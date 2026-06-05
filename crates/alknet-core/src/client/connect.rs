@@ -41,14 +41,14 @@ impl std::fmt::Display for TransportMode {
     }
 }
 
-/// Programmatic configuration for a wraith client session.
+/// Programmatic configuration for an alknet client session.
 ///
 /// Construct with `ConnectOptions::new(key_source)` and chain builder methods.
 /// Call `validate()` before passing to `ClientSession::new()`.
 ///
 /// ```
-/// use wraith_core::client::{ConnectOptions, TransportMode};
-/// use wraith_core::auth::keys::KeySource;
+/// use alknet_core::client::{ConnectOptions, TransportMode};
+/// use alknet_core::auth::keys::KeySource;
 ///
 /// let opts = ConnectOptions::new(KeySource::File("/path/to/key".into()))
 ///     .server("example.com:22")
@@ -312,7 +312,7 @@ impl<T: Transport> ClientSession<T> {
             .await;
         });
 
-        info!("wraith client running: SOCKS5 on {}", socks5_listen);
+        info!("alknet client running: SOCKS5 on {}", socks5_listen);
 
         #[cfg(unix)]
         let signal_done = {
@@ -439,7 +439,7 @@ impl<T: Transport> ClientSession<T> {
 fn derive_username() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "wraith".to_string())
+        .unwrap_or_else(|_| "alknet".to_string())
 }
 
 async fn establish_session<T: Transport>(
@@ -567,7 +567,7 @@ mod tests {
             .remote_forward("0.0.0.0:8080:127.0.0.1:3000")
             .proxy("socks5://127.0.0.1:1080")
             .iroh_relay("https://relay.example.com")
-            .tls_server_name("wraith.test")
+            .tls_server_name("alknet.test")
             .insecure(true);
 
         assert_eq!(opts.server.as_deref(), Some("example.com:22"));
@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(opts.remote_forwards.len(), 1);
         assert_eq!(opts.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
         assert_eq!(opts.iroh_relay.as_deref(), Some("https://relay.example.com"));
-        assert_eq!(opts.tls_server_name.as_deref(), Some("wraith.test"));
+        assert_eq!(opts.tls_server_name.as_deref(), Some("alknet.test"));
         assert!(opts.insecure);
     }
 

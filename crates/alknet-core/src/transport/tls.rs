@@ -293,9 +293,9 @@ mod tests {
     fn tls_transport_builder_methods() {
         let addr: SocketAddr = "1.2.3.4:443".parse().unwrap();
         let transport = TlsTransport::new(addr)
-            .with_server_name("wraith.test")
+            .with_server_name("alknet.test")
             .with_insecure(true);
-        assert_eq!(transport.tls_server_name, Some("wraith.test".to_string()));
+        assert_eq!(transport.tls_server_name, Some("alknet.test".to_string()));
         assert!(transport.insecure);
     }
 
@@ -395,7 +395,7 @@ mod tests {
         let mut client = transport.connect().await.unwrap();
         let (mut server, _info) = accept_handle.await.unwrap();
 
-        let msg = b"wraith integration test";
+        let msg = b"alknet integration test";
         client.write_all(msg).await.unwrap();
         let mut buf = vec![0u8; msg.len()];
         server.read_exact(&mut buf).await.unwrap();

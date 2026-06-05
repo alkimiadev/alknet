@@ -34,7 +34,7 @@ Graceful shutdown (SIGTERM/SIGINT):
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/client/mod.rs` re-exports all client components
+- [ ] `crates/alknet-core/src/client/mod.rs` re-exports all client components
 - [ ] `ConnectOptions` struct with fields matching client.md CLI interface: `server`, `peer`, `transport_mode`, `identity`, `socks5_addr`, `forwards`, `remote_forwards`, `proxy`, `iroh_relay`, `tls_server_name`, `insecure`
 - [ ] `ConnectOptions::identity` accepts `KeySource` (file or in-memory)
 - [ ] `ClientSession::new(opts: ConnectOptions) -> Result<Self>` — creates transport, connects, authenticates

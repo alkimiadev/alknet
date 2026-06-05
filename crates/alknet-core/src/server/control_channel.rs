@@ -1,6 +1,6 @@
-//! Control channel routing for reserved `wraith-*` destinations.
+//! Control channel routing for reserved `alknet-*` destinations.
 //!
-//! SSH channels opened with a destination starting with `wraith-` are intercepted
+//! SSH channels opened with a destination starting with `alknet-` are intercepted
 //! by the server and routed to a `ControlChannelHandler` instead of proxied to a
 //! TCP target. See ADR-018 for the design rationale.
 
@@ -9,11 +9,11 @@ use std::io;
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-pub const WRAITH_CONTROL_DESTINATION: &str = "wraith-control";
-pub const WRAITH_PREFIX: &str = "wraith-";
+pub const ALKNET_CONTROL_DESTINATION: &str = "alknet-control";
+pub const ALKNET_PREFIX: &str = "alknet-";
 
 pub fn is_reserved_destination(host: &str) -> bool {
-    host.starts_with(WRAITH_PREFIX)
+    host.starts_with(ALKNET_PREFIX)
 }
 
 pub trait DuplexStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -68,21 +68,21 @@ mod tests {
     use tokio::io::duplex;
 
     #[test]
-    fn wraith_control_destination_constant() {
-        assert_eq!(WRAITH_CONTROL_DESTINATION, "wraith-control");
+    fn alknet_control_destination_constant() {
+        assert_eq!(ALKNET_CONTROL_DESTINATION, "alknet-control");
     }
 
     #[test]
-    fn wraith_prefix_constant() {
-        assert_eq!(WRAITH_PREFIX, "wraith-");
+    fn alknet_prefix_constant() {
+        assert_eq!(ALKNET_PREFIX, "alknet-");
     }
 
     #[test]
     fn reserved_destination_detected() {
-        assert!(is_reserved_destination("wraith-control"));
-        assert!(is_reserved_destination("wraith-status"));
-        assert!(is_reserved_destination("wraith-events"));
-        assert!(is_reserved_destination("wraith-"));
+        assert!(is_reserved_destination("alknet-control"));
+        assert!(is_reserved_destination("alknet-status"));
+        assert!(is_reserved_destination("alknet-events"));
+        assert!(is_reserved_destination("alknet-"));
     }
 
     #[test]
@@ -90,17 +90,17 @@ mod tests {
         assert!(!is_reserved_destination("example.com"));
         assert!(!is_reserved_destination("localhost"));
         assert!(!is_reserved_destination("192.168.1.1"));
-        assert!(!is_reserved_destination("wraith.example.com"));
+        assert!(!is_reserved_destination("alknet.example.com"));
         assert!(!is_reserved_destination(""));
-        assert!(!is_reserved_destination("wrait-control"));
-        assert!(!is_reserved_destination("WRAITH-control"));
+        assert!(!is_reserved_destination("alkne-control"));
+        assert!(!is_reserved_destination("ALKNET-control"));
     }
 
     #[test]
     fn prefix_matching_case_sensitive() {
-        assert!(!is_reserved_destination("Wraith-control"));
-        assert!(!is_reserved_destination("WRAITH-control"));
-        assert!(is_reserved_destination("wraith-Control"));
+        assert!(!is_reserved_destination("Alknet-control"));
+        assert!(!is_reserved_destination("ALKNET-control"));
+        assert!(is_reserved_destination("alknet-Control"));
     }
 
     #[test]
@@ -187,6 +187,6 @@ mod tests {
 
     #[test]
     fn control_channel_destination_matches_prefix() {
-        assert!(is_reserved_destination(WRAITH_CONTROL_DESTINATION));
+        assert!(is_reserved_destination(ALKNET_CONTROL_DESTINATION));
     }
 }

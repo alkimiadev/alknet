@@ -1,6 +1,6 @@
-# Wraith
+# Alknet
 
-> **Status: Alpha** — This project is in early development. It depends on solid libraries (russh, tokio, iroh) for core functionality, but the glue code and integration between them has not been fully vetted for production use. Because wraith operates low in the network stack, bugs can cause serious problems downstream (leaked connections, broken tunnels, auth failures). Use with caution and report issues.
+> **Status: Alpha** — This project is in early development. It depends on solid libraries (russh, tokio, iroh) for core functionality, but the glue code and integration between them has not been fully vetted for production use. Because alknet operates low in the network stack, bugs can cause serious problems downstream (leaked connections, broken tunnels, auth failures). Use with caution and report issues.
 
 A self-hostable SSH-based tunnel tool that provides VPN-like functionality without being a VPN protocol.
 
@@ -9,9 +9,9 @@ A self-hostable SSH-based tunnel tool that provides VPN-like functionality witho
 - **Private tunneling** — Route traffic to internal services (Postgres, Redis, APIs) over SSH
 - **Censorship circumvention** — SSH over TLS on port 443 is indistinguishable from HTTPS to DPI
 - **NAT traversal** — The iroh transport enables peer-to-peer connections without public IPs or port forwarding
-- **Service mesh connectivity** — Lightweight transport layer for event systems via reserved `wraith-*` destinations
+- **Service mesh connectivity** — Lightweight transport layer for event systems via reserved `alknet-*` destinations
 
-The core insight: SSH tunnels work because SSH is fundamental infrastructure. Blocking it breaks the internet. Wraith makes SSH tunneling accessible through a simple CLI with pluggable transports.
+The core insight: SSH tunnels work because SSH is fundamental infrastructure. Blocking it breaks the internet. Alknet makes SSH tunneling accessible through a simple CLI with pluggable transports.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ cargo build --release
 The default build includes TLS and iroh transports. To build a minimal binary with just TCP:
 
 ```bash
-cargo build --release --no-default-features -p wraith
+cargo build --release --no-default-features -p alknet
 ```
 
 ### Server
@@ -34,17 +34,17 @@ cargo build --release --no-default-features -p wraith
 ssh-keygen -t ed25519 -f ssh_host_ed25519_key -N ""
 
 # Start the server on port 22 (TCP)
-wraith serve --key ssh_host_ed25519_key \
+alknet serve --key ssh_host_ed25519_key \
     --authorized-keys ~/.ssh/authorized_keys
 
 # TLS with stealth mode (looks like nginx 404 to scanners)
-wraith serve --key ssh_host_ed25519_key \
+alknet serve --key ssh_host_ed25519_key \
     --transport tls \
     --acme-domain example.com \
     --stealth
 
 # iroh (no public IP needed)
-wraith serve --key ssh_host_ed25519_key \
+alknet serve --key ssh_host_ed25519_key \
     --transport iroh
 ```
 
@@ -52,21 +52,21 @@ wraith serve --key ssh_host_ed25519_key \
 
 ```bash
 # Connect via TCP and start a SOCKS5 proxy on 127.0.0.1:1080
-wraith connect --server example.com:22 \
+alknet connect --server example.com:22 \
     --identity ~/.ssh/id_ed25519
 
 # Connect via TLS
-wraith connect --server example.com:443 \
+alknet connect --server example.com:443 \
     --transport tls \
     --identity ~/.ssh/id_ed25519
 
 # Connect via iroh (peer-to-peer, no public IP)
-wraith connect --peer <endpoint-id> \
+alknet connect --peer <endpoint-id> \
     --transport iroh \
     --identity ~/.ssh/id_ed25519
 
 # With port forwarding
-wraith connect --server example.com:22 \
+alknet connect --server example.com:22 \
     --identity ~/.ssh/id_ed25519 \
     --forward 5432:db.internal:5432 \
     --forward 6379:redis.internal:6379
@@ -80,24 +80,24 @@ Once connected, point any SOCKS5-aware application at `127.0.0.1:1080`:
 curl --socks5 127.0.0.1:1080 http://internal-api:8080/health
 ```
 
-For VPN-like "route all traffic" behavior, use [tun2proxy](https://github.com/tun2proxy/tun2proxy) alongside wraith's SOCKS5 proxy (see [ADR-014](docs/architecture/decisions/014-defer-tun-recommend-socks5-proxy.md)).
+For VPN-like "route all traffic" behavior, use [tun2proxy](https://github.com/tun2proxy/tun2proxy) alongside alknet's SOCKS5 proxy (see [ADR-014](docs/architecture/decisions/014-defer-tun-recommend-socks5-proxy.md)).
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
-| `wraith-core` | Core library: transport trait, SOCKS5 server, port forwarding, auth, server handler |
-| `wraith` | CLI binary (`wraith connect` / `wraith serve`) |
-| `wraith-napi` | Node.js native addon via napi-rs (`connect()` / `serve()`) |
+| `alknet-core` | Core library: transport trait, SOCKS5 server, port forwarding, auth, server handler |
+| `alknet` | CLI binary (`alknet connect` / `alknet serve`) |
+| `alknet-napi` | Node.js native addon via napi-rs (`connect()` / `serve()`) |
 
 ## Feature flags
 
 | Feature | Crate | Default | Description |
 |---------|-------|---------|-------------|
-| `tls` | `wraith-core`, `wraith` | yes | TLS transport (tokio-rustls) |
-| `iroh` | `wraith-core`, `wraith` | yes | iroh QUIC P2P transport |
-| `acme` | `wraith-core` | no | ACME/Let's Encrypt auto-cert provisioning |
-| `testutil` | `wraith-core` | no | Test utilities (for internal use) |
+| `tls` | `alknet-core`, `alknet` | yes | TLS transport (tokio-rustls) |
+| `iroh` | `alknet-core`, `alknet` | yes | iroh QUIC P2P transport |
+| `acme` | `alknet-core` | no | ACME/Let's Encrypt auto-cert provisioning |
+| `testutil` | `alknet-core` | no | Test utilities (for internal use) |
 
 ## Transport modes
 
@@ -117,7 +117,7 @@ Key formats are OpenSSH throughout (private keys: `-----BEGIN OPENSSH PRIVATE KE
 
 ## Architecture
 
-Wraith's core architectural decision is that SSH never touches the network directly. The transport layer produces a duplex byte stream, and SSH runs over it via `russh::client::connect_stream()` / `russh::server::run_stream()`. This makes transports fully pluggable.
+Alknet's core architectural decision is that SSH never touches the network directly. The transport layer produces a duplex byte stream, and SSH runs over it via `russh::client::connect_stream()` / `russh::server::run_stream()`. This makes transports fully pluggable.
 
 ```
 Client                                          Server
@@ -137,10 +137,10 @@ See [docs/architecture/](docs/architecture/) for full specifications and [ADR in
 
 ## Node.js API
 
-The `wraith-napi` crate provides a Node.js native addon via napi-rs:
+The `alknet-napi` crate provides a Node.js native addon via napi-rs:
 
 ```js
-const { connect, serve } = require('wraith-napi');
+const { connect, serve } = require('alknet-napi');
 
 // Client: open a duplex stream through SSH
 const stream = await connect({
@@ -224,10 +224,10 @@ This is **alpha software**. While it depends on well-established libraries (russ
 
 - **Connection handling edge cases** — reconnection logic, graceful shutdown, resource cleanup
 - **Security review** — the auth layer, rate limiting, and stealth mode should be audited before production use
-- **API stability** — the library API (`wraith-core`) and NAPI interface may change between versions
+- **API stability** — the library API (`alknet-core`) and NAPI interface may change between versions
 - **Performance** — no load testing or benchmarking has been done yet
 
-Please test thoroughly and [file issues](https://git.alk.dev/alkdev/wraith/issues) for any problems you encounter.
+Please test thoroughly and [file issues](https://git.alk.dev/alkdev/alknet/issues) for any problems you encounter.
 
 ## License
 

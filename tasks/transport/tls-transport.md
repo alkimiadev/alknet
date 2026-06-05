@@ -25,7 +25,7 @@ Feature-gated behind `tls` feature flag.
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/transport/tls.rs` (behind `#[cfg(feature = "tls")]`)
+- [ ] `crates/alknet-core/src/transport/tls.rs` (behind `#[cfg(feature = "tls")]`)
 - [ ] `TlsTransport` holds: target addr, optional `tls_server_name`, `insecure` flag, optional root cert for verification
 - [ ] `TlsTransport::connect()` does TCP connect then TLS client handshake via `tokio_rustls::TlsConnector`
 - [ ] When `insecure`, accepts any certificate (dangerous, `webpki_roots::CertStore` bypass or custom verifier)

@@ -18,14 +18,14 @@ The `TransportInfo` and `TransportKind` types carry metadata about incoming conn
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/transport/mod.rs` exports `Transport` trait, `TransportAcceptor` trait, `TransportInfo`, `TransportKind`
+- [ ] `crates/alknet-core/src/transport/mod.rs` exports `Transport` trait, `TransportAcceptor` trait, `TransportInfo`, `TransportKind`
 - [ ] `Transport` trait: `async fn connect(&self) -> Result<Self::Stream>` where `Self::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static`
 - [ ] `Transport::describe(&self) -> String` for human-readable logging
 - [ ] `TransportAcceptor` trait: `async fn accept(&self) -> Result<(Self::Stream, TransportInfo)>` with same stream bounds
 - [ ] `TransportInfo { remote_addr: Option<SocketAddr>, transport_kind: TransportKind }`
 - [ ] `TransportKind` enum: `Tcp`, `Tls { server_name: Option<String> }`, `Iroh { endpoint_id: String }`
 - [ ] Traits are `Send + Sync + 'static`
-- [ ] Re-exported from `crates/wraith-core/src/lib.rs`
+- [ ] Re-exported from `crates/alknet-core/src/lib.rs`
 - [ ] Unit tests verifying trait objects can be constructed (trait is object-safe with `Box<dyn Transport<Stream = ...>>`)
 - [ ] Documentation comments on all public types referencing ADR-001, ADR-004
 

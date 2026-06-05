@@ -23,7 +23,7 @@ Supports three outbound proxy modes per server.md: Direct, SOCKS5 proxy, HTTP CO
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/server/channel_proxy.rs` exports channel proxy functions
+- [ ] `crates/alknet-core/src/server/channel_proxy.rs` exports channel proxy functions
 - [ ] `ProxyConfig` enum: `Direct`, `Socks5 { addr: SocketAddr }`, `HttpConnect { addr: SocketAddr }`
 - [ ] `connect_outbound(target: SocketAddr, proxy: &ProxyConfig) -> Result<TcpStream>` — connects to target directly or via proxy
 - [ ] Direct mode: `TcpStream::connect(target)`

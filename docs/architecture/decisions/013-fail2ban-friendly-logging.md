@@ -27,11 +27,11 @@ This matches what fail2ban needs: source IP + failure indicator. Our existing fa
 This ensures that even without fail2ban, the server rejects obviously abusive connections.
 
 ## Consequences
-- **Positive**: fail2ban can parse wraith logs the same way it parses SSH and nginx logs on our production systems.
+- **Positive**: fail2ban can parse alknet logs the same way it parses SSH and nginx logs on our production systems.
 - **Positive**: Built-in rate limiting provides protection on platforms without fail2ban.
 - **Positive**: No privacy-sensitive data in logs (no tunnel destinations).
 - **Negative**: Slightly more code in the server for connection tracking per IP.
-- **Negative**: Users with custom fail2ban filters need to write regex for wraith's log format (documented examples provided).
+- **Negative**: Users with custom fail2ban filters need to write regex for alknet's log format (documented examples provided).
 
 ## References
 - [server.md](../server.md)

@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/wraith-core",
-    "crates/wraith",
-    "crates/wraith-napi",
+    "crates/alknet-core",
+    "crates/alknet",
+    "crates/alknet-napi",
 ]
 resolver = "2"
 
@@ -10,4 +10,4 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://git.alk.dev/alkdev/wraith"
+repository = "https://git.alk.dev/alkdev/alknet"

@@ -327,7 +327,7 @@ defined in `@alkdev/operations`. The TypeScript implementation provides:
 
 The Rust implementation mirrors these types and behaviors. TypeScript consumers
 continue using `@alkdev/operations` over `@alkdev/pubsub` adapters (including
-the `event-target-wraith` adapter). Rust consumers use core's registry directly.
+the `event-target-alknet` adapter). Rust consumers use core's registry directly.
 Both speak the same wire protocol and can interoperate.
 
 The key principle: **the same `EventEnvelope` can flow from a Rust handler

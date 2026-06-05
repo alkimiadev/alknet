@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-The NAPI wrapper for wraith could expose different granularity levels:
+The NAPI wrapper for alknet could expose different granularity levels:
 
 1. **Full SSH API**: Expose channel multiplexing, `open_direct_tcpip`, `tcpip_forward`, session management. The TypeScript layer would manage channels.
 2. **Single duplex stream**: The NAPI wrapper establishes one SSH channel and returns it as a Node.js `Duplex` stream. TypeScript multiplexing (if needed) happens at the pubsub layer.

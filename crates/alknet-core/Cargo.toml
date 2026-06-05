@@ -1,13 +1,13 @@
 [package]
-name = "wraith-core"
+name = "alknet-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core library for Wraith: pluggable SSH tunnel transport, SOCKS5 proxy, port forwarding, and authentication"
+description = "Core library for Alknet: pluggable SSH tunnel transport, SOCKS5 proxy, port forwarding, and authentication"
 repository.workspace = true
 
 [lib]
-name = "wraith_core"
+name = "alknet_core"
 
 [features]
 default = []
@@ -36,7 +36,7 @@ async-trait = "0.1"
 ipnetwork = "0.21.1"
 
 [dev-dependencies]
-wraith-core = { path = ".", features = ["testutil", "tls", "iroh"] }
+alknet-core = { path = ".", features = ["testutil", "tls", "iroh"] }
 tempfile = "3"
 rcgen = "0.14"
 rand_core = "0.6"

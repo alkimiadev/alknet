@@ -5,7 +5,7 @@ Accepted
 
 ## Context
 
-Wraith currently authenticates connections exclusively through SSH public key
+Alknet currently authenticates connections exclusively through SSH public key
 auth in the SSH handshake. This works for SSH-over-any-transport (TCP, TLS,
 iroh) because SSH carries its own auth protocol. But WebTransport and other
 HTTP-level transports cannot perform SSH key exchange — browsers speak HTTP/3,
@@ -17,8 +17,8 @@ identity system (API keys, JWTs, session tokens). This creates two problems:
 same person connecting via SSH and WebTransport appears as two different
 identities.
 
-The `IdentityProvider` trait is needed to decouple wraith-core from any
-specific identity storage (config file vs. database). Without it, wraith-core
+The `IdentityProvider` trait is needed to decouple alknet-core from any
+specific identity storage (config file vs. database). Without it, alknet-core
 would either hardcode config-file-based auth or take a database dependency —
 neither is acceptable for a library crate.
 
@@ -42,7 +42,7 @@ AuthToken = base64url(key_id || timestamp || signature)
 Server extracts the fingerprint, looks it up in the same `authorized_keys`
 set, verifies the signature, and checks the timestamp window (default ±300s).
 
-**`IdentityProvider` trait**: Decouples wraith-core from identity storage. The
+**`IdentityProvider` trait**: Decouples alknet-core from identity storage. The
 trait resolves a fingerprint or token to an `Identity`. Default implementation
 loads from `DynamicConfig.auth` (no database). Hub implementation can back it
 with `@alkdev/storage`.
@@ -60,7 +60,7 @@ the key material.
 - **Positive**: One key set, one rotation, one `reloadAuth()` call. Adding a
   key to `authorized_keys` immediately grants access via both SSH and
   WebTransport.
-- **Positive**: `IdentityProvider` trait makes wraith-core independent of any
+- **Positive**: `IdentityProvider` trait makes alknet-core independent of any
   specific database. Default: config file. Hub: `@alkdev/storage`.
 - **Positive**: Browser clients can authenticate using Ed25519 keys via
   SubtleCrypto (Chrome 105+, Firefox 130+, Safari 17+). Deno supports it

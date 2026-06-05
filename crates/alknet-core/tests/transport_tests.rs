@@ -1,4 +1,4 @@
-use wraith_core::testutil::{MockTransport, MockTransportAcceptor, Transport, TransportAcceptor, mock_pair};
+use alknet_core::testutil::{MockTransport, MockTransportAcceptor, Transport, TransportAcceptor, mock_pair};
 
 #[tokio::test]
 async fn mock_transport_connect() {

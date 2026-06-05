@@ -92,7 +92,7 @@ See ADR-009 for the decision to default to n0's relay with override.
 Transports can be nested. The CLI supports `--transport iroh --proxy socks5://...` natively (ADR-010):
 
 ```bash
-wraith connect --transport iroh --proxy socks5://127.0.0.1:1080
+alknet connect --transport iroh --proxy socks5://127.0.0.1:1080
 ```
 
 This routes iroh's outbound TCP connections through the specified SOCKS5 proxy. The iroh transport supports SOCKS5 and HTTP proxy configuration for its outbound connections — the proxy URL is applied during transport initialization.

@@ -22,14 +22,14 @@ Use `thiserror` for structured error types propagated via `anyhow::Result` in th
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/error.rs` exports error types
+- [ ] `crates/alknet-core/src/error.rs` exports error types
 - [ ] `TransportError` enum: `ConnectionFailed`, `HandshakeFailed`, `Timeout`, `ProxyFailed`
 - [ ] `AuthError` enum: `KeyRejected`, `CertInvalid`, `CertExpired`, `CertPrincipalMismatch`, `NoMatchingKey`
 - [ ] `ChannelError` enum: `TargetUnreachable`, `ProxyConnectFailed`, `ChannelClosed`
 - [ ] `ConfigError` enum: `InvalidFlag`, `KeyFileNotFound`, `BindFailed`, `IncompatibleOptions`
 - [ ] All error types implement `std::error::Error` via `thiserror`, `Display`, and `Debug`
 - [ ] Error types have `source` chaining where appropriate (e.g., `TransportError::HandshakeFailed { source: std::io::Error }`)
-- [ ] Re-exported from `crates/wraith-core/src/lib.rs`
+- [ ] Re-exported from `crates/alknet-core/src/lib.rs`
 - [ ] Unit tests for Display output of each error variant
 
 ## References

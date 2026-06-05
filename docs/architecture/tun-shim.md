@@ -5,21 +5,21 @@ last_updated: 2026-06-01
 
 # TUN Shim (Deprecated)
 
-> **Note**: TUN functionality has been deferred from the wraith project. For VPN-like "route all traffic" behavior, use `tun2proxy` alongside wraith's SOCKS5 proxy. See ADR-014 for the rationale.
+> **Note**: TUN functionality has been deferred from the alknet project. For VPN-like "route all traffic" behavior, use `tun2proxy` alongside alknet's SOCKS5 proxy. See ADR-014 for the rationale.
 
 ## What Changed
 
-The `wraith-tun` separate process and all TUN-related code is out of scope. The recommended approach for VPN-like behavior is:
+The `alknet-tun` separate process and all TUN-related code is out of scope. The recommended approach for VPN-like behavior is:
 
 ```bash
-# Terminal 1: wraith SOCKS5 proxy (no root required)
-wraith connect --server example.com --identity ~/.ssh/id_ed25519
+# Terminal 1: alknet SOCKS5 proxy (no root required)
+alknet connect --server example.com --identity ~/.ssh/id_ed25519
 
-# Terminal 2: tun2proxy routes all traffic through wraith's SOCKS5
+# Terminal 2: tun2proxy routes all traffic through alknet's SOCKS5
 sudo tun2proxy --proxy socks5://127.0.0.1:1080
 ```
 
-This keeps the core wraith binary free of TUN complexity and leverages an existing, well-tested tool for TUN-to-SOCKS5 bridging.
+This keeps the core alknet binary free of TUN complexity and leverages an existing, well-tested tool for TUN-to-SOCKS5 bridging.
 
 ## References
 

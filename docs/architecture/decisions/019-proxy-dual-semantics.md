@@ -4,11 +4,11 @@
 Accepted
 
 ## Context
-The `--proxy` CLI flag appears on both `wraith connect` (client) and `wraith serve` (server), but the two sides proxy fundamentally different things:
+The `--proxy` CLI flag appears on both `alknet connect` (client) and `alknet serve` (server), but the two sides proxy fundamentally different things:
 
-- **Client**: `--proxy` routes the *transport connection* through the proxy. For example, `wraith connect --transport iroh --proxy socks5://127.0.0.1:1080` means the iroh endpoint's outbound TCP connections go through the specified SOCKS5 proxy before reaching the iroh relay. The proxy wraps the transport layer.
+- **Client**: `--proxy` routes the *transport connection* through the proxy. For example, `alknet connect --transport iroh --proxy socks5://127.0.0.1:1080` means the iroh endpoint's outbound TCP connections go through the specified SOCKS5 proxy before reaching the iroh relay. The proxy wraps the transport layer.
 
-- **Server**: `--proxy` routes *outbound target connections* through the proxy. For example, `wraith serve --proxy socks5://127.0.0.1:9050` means when an SSH client opens a `direct_tcpip` channel to `db.internal:5432`, the server connects to that target through the specified proxy. The proxy wraps the data-plane connections.
+- **Server**: `--proxy` routes *outbound target connections* through the proxy. For example, `alknet serve --proxy socks5://127.0.0.1:9050` means when an SSH client opens a `direct_tcpip` channel to `db.internal:5432`, the server connects to that target through the specified proxy. The proxy wraps the data-plane connections.
 
 Using the same flag name for both is intentional — from the user's perspective, both mean "route traffic through a proxy." But the layer at which the proxy operates differs, and this needs to be explicit so implementers don't confuse the two.
 

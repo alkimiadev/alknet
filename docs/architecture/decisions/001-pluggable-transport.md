@@ -4,9 +4,9 @@
 Accepted
 
 ## Context
-Wraith needs to support multiple transport modes (TCP, TLS, iroh) for SSH sessions. Each mode has different connection establishment logic but produces the same result: a bidirectional byte stream. Without an abstraction, each transport would need its own SSH connection code path.
+Alknet needs to support multiple transport modes (TCP, TLS, iroh) for SSH sessions. Each mode has different connection establishment logic but produces the same result: a bidirectional byte stream. Without an abstraction, each transport would need its own SSH connection code path.
 
-russh's `client::connect_stream()` and `server::run_stream()` both accept `AsyncRead + AsyncWrite + Unpin + Send`, meaning SSH is already transport-agnostic at the API level. The design question is whether to enshrine this in wraith's own type system or handle each transport case-by-case.
+russh's `client::connect_stream()` and `server::run_stream()` both accept `AsyncRead + AsyncWrite + Unpin + Send`, meaning SSH is already transport-agnostic at the API level. The design question is whether to enshrine this in alknet's own type system or handle each transport case-by-case.
 
 ## Decision
 Define a `Transport` trait that produces `AsyncRead + AsyncWrite + Unpin + Send` streams. Each transport (TCP, TLS, iroh) implements this trait. The SSH layer calls `transport.connect()` and passes the result to `russh::client::connect_stream()`.

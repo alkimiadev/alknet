@@ -1,4 +1,4 @@
-//! NAPI `serve()` function and `WraithServer` type.
+//! NAPI `serve()` function and `AlknetServer` type.
 //!
 //! Starts an SSH server that emits new channel streams via a
 //! `ThreadsafeFunction` callback. Supports TCP, TLS, and iroh transports.
@@ -14,14 +14,14 @@ use russh::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use wraith_core::auth::keys::KeySource;
-use wraith_core::auth::server_auth::ServerAuthConfig;
-use wraith_core::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
-use wraith_core::server::serve::{ServeOptions, ServeTransportMode, Server};
-use wraith_core::transport::{TcpAcceptor, TransportAcceptor};
+use alknet_core::auth::keys::KeySource;
+use alknet_core::auth::server_auth::ServerAuthConfig;
+use alknet_core::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
+use alknet_core::server::serve::{ServeOptions, ServeTransportMode, Server};
+use alknet_core::transport::{TcpAcceptor, TransportAcceptor};
 
 #[napi(object)]
-pub struct WraithServeOptions {
+pub struct AlknetServeOptions {
     pub transport: String,
     pub host_key: Option<Either<String, Buffer>>,
     pub authorized_keys: Option<Either<String, Buffer>>,
@@ -75,13 +75,13 @@ pub struct ConnectionInfo {
 }
 
 #[napi]
-pub struct WraithServerStream {
+pub struct AlknetServerStream {
     read: Arc<Mutex<tokio::io::ReadHalf<russh::ChannelStream<server::Msg>>>>,
     write: Arc<Mutex<tokio::io::WriteHalf<russh::ChannelStream<server::Msg>>>>,
 }
 
 #[napi]
-impl WraithServerStream {
+impl AlknetServerStream {
     #[napi]
     pub async fn read(&self, size: u32) -> napi::Result<Buffer> {
         let mut buf = vec![0u8; size as usize];
@@ -208,7 +208,7 @@ impl russh::server::Handler for NapiServerHandler {
         _originator_port: u32,
         _session: &mut russh::server::Session,
     ) -> std::result::Result<bool, Self::Error> {
-        if host_to_connect.starts_with("wraith-") {
+        if host_to_connect.starts_with("alknet-") {
             let guard = self.channel_sender.lock().await;
             if let Some(ref tx) = *guard {
                 let _ = tx.send(channel);
@@ -385,7 +385,7 @@ impl russh::server::Handler for NapiServerHandler {
 type ServerTsfn = ThreadsafeFunction<ConnectionEventWrapper, (), ConnectionEventWrapper>;
 
 #[napi]
-pub struct WraithServer {
+pub struct AlknetServer {
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     listen_addr: String,
     endpoint_id: Option<String>,
@@ -393,7 +393,7 @@ pub struct WraithServer {
 }
 
 struct ConnectionEventWrapper {
-    stream: WraithServerStream,
+    stream: AlknetServerStream,
     info: ConnectionInfo,
 }
 
@@ -408,7 +408,7 @@ impl ToNapiValue for ConnectionEventWrapper {
             "Failed to create object"
         )?;
 
-        let stream_val = <WraithServerStream as ToNapiValue>::to_napi_value(env, val.stream)?;
+        let stream_val = <AlknetServerStream as ToNapiValue>::to_napi_value(env, val.stream)?;
         let key_stream = std::ffi::CString::new("stream").unwrap();
         napi::check_status!(
             napi::sys::napi_set_named_property(env, raw_obj, key_stream.as_ptr(), stream_val),
@@ -439,7 +439,7 @@ impl TypeName for ConnectionEventWrapper {
 impl ValidateNapiValue for ConnectionEventWrapper {}
 
 #[napi]
-impl WraithServer {
+impl AlknetServer {
     #[napi]
     pub async fn close(&self) -> napi::Result<()> {
         let _ = self.shutdown_tx.send(true);
@@ -470,7 +470,7 @@ impl WraithServer {
 }
 
 #[napi]
-pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
+pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
     let host_key_source = resolve_key_source(&options.host_key, "hostKey")?;
     let authorized_keys_source = resolve_optional_key_source(&options.authorized_keys);
     let cert_authority_source = resolve_optional_key_source(&options.cert_authority);
@@ -543,7 +543,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
             );
 
             let private_key =
-                wraith_core::auth::keys::load_private_key(host_key_source).map_err(|e| {
+                alknet_core::auth::keys::load_private_key(host_key_source.clone()).map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
                 })?;
 
@@ -573,7 +573,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
                 .await;
             });
 
-            Ok(WraithServer {
+            Ok(AlknetServer {
                 shutdown_tx,
                 listen_addr: actual_listen,
                 endpoint_id: None,
@@ -581,7 +581,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
             })
         }
         ServeTransportMode::Tls => {
-            use wraith_core::transport::TlsAcceptor;
+            use alknet_core::transport::TlsAcceptor;
 
             let addr = parse_addr(listen_addr_str)?;
 
@@ -654,7 +654,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
             );
 
             let private_key =
-                wraith_core::auth::keys::load_private_key(host_key_source).map_err(|e| {
+                alknet_core::auth::keys::load_private_key(host_key_source.clone()).map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
                 })?;
 
@@ -684,7 +684,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
                 .await;
             });
 
-            Ok(WraithServer {
+            Ok(AlknetServer {
                 shutdown_tx,
                 listen_addr: actual_listen,
                 endpoint_id: None,
@@ -692,7 +692,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
             })
         }
         ServeTransportMode::Iroh => {
-            use wraith_core::transport::IrohAcceptor;
+            use alknet_core::transport::IrohAcceptor;
 
             let relay_url: Option<iroh::RelayUrl> = match options.iroh_relay.as_deref() {
                 Some(u) => Some(u.parse().map_err(|e| {
@@ -736,7 +736,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
             );
 
             let private_key =
-                wraith_core::auth::keys::load_private_key(host_key_source).map_err(|e| {
+                alknet_core::auth::keys::load_private_key(host_key_source).map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
                 })?;
 
@@ -766,7 +766,7 @@ pub async fn serve(options: WraithServeOptions) -> napi::Result<WraithServer> {
                 .await;
             });
 
-            Ok(WraithServer {
+            Ok(AlknetServer {
                 shutdown_tx,
                 listen_addr: String::new(),
                 endpoint_id: Some(iroh_endpoint_id),
@@ -836,7 +836,7 @@ async fn run_accept_loop<A>(
                     Some(ch) => {
                         let channel_stream = ch.into_stream();
                         let (read_half, write_half) = tokio::io::split(channel_stream);
-                        let server_stream = WraithServerStream {
+                        let server_stream = AlknetServerStream {
                             read: Arc::new(Mutex::new(read_half)),
                             write: Arc::new(Mutex::new(write_half)),
                         };

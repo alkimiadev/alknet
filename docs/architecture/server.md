@@ -7,7 +7,7 @@ last_updated: 2026-06-02
 
 ## What
 
-The wraith server accepts SSH connections (via pluggable transport) and handles `channel_open_direct_tcpip` requests by connecting to the requested target — either directly or through an outbound proxy.
+The alknet server accepts SSH connections (via pluggable transport) and handles `channel_open_direct_tcpip` requests by connecting to the requested target — either directly or through an outbound proxy.
 
 ## Why
 
@@ -19,7 +19,7 @@ The server is the tunnel endpoint. It receives SSH channels requesting TCP conne
 
 ```
 ┌──────────────────────────────────────────────────┐
-│                   wraith serve                     │
+│                   alknet serve                     │
 │                                                   │
 │  ┌─────────────────────────────────────────────┐ │
 │  │          SSH Server (russh)                  │ │
@@ -85,7 +85,7 @@ ACME support is feature-gated behind the `acme` feature flag to keep the base bi
 
 When a client opens a `channel_open_direct_tcpip(host, port, originator_addr, originator_port)`:
 
-**Reserved destination** — If `host` starts with `wraith-` (e.g., `wraith-control`), the server routes the channel internally instead of connecting to a TCP target. The primary reserved destination is `wraith-control:0`, which bridges the channel to the local pubsub event bus (ADR-018).
+**Reserved destination** — If `host` starts with `alknet-` (e.g., `alknet-control`), the server routes the channel internally instead of connecting to a TCP target. The primary reserved destination is `alknet-control:0`, which bridges the channel to the local pubsub event bus (ADR-018).
 
 **Regular destination** — For all other targets:
 
@@ -128,7 +128,7 @@ The server handler implements `russh::server::Handler` with two primary responsi
 - Return `Accept` or `Reject`
 
 **Channel handling (`channel_open_direct_tcpip`)**:
-- If the destination host starts with `wraith-`, route internally (control channel, ADR-018)
+- If the destination host starts with `alknet-`, route internally (control channel, ADR-018)
 - Otherwise, connect to `host:port` (directly or via the configured outbound proxy)
 - Spawn a bidirectional proxy task between the SSH channel and the outbound TCP stream
 - Return the channel for data flow
@@ -161,44 +161,44 @@ These provide abuse protection on platforms without fail2ban (macOS, Windows, BS
 
 ```bash
 # Basic server (SSH on port 22)
-wraith serve --key ~/.ssh/ssh_host_ed25519_key
+alknet serve --key ~/.ssh/ssh_host_ed25519_key
 
 # With TLS (manual certs)
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
     --transport tls \
     --tls-cert /etc/ssl/cert.pem \
     --tls-key /etc/ssl/key.pem
 
 # With TLS (auto ACME, domain-based)
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
     --transport tls \
     --acme-domain example.com
 
 # With TLS + stealth (fake nginx 404 to scanners)
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
     --transport tls \
     --acme-domain example.com \
     --stealth
 
 # With iroh transport (no public IP needed)
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
     --transport iroh
 
 # With outbound proxy
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
     --proxy socks5://127.0.0.1:9050
 
 # With certificate authority authentication
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
-    --cert-authority /etc/wraith/ca.pub
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
+    --cert-authority /etc/alknet/ca.pub
 
 # With rate limiting
-wraith serve --key ~/.ssh/ssh_host_ed25519_key \
+alknet serve --key ~/.ssh/ssh_host_ed25519_key \
     --max-connections-per-ip 5 \
     --max-auth-attempts 3
 
 # All options
-wraith serve \
+alknet serve \
   --key <path-or-buffer> \       # SSH host key (required)
   --authorized-keys <path> \     # Authorized keys file
   --cert-authority <path> \      # CA public key for cert-auth
@@ -218,7 +218,7 @@ wraith serve \
 
 When running with `--transport iroh`, the server:
 
-1. Creates an iroh endpoint with ALPN value `b"wraith-ssh"`
+1. Creates an iroh endpoint with ALPN value `b"alknet-ssh"`
 2. Prints its endpoint ID (base58-encoded Ed25519 public key) — this is what clients use as the `--peer` value
 3. Accepts incoming connections on the endpoint
 4. For each connection, accepts a bidirectional stream and passes it to `server::run_stream()`
@@ -228,7 +228,7 @@ No listening port is needed. The server connects outbound to the iroh relay (def
 ## Constraints
 
 - The server does not log tunnel destinations (ADR-006). Auth events and connection events are logged for fail2ban integration (ADR-013).
-- Destination strings beginning with `wraith-` are reserved for internal use (ADR-018). The server must not attempt TCP connections to `wraith-*` destinations — these are intercepted for control channel routing.
+- Destination strings beginning with `alknet-` are reserved for internal use (ADR-018). The server must not attempt TCP connections to `alknet-*` destinations — these are intercepted for control channel routing.
 - One `ServerHandler` instance per connection. Handler state is not shared between connections (unless explicitly configured via `Arc` shared state for things like connection limits).
 - The server binds to a single transport at a time. Running multiple transports (e.g., TCP + iroh) simultaneously requires separate processes or a future multiplexing feature.
 - ACME support requires the `acme` feature flag. Without it, only manual TLS certs are supported.
@@ -271,5 +271,5 @@ None — all resolved.
 | [012](decisions/012-auth-ed25519-and-cert-authority.md) | Key + cert-authority auth | No password auth; support OpenSSH cert-authority |
 | [013](decisions/013-fail2ban-friendly-logging.md) | Fail2ban-friendly logging | Structured auth logs + built-in rate limiting |
 | [017](decisions/017-stealth-mode-protocol-multiplexing.md) | Stealth mode | Protocol multiplexing on port 443 |
-| [018](decisions/018-control-channel-for-pubsub.md) | Control channel | Reserved `wraith-control` destination for pubsub |
+| [018](decisions/018-control-channel-for-pubsub.md) | Control channel | Reserved `alknet-control` destination for pubsub |
 | [019](decisions/019-proxy-dual-semantics.md) | Proxy dual semantics | `--proxy` routes transport on client, data on server |

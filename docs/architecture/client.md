@@ -7,11 +7,11 @@ last_updated: 2026-06-02
 
 ## What
 
-The wraith client establishes an SSH session to a server (via pluggable transport) and exposes a local SOCKS5 proxy for routing traffic through that session. Port forwarding (`-L` / `-R` style) covers specific service access like Postgres or Redis.
+The alknet client establishes an SSH session to a server (via pluggable transport) and exposes a local SOCKS5 proxy for routing traffic through that session. Port forwarding (`-L` / `-R` style) covers specific service access like Postgres or Redis.
 
 ## Why
 
-Users need a way to route traffic through the SSH tunnel. SOCKS5 is the primary interface — it's standard, well-supported by browsers and CLI tools, and needs no privileges. Port forwarding covers specific service access. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside wraith (ADR-014).
+Users need a way to route traffic through the SSH tunnel. SOCKS5 is the primary interface — it's standard, well-supported by browsers and CLI tools, and needs no privileges. Port forwarding covers specific service access. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside alknet (ADR-014).
 
 ## Architecture
 
@@ -19,7 +19,7 @@ Users need a way to route traffic through the SSH tunnel. SOCKS5 is the primary 
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│                     wraith connect                      │
+│                     alknet connect                      │
 │                                                        │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐              │
 │  │ SOCKS5   │ │ Port     │ │ Remote   │              │
@@ -101,8 +101,8 @@ The channel manager orchestrates reconnection: it creates a new transport stream
 The client uses programmatic configuration — no `~/.ssh/config` parsing, no custom config files. Configuration comes from:
 
 1. **CLI flags**: `--server`, `--identity`, `--transport`, etc.
-2. **Library API**: `ConnectOptions` and `ServeOptions` structs in `wraith-core`, constructable programmatically
-3. **Environment variables**: `WRAITH_SERVER`, `WRAITH_IDENTITY` as convenience defaults
+2. **Library API**: `ConnectOptions` and `ServeOptions` structs in `alknet-core`, constructable programmatically
+3. **Environment variables**: `ALKNET_SERVER`, `ALKNET_IDENTITY` as convenience defaults
 
 This approach avoids cross-platform path issues (`~` expansion, Windows `USERPROFILE`) and makes the library API clean for programmatic consumers like the NAPI wrapper. Keys can be provided as file paths or in-memory data.
 
@@ -110,7 +110,7 @@ This approach avoids cross-platform path issues (`~` expansion, Windows `USERPRO
 
 Key inputs (`--identity`, `--authorized-keys`, `--cert-authority`, `--key`) accept either:
 
-- **File path**: A filesystem path to a key file (e.g., `~/.ssh/id_ed25519`, `/etc/wraith/ca.pub`)
+- **File path**: A filesystem path to a key file (e.g., `~/.ssh/id_ed25519`, `/etc/alknet/ca.pub`)
 - **In-memory data**: Raw key bytes provided programmatically via the library API or NAPI wrapper (as `Vec<u8>` in Rust, `Buffer` in Node.js)
 
 The accepted format is **OpenSSH key format** (the format used by `ssh-keygen` and OpenSSH's `~/.ssh/` files). This includes:
@@ -125,31 +125,31 @@ PEM-encoded keys (PKCS#1, PKCS#8) are not supported. Use OpenSSH format keys thr
 
 ```bash
 # Basic connection (TCP, default port 22)
-wraith connect --server example.com --identity ~/.ssh/id_ed25519
+alknet connect --server example.com --identity ~/.ssh/id_ed25519
 
 # With TLS
-wraith connect --server example.com:443 --transport tls --identity ~/.ssh/id_ed25519
+alknet connect --server example.com:443 --transport tls --identity ~/.ssh/id_ed25519
 
 # With TLS + insecure (self-signed certs)
-wraith connect --server example.com:443 --transport tls --identity ~/.ssh/id_ed25519 --insecure
+alknet connect --server example.com:443 --transport tls --identity ~/.ssh/id_ed25519 --insecure
 
 # With iroh (no public IP needed)
-wraith connect --peer <endpoint-id> --transport iroh --identity ~/.ssh/id_ed25519
+alknet connect --peer <endpoint-id> --transport iroh --identity ~/.ssh/id_ed25519
 
 # With iroh + custom relay
-wraith connect --peer <endpoint-id> --transport iroh --identity ~/.ssh/id_ed25519 --iroh-relay https://relay.example.com
+alknet connect --peer <endpoint-id> --transport iroh --identity ~/.ssh/id_ed25519 --iroh-relay https://relay.example.com
 
 # With iroh + proxy (transport chaining)
-wraith connect --peer <endpoint-id> --transport iroh --identity ~/.ssh/id_ed25519 --proxy socks5://127.0.0.1:1080
+alknet connect --peer <endpoint-id> --transport iroh --identity ~/.ssh/id_ed25519 --proxy socks5://127.0.0.1:1080
 
 # SOCKS5 on custom port
-wraith connect --server example.com --socks5 127.0.0.1:1080 --identity ~/.ssh/id_ed25519
+alknet connect --server example.com --socks5 127.0.0.1:1080 --identity ~/.ssh/id_ed25519
 
 # With port forwards
-wraith connect --server example.com --forward 5432:db.internal:5432 --forward 6379:redis.internal:6379
+alknet connect --server example.com --forward 5432:db.internal:5432 --forward 6379:redis.internal:6379
 
 # All options
-wraith connect \
+alknet connect \
   --server <addr> \          # TCP/TLS server address (required for tcp/tls)
   --peer <endpoint-id> \    # iroh endpoint ID, base58-encoded (required for iroh)
   --transport tcp|tls|iroh \ # Transport mode
@@ -165,13 +165,13 @@ wraith connect \
 
 ## Constraints
 
-- SOCKS5 is always enabled when `wraith connect` runs (it's the primary interface). Port forwards are optional.
+- SOCKS5 is always enabled when `alknet connect` runs (it's the primary interface). Port forwards are optional.
 - The client does not log tunnel destinations. The SOCKS5 server connects and proxies — no logging of SOCKS5 request targets.
 - Authentication is Ed25519 public key or OpenSSH certificate (ADR-012). No password authentication over SSH.
-- Only one SSH session per `wraith connect` process. Multiple sessions = multiple processes (or a future multiplexer).
+- Only one SSH session per `alknet connect` process. Multiple sessions = multiple processes (or a future multiplexer).
 - No `~/.ssh/config` parsing. Configuration is programmatic via CLI flags, env vars, or library API structs (ADR-011).
 - VPN-like "route all traffic" behavior is provided by running `tun2proxy --proxy socks5://127.0.0.1:1080` alongside the client, not by a built-in TUN interface (ADR-014).
-- The CLI `wraith connect` command manages a full SSH session with SOCKS5 and port forwarding. The NAPI `connect()` function is a different operation — it opens a single SSH channel as a Duplex stream for programmatic use, with no SOCKS5 server or port forwarding. See napi-and-pubsub.md for details.
+- The CLI `alknet connect` command manages a full SSH session with SOCKS5 and port forwarding. The NAPI `connect()` function is a different operation — it opens a single SSH channel as a Duplex stream for programmatic use, with no SOCKS5 server or port forwarding. See napi-and-pubsub.md for details.
 
 ## Graceful Shutdown
 

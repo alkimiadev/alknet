@@ -40,14 +40,14 @@ impl std::fmt::Display for ServeTransportMode {
     }
 }
 
-/// Programmatic configuration for a wraith server.
+/// Programmatic configuration for an alknet server.
 ///
 /// Construct with `ServeOptions::new(key_source)` and chain builder methods.
 /// Call `validate()` before passing to `Server::new()`.
 ///
 /// ```
-/// use wraith_core::server::{ServeOptions, ServeTransportMode};
-/// use wraith_core::auth::keys::KeySource;
+/// use alknet_core::server::{ServeOptions, ServeTransportMode};
+/// use alknet_core::auth::keys::KeySource;
 ///
 /// let opts = ServeOptions::new(KeySource::File("/path/to/host_key".into()))
 ///     .transport_mode(ServeTransportMode::Tcp)
@@ -221,7 +221,7 @@ struct ActiveSession {
     join: tokio::task::JoinHandle<()>,
 }
 
-/// The wraith SSH server.
+/// The alknet SSH server.
 ///
 /// Accepts connections over any `TransportAcceptor`, authenticates via Ed25519 keys
 /// or certificate authority, and proxies `direct-tcpip` channels to their targets.
@@ -331,13 +331,13 @@ impl Server {
 
         if self.transport_mode == ServeTransportMode::Iroh {
             if let Some(id) = endpoint_info {
-                info!("wraith server running: transport=iroh endpoint_id={}", id);
+                info!("alknet server running: transport=iroh endpoint_id={}", id);
             } else {
-                info!("wraith server running: transport=iroh");
+                info!("alknet server running: transport=iroh");
             }
         } else {
             info!(
-                "wraith server running: transport={} listen={}",
+                "alknet server running: transport={} listen={}",
                 self.transport_mode, self.listen_addr
             );
         }

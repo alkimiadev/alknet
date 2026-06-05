@@ -5,7 +5,7 @@
 //! auth, connection rate limiting, auth attempt limiting, stealth mode (fake nginx 404),
 //! and outbound proxy routing (direct/SOCKS5/HTTP CONNECT).
 //!
-//! Destination hosts starting with `wraith-` are reserved for internal use (control channel, ADR-018).
+//! Destination hosts starting with `alknet-` are reserved for internal use (control channel, ADR-018).
 
 pub mod channel_proxy;
 pub mod control_channel;
@@ -16,8 +16,8 @@ pub mod stealth;
 
 pub use channel_proxy::{connect_outbound, proxy_channel};
 pub use control_channel::{
-    ControlChannelHandler, ControlChannelRouter, DuplexStream, WRAITH_CONTROL_DESTINATION,
-    WRAITH_PREFIX, is_reserved_destination,
+    ControlChannelHandler, ControlChannelRouter, DuplexStream, ALKNET_CONTROL_DESTINATION,
+    ALKNET_PREFIX, is_reserved_destination,
 };
 pub use handler::{ProxyConfig, ProxyMode, ServerHandler, TransportKind};
 pub use rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};

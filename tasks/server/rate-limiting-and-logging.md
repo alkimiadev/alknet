@@ -21,7 +21,7 @@ No logging of tunnel destinations, DNS resolutions, or bytes transferred (ADR-00
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/server/rate_limit.rs` exports connection rate limiter
+- [ ] `crates/alknet-core/src/server/rate_limit.rs` exports connection rate limiter
 - [ ] `ConnectionRateLimiter` tracks active connections per IP using `HashMap<IpAddr, usize>`
 - [ ] `ConnectionRateLimiter::check(ip) -> bool` — returns `true` if connection allowed, `false` if over limit
 - [ ] `ConnectionRateLimiter::on_connect(ip)` — increment counter

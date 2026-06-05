@@ -19,7 +19,7 @@ No password auth. The client handler is simpler than the server — it just need
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/auth/client_auth.rs` exports `ClientAuthConfig` and client handler
+- [ ] `crates/alknet-core/src/auth/client_auth.rs` exports `ClientAuthConfig` and client handler
 - [ ] `ClientAuthConfig` holds: `private_key: KeyPair`, optional `public_key: PublicKey`
 - [ ] `ClientAuthConfig::from_key_source(source: KeySource) -> Result<Self>` — loads key via key-loading module
 - [ ] Implements `russh::client::Handler` with `auth_publickey()` returning the public key

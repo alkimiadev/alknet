@@ -9,7 +9,7 @@ use tokio::io;
 
 use super::{Transport, TransportAcceptor, TransportInfo, TransportKind};
 
-pub const ALPN: &[u8] = b"wraith-ssh";
+pub const ALPN: &[u8] = b"alknet-ssh";
 const DEFAULT_RELAY_URL: &str = "https://relay.iroh.network/";
 
 /// A client-side iroh QUIC P2P transport that connects to a remote iroh endpoint.
@@ -31,8 +31,8 @@ pub struct IrohTransport {
 impl IrohTransport {
     /// Create a new iroh transport with its own dedicated endpoint.
     ///
-    /// The endpoint is created with the `wraith-ssh` ALPN and the provided
-    /// relay URL. Use this when wraith is the only iroh service on this node.
+    /// The endpoint is created with the `alknet-ssh` ALPN and the provided
+    /// relay URL. Use this when alknet is the only iroh service on this node.
     pub async fn new(
         node_id: NodeId,
         relay_url: Option<RelayUrl>,
@@ -54,9 +54,9 @@ impl IrohTransport {
 
     /// Create an iroh transport using an existing shared endpoint.
     ///
-    /// The endpoint must already have the `wraith-ssh` ALPN registered
+    /// The endpoint must already have the `alknet-ssh` ALPN registered
     /// (typically via [`iroh::protocol::Router::builder`]). This enables
-    /// running wraith alongside iroh-blobs, iroh-gossip, iroh-docs, and
+    /// running alknet alongside iroh-blobs, iroh-gossip, iroh-docs, and
     /// other protocol handlers on the same QUIC endpoint — one connection
     /// per peer, multiplexed by ALPN.
     pub fn from_endpoint(node_id: NodeId, endpoint: Endpoint) -> Self {
@@ -102,9 +102,9 @@ impl Transport for IrohTransport {
 /// [`IrohAcceptor::from_endpoint`] to share an existing iroh `Endpoint`
 /// with other protocol handlers (blobs, gossip, docs).
 ///
-/// When using `from_endpoint`, the wraith-ssh ALPN must be registered
+/// When using `from_endpoint`, the alknet-ssh ALPN must be registered
 /// via an iroh `Router` that calls `Handler::accept()` on incoming
-/// connections with the `wraith-ssh` ALPN, then passes the accepted
+/// connections with the `alknet-ssh` ALPN, then passes the accepted
 /// bidirectional stream to `russh::server::run_stream()`.
 pub struct IrohAcceptor {
     endpoint: Endpoint,
@@ -112,9 +112,9 @@ pub struct IrohAcceptor {
 }
 
 impl IrohAcceptor {
-    /// Bind a new iroh endpoint with a dedicated `wraith-ssh` ALPN.
+    /// Bind a new iroh endpoint with a dedicated `alknet-ssh` ALPN.
     ///
-    /// Use this when wraith is the only iroh service on this node.
+    /// Use this when alknet is the only iroh service on this node.
     pub async fn bind(
         relay_url: Option<RelayUrl>,
         proxy_url: Option<url::Url>,
@@ -135,14 +135,14 @@ impl IrohAcceptor {
 
     /// Create an iroh acceptor using an existing shared endpoint.
     ///
-    /// The endpoint must already have the `wraith-ssh` ALPN registered
+    /// The endpoint must already have the `alknet-ssh` ALPN registered
     /// (typically via [`iroh::protocol::Router::builder`]). When using a
-    /// shared endpoint, incoming connections with the `wraith-ssh` ALPN
+    /// shared endpoint, incoming connections with the `alknet-ssh` ALPN
     /// are routed by the Router to a `ProtocolHandler` that this acceptor
     /// does not manage — the caller is responsible for bridging the
     /// Router's `accept()` callback to this acceptor's stream handling.
     ///
-    /// For the standalone case where wraith owns the endpoint, use
+    /// For the standalone case where alknet owns the endpoint, use
     /// [`IrohAcceptor::bind`] instead, which handles the accept loop
     /// internally.
     pub fn from_endpoint(endpoint: Endpoint) -> Self {

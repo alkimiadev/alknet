@@ -1,8 +1,8 @@
-//! # wraith-core
+//! # alknet-core
 //!
-//! Core library for [Wraith](https://git.alk.dev/alkdev/wraith), a self-hostable SSH-based
+//! Core library for [Alknet](https://git.alk.dev/alkdev/alknet), a self-hostable SSH-based
 //! tunnel tool. This crate provides the transport abstraction, SOCKS5 server, port forwarding,
-//! authentication, and server handler — everything needed to build a wraith client or server
+//! authentication, and server handler — everything needed to build an alknet client or server
 //! on top of pluggable transports.
 //!
 //! > **Alpha software.** This crate depends on solid libraries (russh, tokio, rustls, iroh)
@@ -33,10 +33,10 @@
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use wraith_core::transport::TcpTransport;
-//! use wraith_core::client::{ClientSession, ConnectOptions, TransportMode};
-//! use wraith_core::auth::keys::KeySource;
-//! use wraith_core::Transport;
+//! use alknet_core::transport::TcpTransport;
+//! use alknet_core::client::{ClientSession, ConnectOptions, TransportMode};
+//! use alknet_core::auth::keys::KeySource;
+//! use alknet_core::Transport;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {

@@ -15,7 +15,7 @@ shared across both auth paths. Identity resolution produces a transport-agnostic
 
 ## Why
 
-Wraith currently authenticates connections exclusively through SSH public key
+Alknet currently authenticates connections exclusively through SSH public key
 auth. Non-SSH transports (WebTransport) cannot perform SSH key exchange — they
 need a different auth presentation that shares the same key material. The
 unified auth layer ensures one key set, one identity, one rotation mechanism
@@ -48,7 +48,7 @@ AuthToken = base64url(key_id || timestamp || signature)
 
 Wire format when passed in a WebTransport CONNECT request:
 ```
-CONNECT https://server:443/wraith?token=<AuthToken>
+CONNECT https://server:443/alknet?token=<AuthToken>
 ```
 
 Server verification:
@@ -74,7 +74,7 @@ ADR-023.
 
 ### IdentityProvider Trait
 
-The `IdentityProvider` trait decouples wraith-core from any specific identity
+The `IdentityProvider` trait decouples alknet-core from any specific identity
 storage. It resolves a key fingerprint or auth token to an `Identity` with
 scopes and resources.
 
@@ -103,7 +103,7 @@ default scope set. No database required.
 `accounts` tables plus the ACL graph. Resolves fingerprint → account →
 organization membership → effective scopes. Uses `ArcSwap` for hot reload.
 
-The trait is the contract. The backing store is pluggable. Wraith-core never
+The trait is the contract. The backing store is pluggable. Alknet-core never
 depends on Honker, SQLite, or any specific database.
 
 ### AuthPolicy Structure
@@ -167,7 +167,7 @@ authorization decisions.
 
 The wtransport library's `SessionRequest` provides:
 
-- `path()` — URL path (e.g., `/wraith?token=...`)
+- `path()` — URL path (e.g., `/alknet?token=...`)
 - `headers()` — HTTP headers (for `Authorization: Bearer ...`)
 - `origin()` — Browser origin (for CORS-like restrictions)
 - `remote_address()` — Client UDP address
@@ -204,7 +204,7 @@ dependencies needed.
 
 - Auth tokens are Ed25519-signed with the same key pair used for SSH auth. No
   separate key management for non-SSH transports.
-- `IdentityProvider` is the only interface between wraith-core and identity
+- `IdentityProvider` is the only interface between alknet-core and identity
   storage. No database dependency at the core level.
 - The SSH auth path is unchanged. `auth_publickey()` continues to work exactly
   as it does today. Token auth is additive.

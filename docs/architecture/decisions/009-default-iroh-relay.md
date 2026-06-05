@@ -18,7 +18,7 @@ Default to n0's relay servers. Allow override via `--iroh-relay <url>` CLI flag.
 This matches iroh's own defaults — n0's relay is the standard starting point. Users who need production reliability self-host.
 
 ## Consequences
-- **Positive**: Zero-config iroh transport for testing and development. `wraith serve --transport iroh` just works.
+- **Positive**: Zero-config iroh transport for testing and development. `alknet serve --transport iroh` just works.
 - **Positive**: Self-hosting is a single flag override, not a complex setup requirement.
 - **Negative**: Default depends on n0's infrastructure. If n0's relay is down, default iroh connections fail (but this is the same experience as every iroh user).
 - **Negative**: Privacy-conscious users must remember to `--iroh-relay` to avoid n0. Mitigated by documentation.

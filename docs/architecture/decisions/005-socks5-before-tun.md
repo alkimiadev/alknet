@@ -24,14 +24,14 @@ SOCKS5 is the core because:
 TUN forwards to SOCKS5 rather than directly to SSH because:
 - The SOCKS5 code already handles TCP connection establishment and bidirectional proxying
 - TUN's job is just IP packet → SOCKS5 connection, not IP packet → SSH channel
-- The `wraith-tun` binary stays minimal (~200-500 lines)
+- The `alknet-tun` binary stays minimal (~200-500 lines)
 - No root code in the core binary
 
 ## Consequences
 - **Positive**: Core binary is root-free. TUN functionality is provided by the external `tun2proxy` tool (ADR-014).
 - **Positive**: SOCKS5 is testable without TUN — just `curl` against it.
 - **Positive**: The TUN approach is validated by tun2proxy, a well-tested existing tool. No custom TUN code to maintain.
-- **Negative**: VPN-like behavior requires running `tun2proxy` alongside `wraith connect` — two processes instead of one integrated binary.
+- **Negative**: VPN-like behavior requires running `tun2proxy` alongside `alknet connect` — two processes instead of one integrated binary.
 - **Negative**: SOCKS5 doesn't capture UDP (except DNS via SOCKS5h). TUN mode via tun2proxy handles this separately.
 
 ## References

@@ -5,7 +5,7 @@ Accepted
 
 ## Context
 
-The wraith control channel (ADR-018) routes from client → server's event bus.
+The alknet control channel (ADR-018) routes from client → server's event bus.
 This is unidirectional: clients can send events to the server, but the server
 cannot call operations on the client. In the hub/spoke model, spokes (dev env
 containers) connect to a hub and expose operations (fs, bash, search) that the
@@ -35,7 +35,7 @@ Core-provided operations use short paths without a spoke prefix
 (`/services/list`, `/services/schema`). Spoke operations are prefixed
 (`/dev1/fs/readFile`).
 
-This generalizes ADR-018's control channel: the `wraith-*` destination becomes
+This generalizes ADR-018's control channel: the `alknet-*` destination becomes
 a transport for `EventEnvelope` frames with call protocol semantics, instead of
 raw pubsub dispatch.
 

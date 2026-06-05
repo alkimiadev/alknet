@@ -1,4 +1,4 @@
-//! Error types for wraith-core.
+//! Error types for alknet-core.
 //!
 //! Layered error hierarchy:
 //! - `TransportError` — connection/handshake/timeout errors (trigger reconnection on client)

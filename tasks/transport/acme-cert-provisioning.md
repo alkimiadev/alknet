@@ -23,7 +23,7 @@ This integrates with `TlsAcceptor` by providing ACME-resolved certificates inste
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/transport/acme.rs` (behind `#[cfg(feature = "acme")]`)
+- [ ] `crates/alknet-core/src/transport/acme.rs` (behind `#[cfg(feature = "acme")]`)
 - [ ] Feature `acme` implies `tls` in Cargo.toml
 - [ ] `AcmeCertProvider` struct accepts: domain (domain-based) or IP mode flag
 - [ ] Domain-based mode: uses `rustls-acme` with HTTP-01/TLS-ALPN-01 challenge responder

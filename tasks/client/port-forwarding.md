@@ -30,7 +30,7 @@ Both types are specified as repeatable `--forward` / `--remote-forward` CLI opti
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/client/forward.rs` exports `PortForwardSpec`, `LocalForwarder`, `RemoteForwarder`
+- [ ] `crates/alknet-core/src/client/forward.rs` exports `PortForwardSpec`, `LocalForwarder`, `RemoteForwarder`
 - [ ] `PortForwardSpec` parses `-L` / `-R` spec strings: `local_addr:local_port:remote_host:remote_port`
 - [ ] `LocalForwarder` binds TcpListener, accepts connections, opens SSH direct-tcpip channel for each, proxies bidirectionally
 - [ ] `RemoteForwarder` sends `tcpip_forward` request, handles `forwarded-tcpip` channel opens, connects to local target, proxies bidirectionally

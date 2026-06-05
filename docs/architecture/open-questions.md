@@ -66,14 +66,14 @@ last_updated: 2026-06-04
 - **Origin**: [tun-shim.md](tun-shim.md)
 - **Status**: ~~resolved~~
 - **Priority**: ~~low~~ —
-- **Resolution**: ADR-014 — TUN is deferred entirely from the wraith project. For VPN-like behavior, users run `tun2proxy --proxy socks5://127.0.0.1:1080` alongside wraith. This eliminates all TUN-related scope questions (Windows, TCP reconstruction, etc.).
+- **Resolution**: ADR-014 — TUN is deferred entirely from the alknet project. For VPN-like behavior, users run `tun2proxy --proxy socks5://127.0.0.1:1080` alongside alknet. This eliminates all TUN-related scope questions (Windows, TCP reconstruction, etc.).
 - **Cross-references**: [ADR-014](decisions/014-defer-tun-recommend-socks5-proxy.md)
 
 ### OQ-09: TCP reconstruction approach for TUN
 - **Origin**: [tun-shim.md](tun-shim.md)
 - **Status**: ~~resolved~~
 - **Priority**: ~~medium~~ —
-- **Resolution**: ADR-014 — TUN is deferred from wraith. tun2proxy (external tool) handles this if users need VPN-like behavior.
+- **Resolution**: ADR-014 — TUN is deferred from alknet. tun2proxy (external tool) handles this if users need VPN-like behavior.
 - **Cross-references**: [ADR-014](decisions/014-defer-tun-recommend-socks5-proxy.md)
 
 ## NAPI / PubSub
@@ -122,7 +122,7 @@ last_updated: 2026-06-04
 - **Resolution**: (pending — needs R&D in WebTransport transport session)
 - **Cross-references**: [auth.md](auth.md), OQ-19
 
-### OQ-16: Transport-specific forwarding policy (e.g., WebTransport clients restricted to wraith-* channels)
+### OQ-16: Transport-specific forwarding policy (e.g., WebTransport clients restricted to alknet-* channels)
 - **Origin**: [research/configuration.md](../research/configuration.md)
 - **Status**: open
 - **Priority**: low
@@ -133,7 +133,7 @@ last_updated: 2026-06-04
 - **Origin**: [research/configuration.md](../research/configuration.md)
 - **Status**: ~~resolved~~
 - **Priority**: ~~medium~~ —
-- **Resolution**: ADR-023 — Unified auth with shared key material. SSH transports use SSH pubkey auth. Non-SSH transports (WebTransport) use Ed25519-signed timestamp tokens. Both verify against the same `authorized_keys` set. The presentation differs per transport, but the identity is unified. `AuthPolicy` holds both `SshAuthConfig` and `TokenAuthConfig`, with `TokenKeySource::Shared` as the default (same keys for both paths). `IdentityProvider` trait decouples wraith-core from identity storage.
+- **Resolution**: ADR-023 — Unified auth with shared key material. SSH transports use SSH pubkey auth. Non-SSH transports (WebTransport) use Ed25519-signed timestamp tokens. Both verify against the same `authorized_keys` set. The presentation differs per transport, but the identity is unified. `AuthPolicy` holds both `SshAuthConfig` and `TokenAuthConfig`, with `TokenKeySource::Shared` as the default (same keys for both paths). `IdentityProvider` trait decouples alknet-core from identity storage.
 - **Cross-references**: [ADR-023](decisions/023-unified-auth-shared-key-material.md), [auth.md](auth.md), OQ-15
 
 ## Auth

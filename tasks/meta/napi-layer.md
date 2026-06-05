@@ -14,13 +14,13 @@ level: planning
 
 ## Description
 
-Meta task that clusters NAPI tasks. Once complete, the `@alkdev/wraith` Node.js native addon provides `connect()` and `serve()` returning duplex streams for TypeScript consumers.
+Meta task that clusters NAPI tasks. Once complete, the `@alkdev/alknet` Node.js native addon provides `connect()` and `serve()` returning duplex streams for TypeScript consumers.
 
 ## Acceptance Criteria
 
 - [x] All NAPI tasks completed
 - [x] `connect()` returns Duplex stream, no SOCKS5, no port forwarding
-- [x] `serve()` returns WraithServer with close() and onConnection events
+- [x] `serve()` returns AlknetServer with close() and onConnection events
 - [x] Key material from Buffer (in-memory) and file paths both work
 - [x] JS-to-Rust and Rust-to-JS error marshalling works correctly
 
@@ -30,4 +30,4 @@ Meta task that clusters NAPI tasks. Once complete, the `@alkdev/wraith` Node.js 
 
 ## Summary
 
-NAPI layer complete. connect() returns WraithStream (read/write/close), serve() returns WraithServer with close()/onConnection(). Key material works from both file paths and in-memory Buffers. TCP transport fully supported; TLS/iroh return helpful errors in NAPI layer.
+NAPI layer complete. connect() returns AlknetStream (read/write/close), serve() returns AlknetServer with close()/onConnection(). Key material works from both file paths and in-memory Buffers. TCP transport fully supported; TLS/iroh return helpful errors in NAPI layer.

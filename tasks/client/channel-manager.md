@@ -32,7 +32,7 @@ Reconnection is always enabled. The backoff caps at 30 seconds and continues ind
 
 ## Acceptance Criteria
 
-- [x] `crates/wraith-core/src/client/channel_manager.rs` exports `ChannelManager`
+- [x] `crates/alknet-core/src/client/channel_manager.rs` exports `ChannelManager`
 - [x] `ChannelManager` holds: `Arc<Transport>`, `Arc<ClientAuthConfig>`, `Arc<client::Handle<ClientHandler>>` (behind RwLock for reconnection)
 - [x] `ChannelManager::new()` establishes initial transport connection, authenticates, returns manager
 - [x] `open_direct_tcpip(host, port)` — opens SSH channel to target
@@ -61,4 +61,4 @@ Reconnection is always enabled. The backoff caps at 30 seconds and continues ind
 
 ## Summary
 
-Implemented `ChannelManager` in `crates/wraith-core/src/client/channel_manager.rs` with SSH session management, channel opens (`open_direct_tcpip`), port forward requests (`request_tcpip_forward`/`cancel_tcpip_forward`), and automatic reconnection with exponential backoff (1s→30s cap). Full reconnect per ADR-004 creates new transport stream + new SSH session. Port forwards are re-registered after successful reconnect. 8 unit tests covering backoff timing, forward tracking, transport failure, and reconnection detection.
+Implemented `ChannelManager` in `crates/alknet-core/src/client/channel_manager.rs` with SSH session management, channel opens (`open_direct_tcpip`), port forward requests (`request_tcpip_forward`/`cancel_tcpip_forward`), and automatic reconnection with exponential backoff (1s→30s cap). Full reconnect per ADR-004 creates new transport stream + new SSH session. Port forwards are re-registered after successful reconnect. 8 unit tests covering backoff timing, forward tracking, transport failure, and reconnection detection.

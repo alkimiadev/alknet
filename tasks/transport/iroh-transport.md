@@ -24,10 +24,10 @@ Feature-gated behind `iroh` feature flag.
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/transport/iroh.rs` (behind `#[cfg(feature = "iroh")]`)
+- [ ] `crates/alknet-core/src/transport/iroh.rs` (behind `#[cfg(feature = "iroh")]`)
 - [ ] `IrohTransport` holds: target endpoint ID (base58-decoded to `NodeId`), relay URL, optional proxy URL
 - [ ] `IrohTransport::connect()` calls `endpoint.connect(node_id, alpn)`, then `conn.open_bi()`, then `tokio::io::join(recv, send)`
-- [ ] ALPN value is `b"wraith-ssh"`
+- [ ] ALPN value is `b"alknet-ssh"`
 - [ ] `IrohTransport::describe()` returns e.g. `"iroh://<endpoint-id>"`
 - [ ] `IrohAcceptor` holds an `iroh::Endpoint` instance
 - [ ] `IrohAcceptor::bind()` creates endpoint with relay URL and optional proxy config

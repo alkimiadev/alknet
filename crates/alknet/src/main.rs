@@ -1,10 +1,10 @@
-//! # wraith
+//! # alknet
 //!
-//! CLI binary for [Wraith](https://git.alk.dev/alkdev/wraith), a self-hostable SSH-based tunnel
-//! tool. Provides `wraith connect` (client) and `wraith serve` (server) subcommands with
+//! CLI binary for [Alknet](https://git.alk.dev/alkdev/alknet), a self-hostable SSH-based tunnel
+//! tool. Provides `alknet connect` (client) and `alknet serve` (server) subcommands with
 //! pluggable transports (TCP, TLS, iroh).
 //!
-//! > **Alpha software.** See `wraith-core` for library usage.
+//! > **Alpha software.** See `alknet-core` for library usage.
 
 use std::net::SocketAddr;
 use std::process;
@@ -12,18 +12,18 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use wraith_core::auth::keys::KeySource;
-use wraith_core::client::{ConnectOptions, TransportMode};
-use wraith_core::server::{ServeOptions, ServeTransportMode, Server};
+use alknet_core::auth::keys::KeySource;
+use alknet_core::client::{ConnectOptions, TransportMode};
+use alknet_core::server::{ServeOptions, ServeTransportMode, Server};
 #[cfg(feature = "iroh")]
-use wraith_core::transport::IrohTransport;
-use wraith_core::transport::TcpTransport;
+use alknet_core::transport::IrohTransport;
+use alknet_core::transport::TcpTransport;
 #[cfg(feature = "tls")]
-use wraith_core::transport::TlsTransport;
-use wraith_core::transport::Transport;
+use alknet_core::transport::TlsTransport;
+use alknet_core::transport::Transport;
 
 #[derive(Parser)]
-#[command(name = "wraith", version, about = "Wraith SSH tunnel tool")]
+#[command(name = "alknet", version, about = "Alknet SSH tunnel tool")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -32,13 +32,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     #[command(
-        about = "Connect to a wraith server and start a SOCKS5 proxy / port forwarding session"
+        about = "Connect to an alknet server and start a SOCKS5 proxy / port forwarding session"
     )]
     Connect {
         #[arg(
             long,
             help = "TCP/TLS server address (required for tcp/tls transport)",
-            env = "WRAITH_SERVER"
+            env = "ALKNET_SERVER"
         )]
         server: Option<String>,
 
@@ -51,7 +51,7 @@ enum Commands {
         #[arg(long, value_enum, default_value = "tcp", help = "Transport mode")]
         transport: TransportModeArg,
 
-        #[arg(long, help = "SSH private key path", env = "WRAITH_IDENTITY")]
+        #[arg(long, help = "SSH private key path", env = "ALKNET_IDENTITY")]
         identity: Option<String>,
 
         #[arg(long, default_value = "127.0.0.1:1080", help = "SOCKS5 listen address")]
@@ -76,7 +76,7 @@ enum Commands {
         insecure: bool,
     },
 
-    #[command(about = "Start the wraith server (accept SSH connections)")]
+    #[command(    about = "Start the alknet server (accept SSH connections)")]
     Serve {
         #[arg(long, help = "SSH host key path (required)")]
         key: String,
@@ -263,7 +263,7 @@ async fn run_connect(
     insecure: bool,
 ) -> Result<()> {
     let identity_val = identity
-        .ok_or_else(|| anyhow!("--identity is required (or set WRAITH_IDENTITY env var)"))?;
+        .ok_or_else(|| anyhow!("--identity is required (or set ALKNET_IDENTITY env var)"))?;
     let key_source = KeySource::File(identity_val.into());
 
     let transport_mode: TransportMode = transport.into();
@@ -317,7 +317,7 @@ async fn run_connect(
             #[cfg(not(feature = "tls"))]
             {
                 Err(anyhow!(
-                    "TLS transport is not available (wraith-core built without 'tls' feature)"
+                    "TLS transport is not available (alknet-core built without 'tls' feature)"
                 ))
             }
             #[cfg(feature = "tls")]
@@ -340,7 +340,7 @@ async fn run_connect(
             #[cfg(not(feature = "iroh"))]
             {
                 Err(anyhow!(
-                    "iroh transport is not available (wraith-core built without 'iroh' feature)"
+                    "iroh transport is not available (alknet-core built without 'iroh' feature)"
                 ))
             }
             #[cfg(feature = "iroh")]
@@ -375,7 +375,7 @@ async fn run_connect(
 }
 
 async fn connect_and_run<T: Transport>(opts: ConnectOptions, transport: Arc<T>) -> Result<()> {
-    wraith_core::client::ClientSession::new(opts, transport)
+    alknet_core::client::ClientSession::new(opts, transport)
         .await
         .map_err(|e| anyhow!("{e}"))?
         .run()
@@ -405,7 +405,7 @@ async fn run_serve(
         #[cfg(not(feature = "acme"))]
         {
             return Err(anyhow!(
-                "ACME support is not available (wraith built without 'acme' feature)"
+                "ACME support is not available (alknet built without 'acme' feature)"
             ));
         }
     }
@@ -454,7 +454,7 @@ async fn run_serve(
             let addr: SocketAddr = listen
                 .parse()
                 .map_err(|e| anyhow!("invalid listen address: {e}"))?;
-            let acceptor = wraith_core::transport::TcpAcceptor::bind(addr)
+            let acceptor = alknet_core::transport::TcpAcceptor::bind(addr)
                 .await
                 .map_err(|e| anyhow!("bind failed: {e}"))?;
             server.run(acceptor, None).await.map_err(|e| anyhow!("{e}"))
@@ -463,7 +463,7 @@ async fn run_serve(
             #[cfg(not(feature = "tls"))]
             {
                 Err(anyhow!(
-                    "TLS transport is not available (wraith-core built without 'tls' feature)"
+                    "TLS transport is not available (alknet-core built without 'tls' feature)"
                 ))
             }
             #[cfg(feature = "acme")]
@@ -473,11 +473,11 @@ async fn run_serve(
                         .parse()
                         .map_err(|e| anyhow!("invalid listen address: {e}"))?;
                     let provider = Arc::new(
-                        wraith_core::transport::AcmeCertProvider::domain(domain)
+                        alknet_core::transport::AcmeCertProvider::domain(domain)
                             .with_production_directory(),
                     );
                     let acceptor =
-                        wraith_core::transport::AcmeTlsAcceptor::bind_acme(addr, provider)
+                        alknet_core::transport::AcmeTlsAcceptor::bind_acme(addr, provider)
                             .await
                             .map_err(|e| anyhow!("ACME bind failed: {e}"))?;
                     return server.run(acceptor, None).await.map_err(|e| anyhow!("{e}"));
@@ -506,7 +506,7 @@ async fn run_serve(
                 let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut &key_data[..])
                     .map_err(|e| anyhow!("failed to parse TLS private key: {e}"))?
                     .ok_or_else(|| anyhow!("no private key found in {}", key_path))?;
-                let acceptor = wraith_core::transport::TlsAcceptor::bind(addr, certs, key, None)
+                let acceptor = alknet_core::transport::TlsAcceptor::bind(addr, certs, key, None)
                     .await
                     .map_err(|e| anyhow!("TLS bind failed: {e}"))?;
                 server.run(acceptor, None).await.map_err(|e| anyhow!("{e}"))
@@ -516,7 +516,7 @@ async fn run_serve(
             #[cfg(not(feature = "iroh"))]
             {
                 Err(anyhow!(
-                    "iroh transport is not available (wraith-core built without 'iroh' feature)"
+                    "iroh transport is not available (alknet-core built without 'iroh' feature)"
                 ))
             }
             #[cfg(feature = "iroh")]
@@ -533,7 +533,7 @@ async fn run_serve(
                     Some(u) => Some(u.parse().map_err(|e| anyhow!("invalid proxy URL: {e}"))?),
                     None => None,
                 };
-                let acceptor = wraith_core::transport::IrohAcceptor::bind(relay_url, proxy_url)
+                let acceptor = alknet_core::transport::IrohAcceptor::bind(relay_url, proxy_url)
                     .await
                     .map_err(|e| anyhow!("iroh bind failed: {e}"))?;
                 let endpoint_id = acceptor.endpoint_id();

@@ -191,7 +191,7 @@ also include:
 Example prompt template:
 
 ```
-You are an implementation specialist for the @alkdev/wraith project.
+You are an implementation specialist for the @alkdev/alknet project.
 
 Your task: {{task}}
 
@@ -204,7 +204,7 @@ Your task: {{task}}
 7. Push: git push origin $(git branch --show-current)
 8. Notify: worktree({action: "notify", args: {message: "Task completed: {{task}}. <brief summary>", level: "info"}})
 
-Key project constraints (@alkdev/wraith):
+Key project constraints (@alkdev/alknet):
 - Rust: use cargo build, cargo clippy, cargo fmt, cargo test
 - No comments in code
 - anyhow::Result for application errors, thiserror for library error types

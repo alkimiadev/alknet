@@ -1,6 +1,6 @@
-//! # wraith-napi
+//! # alknet-napi
 //!
-//! Node.js native addon for [Wraith](https://git.alk.dev/alkdev/wraith) via napi-rs.
+//! Node.js native addon for [Alknet](https://git.alk.dev/alkdev/alknet) via napi-rs.
 //! Exposes `connect()` and `serve()` functions for programmatic SSH tunnel creation.
 //!
 //! > **Alpha software.** The NAPI interface may change between versions.
@@ -8,7 +8,7 @@
 //! # Quick example (Node.js)
 //!
 //! ```js
-//! const { connect, serve } = require('wraith-napi');
+//! const { connect, serve } = require('alknet-napi');
 //!
 //! // Client: open a duplex SSH stream
 //! const stream = await connect({

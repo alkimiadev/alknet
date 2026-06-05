@@ -26,7 +26,7 @@ Implement the server's main accept loop and configuration. This ties together th
 
 ## Acceptance Criteria
 
-- [x] `crates/wraith-core/src/server/mod.rs` re-exports all server components
+- [x] `crates/alknet-core/src/server/mod.rs` re-exports all server components
 - [x] `ServeOptions` struct with fields matching server.md CLI interface: `key`, `authorized_keys`, `cert_authority`, `transport_mode`, `listen_addr`, `tls_cert`, `tls_key`, `acme_domain`, `stealth`, `proxy`, `iroh_relay`, `max_connections_per_ip`, `max_auth_attempts`
 - [x] `Server::new(opts: ServeOptions) -> Result<Server>` — creates server with bound acceptor, auth config, rate limiter
 - [x] `Server::run()` — enters accept loop, for each connection: check rate limit → create handler → `run_stream()`
@@ -56,7 +56,7 @@ Key design decisions:
 
 ## Summary
 
-Implemented server accept loop and configuration in `crates/wraith-core/src/server/serve.rs`:
+Implemented server accept loop and configuration in `crates/alknet-core/src/server/serve.rs`:
 - `ServeOptions` struct with all CLI interface fields, builder pattern, KeySource support
 - `Server::new()` creates server with russh config, auth config, rate limiter
 - `Server::run(acceptor, endpoint_info)` enters accept loop with rate limiting, stealth detection, russh::server::run_stream()

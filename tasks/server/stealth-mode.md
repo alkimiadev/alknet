@@ -25,7 +25,7 @@ Stealth mode requires TLS transport. The CLI should reject or warn if `--stealth
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/server/stealth.rs` exports stealth mode protocol detection
+- [ ] `crates/alknet-core/src/server/stealth.rs` exports stealth mode protocol detection
 - [ ] `detect_protocol(stream: TlsStream) -> ProtocolDetection` — peeks at first bytes to determine SSH vs HTTP
 - [ ] `ProtocolDetection` enum: `Ssh`, `Http` (or `Unknown`)
 - [ ] If SSH detected: pass stream to `russh::server::run_stream()`

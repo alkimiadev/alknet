@@ -8,33 +8,33 @@ phase: exploration
 
 ## Problem
 
-Wraith's configuration is loaded once at startup and never changes. This has
+Alknet's configuration is loaded once at startup and never changes. This has
 three specific failures:
 
 1. **No hot reload of authentication credentials.** Adding or removing an
    authorized key requires restarting the server process. In a hub/spoke
    deployment where keys are managed via a database (see
-   `@alkdev/storage`'s `peer_credentials` table), the wraith process must be
+   `@alkdev/storage`'s `peer_credentials` table), the alknet process must be
    restarted every time a key is added, revoked, or rotated. This is
    operationally unacceptable for a production service.
 
 2. **No port forwarding access control.** Any authenticated client can open a
    `direct-tcpip` channel to any destination. There is no policy governing
-   which hosts, ports, or `wraith-*` control channels a client may access. This
+   which hosts, ports, or `alknet-*` control channels a client may access. This
    is a security gap — a compromised key grants unrestricted network access
    through the tunnel.
 
 3. **No structured configuration beyond CLI flags.** ADR-011 chose
    programmatic-first configuration for the alpha. This was correct — it
    avoided cross-platform path issues and kept the API surface small. But as
-   wraith moves toward publishable releases, operators need config files for
+   alknet moves toward publishable releases, operators need config files for
    reproducible deployments, and the NAPI layer needs programmatic reload
    capability that the current `ServeOptions` builder pattern doesn't support.
 
 ### What's Not The Problem
 
 - This does not propose depending on Honker, SQLite, or any specific data
-  source at the `wraith-core` level. The core provides a reload mechanism;
+  source at the `alknet-core` level. The core provides a reload mechanism;
   data sources plug in from outside.
 - This does not propose file-watching (potential attack vector, unnecessary
   complexity). CLI usage loads config once at startup. Programmatic usage
@@ -131,7 +131,7 @@ pub enum TargetPattern {
     Host(String),
     Cidr(IpNetwork),
     PortRange(String, Range<u16>),
-    WraithPrefix,
+    AlknetPrefix,
 }
 ```
 
@@ -169,14 +169,14 @@ max_connections_per_ip = 5
 max_auth_attempts = 3
 
 [server.tls]
-cert = "/etc/wraith/tls/cert.pem"
-key = "/etc/wraith/tls/key.pem"
+cert = "/etc/alknet/tls/cert.pem"
+key = "/etc/alknet/tls/key.pem"
 
 [server.iroh]
 relay = "https://relay.alk.dev"
 
 [auth]
-host_key = "/etc/wraith/ssh/host_key"
+host_key = "/etc/alknet/ssh/host_key"
 
 [forwarding]
 default = "deny"
@@ -186,7 +186,7 @@ target = "localhost:*"
 action = "allow"
 
 [[forwarding.rules]]
-target = "wraith-*"
+target = "alknet-*"
 action = "allow"
 
 [[forwarding.rules]]
@@ -202,7 +202,7 @@ Rules are evaluated in order; first match wins.
 The NAPI layer exposes the reload handle:
 
 ```typescript
-interface WraithServer {
+interface AlknetServer {
   reloadAuth(auth: { authorizedKeys?: Buffer, certAuthority?: Buffer }): void;
   reloadForwarding(policy: ForwardingPolicyConfig): void;
   reloadAll(config: DynamicConfig): void;
@@ -214,7 +214,7 @@ interface ForwardingPolicyConfig {
 }
 
 interface ForwardingRuleConfig {
-  target: string;      // "localhost:*", "10.0.0.0/8:80", "wraith-*"
+  target: string;      // "localhost:*", "10.0.0.0/8:80", "alknet-*"
   action: 'allow' | 'deny';
   principals?: string[];  // default ["*"]
 }
@@ -255,7 +255,7 @@ This is a convenience layer on top of `ConnectOptions`, not a replacement.
 | Core Rust | `StaticConfig` struct | `ArcSwap<DynamicConfig>` | `ConfigReloadHandle::reload()` |
 | NAPI | `serve()` options | Same `ArcSwap` | `server.reloadAuth()`, `server.reloadForwarding()` |
 
-The CLI doesn't need a reload mechanism. When you're running wraith from the
+The CLI doesn't need a reload mechanism. When you're running alknet from the
 command line, restarting is fine. The reload mechanism exists for programmatic
 consumers that manage credentials in a database.
 
@@ -337,8 +337,8 @@ listen = "0.0.0.0:443"
 stealth = true
 
 [listeners.tls]
-cert = "/etc/wraith/tls/cert.pem"
-key = "/etc/wraith/tls/key.pem"
+cert = "/etc/alknet/tls/cert.pem"
+key = "/etc/alknet/tls/key.pem"
 
 [[listeners]]
 transport = "tcp"
@@ -354,8 +354,8 @@ listen = "0.0.0.0:443"
 # WebTransport shares port 443 with TLS because QUIC is UDP, TLS is TCP
 
 [listeners.webtransport]
-cert = "/etc/wraith/tls/cert.pem"
-key = "/etc/wraith/tls/key.pem"
+cert = "/etc/alknet/tls/cert.pem"
+key = "/etc/alknet/tls/key.pem"
 ```
 
 The `[[listeners]]` array-of-tables pattern means each listener is an
@@ -376,7 +376,7 @@ const server = await serve({
 });
 ```
 
-Single `WraithServer` object, single `reloadAuth()` call affects all
+Single `AlknetServer` object, single `reloadAuth()` call affects all
 listeners.
 
 ### Transport Kind and WebTransport
@@ -386,7 +386,7 @@ so the handler can behave differently per transport. Adding `WebTransport` to
 this enum is straightforward — WebTransport connections are identifiable at
 accept time. The handler behavior is the same (port forwarding only), but
 the tag enables transport-specific logging and future policy differences
-(e.g., WebTransport clients can only access `wraith-*` control channels).
+(e.g., WebTransport clients can only access `alknet-*` control channels).
 
 ## Proposed Solution
 
@@ -396,9 +396,9 @@ the tag enables transport-specific logging and future policy differences
 2. Replace `Arc<ServerAuthConfig>` in `ServerHandler` with
    `Arc<ArcSwap<DynamicConfig>>`
 3. Add `ConfigReloadHandle` with `reload(DynamicConfig)` method
-4. Expose `reloadAuth()` on the NAPI `WraithServer` object
+4. Expose `reloadAuth()` on the NAPI `AlknetServer` object
 
-**Scope**: `wraith-core` auth module + `wraith-napi` serve module
+**Scope**: `alknet-core` auth module + `alknet-napi` serve module
 
 **Risk**: Low — internal refactor, no protocol changes
 
@@ -406,9 +406,9 @@ the tag enables transport-specific logging and future policy differences
 
 1. Add `ForwardingPolicy` to `DynamicConfig`
 2. Add policy check to `channel_open_direct_tcpip` before proxy spawn
-3. Expose `reloadForwarding()` on NAPI `WraithServer`
+3. Expose `reloadForwarding()` on NAPI `AlknetServer`
 
-**Scope**: `wraith-core` handler + `wraith-napi`
+**Scope**: `alknet-core` handler + `alknet-napi`
 
 **Risk**: Low — new check, default-allow preserves current behavior
 
@@ -419,7 +419,7 @@ the tag enables transport-specific logging and future policy differences
 3. Config file only covers static config + initial auth config path
 4. Add `serde` derive to `StaticConfig`
 
-**Scope**: `wraith-cli` (new binary crate) + `wraith-core` config module
+**Scope**: `alknet-cli` (new binary crate) + `alknet-core` config module
 
 **Risk**: Medium — new dependency (`toml` crate), new CLI surface to validate
 
@@ -429,7 +429,7 @@ the tag enables transport-specific logging and future policy differences
 2. `--profile production` loads named profile
 3. CLI flags override profile values
 
-**Scope**: `wraith-cli`
+**Scope**: `alknet-cli`
 
 **Risk**: Low — convenience layer only
 
@@ -443,7 +443,7 @@ the tag enables transport-specific logging and future policy differences
 6. Add `WebTransport` to `TransportKind` enum (initially as a tag only;
    actual WebTransport acceptor is a separate R&D phase)
 
-**Scope**: `wraith-core` serve.rs + `wraith-napi` + `wraith-cli`
+**Scope**: `alknet-core` serve.rs + `alknet-napi` + `alknet-cli`
 
 **Risk**: Medium — changes the primary API surface of `serve()`. Backwards
 compat via accepting both `transport: string` (single) and
@@ -511,7 +511,7 @@ compat via accepting both `transport: string` (single) and
   Initially no — all transports get the same port-forwarding-only handler.
   But WebTransport connections come from browsers, which have different trust
   assumptions. A future forwarding policy might restrict WebTransport clients
-  to `wraith-*` control channels only (no arbitrary host:port forwarding).
+  to `alknet-*` control channels only (no arbitrary host:port forwarding).
   This is a policy question, not a transport question. The `TransportKind` tag
   on the handler enables transport-aware policy rules in `ForwardingPolicy`
   without changing the handler. Defer to Phase 2 (forwarding policy design).

@@ -30,7 +30,7 @@ This separation ensures fail2ban has enough data to detect abusive IPs while des
 - **Positive**: Tunnel destinations are never written to disk or any observable log. This is the same guarantee OpenSSH makes with `LogLevel VERBOSE` or below.
 - **Positive**: Reduces legal and privacy exposure for server operators.
 - **Positive**: fail2ban can still work — it needs source IPs and auth failures, not destinations.
-- **Negative**: Server operators cannot audit what destinations clients are accessing. If an operator needs this for compliance, they must implement it outside wraith (e.g., network-level logging at the target host).
+- **Negative**: Server operators cannot audit what destinations clients are accessing. If an operator needs this for compliance, they must implement it outside alknet (e.g., network-level logging at the target host).
 - **Negative**: Debugging connectivity issues is harder without destination logs. Mitigated by client-side logging (the client knows what it's connecting to).
 
 ## References

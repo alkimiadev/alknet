@@ -3,33 +3,33 @@ status: reviewed
 last_updated: 2026-06-02
 ---
 
-# Wraith Overview
+# Alknet Overview
 
 ## Purpose
 
-Wraith is a self-hostable SSH-based tunnel tool that provides VPN-like functionality without being a VPN protocol. It enables:
+Alknet is a self-hostable SSH-based tunnel tool that provides VPN-like functionality without being a VPN protocol. It enables:
 
 - **Private tunneling** of services (Postgres, Redis, internal APIs) over SSH
 - **Censorship circumvention** — SSH over TLS on port 443 looks like HTTPS to DPI
 - **NAT traversal** — iroh transport allows peer-to-peer connections without public IPs or port forwarding
 - **Service mesh connectivity** — a lightweight transport layer for the pubsub/operations event system
 
-The core insight: SSH tunnels work because SSH is fundamental infrastructure. Blocking it breaks the internet. Wraith makes SSH tunneling accessible through a simple CLI with pluggable transports.
+The core insight: SSH tunnels work because SSH is fundamental infrastructure. Blocking it breaks the internet. Alknet makes SSH tunneling accessible through a simple CLI with pluggable transports.
 
 ## Exports
 
-### Binary: `wraith`
+### Binary: `alknet`
 
 A single binary with subcommands:
 
 ```
-wraith serve     — Start the server (accepts SSH connections)
-wraith connect  — Start the client (opens SSH session, exposes SOCKS5/port-forwards)
+alknet serve     — Start the server (accepts SSH connections)
+alknet connect  — Start the client (opens SSH session, exposes SOCKS5/port-forwards)
 ```
 
-### Library: `wraith-core`
+### Library: `alknet-core`
 
-The `wraith-core` crate exports the pluggable components for embedding or programmatic use:
+The `alknet-core` crate exports the pluggable components for embedding or programmatic use:
 
 - `Transport` trait — produces a duplex stream for SSH to run over
 - `TcpTransport` — direct TCP connection
@@ -60,7 +60,7 @@ The `wraith-core` crate exports the pluggable components for embedding or progra
 
 1. **SSH runs over transport, not alongside** — The transport layer produces a single `AsyncRead+AsyncWrite+Unpin+Send` stream. SSH runs over that stream via `russh::client::connect_stream()` / `russh::server::run_stream()`. The SSH layer never knows what transport it's on. (ADR-001, ADR-004)
 
-2. **SOCKS5 is the primary client interface** — Port forwarding is built on top of SOCKS5-like channel management. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside wraith's SOCKS5 proxy. TUN is not in the project scope. (ADR-005, ADR-014)
+2. **SOCKS5 is the primary client interface** — Port forwarding is built on top of SOCKS5-like channel management. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside alknet's SOCKS5 proxy. TUN is not in the project scope. (ADR-005, ADR-014)
 
 3. **No logging of tunnel destinations** — The server logs auth attempts and connections (for fail2ban) but does not log `channel_open_direct_tcpip` destinations, DNS lookups, or bytes transferred. (ADR-006, ADR-013)
 
@@ -91,11 +91,11 @@ The `wraith-core` crate exports the pluggable components for embedding or progra
 | [011](decisions/011-no-ssh-config-programmatic-api.md) | Programmatic-first | No file-based config; options are structs, env vars, CLI flags |
 | [012](decisions/012-auth-ed25519-and-cert-authority.md) | Key + cert-authority | Ed25519 keys + OpenSSH CA; no password auth |
 | [013](decisions/013-fail2ban-friendly-logging.md) | Fail2ban-friendly | Structured auth logs + built-in rate limiting |
-| [014](decisions/014-defer-tun-recommend-socks5-proxy.md) | Defer TUN | Use tun2proxy for VPN-like behavior; no wraith-tun binary |
+| [014](decisions/014-defer-tun-recommend-socks5-proxy.md) | Defer TUN | Use tun2proxy for VPN-like behavior; no alknet-tun binary |
 | [015](decisions/015-napi-rs-for-ffi-bridge.md) | napi-rs | Standard Node.js native addon tooling |
 | [016](decisions/016-napi-expose-connect-and-serve.md) | connect + serve | NAPI exposes both client and server from the start |
 | [017](decisions/017-stealth-mode-protocol-multiplexing.md) | Stealth mode | Protocol multiplexing on port 443 |
-| [018](decisions/018-control-channel-for-pubsub.md) | Control channel | Reserved `wraith-control` destination for pubsub |
+| [018](decisions/018-control-channel-for-pubsub.md) | Control channel | Reserved `alknet-control` destination for pubsub |
 | [019](decisions/019-proxy-dual-semantics.md) | Proxy dual semantics | `--proxy` routes transport on client, data on server |
 
 ## Open Questions

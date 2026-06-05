@@ -5,7 +5,7 @@ Accepted
 
 ## Context
 
-The current control channel (ADR-018) is hardcoded: `wraith-control:0` bridges
+The current control channel (ADR-018) is hardcoded: `alknet-control:0` bridges
 to the local pubsub event bus. If NAPI wants to expose `fs.readFile` or
 `bash.exec` as callable operations, it has no way to register these with core's
 channel routing. The NAPI handler would need to intercept channel data outside

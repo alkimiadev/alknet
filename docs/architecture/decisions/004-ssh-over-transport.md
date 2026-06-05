@@ -19,7 +19,7 @@ This is directly enabled by russh's `connect_stream()` and `run_stream()` APIs, 
 - **Positive**: Adding a new transport requires implementing the `Transport` trait, not modifying SSH code.
 - **Positive**: Testing is straightforward — mock transports produce in-memory streams.
 - **Positive**: Security audit is clean — the SSH implementation has no network-facing code.
-- **Positive**: The transport can be layered. Iroh connecting through a SOCKS5 proxy (which itself tunnels through wraith) is just a transport that calls out to a SOCKS5 library before establishing the QUIC connection.
+- **Positive**: The transport can be layered. Iroh connecting through a SOCKS5 proxy (which itself tunnels through alknet) is just a transport that calls out to a SOCKS5 library before establishing the QUIC connection.
 - **Negative**: SSH keepalive and reconnection must be handled at the transport level. If the transport stream dies, the SSH session dies. Reconnection means establishing a new transport + new SSH session. There's no "SSH reconnects over the same transport" — you get a new session.
 - **Negative**: Multiple SSH sessions over the same iroh connection require the iroh `Endpoint` (not stream) to be shared between sessions. The transport trait produces one stream per `connect()` call. The iroh `Endpoint` must be created externally and shared. (The `IrohTransport` struct holds an `Arc<Endpoint>`.)
 

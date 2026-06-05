@@ -25,7 +25,7 @@ All keys must be in **OpenSSH key format** (not PEM/PKCS#1/PKCS#8). This module 
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/auth/keys.rs` exports key loading functions
+- [ ] `crates/alknet-core/src/auth/keys.rs` exports key loading functions
 - [ ] `KeySource` enum: `File(PathBuf)` and `Memory(Vec<u8>)` for unified key input handling
 - [ ] `load_private_key(source: KeySource) -> Result<russh::key::KeyPair>` — loads OpenSSH private key from file or memory
 - [ ] `load_public_keys(source: KeySource) -> Result<Vec<russh::key::PublicKey>>` — loads one or more public keys from authorized_keys format

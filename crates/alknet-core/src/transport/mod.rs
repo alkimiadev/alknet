@@ -1,4 +1,4 @@
-//! Pluggable transport layer for Wraith.
+//! Pluggable transport layer for Alknet.
 //!
 //! The transport layer produces a duplex byte stream (`AsyncRead + AsyncWrite + Unpin + Send`)
 //! that SSH consumes. This is the core architectural abstraction — SSH never opens its own

@@ -18,8 +18,8 @@ The mock transport is critical — it lets us test SSH client/server flows witho
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/tests/` directory with empty integration test skeletons: `transport_tests.rs`, `client_tests.rs`, `server_tests.rs`, `auth_tests.rs`
-- [ ] `crates/wraith-core/src/testutil.rs` module (behind `#[cfg(test)]` or a `testutil` feature) exporting `MockTransport` and `MockStream`
+- [ ] `crates/alknet-core/tests/` directory with empty integration test skeletons: `transport_tests.rs`, `client_tests.rs`, `server_tests.rs`, `auth_tests.rs`
+- [ ] `crates/alknet-core/src/testutil.rs` module (behind `#[cfg(test)]` or a `testutil` feature) exporting `MockTransport` and `MockStream`
 - [ ] `MockStream` wraps `tokio::io::DuplexStream` implementing `AsyncRead + AsyncWrite + Unpin + Send`
 - [ ] `MockTransport` implements `Transport` trait (once defined) returning `MockStream` via `connect()`
 - [ ] `MockTransportAcceptor` implements `TransportAcceptor` (once defined) returning paired `MockStream` via `accept()`

@@ -1,16 +1,16 @@
 [package]
-name = "wraith-napi"
+name = "alknet-napi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Node.js native addon for Wraith via napi-rs: connect() and serve() SSH tunnel functions"
+description = "Node.js native addon for Alknet via napi-rs: connect() and serve() SSH tunnel functions"
 repository.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-wraith-core = { path = "../wraith-core", features = ["tls", "iroh"] }
+alknet-core = { path = "../alknet-core", features = ["tls", "iroh"] }
 napi = { version = "3", features = ["async", "error_anyhow"] }
 napi-derive = "3"
 tokio = { version = "1", features = ["io-util", "sync", "rt", "macros", "net", "time", "signal"] }

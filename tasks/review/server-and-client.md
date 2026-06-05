@@ -28,7 +28,7 @@ Verify end-to-end SSH tunnel flow: client connects → SOCKS5 proxy works → po
 - [x] Logging: structured `tracing::info!` events match ADR-013 format
 - [x] No logging of tunnel destinations (ADR-006)
 - [x] Reconnection: transport failure → exponential backoff → reconnect → port forwards re-registered
-- [x] Reserved `wraith-` destinations routed to control channel, not TCP proxy
+- [x] Reserved `alknet-` destinations routed to control channel, not TCP proxy
 - [x] Graceful shutdown works for both server and client
 - [x] All tests pass: `cargo test --workspace`
 - [x] `cargo clippy --workspace` passes
@@ -40,7 +40,7 @@ Verify end-to-end SSH tunnel flow: client connects → SOCKS5 proxy works → po
 ## Summary
 
 Server and client review passed with fixes. Key issues found and resolved:
-- wired channel proxy into handler (was dropping all non-wraith channels)
+- wired channel proxy into handler (was dropping all non-alknet channels)
 - added client reconnection with exponential backoff + remote forward re-registration
 - fixed ADR-006 violations (removed server-side destination logging)
 - 241 tests pass, clippy clean

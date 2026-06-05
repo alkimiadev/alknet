@@ -16,7 +16,7 @@ Implement the simplest transport: plain TCP. `TcpTransport` connects via `TcpStr
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/transport/tcp.rs` exports `TcpTransport` and `TcpAcceptor`
+- [ ] `crates/alknet-core/src/transport/tcp.rs` exports `TcpTransport` and `TcpAcceptor`
 - [ ] `TcpTransport` holds a `SocketAddr` target address
 - [ ] `TcpTransport::connect()` calls `TcpStream::connect(addr)` and returns the stream
 - [ ] `TcpTransport::describe()` returns e.g. `"tcp://1.2.3.4:22"`

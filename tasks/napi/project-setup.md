@@ -1,6 +1,6 @@
 ---
 id: napi/project-setup
-name: Set up wraith-napi project with napi-rs build tooling and TypeScript types
+name: Set up alknet-napi project with napi-rs build tooling and TypeScript types
 status: pending
 depends_on:
   - setup/project-init
@@ -12,7 +12,7 @@ level: implementation
 
 ## Description
 
-Set up the napi-rs project for the `@alkdev/wraith` Node.js native addon. This includes the napi-rs build configuration, TypeScript type definitions, and the package structure.
+Set up the napi-rs project for the `@alkdev/alknet` Node.js native addon. This includes the napi-rs build configuration, TypeScript type definitions, and the package structure.
 
 Per ADR-015 and ADR-016: napi-rs is the FFI bridge, and the wrapper exposes `connect()` and `serve()` functions. The NAPI layer is transport-agnostic — it doesn't know about pubsub's `EventEnvelope`.
 
@@ -20,11 +20,11 @@ The Cargo.toml skeleton was created in setup/project-init. This task configures 
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-napi/` has `Cargo.toml` with `crate-type = ["cdylib"]`, `napi` and `napi-derive` dependencies
-- [ ] `crates/wraith-napi/src/lib.rs` with napi module registration
-- [ ] `packages/wraith-napi/` directory (or similar) with `package.json` named `@alkdev/wraith`
-- [ ] `packages/wraith-napi/tsconfig.json` for TypeScript type generation
-- [ ] TypeScript type definitions for `WraithConnectOptions`, `WraithServeOptions`, `WraithServer`, `ConnectionInfo` matching napi-and-pubsub.md interfaces
+- [ ] `crates/alknet-napi/` has `Cargo.toml` with `crate-type = ["cdylib"]`, `napi` and `napi-derive` dependencies
+- [ ] `crates/alknet-napi/src/lib.rs` with napi module registration
+- [ ] `packages/alknet-napi/` directory (or similar) with `package.json` named `@alkdev/alknet`
+- [ ] `packages/alknet-napi/tsconfig.json` for TypeScript type generation
+- [ ] TypeScript type definitions for `AlknetConnectOptions`, `AlknetServeOptions`, `AlknetServer`, `ConnectionInfo` matching napi-and-pubsub.md interfaces
 - [ ] `napi.config.js` or `NapiRs.config` with correct cargo path, module name
 - [ ] Build command: `npm run build` builds the native addon
 - [ ] Feature flags: `iroh` feature optional; base package includes tcp + tls

@@ -22,7 +22,7 @@ No password authentication over SSH. This is the `russh::server::Handler::auth_p
 
 ## Acceptance Criteria
 
-- [ ] `crates/wraith-core/src/auth/server_auth.rs` exports `ServerAuthConfig` and auth logic
+- [ ] `crates/alknet-core/src/auth/server_auth.rs` exports `ServerAuthConfig` and auth logic
 - [ ] `ServerAuthConfig` holds: `authorized_keys: HashSet<PublicKey>`, `cert_authorities: Vec<CertAuthorityEntry>`
 - [ ] `ServerAuthConfig::from_keys_and_ca()` constructor: loads authorized keys and cert-authority entries from provided key sources
 - [ ] Auth check function: given a presented key/certificate, return `Accept` or `Reject`

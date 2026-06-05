@@ -10,7 +10,7 @@ use russh::ChannelId;
 
 use crate::auth::ServerAuthConfig;
 use crate::server::control_channel::{
-    ControlChannelHandler, ControlChannelRouter, WRAITH_PREFIX,
+    ControlChannelHandler, ControlChannelRouter, ALKNET_PREFIX,
 };
 use crate::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 
@@ -210,7 +210,7 @@ impl Handler for ServerHandler {
         originator_port: u32,
         _session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        if host_to_connect.starts_with(WRAITH_PREFIX) {
+        if host_to_connect.starts_with(ALKNET_PREFIX) {
             if !self.control_channel_router.has_handler() {
                 return Ok(false);
             }
@@ -576,18 +576,18 @@ mod tests {
     }
 
     #[test]
-    fn reserved_wraith_destination_routing() {
+    fn reserved_alknet_destination_routing() {
         use crate::server::control_channel::is_reserved_destination;
-        assert!(is_reserved_destination("wraith-control"));
-        assert!(is_reserved_destination("wraith-status"));
-        assert!(is_reserved_destination("wraith-events"));
+        assert!(is_reserved_destination("alknet-control"));
+        assert!(is_reserved_destination("alknet-status"));
+        assert!(is_reserved_destination("alknet-events"));
         assert!(!is_reserved_destination("example.com"));
         assert!(!is_reserved_destination("localhost"));
-        assert!(!is_reserved_destination("wraith.example.com"));
+        assert!(!is_reserved_destination("alknet.example.com"));
     }
 
     #[test]
-    fn server_handler_without_control_handler_rejects_wraith_destinations() {
+    fn server_handler_without_control_handler_rejects_alknet_destinations() {
         let auth_config = make_empty_auth_config();
         let handler = make_handler(auth_config, None, None);
         assert!(!handler.control_channel_router().has_handler());

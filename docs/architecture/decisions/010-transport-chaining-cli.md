@@ -7,10 +7,10 @@ Accepted
 Transport chaining allows combining iroh with an upstream proxy, e.g.:
 
 ```bash
-wraith connect --transport iroh --proxy socks5://127.0.0.1:1080
+alknet connect --transport iroh --proxy socks5://127.0.0.1:1080
 ```
 
-This routes iroh's outbound TCP connections through a SOCKS5 proxy, which could itself be another wraith instance. This is important for:
+This routes iroh's outbound TCP connections through a SOCKS5 proxy, which could itself be another alknet instance. This is important for:
 - Nested tunnel topologies
 - Environments where iroh needs to go through an existing proxy
 - Composing transports in flexible ways

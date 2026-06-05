@@ -1,4 +1,4 @@
-//! NAPI `connect()` function and `WraithStream` type.
+//! NAPI `connect()` function and `AlknetStream` type.
 //!
 //! Opens a single SSH channel as a duplex stream for programmatic use.
 //! Unlike the CLI client, this does not start a SOCKS5 server or port forwards —
@@ -13,15 +13,15 @@ use russh::client;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use wraith_core::auth::client_auth::{ClientAuthConfig, ClientHandler};
-use wraith_core::auth::keys::KeySource;
-use wraith_core::transport::{IrohTransport, TcpTransport, TlsTransport, Transport};
+use alknet_core::auth::client_auth::{ClientAuthConfig, ClientHandler};
+use alknet_core::auth::keys::KeySource;
+use alknet_core::transport::{IrohTransport, TcpTransport, TlsTransport, Transport};
 
-const DEFAULT_HOST: &str = "wraith-control";
+const DEFAULT_HOST: &str = "alknet-control";
 const DEFAULT_PORT: u32 = 0;
 
 #[napi(object)]
-pub struct WraithConnectOptions {
+pub struct AlknetConnectOptions {
     pub server: Option<String>,
     pub peer: Option<String>,
     pub transport: String,
@@ -53,13 +53,13 @@ fn parse_addr(addr_str: &str) -> Result<SocketAddr> {
 }
 
 #[napi]
-pub struct WraithStream {
+pub struct AlknetStream {
     read: Arc<Mutex<tokio::io::ReadHalf<russh::ChannelStream<client::Msg>>>>,
     write: Arc<Mutex<tokio::io::WriteHalf<russh::ChannelStream<client::Msg>>>>,
 }
 
 #[napi]
-impl WraithStream {
+impl AlknetStream {
     #[napi]
     pub async fn read(&self, size: u32) -> Result<Buffer> {
         let mut buf = vec![0u8; size as usize];
@@ -96,7 +96,7 @@ impl WraithStream {
 }
 
 #[napi]
-pub async fn connect(options: WraithConnectOptions) -> Result<WraithStream> {
+pub async fn connect(options: AlknetConnectOptions) -> Result<AlknetStream> {
     let key_source = resolve_key_source(&options.identity)?;
     let auth_config = Arc::new(
         ClientAuthConfig::from_key_source(key_source)
@@ -105,7 +105,7 @@ pub async fn connect(options: WraithConnectOptions) -> Result<WraithStream> {
 
     let transport_mode = options.transport.to_lowercase();
     let handler = ClientHandler::from_config(&auth_config);
-    let username = "wraith".to_string();
+    let username = "alknet".to_string();
 
     let config = Arc::new(client::Config::default());
 
@@ -232,7 +232,7 @@ pub async fn connect(options: WraithConnectOptions) -> Result<WraithStream> {
     let stream = channel.into_stream();
     let (read_half, write_half) = tokio::io::split(stream);
 
-    Ok(WraithStream {
+    Ok(AlknetStream {
         read: Arc::new(Mutex::new(read_half)),
         write: Arc::new(Mutex::new(write_half)),
     })
