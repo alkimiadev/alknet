@@ -6,13 +6,25 @@ phase: exploration
 
 # Configuration Architecture
 
+## Terminology Change: Head/Worker
+
+This document previously used **hub/spoke** terminology. It has been updated to **head/worker**:
+
+- **Head node**: The coordinating node (formerly "hub"). A head can also be a worker.
+- **Worker node**: A node that connects to a head and registers services (formerly "spoke").
+- **Node**: Any participant in the network. Every node has an identity.
+
+This better reflects that a head is also a worker, enabling mesh topologies.
+
+## Problem
+
 ## Problem
 
 Alknet's configuration is loaded once at startup and never changes. This has
 three specific failures:
 
 1. **No hot reload of authentication credentials.** Adding or removing an
-   authorized key requires restarting the server process. In a hub/spoke
+   authorized key requires restarting the server process. In a head/worker
    deployment where keys are managed via a database (see
    `@alkdev/storage`'s `peer_credentials` table), the alknet process must be
    restarted every time a key is added, revoked, or rotated. This is
@@ -38,7 +50,7 @@ three specific failures:
   data sources plug in from outside.
 - This does not propose file-watching (potential attack vector, unnecessary
   complexity). CLI usage loads config once at startup. Programmatic usage
-  (NAPI, hub) calls reload explicitly.
+  (NAPI, head node) calls reload explicitly.
 - This does not replace the existing `ServeOptions` builder pattern. It
   generalizes it.
 
@@ -62,6 +74,19 @@ atomically without disrupting existing connections.
 The split is clean: anything that affects the SSH handshake or socket binding
 is static. Anything that's checked per-connection or per-channel is dynamic.
 
+### Auth Reload: Service Approach
+
+The original design held all authorized keys in memory via `ArcSwap<DynamicConfig>`. For small deployments this works, but for nodes serving many users it requires loading every key into RAM and atomic-swapping the entire set on each reload.
+
+The improved approach is to make auth an **irpc service** (see [core.md](core.md) and [services.md](services.md)). Auth verification becomes a service call: `VerifyPubkey { fingerprint, key_data }` → `oneshot::Sender<AuthResult>`. The service can:
+
+- Query SQLite on demand (no need to hold all keys in memory)
+- Maintain an LRU cache for hot keys
+- Subscribe to honker streams for key invalidation
+- Run locally (in-process mpsc) or remotely (QUIC stream)
+
+`ArcSwap<DynamicConfig>` remains as a fallback for minimal deployments (CLI usage, single-node setups) where SQLite overhead isn't warranted. The service approach is the primary path for production deployments.
+
 ### Current Architecture
 
 ```
@@ -83,7 +108,7 @@ path to update it.
 
 ### Proposed Architecture
 
-Replace `Arc<ServerAuthConfig>` with a reloadable provider:
+Replace `Arc<ServerAuthConfig>` with a service-based approach:
 
 ```
 StaticConfig (Arc, loaded once)
@@ -92,14 +117,23 @@ StaticConfig (Arc, loaded once)
   ├─ host key
   └─ max_auth_attempts, max_connections_per_ip
 
+AuthService (irpc service, local or remote)
+  ├─ VerifyPubkey(fingerprint, key_data) → AuthResult
+  ├─ VerifyToken(token_bytes) → AuthResult
+  └─ ReloadKeys() → ()
+     Backed by: SQLite (peer_credentials, api_keys)
+     Optional: ArcSwap<DynamicConfig> for minimal deployments
+
+ConfigService (irpc service, always local)
+  ├─ ReloadDynamicConfig(DynamicConfig)
+  └─ GetForwardingPolicy() → ForwardingPolicy
+
 DynamicConfig (Arc<ArcSwap<DynamicConfig>>, reloadable)
-  ├─ auth: ServerAuthConfig
   ├─ forwarding: ForwardingPolicy
   └─ rate_limits: RateLimitConfig
-
-ConfigReloadHandle (exposed to NAPI)
-  └─ reload(DynamicConfig)
 ```
+
+For production: auth verification goes through the auth service, which queries SQLite. The `DynamicConfig` only holds forwarding policy and rate limits — not the full key set. For minimal deployments: auth falls back to `ArcSwap<DynamicConfig>` with all keys in memory, wrapped by the same service interface.
 
 `ArcSwap` provides lock-free reads on the hot path. Every `auth_publickey()`
 and `channel_open_direct_tcpip()` call does an `Arc` dereference — zero cost
@@ -138,7 +172,7 @@ pub enum TargetPattern {
 Rule evaluation: first match wins, default applies if no rule matches. This
 model maps to OpenSSH's `AllowTcpForwarding` + `PermitOpen` but is more
 expressive. It also maps to `peer_credentials.metadata.scopes` in `@alkdev/storage`
-— the hub can generate forwarding rules from stored scopes.
+— the head node can generate forwarding rules from stored scopes.
 
 Rule ordering matters. A deny-then-allow pattern gives blocklist semantics. An
 allow-then-deny pattern gives allowlist semantics. Both are useful. The
@@ -220,7 +254,7 @@ interface ForwardingRuleConfig {
 }
 ```
 
-The hub calls `server.reloadAuth(...)` after writing to `peer_credentials`.
+The head node calls `server.reloadAuth(...)` after writing to `peer_credentials`.
 The NAPI layer parses the key data and constructs a new `DynamicConfig`, then
 calls the `ConfigReloadHandle`.
 
@@ -235,7 +269,7 @@ A config file for client connections could define named profiles:
 
 ```toml
 [profiles.production]
-server = "hub.alk.dev:443"
+server = "head.alk.dev:443"
 transport = "tls"
 identity = "/home/user/.ssh/id_ed25519"
 
@@ -252,16 +286,17 @@ This is a convenience layer on top of `ConnectOptions`, not a replacement.
 | Interface | Static config | Dynamic config | Reload mechanism |
 |---|---|---|---|
 | CLI | Flags + optional `--config` file | Loaded at startup from `--authorized-keys` | None (restart to change) |
-| Core Rust | `StaticConfig` struct | `ArcSwap<DynamicConfig>` | `ConfigReloadHandle::reload()` |
-| NAPI | `serve()` options | Same `ArcSwap` | `server.reloadAuth()`, `server.reloadForwarding()` |
+| Core Rust | `StaticConfig` struct | `AuthService` (irpc) or `ArcSwap<DynamicConfig>` (minimal) | `ConfigService::reload()` or `ConfigReloadHandle::reload()` |
+| NAPI | `serve()` options | Same | `server.reloadAuth()`, `server.reloadForwarding()` |
 
 The CLI doesn't need a reload mechanism. When you're running alknet from the
 command line, restarting is fine. The reload mechanism exists for programmatic
-consumers that manage credentials in a database.
+consumers and for the auth service pattern where keys are queried on demand from
+a database.
 
 ### Multi-Transport Listeners
 
-A host may want to accept connections on multiple transports simultaneously:
+A head node may want to accept connections on multiple transports simultaneously:
 
 - TCP on port 22 (simple, direct SSH)
 - TLS on port 443 (stealth mode, corporate firewalls)
@@ -458,7 +493,7 @@ compat via accepting both `transport: string` (single) and
   Global rules with principal matching is simpler and covers most cases. Per-user
   scope derived from certificates is more granular but requires the server to
   maintain a mapping from key fingerprint to scope. This mapping comes from the
-  hub's database, not from the SSH protocol. Phase 2 starts with global rules;
+  head node's database, not from the SSH protocol. Phase 2 starts with global rules;
   per-user scope can be added as an extension.
 
 - **OQ-CFG-02**: Should the config file watch for changes and auto-reload?
@@ -553,15 +588,34 @@ compat via accepting both `transport: string` (single) and
   presents an Ed25519-signed timestamp token. Verification produces the same
   `Identity` type via the `IdentityProvider` trait. One `reloadAuth()` call
   updates both. See [auth.md](../architecture/auth.md) and
-  [ADR-023](../architecture/decisions/023-unified-auth-shared-key-material.md).
+   [ADR-023](../architecture/decisions/023-unified-auth-shared-key-material.md).
+
+- **OQ-CFG-07**: Should auth and secret services share a single irpc endpoint
+  or be separate services?
+
+  Separate services are better. Auth (verify credentials) and Secret (derive/store
+  keys) have different security boundaries. The secret service holds the master
+  seed; the auth service only needs public key fingerprints. They may run on
+  different machines. See [services.md](services.md) for protocol definitions.
+
+- **OQ-CFG-08**: How do external credentials (API keys, OAuth tokens) relate
+  to the secret service's HD key derivation?
+
+  HD-derived keys (from SLIP-0010/BIP39) cover self-generated secrets (identity
+  keys, encryption keys, SSH keys). External credentials (third-party API keys,
+  OAuth tokens) can't be derived — they must be stored encrypted. The secret
+  service handles both: derived keys are regenerated on demand; stored secrets
+  are encrypted with a key that is itself derived from the seed. See
+  [services.md](services.md) for the `SecretProtocol` definition.
 
 ## Decisions Required
 
 These decisions will be extracted into ADRs when the architecture is finalized:
 
-1. **ADR-020**: Static/dynamic config split, `ArcSwap<DynamicConfig>` for
-  hot-reloadable auth and forwarding policy. Supersedes ADR-011's "no config
-  file" — adds optional config file while preserving programmatic-first API.
+1. **ADR-020**: Static/dynamic config split. Auth delegated to `AuthService` (irpc)
+  for production; `ArcSwap<DynamicConfig>` for minimal deployments. Supersedes
+  ADR-011's "no config file" — adds optional config file while preserving
+  programmatic-first API.
 
 2. **ADR-021**: Forwarding policy with rule-based allow/deny. Default-allow
   preserves current behavior during migration; default-deny for production
@@ -570,6 +624,13 @@ These decisions will be extracted into ADRs when the architecture is finalized:
 3. **ADR-022**: Multi-transport listeners. `Server` spawns multiple accept
   loops sharing auth config, session state, and shutdown. Replaces single
   `ServeTransportMode` with `Vec<ListenerConfig>`.
+
+4. **ADR-026**: Head/worker terminology. Replace hub/spoke with head/worker
+  throughout all documentation and APIs. A head is also a worker.
+
+5. **ADR-028**: Auth as service. Auth verification via irpc `AuthProtocol`
+  service, not in-memory key set. Enables SQLite-backed auth for production,
+  `ArcSwap` fallback for minimal deployments.
 
 ## References
 
@@ -586,3 +647,5 @@ These decisions will be extracted into ADRs when the architecture is finalized:
 - [ADR-023](../architecture/decisions/023-unified-auth-shared-key-material.md) — Unified auth with shared key material
 - [auth.md](../architecture/auth.md) — Unified auth architecture spec
 - [call-protocol.md](../architecture/call-protocol.md) — Bidirectional call protocol spec
+- [services.md](services.md) — Service layer architecture (irpc services)
+- [core.md](core.md) — Core overview, head/worker terminology, service layer

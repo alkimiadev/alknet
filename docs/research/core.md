@@ -1,11 +1,22 @@
-# Alknet Core: Transport, Call Protocol, Auth, and DNS
+# Alknet Core: Transport, Call Protocol, Auth, Services, and DNS
 
 > Status: Research / Draft
-> Last updated: 2026-06-05
+> Last updated: 2026-06-06
 
 ## Overview
 
-`alknet-core` is the foundational crate providing pluggable transports, the bidirectional call protocol, Ed25519 authentication, and (future) DNS transport + naming. Everything else (storage, flowgraph, relay) builds on top of this.
+`alknet-core` is the foundational crate providing pluggable transports, the bidirectional call protocol, Ed25519 authentication, a service layer (via irpc), and (future) DNS transport + naming. Everything else (storage, flowgraph, relay) builds on top of this.
+
+### Terminology: Nodes, Heads, and Workers
+
+Alknet uses a **head/worker** model instead of hub/spoke:
+
+- **Node**: Any participant in the network. Every node has an Ed25519 identity.
+- **Head node**: A node that coordinates — accepts connections, routes operations, manages cluster state. A head is also a worker (it can execute operations).
+- **Worker node**: A node that connects to a head, registers its services, and executes operations. Any worker can become a head.
+- **Service**: A named collection of operations exposed by a node (e.g., `fs`, `bash`, `compute`, `agent`). Services register via the call protocol.
+
+This model allows natural mesh formation: a head can also be a worker for another head, enabling multi-hop routing, redundancy, and distributed topologies without a centralized authority.
 
 ## Transport Layer
 
@@ -102,10 +113,10 @@ A call is just a subscribe that resolves after one event. Both `call()` and `sub
 ### Operation Paths
 
 ```
-/{spoke}/{service}/{op}
+/{node}/{service}/{op}
 ```
 
-- **spoke** — identity prefix of the node that exposes the operation
+- **node** — identity prefix of the node that exposes the operation
 - **service** — logical service namespace (e.g., `fs`, `bash`, `agent`)
 - **op** — specific operation (e.g., `readFile`, `exec`, `chat`)
 
@@ -113,9 +124,9 @@ Examples:
 
 | Path | Meaning |
 |------|---------|
-| `/dev1/fs/readFile` | Spoke `dev1`, service `fs`, op `readFile` |
-| `/hub/agent/chat` | Hub's own `agent` service, op `chat` |
-| `/hub/sessions/list` | Hub's `sessions` service, op `list` |
+| `/dev1/fs/readFile` | Node `dev1`, service `fs`, op `readFile` |
+| `/head/agent/chat` | Head's own `agent` service, op `chat` |
+| `/head/sessions/list` | Head's `sessions` service, op `list` |
 
 ### PendingRequestMap
 
@@ -176,39 +187,41 @@ registry.register(OperationSpec { name: "/fs/readFile", ... }, fs_read_handler);
 | Worker | `postMessage` | Bidirectional over structured clone |
 | DNS | Query TXT records (client) / serve TXT records (server) | Request/response over DNS |
 
-### Hub/Spoke Architecture
+### Head/Worker Architecture
 
 ```
          ┌─────────────────────────────────┐
-         │              Hub                │
+         │           Head Node             │
          │                                 │
-         │  Hub-local services:            │
-         │  /hub/agent/chat               │
-         │  /hub/agent/complete            │
-         │  /hub/sessions/list             │
+         │  Head-local services:           │
+         │  /head/agent/chat              │
+         │  /head/agent/complete           │
+         │  /head/sessions/list            │
          │                                 │
-         │  Spoke registry:                │
+         │  Worker registry:              │
          │  /dev1/fs/* → dev1 connection    │
          │  /browser-1/notify/* → WT conn  │
          └──────┬───────┬──────────────────┘
                 │       │
       ┌─────────▼┐ ┌───▼────────────┐
-      │  Spoke    │ │Browser Spoke   │
+      │  Worker   │ │Browser Worker  │
       │  "dev1"   │ │"browser-1"     │
       │  /fs/*    │ │/notify/*       │
       └───────────┘ └────────────────┘
 ```
 
-Spokes register operations on connect:
+A head node is also a worker. Any worker can become a head. This enables mesh topologies where nodes coordinate in a peer-to-peer fashion rather than through a single centralized authority.
+
+Workers register operations on connect:
 
 ```json
 {
   "type": "call.requested",
   "id": "uuid-123",
   "payload": {
-    "operationId": "/hub/services/register",
+    "operationId": "/head/services/register",
     "input": {
-      "spoke": "dev1",
+      "node": "dev1",
       "operations": ["/fs/readFile", "/bash/exec"]
     }
   }
@@ -217,9 +230,83 @@ Spokes register operations on connect:
 
 ## Authentication
 
-Ed25519 keys for SSH authentication. A separate authentication mechanism for browsers where they sign a token using the same Ed25519 keys. Hot key rotation without server restart (mechanism in core for programmatic key updates).
+Ed25519 keys for SSH authentication. A separate authentication mechanism for browsers where they sign a token using the same Ed25519 keys. 
+
+Authentication is provided by the **auth service** — an irpc-based service that verifies credentials on demand rather than holding all keys in memory. This replaces the earlier `ArcSwap<DynamicConfig>` approach and scales to large user populations without requiring full key set reloads.
 
 Peer credentials are stored in `peer_credentials` table (fingerprint-based lookup). Account credentials via `api_keys` table (SHA-256 hash for high-entropy keys).
+
+See [services.md](services.md) for the auth service protocol definition.
+
+## Service Layer
+
+### Architecture
+
+Alknet uses an **irpc-based service layer** to decompose core responsibilities into independently testable, deployable, and replaceable components. irpc provides lightweight RPC that works both as an in-process async boundary (tokio channels) and cross-process/cross-network (QUIC streams via noq).
+
+A **service** is an irpc protocol enum that defines the operations a component supports. Services run as async actors — locally they communicate via `mpsc` channels, remotely via QUIC streams. The `Client<S>` abstracts over both.
+
+### Core Services
+
+| Service | irpc Protocol | Purpose | Always Local? |
+|---------|--------------|---------|---------------|
+| **Auth** | `AuthProtocol` | Verify identities, check credentials, issue tokens | Can be remote for large-scale auth |
+| **Secret** | `SecretProtocol` | Derive keys from seed, encrypt/decrypt stored secrets, key versioning | Local in single-node, remote in clustered |
+| **Config** | `ConfigProtocol` | Dynamic config reload (auth keys, forwarding policy) | Local |
+| **Storage** | `StorageProtocol` | Graph CRUD, metagraph operations, honker event bridge | Local or remote |
+
+### Service Definition Pattern
+
+Services are defined as irpc protocol enums:
+
+```rust
+use irpc::{rpc_requests, channel::{mpsc, oneshot}};
+
+#[rpc_requests(message = AuthMessage)]
+#[derive(Debug, Serialize, Deserialize)]
+enum AuthProtocol {
+    #[rpc(tx=oneshot::Sender<AuthResult>)]
+    #[wrap(VerifyPubkey)]
+    VerifyPubkey { fingerprint: String, key_data: Vec<u8> },
+
+    #[rpc(tx=oneshot::Sender<AuthResult>)]
+    #[wrap(VerifyToken)]
+    VerifyToken { token: Vec<u8> },
+
+    #[rpc(tx=oneshot::Sender<()>)]
+    #[wrap(ReloadKeys)]
+    ReloadKeys,
+}
+```
+
+### Local vs Remote
+
+```rust
+enum AuthClient {
+    // In-process: zero-copy tokio channels
+    Local(Client<AuthProtocol>),
+    // Cross-process/cross-network: QUIC stream
+    Remote(irpc::rpc::Client<AuthProtocol>),
+}
+```
+
+A node that runs all services locally uses `Client::local(mpsc::channel)`. A node that delegates auth to a separate service uses `Client::remote(quinn::Connection)`. The call sites are identical — the client abstracts over both.
+
+### Relationship to Call Protocol
+
+Services are **internal** to a node or cluster. The call protocol is **external** — it's how nodes talk to each other over SSH/WebSocket/QUIC/DNS transports. Services handle concerns like auth and secrets that should not be part of the wire protocol but are needed by every node.
+
+A service can also be exposed as a call protocol operation. For example, the secret service's `DeriveKey` could be exposed as `/head/secrets/derive` for remote workers that need key derivation but shouldn't hold the master seed.
+
+### Event Boundary Discipline
+
+Following the event sourcing patterns in [event_source_types.md](/workspace/research/event_sourcing/event_source_types.md):
+
+- **Honker streams** (`stream_publish`/`subscribe`) are **internal event sourcing** for the service that owns that data. They are domain events, not integration events.
+- **Call protocol `EventEnvelope`** is the **integration boundary** between nodes. Cross-node notifications are projected from domain events, not published directly.
+- **irpc service calls** are **synchronous request-response** within a node or cluster. They are not events and should not be used as such.
+
+This prevents the conflation of internal state management (event sourcing), cross-service notification (integration events), and service calls (request-response).
 
 ## DNS Transport (Planned)
 
@@ -322,6 +409,9 @@ alknet's DNS transport should support all of these. DoH (port 443, looks like HT
 | 023 | Unified auth | Shared Ed25519 key material across auth mechanisms |
 | 024 | Bidirectional call protocol | Both sides can call, generalized from ADR-018 |
 | 025 | Handler/spec separation | Downstream registers operations without modifying core |
+| 026 | Head/worker terminology | Replace hub/spoke with head/worker; any node can be a head |
+| 027 | Service layer via irpc | Core responsibilities decomposed into irpc service protocols |
+| 028 | Auth as service | Auth verification via irpc service, not in-memory key set |
 
 ## References
 
@@ -329,6 +419,8 @@ alknet's DNS transport should support all of these. DoH (port 443, looks like HT
 - `@alkdev/operations` — TypeScript call protocol, `OperationSpec`, registry
 - `@alkdev/flowgraph` — TypeScript operation graph and call graph (planned Rust port)
 - `@alkdev/storage` — TypeScript metagraph, identity, ACL (planned Rust port as `alknet-storage`)
+- `@alkdev/dispatch` — Instance management service (head+worker architecture reference)
 - iroh-dns — DNS resolver and endpoint info (naming/discovery)
 - iroh-live-relay — WebTransport relay (planned transport reference)
-- irpc — iroh streaming RPC (postcard-only, Rust-to-Rust)
+- irpc — iroh streaming RPC (service layer, async boundaries)
+- [event_source_types.md](/workspace/research/event_sourcing/event_source_types.md) — Event-driven architecture patterns and anti-patterns

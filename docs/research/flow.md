@@ -1,7 +1,7 @@
 # Alknet Flowgraph: Operation Graph, Call Graph, and Graph Operations
 
 > Status: Research / Draft
-> Last updated: 2026-06-05
+> Last updated: 2026-06-06
 
 ## Overview
 
@@ -457,6 +457,7 @@ tokio = { version = "1", features = ["full"] }
 | `NodeAttributes` / `EdgeAttributes` traits | Generic over attribute types, matching flowgraph's type parameter pattern |
 | DAG enforcement at construction | Matches TypeScript flowgraph: `fromSpecs()` throws `CycleError` |
 | `filter_by_status` is O(n) | Matches TypeScript: small graphs (tens to hundreds of nodes), no index needed |
+| Call protocol as integration boundary | Call protocol `EventEnvelope` is the cross-node integration boundary; domain events stay within services |
 
 ## References
 
@@ -467,3 +468,5 @@ tokio = { version = "1", features = ["full"] }
 - `/workspace/@alkdev/storage/docs/architecture/metagraph-module.md` — TypeBox Module pattern
 - `/workspace/@alkdev/storage/docs/architecture/sqlite-host.md` — SQLite table definitions
 - `/workspace/@alkdev/storage/docs/architecture/acl.md` — ACL as metagraph
+- [services.md](services.md) — Service layer architecture (irpc protocols)
+- [core.md](core.md) — Core overview, head/worker terminology
