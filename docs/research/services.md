@@ -267,6 +267,126 @@ enum StorageProtocol {
 
 The `Subscribe` variant uses server-streaming irpc — the client sends one request and receives multiple `StorageEvent` messages via `mpsc::Sender`. These are honker stream events projected into integration events.
 
+## Operation Context and Handler Environment
+
+The call protocol's `OperationSpec` defines *what* an operation looks like (name, namespace, input/output schemas, access control). But the handler that actually processes the call needs more than just `input` — it needs **context**: who made the call, what other operations it can invoke, and what identity it runs as.
+
+This is the pattern established in `@alkdev/operations` and needs to map cleanly to the Rust implementation.
+
+### OperationContext
+
+Every handler receives an `OperationContext` alongside its input:
+
+```rust
+pub struct OperationContext {
+    pub request_id: String,
+    pub parent_request_id: Option<String>,
+    pub identity: Option<Identity>,
+    pub metadata: HashMap<String, Value>,
+    pub env: OperationEnv,
+    pub trusted: bool,  // set by buildEnv(), not by callers
+}
+
+pub struct Identity {
+    pub id: String,
+    pub scopes: Vec<String>,
+    pub resources: Option<HashMap<String, Vec<String>>>,
+}
+```
+
+Key fields:
+
+- **`request_id`** / **`parent_request_id`**: Call tracing. A mutation that triggers events carries `parent_request_id` so the call graph can link them.
+- **`identity`**: The authenticated identity making the call. Populated by the auth service from the call protocol's `call.requested` event. ACL checks use `identity.scopes` and `identity.resources` via the operation's `accessControl`.
+- **`metadata`**: Arbitrary key-value context. Used for things like trace IDs, correlation headers, or feature flags.
+- **`env`**: The **operation environment** — namespaced access to call other operations. This is the composition mechanism.
+- **`trusted`**: Internal flag set by `buildEnv()`. When a handler calls another operation through `env`, the nested call is `trusted` (skips ACL checks). This prevents handlers from having to manage auth scope escalation themselves.
+
+### OperationEnv (the composition mechanism)
+
+`OperationEnv` provides namespaced access to the operation registry. A handler can call other operations without knowing their transport:
+
+```rust
+pub type OperationEnv = HashMap<String, HashMap<String, fn(Value, OperationContext) -> ResponseEnvelope>>;
+
+// Usage inside a handler:
+let result = context.env["secrets"]["deriveKey"](derive_input, nested_context)?;
+```
+
+In TypeScript, `buildEnv()` iterates all registered specs (excluding subscriptions), creates closure functions for each, and passes `trusted: true` in the nested context. The Rust equivalent uses irpc service calls:
+
+```rust
+// Local: direct function call through handler map
+// Remote: irpc call to the service that owns that operation
+```
+
+This means a handler for `/head/docker/create` can internally call `/head/secrets/derive` to get a key for the container, and the nested call is routed through the same service layer — locally if the secret service is on the same node, remotely via irpc if it's on a different node.
+
+### Mapping to irpc
+
+The TypeScript `OperationEnv` pattern maps to irpc as follows:
+
+| TypeScript | Rust (irpc) |
+|-----------|-------------|
+| `context.env.namespace.op(input)` | `client.rpc(ProtocolMessage::OpName { ... }).await?` |
+| `buildEnv(registry, context)` | `irpc::Client::local(tx)` or `irpc::Client::remote(conn)` |
+| `registry.execute(id, input, context)` | Service handler dispatch on the enum variant |
+| `accessControl` check | `enforceAccess()` before handler dispatch |
+| Subscription handlers (`async function*`) | `mpsc::Sender<T>` streaming response |
+
+### Call Protocol Events and Context
+
+The call protocol's `EventEnvelope` carries the context fields:
+
+```json
+{
+  "type": "call.requested",
+  "id": "uuid-123",
+  "payload": {
+    "operationId": "/head/docker/create",
+    "input": { "image": "nginx", "name": "web" },
+    "identity": { "id": "node-abc", "scopes": ["docker:read", "docker:write"] },
+    "parentRequestId": "uuid-122",
+    "deadline": 1712345678000
+  }
+}
+```
+
+The `CallHandler` in `call.ts` receives this event, constructs an `OperationContext` from the payload, validates access control, and dispatches to the registered handler. The same pattern applies in Rust — the `buildCallHandler` function creates the context from the event and calls `registry.execute()`.
+
+### Mutations and Events
+
+A mutation handler can trigger side effects after the main operation:
+
+```
+handler(input, context) {
+  // 1. Perform mutation (e.g., create a node in storage)
+  let result = storage.create_node(...);
+
+  // 2. Trigger side effects (e.g., publish event)
+  // This is an integration event, not a domain event
+  pubsub.publish("call.responded", "", {
+    requestId: context.request_id,
+    output: result,
+  });
+
+  return result;
+}
+```
+
+Following the event boundary discipline: the mutation itself uses honker's `stream_publish` for internal state management (domain event), and the call protocol `call.responded` is the integration event that other nodes/services react to. The handler doesn't publish honker events directly — that's the storage service's internal concern. The handler calls `context.env.storage.addNode()` and the storage service internally publishes to honker before returning.
+
+### Adapters: MCP and OpenAPI
+
+The `from_mcp` and `from_openapi` adapters in `@alkdev/operations` demonstrate how external protocols map to the operation model:
+
+- **MCP**: Each MCP tool becomes a `MUTATION` operation. The handler calls `client.callTool()` and wraps the result in a `ResponseEnvelope` with `source: "mcp"`.
+- **OpenAPI**: Each HTTP endpoint becomes a `QUERY`, `MUTATION`, or `SUBSCRIPTION` (detected from `text/event-stream` responses). The handler makes HTTP requests and wraps results with `source: "http"`.
+
+These adapters will need to map to irpc in Rust. The `ResponseEnvelope` pattern (wrapping results with source metadata) carries over directly. The `OpenAPIServiceRegistry` and `MCPClientLoader` patterns become irpc service initializers that register their operations with the call protocol's `OperationRegistry`.
+
+The key insight: **adapters are just like any other service** — they register operations in the registry and get an `OperationContext` with `env` access. An MCP adapter can call `/head/secrets/derive` just as easily as a local handler can.
+
 ## Service Composition
 
 ### Minimal Deployment (Single Node, CLI)
