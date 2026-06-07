@@ -26,11 +26,13 @@ pub struct ProxyConfig {
     pub mode: ProxyMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TransportKind {
     Tcp,
     Tls,
     Iroh,
+    Dns,
+    WebTransport,
 }
 
 impl std::fmt::Display for TransportKind {
@@ -39,6 +41,8 @@ impl std::fmt::Display for TransportKind {
             TransportKind::Tcp => write!(f, "tcp"),
             TransportKind::Tls => write!(f, "tls"),
             TransportKind::Iroh => write!(f, "iroh"),
+            TransportKind::Dns => write!(f, "dns"),
+            TransportKind::WebTransport => write!(f, "webtransport"),
         }
     }
 }
@@ -752,6 +756,8 @@ mod tests {
         assert_eq!(TransportKind::Tcp.to_string(), "tcp");
         assert_eq!(TransportKind::Tls.to_string(), "tls");
         assert_eq!(TransportKind::Iroh.to_string(), "iroh");
+        assert_eq!(TransportKind::Dns.to_string(), "dns");
+        assert_eq!(TransportKind::WebTransport.to_string(), "webtransport");
     }
 
     #[tokio::test]

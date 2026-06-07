@@ -1,5 +1,5 @@
 use crate::server::handler::{ProxyConfig, ProxyMode};
-use crate::server::serve::ServeTransportMode;
+use crate::server::serve::{ListenerConfig, ServeTransportMode};
 use std::net::SocketAddr;
 
 pub struct StaticConfig {
@@ -15,6 +15,7 @@ pub struct StaticConfig {
     pub max_connections_per_ip: usize,
     pub proxy_config: Option<ProxyConfig>,
     pub iroh_relay: Option<String>,
+    pub listeners: Vec<ListenerConfig>,
 }
 
 impl std::fmt::Debug for StaticConfig {
@@ -31,6 +32,7 @@ impl std::fmt::Debug for StaticConfig {
             .field("max_connections_per_ip", &self.max_connections_per_ip)
             .field("proxy_config", &self.proxy_config)
             .field("iroh_relay", &self.iroh_relay)
+            .field("listeners", &self.listeners)
             .finish()
     }
 }
@@ -55,6 +57,24 @@ impl StaticConfig {
 
         let proxy_config = parse_proxy_config(opts.proxy.as_deref());
 
+        let listeners = if let Some(listeners) = opts.listeners {
+            listeners
+        } else {
+            vec![ListenerConfig {
+                transport_kind: match opts.transport_mode {
+                    ServeTransportMode::Tcp => crate::server::handler::TransportKind::Tcp,
+                    ServeTransportMode::Tls => crate::server::handler::TransportKind::Tls,
+                    ServeTransportMode::Iroh => crate::server::handler::TransportKind::Iroh,
+                },
+                listen_addr: opts.listen_addr.clone(),
+                tls_cert: opts.tls_cert.clone(),
+                tls_key: opts.tls_key.clone(),
+                acme_domain: opts.acme_domain.clone(),
+                stealth: opts.stealth,
+                iroh_relay: opts.iroh_relay.clone(),
+            }]
+        };
+
         let static_config = StaticConfig {
             transport_mode: opts.transport_mode,
             listen_addr: opts.listen_addr,
@@ -68,6 +88,7 @@ impl StaticConfig {
             max_connections_per_ip: opts.max_connections_per_ip,
             proxy_config,
             iroh_relay: opts.iroh_relay,
+            listeners,
         };
 
         Ok((static_config, dynamic))
