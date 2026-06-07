@@ -23,7 +23,9 @@ The current call-protocol.md already covers: operation paths, EventEnvelope wire
 2. **Three dispatch paths** — local dispatch, irpc service dispatch, remote dispatch, all producing the same ResponseEnvelope
 3. **OperationContext** — request_id, parent_request_id, identity, metadata, env, trusted
 4. **How irpc is one backend** — not a replacement for the call protocol or for OperationEnv
-5. **How a call protocol handler can call an irpc service internally** (e.g., /head/auth/verify calls AuthProtocol::VerifyPubkey)
+5. **How a call protocol handler can call an irpc service internally** (e.g., /head/auth/verify calls AuthProtocol::VerifyPubkey) — note: this is Phase 2+ composition; Phase 1 uses IdentityProvider directly
+
+**Phase boundary note**: Phase 1 ships with local dispatch only (direct function calls through the operation registry). The irpc service dispatch and remote dispatch paths are contracted here but not built yet. OperationEnv should be documented with all three paths, but the spec should make it clear that Phase 1 is local-only. The agent service pattern example (`/head/agent/chat`) is a downstream application concern, not a core requirement.
 
 **What stays the same**: Operation paths, EventEnvelope, call protocol events, bidirectional routing, head/worker architecture, PendingRequestMap, protocol adapter layer.
 
@@ -37,7 +39,8 @@ The current call-protocol.md already covers: operation paths, EventEnvelope wire
 - [ ] ResponseEnvelope as universal return type documented
 - [ ] Operation handlers receive `(input: Value, context: OperationContext) -> ResponseEnvelope`
 - [ ] irpc explicitly positioned as one dispatch backend for OperationEnv per ADR-033
-- [ ] Shows how a call protocol handler can internally call an irpc service (example: /head/auth/verify → AuthProtocol::VerifyPubkey)
+- [ ] Phase boundary clear: Phase 1 is local dispatch only; irpc and remote dispatch paths are contracted but not built yet
+- [ ] Agent service pattern is noted as a downstream application concern, not a core requirement
 - [ ] Hard constraint stated: OperationEnv composition model matches @alkdev/operations behavioral contract
 - [ ] ADR table updated with references to 028, 033
 - [ ] Reference to services.md for full OperationEnv and irpc service details

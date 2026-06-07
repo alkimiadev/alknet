@@ -33,7 +33,7 @@ Review all Phase 0 spec documents after they're written. This is the Phase 0 rev
 - [ ] **No inline open questions** — all OQs are in open-questions.md, specs reference OQ numbers
 - [ ] **Terminology is consistent** — head/worker everywhere (no hub/spoke in specs, ADRs retain historical language)
 - [ ] **Layer boundaries are clear** — every component belongs to exactly one layer (Transport, Interface, Protocol)
-- [ ] **Crate dependencies are acyclic** — core doesn't depend on secret, storage, or flowgraph per ADR-027
+- [ ] **Phase boundaries are clear** — specs distinguish what ships in Phase 1 (ConfigIdentityProvider, ArcSwap, local dispatch) from what's contracted for later (StorageIdentityProvider, irpc service layer, application services, multi-node deployment). No spec should imply that alknet-storage, alknet-secret, or the irpc service implementations already exist.
 - [ ] **Every spec has YAML frontmatter** with status and last_updated
 - [ ] **Identity is consistently defined** — Identity struct is `{id, scopes, resources}` everywhere (identity.md is canonical, auth.md references it)
 - [ ] **OperationEnv is consistently described** — three dispatch paths match across services.md, call-protocol.md, and identity.md
