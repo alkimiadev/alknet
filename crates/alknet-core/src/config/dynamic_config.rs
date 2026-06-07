@@ -277,6 +277,10 @@ impl ConfigReloadHandle {
     pub fn dynamic(&self) -> Arc<DynamicConfig> {
         self.dynamic.load_full()
     }
+
+    pub fn dynamic_arc(&self) -> Arc<ArcSwap<DynamicConfig>> {
+        Arc::clone(&self.dynamic)
+    }
 }
 
 impl std::fmt::Debug for ConfigReloadHandle {

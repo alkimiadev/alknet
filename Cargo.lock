@@ -105,7 +105,9 @@ name = "alknet-napi"
 version = "0.1.0"
 dependencies = [
  "alknet-core",
+ "arc-swap",
  "async-trait",
+ "ipnetwork",
  "iroh",
  "napi",
  "napi-derive",
