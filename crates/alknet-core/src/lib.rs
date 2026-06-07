@@ -27,6 +27,7 @@
 //! | `tls` | yes | TLS transport via `tokio-rustls` |
 //! | `iroh` | yes | iroh QUIC P2P transport |
 //! | `acme` | no | ACME/Let's Encrypt auto-cert provisioning (implies `tls`) |
+//! | `irpc` | no | irpc service layer (AuthProtocol, AuthServiceImpl) |
 //! | `testutil` | no | Test utilities (for internal use) |
 //!
 //! # Quick example
@@ -61,6 +62,8 @@ pub mod transport;
 #[cfg(feature = "testutil")]
 pub mod testutil;
 
+#[cfg(feature = "irpc")]
+pub use auth::{AuthProtocol, AuthResult, AuthServiceImpl};
 pub use auth::{AuthToken, ConfigIdentityProvider, Identity, IdentityProvider};
 pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};

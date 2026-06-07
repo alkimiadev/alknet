@@ -3,11 +3,15 @@
 //! Supports file-path and in-memory key sources. No password authentication.
 //! See ADR-012 for the design rationale.
 
+#[cfg(feature = "irpc")]
+pub mod auth_protocol;
 pub mod client_auth;
 pub mod identity;
 pub mod keys;
 pub mod server_auth;
 
+#[cfg(feature = "irpc")]
+pub use auth_protocol::{AuthProtocol, AuthResult, AuthServiceImpl};
 pub use client_auth::{ClientAuthConfig, ClientHandler};
 pub use identity::{AuthToken, ConfigIdentityProvider, Identity, IdentityProvider};
 pub use keys::{load_private_key, load_public_keys, CertAuthorityEntry, KeySource};
