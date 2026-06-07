@@ -14,6 +14,7 @@ default = []
 tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots"]
 iroh = ["dep:iroh", "dep:url"]
 acme = ["dep:rustls-acme", "dep:futures", "tls"]
+irpc = []
 testutil = []
 transport-traits = []
 

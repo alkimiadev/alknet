@@ -64,8 +64,8 @@ pub mod testutil;
 pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};
 pub use config::{
-    AuthPolicy, ConfigReloadHandle, DynamicConfig, ForwardingAction, ForwardingPolicy,
-    ForwardingRule, RateLimitConfig, StaticConfig,
+    AuthPolicy, ConfigReloadHandle, ConfigServiceImpl, DynamicConfig, ForwardingAction,
+    ForwardingPolicy, ForwardingRule, RateLimitConfig, StaticConfig,
 };
 pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
 pub use server::serve::{ServeError, ServeOptions, ServeTransportMode, Server};
