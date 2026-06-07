@@ -1,7 +1,7 @@
 ---
 id: auth/server-auth-handler
 name: Implement server-side authentication (Ed25519 keys + OpenSSH cert-authority)
-status: pending
+status: completed
 depends_on:
   - auth/key-loading
   - auth/error-types

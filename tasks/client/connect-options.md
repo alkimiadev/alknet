@@ -1,7 +1,7 @@
 ---
 id: client/connect-options
 name: Implement ConnectOptions struct and client session orchestration with graceful shutdown
-status: pending
+status: completed
 depends_on:
   - client/channel-manager
   - client/socks5-server

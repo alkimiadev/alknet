@@ -1,7 +1,7 @@
 ---
 id: review/core-foundation
 name: Review core foundation — transport traits, auth, error types, key loading
-status: pending
+status: completed
 depends_on:
   - meta/transport-layer
   - meta/auth-layer

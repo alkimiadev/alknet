@@ -1,7 +1,7 @@
 ---
 id: server/channel-proxy
 name: Implement server channel proxy — direct TCP and outbound proxy connections
-status: pending
+status: completed
 depends_on:
   - server/handler
   - auth/error-types

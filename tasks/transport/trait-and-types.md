@@ -1,7 +1,7 @@
 ---
 id: transport/trait-and-types
 name: Define Transport trait, TransportAcceptor trait, TransportInfo, and TransportKind types
-status: pending
+status: completed
 depends_on:
   - setup/project-init
 scope: narrow

@@ -1,7 +1,7 @@
 ---
 id: cli/connect-command
 name: Implement `alknet connect` CLI subcommand with clap
-status: pending
+status: completed
 depends_on:
   - client/connect-options
 scope: moderate

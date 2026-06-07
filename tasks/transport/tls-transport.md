@@ -1,7 +1,7 @@
 ---
 id: transport/tls-transport
 name: Implement TlsTransport and TlsAcceptor (feature-gated tls)
-status: pending
+status: completed
 depends_on:
   - transport/tcp-transport
   - transport/trait-and-types

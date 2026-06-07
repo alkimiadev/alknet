@@ -1,7 +1,7 @@
 ---
 id: client/socks5-server
 name: Implement SOCKS5 server — local proxy that forwards through SSH channels
-status: pending
+status: completed
 depends_on:
   - auth/client-auth-handler
   - transport/trait-and-types

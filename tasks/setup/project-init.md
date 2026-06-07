@@ -1,7 +1,7 @@
 ---
 id: setup/project-init
 name: Initialize Cargo workspace with alknet, alknet-core, and alknet-napi crates
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: low

@@ -1,7 +1,7 @@
 ---
 id: meta/transport-layer
 name: Complete transport layer — trait, TCP, TLS, iroh, ACME
-status: pending
+status: completed
 depends_on:
   - transport/trait-and-types
   - transport/tcp-transport

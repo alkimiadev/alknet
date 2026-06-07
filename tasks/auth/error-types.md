@@ -1,7 +1,7 @@
 ---
 id: auth/error-types
 name: Define error types for transport, auth, channel, and configuration layers
-status: pending
+status: completed
 depends_on:
   - setup/project-init
 scope: narrow

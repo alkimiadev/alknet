@@ -1,7 +1,7 @@
 ---
 id: setup/test-infrastructure
 name: Set up test infrastructure with tokio test helpers and integration test skeleton
-status: pending
+status: completed
 depends_on:
   - setup/project-init
 scope: narrow

@@ -1,7 +1,7 @@
 ---
 id: transport/iroh-transport
 name: Implement IrohTransport and IrohAcceptor (feature-gated iroh)
-status: pending
+status: completed
 depends_on:
   - transport/trait-and-types
   - transport/tcp-transport

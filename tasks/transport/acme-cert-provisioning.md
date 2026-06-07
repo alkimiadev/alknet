@@ -1,7 +1,7 @@
 ---
 id: transport/acme-cert-provisioning
 name: Implement ACME Lets Encrypt certificate provisioning (feature-gated acme)
-status: pending
+status: completed
 depends_on:
   - transport/tls-transport
 scope: moderate

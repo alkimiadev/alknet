@@ -1,7 +1,7 @@
 ---
 id: napi/connect-function
 name: Implement NAPI connect() — single SSH channel as Duplex stream
-status: pending
+status: completed
 depends_on:
   - napi/project-setup
   - client/channel-manager

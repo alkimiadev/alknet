@@ -1,7 +1,7 @@
 ---
 id: server/rate-limiting-and-logging
 name: Implement server rate limiting and fail2ban-friendly structured logging
-status: pending
+status: completed
 depends_on:
   - server/handler
 scope: narrow

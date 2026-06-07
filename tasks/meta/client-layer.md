@@ -1,7 +1,7 @@
 ---
 id: meta/client-layer
 name: Complete client layer — SOCKS5, port forwarding, channel manager, ConnectOptions
-status: pending
+status: completed
 depends_on:
   - client/socks5-server
   - client/port-forwarding

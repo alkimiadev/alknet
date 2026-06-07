@@ -1,7 +1,7 @@
 ---
 id: server/stealth-mode
 name: Implement stealth mode — protocol multiplexing on port 443 (ADR-017)
-status: pending
+status: completed
 depends_on:
   - transport/tls-transport
   - server/handler

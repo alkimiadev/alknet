@@ -1,7 +1,7 @@
 ---
 id: auth/key-loading
 name: Implement SSH key material loading (file paths and in-memory data)
-status: pending
+status: completed
 depends_on:
   - auth/error-types
   - setup/project-init

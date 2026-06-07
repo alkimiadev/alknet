@@ -1,7 +1,7 @@
 ---
 id: auth/client-auth-handler
 name: Implement client-side SSH authentication with Ed25519 key pairs
-status: pending
+status: completed
 depends_on:
   - auth/key-loading
   - auth/error-types

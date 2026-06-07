@@ -1,7 +1,7 @@
 ---
 id: client/channel-manager
 name: Implement ChannelManager — SSH session management, channel opens, reconnection
-status: done
+status: completed
 depends_on:
   - auth/client-auth-handler
   - transport/trait-and-types

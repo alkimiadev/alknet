@@ -1,7 +1,7 @@
 ---
 id: transport/tcp-transport
 name: Implement TcpTransport and TcpAcceptor
-status: pending
+status: completed
 depends_on:
   - transport/trait-and-types
 scope: narrow

@@ -1,7 +1,7 @@
 ---
 id: server/handler
 name: Implement ServerHandler — russh server handler with auth and channel dispatch
-status: pending
+status: completed
 depends_on:
   - auth/server-auth-handler
   - transport/trait-and-types

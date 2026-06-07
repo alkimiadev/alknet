@@ -1,7 +1,7 @@
 ---
 id: napi/project-setup
 name: Set up alknet-napi project with napi-rs build tooling and TypeScript types
-status: pending
+status: completed
 depends_on:
   - setup/project-init
 scope: moderate

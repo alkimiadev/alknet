@@ -1,7 +1,7 @@
 ---
 id: client/port-forwarding
 name: Implement port forwarding — local (-L) and remote (-R) forwards
-status: pending
+status: completed
 depends_on:
   - auth/client-auth-handler
   - transport/trait-and-types

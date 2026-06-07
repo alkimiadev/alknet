@@ -1,7 +1,7 @@
 ---
 id: meta/auth-layer
 name: Complete auth layer — error types, key loading, server auth, client auth
-status: pending
+status: completed
 depends_on:
   - auth/error-types
   - auth/key-loading

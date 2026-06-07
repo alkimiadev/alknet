@@ -1,7 +1,7 @@
 ---
 id: server/control-channel
 name: Implement alknet-control reserved channel for pubsub event bus bridging (ADR-018)
-status: pending
+status: completed
 depends_on:
   - server/handler
   - auth/error-types
