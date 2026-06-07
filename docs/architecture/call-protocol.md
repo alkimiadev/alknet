@@ -335,11 +335,11 @@ through core, out over SSH channel, into a JavaScript pubsub adapter, and
 be dispatched through `@alkdev/operations`'s call handler** — with zero
 translation at the wire level.
 
-### Agent Service Pattern
+### Agent Service Pattern (Future)
 
-The head commonly runs an agent service that coordinates between LLM providers
-and tool calls. This service is just another set of registered operations —
-no special treatment:
+An agent service — coordinating between LLM providers and tool calls — is a
+primary use case for the call protocol. It would be just another set of
+registered operations with no special treatment:
 
 - `/head/agent/chat` — send a message, get a completion. Routes to the
   appropriate LLM provider based on available workers and configuration.
@@ -348,10 +348,12 @@ no special treatment:
   durable storage).
 - `/head/sessions/history` — retrieve a specific session's message history.
 
-The agent service uses the same call protocol to invoke tools on workers:
-`/dev1/fs/readFile` for file access, `/dev1/bash/exec` for shell commands. It
-stores session state via whatever mechanism the head deployment provides — core
-doesn't mandate Honker or any specific storage.
+The agent service would use the same call protocol to invoke tools on workers
+(e.g., `/dev1/fs/readFile` for file access, `/dev1/bash/exec` for shell
+commands). This is a **downstream application concern**, not a core
+requirement. The call protocol enables it by providing the universal composition
+mechanism (OperationEnv, ADR-033), but the agent service itself is built on
+top, not into the core.
 
 ## Constraints
 

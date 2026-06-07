@@ -5,9 +5,16 @@ last_updated: 2026-06-07
 
 # Storage
 
+> **Phase note**: `alknet-storage` is a future crate (Phase 2+). This spec
+> defines its contract — the data model, the `IdentityProvider` impl, the
+> irpc service protocol — so that alknet-core can define the traits
+> (`IdentityProvider`) that storage will later implement. The crate itself
+> hasn't been built yet. Phase 1 uses `ConfigIdentityProvider` backed by
+> `ArcSwap<DynamicConfig>`.
+
 ## What
 
-The `alknet-storage` crate provides SQLite-backed graph storage, identity
+The `alknet-storage` crate will provide SQLite-backed graph storage, identity
 management, access control, and reactivity via honker. It mirrors the
 TypeScript `@alkdev/storage` package's design while leveraging Rust's type
 system and honker's built-in pub/sub.
@@ -99,11 +106,11 @@ The ACL graph is a directed, non-multi metagraph:
 Delegation edges carry `narrowed_scopes` — the delegate can only exercise scopes
 that are a subset of the delegator's.
 
-### StorageIdentityProvider
+### StorageIdentityProvider (Future — Phase 2+)
 
-Implements alknet-core's `IdentityProvider` trait (ADR-029). Queries
-`peer_credentials` (for SSH key resolution) and `api_keys` (for token auth), then
-traverses the ACL graph to compute effective scopes and resources.
+Implements alknet-core's `IdentityProvider` trait (ADR-029). This is defined
+here as a contract. When alknet-storage is built, it will provide this
+implementation. Phase 1 uses `ConfigIdentityProvider` backed by `ArcSwap`.
 
 ```rust
 impl IdentityProvider for StorageIdentityProvider {

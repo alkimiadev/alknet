@@ -81,14 +81,15 @@ feature is disabled, auth goes through `IdentityProvider` directly.
 
 ### AuthServiceImpl
 
-Two implementations exist:
+Two implementations exist (the second is a future phase):
 
 - **ConfigAuthService** — backed by `ConfigIdentityProvider` (ArcSwap path).
   Wraps the trait in an irpc service for deployments that use the service layer
-  but don't have SQLite.
+  but don't have SQLite. This is the Phase 1 path: it ships with alknet-core.
 - **StorageAuthService** — backed by SQLite `peer_credentials` and `api_keys`
-  tables (in alknet-storage). Queries on demand. Can maintain an LRU cache for
-  hot fingerprints. This is the production implementation.
+  tables (in alknet-storage, not yet built). Queries on demand. Can maintain an
+  LRU cache for hot fingerprints. This is a Phase 2+ implementation — the
+  contract is defined here so alknet-storage can implement it later.
 
 Both produce the same `AuthResult` — an `Identity` or a denial. Callers don't
 know or care which backend is running.

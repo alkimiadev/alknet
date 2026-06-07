@@ -96,13 +96,16 @@ impl IdentityProvider for ConfigIdentityProvider {
 }
 ```
 
-### StorageIdentityProvider (Production)
+### StorageIdentityProvider (Future — Phase 2+)
 
-Implemented in `alknet-storage` (not in alknet-core). Backed by SQLite
-`peer_credentials` and `api_keys` tables plus the ACL graph. Resolves
-fingerprint → account → organization membership → effective scopes. Uses the
-`IdentityProvider` trait defined in alknet-core, providing the concrete impl via
-the trait.
+Implemented in `alknet-storage` (a crate that doesn't exist yet). Backed by
+SQLite `peer_credentials` and `api_keys` tables plus the ACL graph. Resolves
+fingerprint → account → organization membership → effective scopes.
+
+This implementation is defined here so the contract is clear, but alknet-storage
+hasn't been built yet. Phase 1 uses `ConfigIdentityProvider` exclusively. When
+alknet-storage is built, it implements alknet-core's `IdentityProvider` trait,
+and the CLI/NAPI assembly layer wires the concrete implementation.
 
 ### AuthProtocol irpc Service
 
@@ -132,7 +135,8 @@ The relationship:
   which internally delegates to `AuthProtocol::VerifyPubkey` via an irpc client.
   Used in production deployments with SQLite-backed auth.
 
-Both paths produce the same `Identity` result.
+Both paths produce the same `Identity` result. Note: the irpc path requires the
+service layer to be built (Phase 2+). Phase 1 uses the trait path exclusively.
 
 ### Auth Flows
 

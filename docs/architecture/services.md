@@ -5,6 +5,16 @@ last_updated: 2026-06-07
 
 # Services
 
+> **Phase note**: This spec defines the contracts for the service layer — the
+> protocol enums, OperationEnv, and deployment topologies. Phase 1 ships
+> `ConfigIdentityProvider` (ArcSwap-based) and `ConfigServiceImpl` (ArcSwap-based)
+> as the only auth and config implementations. The irpc service protocols
+> (`AuthProtocol`, `SecretProtocol`, etc.) and the production deployment
+> topology (multi-node with `StorageIdentityProvider`) are contracted here but
+> will be implemented in Phase 2+. Application services (DockerService,
+> NodeService, agent services) are downstream concerns that build on top of
+> the call protocol and OperationEnv — they are not core requirements.
+
 ## What
 
 The irpc service layer decomposes alknet's core responsibilities into
@@ -143,18 +153,30 @@ HTTP, MCP, DNS, and WebSocket adapters all resolve through OperationEnv:
 
 ### Deployment Topologies
 
-**Minimal (single node, CLI)**: All services run locally via tokio channels.
+**Current (Phase 1, single node, CLI)**: This is what exists and ships today.
+Auth uses `ConfigIdentityProvider` backed by `ArcSwap<DynamicConfig>`. Config
+uses `ConfigServiceImpl` backed by `ArcSwap<DynamicConfig>`. There is no
+database dependency.
 
 ```
 ┌──────────────────────────────────────────────┐
 │                 Single Process                │
-│  Auth (ArcSwap) | Secret (seed in RAM) |     │
-│  Config (ArcSwap) | alknet-core Server        │
+│  ConfigIdentityProvider (ArcSwap)             │
+│  ConfigServiceImpl (ArcSwap)                  │
+│  alknet-core Server                           │
 └──────────────────────────────────────────────┘
 ```
 
-**Production (multi-node)**: Auth and secrets on dedicated nodes; workers
-access them remotely.
+The irpc service layer (`AuthProtocol`, `SecretProtocol`, `ConfigProtocol`,
+`StorageProtocol`) and the application services (DockerService, NodeService,
+WalletService, agent services) are downstream concerns that will be built in
+later phases. The architecture defines the contracts (`IdentityProvider` trait,
+`OperationEnv`, service protocol enums) so that implementations can plug in
+without modifying core, but the implementations don't exist yet.
+
+**Future (multi-node, production)**: Auth and secrets on dedicated nodes;
+workers access them remotely via irpc over QUIC. StorageIdentityProvider
+backed by SQLite replaces ConfigIdentityProvider for auth.
 
 ```
 Auth Node (SQLite)           Secret Node (seed in RAM)
@@ -167,6 +189,9 @@ Head Node (Config, Storage, alknet-core Server)
        │
 Worker Node (alknet-core Client)
 ```
+
+This topology requires alknet-storage, alknet-secret, and the irpc service
+layer to be built — they are Phase 2+ concerns.
 
 ## Constraints
 
