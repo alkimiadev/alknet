@@ -56,6 +56,7 @@ pub mod call;
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod interface;
 pub mod server;
 pub mod socks5;
 pub mod transport;
@@ -84,5 +85,10 @@ pub use config::{
     ForwardingPolicy, ForwardingRule, RateLimitConfig, StaticConfig, TargetPattern,
 };
 pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
+pub use interface::{
+    is_valid_pair, Interface, InterfaceConfig, InterfaceEvent, InterfaceKind, InterfaceSession,
+    RawFramingConfig, SshInterfaceConfig, TransportKindBase, TransportStream,
+    VALID_TRANSPORT_INTERFACE_PAIRS,
+};
 pub use server::serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};
 pub use transport::{Transport, TransportAcceptor, TransportInfo, TransportKind};
