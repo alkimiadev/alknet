@@ -509,7 +509,7 @@ impl Server {
             .first()
             .expect("at least one listener required");
 
-        let transport_kind = listener.transport_kind.clone();
+        let transport_kind = listener.transport_kind;
         let stealth = listener.stealth;
         let listen_addr = listener.listen_addr.clone();
 
@@ -573,7 +573,7 @@ impl Server {
             };
 
             let remote_addr = info.remote_addr;
-            let handler_transport_kind = transport_kind.clone();
+            let handler_transport_kind = transport_kind;
 
             let handler = ServerHandler::new(
                 Arc::clone(&server.dynamic),

@@ -66,7 +66,7 @@ pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};
 pub use config::{
     AuthPolicy, ConfigReloadHandle, ConfigServiceImpl, DynamicConfig, ForwardingAction,
-    ForwardingPolicy, ForwardingRule, RateLimitConfig, StaticConfig,
+    ForwardingPolicy, ForwardingRule, RateLimitConfig, StaticConfig, TargetPattern,
 };
 pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
 pub use server::serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};

@@ -26,7 +26,7 @@ pub struct ProxyConfig {
     pub mode: ProxyMode,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransportKind {
     Tcp,
     Tls,
@@ -48,6 +48,7 @@ impl std::fmt::Display for TransportKind {
 }
 
 pub struct ServerHandler {
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
     identity_provider: Box<dyn IdentityProvider>,
     #[allow(dead_code)]
     outbound_proxy: Option<ProxyConfig>,
@@ -97,6 +98,7 @@ impl ServerHandler {
         };
 
         Self {
+            dynamic,
             identity_provider,
             outbound_proxy,
             remote_addr,
@@ -234,6 +236,34 @@ impl Handler for ServerHandler {
 
             let _ = channel;
             return Ok(true);
+        }
+
+        let identity = self
+            .authenticated_identity
+            .clone()
+            .unwrap_or_else(|| Identity {
+                id: String::new(),
+                scopes: vec![],
+                resources: std::collections::HashMap::new(),
+            });
+
+        let policy = self.dynamic.load();
+        let allowed = policy.forwarding.check(
+            host_to_connect,
+            port_to_connect as u16,
+            &identity,
+            self.transport,
+        );
+
+        if !allowed {
+            tracing::info!(
+                remote_addr = ?self.remote_addr,
+                target = %format!("{host_to_connect}:{port_to_connect}"),
+                identity = %identity.id,
+                transport = %self.transport,
+                "forwarding denied by policy"
+            );
+            return Ok(false);
         }
 
         let target_host = host_to_connect.to_string();
