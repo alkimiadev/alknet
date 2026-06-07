@@ -1,7 +1,7 @@
 ---
 id: core/config-identity-provider-into-handler
 name: Wire IdentityProvider and ForwardingPolicy into ServerHandler
-status: pending
+status: completed
 depends_on:
   - core/forwarding-policy
 scope: narrow

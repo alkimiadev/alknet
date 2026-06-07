@@ -1,7 +1,7 @@
 ---
 id: core/operationenv-local-dispatch
 name: Implement OperationEnv local dispatch and event envelope framing
-status: pending
+status: completed
 depends_on:
   - core/operation-context-registry
 scope: moderate

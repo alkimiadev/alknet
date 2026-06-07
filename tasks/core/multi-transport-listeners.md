@@ -1,7 +1,7 @@
 ---
 id: core/multi-transport-listeners
 name: Implement multi-transport listeners with Vec<ListenerConfig>
-status: pending
+status: completed
 depends_on:
   - core/config-static-dynamic-split
 scope: moderate

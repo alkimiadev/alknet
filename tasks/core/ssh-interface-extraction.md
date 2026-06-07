@@ -1,7 +1,7 @@
 ---
 id: core/ssh-interface-extraction
 name: Extract SshInterface from ServerHandler — refactor SSH into Layer 2
-status: pending
+status: completed
 depends_on:
   - core/interface-trait-definition
   - core/config-identity-provider-into-handler

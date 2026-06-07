@@ -1,7 +1,7 @@
 ---
 id: core/operation-context-registry
 name: Implement OperationContext, OperationRegistry, and OperationSpec
-status: pending
+status: completed
 depends_on:
   - core/identity-type-provider
 scope: moderate

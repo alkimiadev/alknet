@@ -1,7 +1,7 @@
 ---
 id: core/identity-type-provider
 name: Implement Identity struct and IdentityProvider trait
-status: pending
+status: completed
 depends_on:
   - core/config-static-dynamic-split
 scope: moderate

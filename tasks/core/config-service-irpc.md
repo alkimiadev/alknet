@@ -1,7 +1,7 @@
 ---
 id: core/config-service-irpc
 name: Implement ConfigProtocol irpc service and ConfigServiceImpl
-status: pending
+status: completed
 depends_on:
   - core/config-static-dynamic-split
 scope: narrow

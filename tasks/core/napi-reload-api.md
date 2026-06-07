@@ -1,7 +1,7 @@
 ---
 id: core/napi-reload-api
 name: Add NAPI reload API for DynamicConfig and ForwardingPolicy
-status: pending
+status: completed
 depends_on:
   - core/config-identity-provider-into-handler
   - core/multi-transport-listeners

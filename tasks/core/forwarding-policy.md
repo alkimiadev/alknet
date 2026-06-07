@@ -1,7 +1,7 @@
 ---
 id: core/forwarding-policy
 name: Implement ForwardingPolicy with rule-based allow/deny
-status: pending
+status: completed
 depends_on:
   - core/identity-type-provider
 scope: moderate

@@ -1,7 +1,7 @@
 ---
 id: core/config-static-dynamic-split
 name: Implement StaticConfig / DynamicConfig split with ArcSwap hot-reload
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: medium

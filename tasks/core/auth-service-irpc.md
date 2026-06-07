@@ -1,7 +1,7 @@
 ---
 id: core/auth-service-irpc
 name: Implement AuthProtocol irpc service enum behind feature flag
-status: pending
+status: completed
 depends_on:
   - core/identity-type-provider
 scope: narrow

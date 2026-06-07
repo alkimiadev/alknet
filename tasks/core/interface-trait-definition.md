@@ -1,7 +1,7 @@
 ---
 id: core/interface-trait-definition
 name: Define Interface trait and InterfaceConfig types
-status: pending
+status: completed
 depends_on:
   - core/multi-transport-listeners
   - core/operationenv-local-dispatch
