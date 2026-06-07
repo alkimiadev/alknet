@@ -21,7 +21,7 @@ pub use control_channel::{
 };
 pub use handler::{ProxyConfig, ProxyMode, ServerHandler, TransportKind};
 pub use rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
-pub use serve::{ServeError, ServeOptions, ServeTransportMode, Server};
+pub use serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};
 pub use stealth::{
     detect_protocol, send_fake_nginx_404, validate_stealth_config, ProtocolDetection,
 };

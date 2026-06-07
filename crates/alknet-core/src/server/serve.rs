@@ -3,6 +3,7 @@
 //! `Server` binds to a transport acceptor and runs an accept loop, handling
 //! authentication, stealth mode protocol detection, and graceful shutdown.
 //! `ServeOptions` provides a builder-pattern API for programmatic configuration.
+//! Supports multiple listeners via `ListenerConfig` for multi-transport operation.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,7 +25,6 @@ use crate::server::stealth::{self, ProtocolDetection};
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:22";
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Transport mode for the server listener.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServeTransportMode {
     Tcp,
@@ -42,22 +42,153 @@ impl std::fmt::Display for ServeTransportMode {
     }
 }
 
-/// Programmatic configuration for an alknet server.
-///
-/// Construct with `ServeOptions::new(key_source)` and chain builder methods.
-/// Call `validate()` before passing to `Server::new()`.
-///
-/// ```
-/// use alknet_core::server::{ServeOptions, ServeTransportMode};
-/// use alknet_core::auth::keys::KeySource;
-///
-/// let opts = ServeOptions::new(KeySource::File("/path/to/host_key".into()))
-///     .transport_mode(ServeTransportMode::Tcp)
-///     .listen_addr("0.0.0.0:22")
-///     .max_connections_per_ip(5)
-///     .max_auth_attempts(3);
-/// opts.validate().unwrap();
-/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListenerConfig {
+    pub transport_kind: TransportKind,
+    pub listen_addr: String,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub acme_domain: Option<String>,
+    pub stealth: bool,
+    pub iroh_relay: Option<String>,
+}
+
+impl ListenerConfig {
+    pub fn tcp(addr: impl Into<String>) -> Self {
+        Self {
+            transport_kind: TransportKind::Tcp,
+            listen_addr: addr.into(),
+            tls_cert: None,
+            tls_key: None,
+            acme_domain: None,
+            stealth: false,
+            iroh_relay: None,
+        }
+    }
+
+    pub fn tls(addr: impl Into<String>) -> Self {
+        Self {
+            transport_kind: TransportKind::Tls,
+            listen_addr: addr.into(),
+            tls_cert: None,
+            tls_key: None,
+            acme_domain: None,
+            stealth: false,
+            iroh_relay: None,
+        }
+    }
+
+    pub fn iroh(addr: impl Into<String>) -> Self {
+        Self {
+            transport_kind: TransportKind::Iroh,
+            listen_addr: addr.into(),
+            tls_cert: None,
+            tls_key: None,
+            acme_domain: None,
+            stealth: false,
+            iroh_relay: None,
+        }
+    }
+
+    pub fn dns(domain: impl Into<String>) -> Self {
+        Self {
+            transport_kind: TransportKind::Dns,
+            listen_addr: domain.into(),
+            tls_cert: None,
+            tls_key: None,
+            acme_domain: None,
+            stealth: false,
+            iroh_relay: None,
+        }
+    }
+
+    pub fn webtransport(host: impl Into<String>) -> Self {
+        Self {
+            transport_kind: TransportKind::WebTransport,
+            listen_addr: host.into(),
+            tls_cert: None,
+            tls_key: None,
+            acme_domain: None,
+            stealth: false,
+            iroh_relay: None,
+        }
+    }
+
+    pub fn tls_cert(mut self, path: impl Into<String>) -> Self {
+        self.tls_cert = Some(path.into());
+        self
+    }
+
+    pub fn tls_key(mut self, path: impl Into<String>) -> Self {
+        self.tls_key = Some(path.into());
+        self
+    }
+
+    pub fn acme_domain(mut self, domain: impl Into<String>) -> Self {
+        self.acme_domain = Some(domain.into());
+        self
+    }
+
+    pub fn stealth(mut self, enabled: bool) -> Self {
+        self.stealth = enabled;
+        self
+    }
+
+    pub fn iroh_relay(mut self, url: impl Into<String>) -> Self {
+        self.iroh_relay = Some(url.into());
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.stealth && self.transport_kind != TransportKind::Tls {
+            return Err(ConfigError::InvalidFlag {
+                name: "stealth mode requires TLS transport".to_string(),
+            });
+        }
+
+        match self.transport_kind {
+            TransportKind::Tls => {
+                if self.tls_cert.is_none() && self.acme_domain.is_none() {
+                    return Err(ConfigError::InvalidFlag {
+                        name: "TLS transport requires tls_cert/tls_key or acme_domain".to_string(),
+                    });
+                }
+                if self.tls_cert.is_some() && self.tls_key.is_none() {
+                    return Err(ConfigError::InvalidFlag {
+                        name: "tls_cert requires tls_key".to_string(),
+                    });
+                }
+                if self.tls_key.is_some() && self.tls_cert.is_none() {
+                    return Err(ConfigError::InvalidFlag {
+                        name: "tls_key requires tls_cert".to_string(),
+                    });
+                }
+            }
+            TransportKind::Tcp
+            | TransportKind::Iroh
+            | TransportKind::Dns
+            | TransportKind::WebTransport => {
+                if self.tls_cert.is_some() || self.tls_key.is_some() || self.acme_domain.is_some() {
+                    return Err(ConfigError::IncompatibleOptions);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for ListenerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.transport_kind {
+            TransportKind::Iroh => write!(f, "{} (iroh)", self.listen_addr),
+            TransportKind::Dns => write!(f, "{} (dns)", self.listen_addr),
+            TransportKind::WebTransport => write!(f, "{} (webtransport)", self.listen_addr),
+            _ => write!(f, "{} ({})", self.listen_addr, self.transport_kind),
+        }
+    }
+}
+
 pub struct ServeOptions {
     pub key: KeySource,
     pub authorized_keys: Option<KeySource>,
@@ -72,6 +203,7 @@ pub struct ServeOptions {
     pub iroh_relay: Option<String>,
     pub max_connections_per_ip: usize,
     pub max_auth_attempts: usize,
+    pub listeners: Option<Vec<ListenerConfig>>,
 }
 
 impl ServeOptions {
@@ -90,6 +222,7 @@ impl ServeOptions {
             iroh_relay: None,
             max_connections_per_ip: 0,
             max_auth_attempts: 10,
+            listeners: None,
         }
     }
 
@@ -153,7 +286,24 @@ impl ServeOptions {
         self
     }
 
+    pub fn listeners(mut self, listeners: Vec<ListenerConfig>) -> Self {
+        self.listeners = Some(listeners);
+        self
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(ref listeners) = self.listeners {
+            if listeners.is_empty() {
+                return Err(ConfigError::InvalidFlag {
+                    name: "listeners must not be empty".to_string(),
+                });
+            }
+            for listener in listeners {
+                listener.validate()?;
+            }
+            return Ok(());
+        }
+
         if self.stealth && self.transport_mode != ServeTransportMode::Tls {
             return Err(ConfigError::InvalidFlag {
                 name: "stealth mode requires TLS transport (--transport tls)".to_string(),
@@ -201,11 +351,11 @@ impl std::fmt::Debug for ServeOptions {
             .field("stealth", &self.stealth)
             .field("max_connections_per_ip", &self.max_connections_per_ip)
             .field("max_auth_attempts", &self.max_auth_attempts)
+            .field("listeners", &self.listeners)
             .finish()
     }
 }
 
-/// Errors that can occur during server setup and operation.
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
     #[error("config error: {0}")]
@@ -223,19 +373,12 @@ struct ActiveSession {
     join: tokio::task::JoinHandle<()>,
 }
 
-/// The alknet SSH server.
-///
-/// Accepts connections over any `TransportAcceptor`, authenticates via Ed25519 keys
-/// or certificate authority, and proxies `direct-tcpip` channels to their targets.
-/// Supports stealth mode (TLS only), outbound proxy routing, and connection rate limiting.
 pub struct Server {
     config: Arc<server::Config>,
     dynamic: Arc<ArcSwap<DynamicConfig>>,
     connection_limiter: Arc<ConnectionRateLimiter>,
     outbound_proxy: Option<ProxyConfig>,
-    stealth: bool,
-    transport_mode: ServeTransportMode,
-    listen_addr: String,
+    listeners: Vec<ListenerConfig>,
     max_auth_attempts: usize,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -277,14 +420,31 @@ impl Server {
 
         let dynamic = Arc::new(ArcSwap::new(Arc::new(dynamic_config)));
 
+        let listeners = if let Some(listeners) = opts.listeners {
+            listeners
+        } else {
+            let transport_kind = match opts.transport_mode {
+                ServeTransportMode::Tcp => TransportKind::Tcp,
+                ServeTransportMode::Tls => TransportKind::Tls,
+                ServeTransportMode::Iroh => TransportKind::Iroh,
+            };
+            vec![ListenerConfig {
+                transport_kind,
+                listen_addr: opts.listen_addr.clone(),
+                tls_cert: opts.tls_cert.clone(),
+                tls_key: opts.tls_key.clone(),
+                acme_domain: opts.acme_domain.clone(),
+                stealth: opts.stealth,
+                iroh_relay: opts.iroh_relay.clone(),
+            }]
+        };
+
         Ok(Self {
             config,
             dynamic,
             connection_limiter,
             outbound_proxy,
-            stealth: opts.stealth,
-            transport_mode: opts.transport_mode,
-            listen_addr: opts.listen_addr,
+            listeners,
             max_auth_attempts,
             shutdown_tx,
             shutdown_rx,
@@ -344,13 +504,16 @@ impl Server {
     where
         A: crate::transport::TransportAcceptor,
     {
-        let transport_kind = match self.transport_mode {
-            ServeTransportMode::Tcp => TransportKind::Tcp,
-            ServeTransportMode::Tls => TransportKind::Tls,
-            ServeTransportMode::Iroh => TransportKind::Iroh,
-        };
+        let listener = self
+            .listeners
+            .first()
+            .expect("at least one listener required");
 
-        if self.transport_mode == ServeTransportMode::Iroh {
+        let transport_kind = listener.transport_kind.clone();
+        let stealth = listener.stealth;
+        let listen_addr = listener.listen_addr.clone();
+
+        if matches!(transport_kind, TransportKind::Iroh) {
             if let Some(id) = endpoint_info {
                 info!("alknet server running: transport=iroh endpoint_id={}", id);
             } else {
@@ -359,7 +522,7 @@ impl Server {
         } else {
             info!(
                 "alknet server running: transport={} listen={}",
-                self.transport_mode, self.listen_addr
+                transport_kind, listen_addr
             );
         }
 
@@ -410,7 +573,7 @@ impl Server {
             };
 
             let remote_addr = info.remote_addr;
-            let handler_transport_kind = transport_kind;
+            let handler_transport_kind = transport_kind.clone();
 
             let handler = ServerHandler::new(
                 Arc::clone(&server.dynamic),
@@ -427,8 +590,7 @@ impl Server {
 
             let config = Arc::clone(&server.config);
             let sessions = Arc::clone(&server.sessions);
-            let stealth = server.stealth;
-            let transport_is_tls = server.transport_mode == ServeTransportMode::Tls;
+            let transport_is_tls = matches!(transport_kind, TransportKind::Tls);
 
             tokio::spawn(async move {
                 let result =
@@ -447,6 +609,10 @@ impl Server {
         server.shutdown().await?;
 
         Ok(())
+    }
+
+    pub fn listeners(&self) -> &[ListenerConfig] {
+        &self.listeners
     }
 }
 
@@ -547,6 +713,7 @@ mod tests {
         assert!(opts.iroh_relay.is_none());
         assert_eq!(opts.max_connections_per_ip, 0);
         assert_eq!(opts.max_auth_attempts, 10);
+        assert!(opts.listeners.is_none());
     }
 
     #[test]
@@ -739,10 +906,235 @@ mod tests {
     }
 
     #[test]
-    fn server_holds_listen_addr() {
-        let opts = ServeOptions::new(make_key_source()).listen_addr("0.0.0.0:443");
+    fn listener_config_tcp_constructor() {
+        let lc = ListenerConfig::tcp("0.0.0.0:22");
+        assert_eq!(lc.transport_kind, TransportKind::Tcp);
+        assert_eq!(lc.listen_addr, "0.0.0.0:22");
+        assert!(!lc.stealth);
+        assert!(lc.tls_cert.is_none());
+    }
+
+    #[test]
+    fn listener_config_tls_constructor() {
+        let lc = ListenerConfig::tls("0.0.0.0:443")
+            .tls_cert("/cert.pem")
+            .tls_key("/key.pem")
+            .stealth(true);
+        assert_eq!(lc.transport_kind, TransportKind::Tls);
+        assert_eq!(lc.listen_addr, "0.0.0.0:443");
+        assert!(lc.stealth);
+        assert_eq!(lc.tls_cert.as_deref(), Some("/cert.pem"));
+        assert_eq!(lc.tls_key.as_deref(), Some("/key.pem"));
+    }
+
+    #[test]
+    fn listener_config_iroh_constructor() {
+        let lc = ListenerConfig::iroh("0.0.0.0:0").iroh_relay("https://relay.example.com");
+        assert_eq!(lc.transport_kind, TransportKind::Iroh);
+        assert_eq!(lc.iroh_relay.as_deref(), Some("https://relay.example.com"));
+    }
+
+    #[test]
+    fn listener_config_dns_constructor() {
+        let lc = ListenerConfig::dns("example.com");
+        assert_eq!(lc.transport_kind, TransportKind::Dns);
+        assert_eq!(lc.listen_addr, "example.com");
+    }
+
+    #[test]
+    fn listener_config_webtransport_constructor() {
+        let lc = ListenerConfig::webtransport("example.com");
+        assert_eq!(lc.transport_kind, TransportKind::WebTransport);
+        assert_eq!(lc.listen_addr, "example.com");
+    }
+
+    #[test]
+    fn listener_config_validate_tls_requires_certs() {
+        let lc = ListenerConfig::tls("0.0.0.0:443");
+        assert!(lc.validate().is_err());
+    }
+
+    #[test]
+    fn listener_config_validate_tls_with_certs_ok() {
+        let lc = ListenerConfig::tls("0.0.0.0:443")
+            .tls_cert("/cert.pem")
+            .tls_key("/key.pem");
+        assert!(lc.validate().is_ok());
+    }
+
+    #[test]
+    fn listener_config_validate_tls_with_acme_ok() {
+        let lc = ListenerConfig::tls("0.0.0.0:443").acme_domain("example.com");
+        assert!(lc.validate().is_ok());
+    }
+
+    #[test]
+    fn listener_config_validate_stealth_without_tls_rejected() {
+        let lc = ListenerConfig::tcp("0.0.0.0:22").stealth(true);
+        assert!(lc.validate().is_err());
+    }
+
+    #[test]
+    fn listener_config_validate_tcp_cannot_have_tls_certs() {
+        let lc = ListenerConfig::tcp("0.0.0.0:22").tls_cert("/cert.pem");
+        assert!(lc.validate().is_err());
+    }
+
+    #[test]
+    fn listener_config_display() {
+        let tcp = ListenerConfig::tcp("0.0.0.0:22");
+        assert_eq!(format!("{}", tcp), "0.0.0.0:22 (tcp)");
+
+        let tls = ListenerConfig::tls("0.0.0.0:443");
+        assert_eq!(format!("{}", tls), "0.0.0.0:443 (tls)");
+
+        let iroh = ListenerConfig::iroh("0.0.0.0:0");
+        assert_eq!(format!("{}", iroh), "0.0.0.0:0 (iroh)");
+
+        let dns = ListenerConfig::dns("example.com");
+        assert_eq!(format!("{}", dns), "example.com (dns)");
+
+        let wt = ListenerConfig::webtransport("example.com");
+        assert_eq!(format!("{}", wt), "example.com (webtransport)");
+    }
+
+    #[test]
+    fn listener_config_equality() {
+        let lc1 = ListenerConfig::tcp("0.0.0.0:22");
+        let lc2 = ListenerConfig::tcp("0.0.0.0:22");
+        assert_eq!(lc1, lc2);
+
+        let lc3 = ListenerConfig::tls("0.0.0.0:443");
+        assert_ne!(lc1, lc3);
+    }
+
+    #[test]
+    fn serve_options_with_listeners() {
+        let listeners = vec![
+            ListenerConfig::tcp("0.0.0.0:22"),
+            ListenerConfig::tls("0.0.0.0:443")
+                .tls_cert("/cert.pem")
+                .tls_key("/key.pem"),
+        ];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
+
+        assert!(opts.listeners.is_some());
+        assert_eq!(opts.listeners.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn serve_options_validate_listeners_ok() {
+        let listeners = vec![
+            ListenerConfig::tcp("0.0.0.0:22"),
+            ListenerConfig::tls("0.0.0.0:443")
+                .tls_cert("/cert.pem")
+                .tls_key("/key.pem"),
+        ];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn serve_options_validate_listeners_bypasses_single_validation() {
+        let listeners = vec![ListenerConfig::tcp("0.0.0.0:22")];
+        let opts = ServeOptions::new(make_key_source())
+            .stealth(true)
+            .listeners(listeners);
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn serve_options_validate_listeners_per_listener_stealth_requires_tls() {
+        let listeners = vec![ListenerConfig::tcp("0.0.0.0:22").stealth(true)];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
+        assert!(opts.validate().is_err());
+    }
+
+    #[test]
+    fn serve_options_validate_empty_listeners_rejected() {
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(vec![]);
+        assert!(opts.validate().is_err());
+    }
+
+    #[test]
+    fn server_new_with_listeners() {
+        let listeners = vec![ListenerConfig::tcp("0.0.0.0:22")];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
         let server = Server::new(opts).unwrap();
-        assert_eq!(server.listen_addr, "0.0.0.0:443");
+        assert_eq!(server.listeners.len(), 1);
+        assert_eq!(server.listeners[0].transport_kind, TransportKind::Tcp);
+    }
+
+    #[test]
+    fn server_new_single_transport_creates_listener() {
+        let opts =
+            ServeOptions::new(make_key_source()).authorized_keys(make_authorized_keys_source());
+        let server = Server::new(opts).unwrap();
+        assert_eq!(server.listeners.len(), 1);
+        assert_eq!(server.listeners[0].transport_kind, TransportKind::Tcp);
+        assert_eq!(server.listeners[0].listen_addr, "0.0.0.0:22");
+    }
+
+    #[test]
+    fn server_new_tls_transport_creates_tls_listener() {
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .transport_mode(ServeTransportMode::Tls)
+            .tls_cert("/cert.pem")
+            .tls_key("/key.pem")
+            .listen_addr("0.0.0.0:443")
+            .stealth(true);
+        let server = Server::new(opts).unwrap();
+        assert_eq!(server.listeners.len(), 1);
+        assert_eq!(server.listeners[0].transport_kind, TransportKind::Tls);
+        assert!(server.listeners[0].stealth);
+        assert_eq!(server.listeners[0].tls_cert.as_deref(), Some("/cert.pem"));
+    }
+
+    #[test]
+    fn server_listeners_accessor() {
+        let listeners = vec![
+            ListenerConfig::tcp("0.0.0.0:22"),
+            ListenerConfig::tls("0.0.0.0:443")
+                .tls_cert("/cert.pem")
+                .tls_key("/key.pem"),
+        ];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
+        let server = Server::new(opts).unwrap();
+        assert_eq!(server.listeners().len(), 2);
+        assert_eq!(server.listeners()[0].transport_kind, TransportKind::Tcp);
+        assert_eq!(server.listeners()[1].transport_kind, TransportKind::Tls);
+    }
+
+    #[test]
+    fn server_new_multi_listener_tcp_and_tls() {
+        let listeners = vec![
+            ListenerConfig::tcp("0.0.0.0:22"),
+            ListenerConfig::tls("0.0.0.0:443")
+                .tls_cert("/cert.pem")
+                .tls_key("/key.pem"),
+        ];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
+        let server = Server::new(opts).unwrap();
+        assert_eq!(server.listeners.len(), 2);
+
+        let dynamic = server.config_reload_handle();
+        let config = dynamic.dynamic();
+        assert!(config.auth.authorized_keys.len() > 0);
     }
 
     #[tokio::test]

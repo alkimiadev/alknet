@@ -68,5 +68,5 @@ pub use config::{
     ForwardingRule, RateLimitConfig, StaticConfig,
 };
 pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
-pub use server::serve::{ServeError, ServeOptions, ServeTransportMode, Server};
+pub use server::serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};
 pub use transport::{Transport, TransportAcceptor, TransportInfo, TransportKind};
