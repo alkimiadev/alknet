@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-overview
 name: Update overview.md — add crate structure, Layer 3, services, identity
-status: pending
+status: completed
 depends_on:
   - architecture/adr-027-crate-decomposition
   - architecture/adr-026-transport-interface-separation
@@ -48,8 +48,8 @@ The existing content (purpose, SSH tunneling, transport pluggability, etc.) stay
 
 ## Notes
 
-> To be filled by implementation agent
+Added crate structure table (6 crates, phase notes), three-layer model section, service layer section with Phase boundary note, Identity section with struct definition, expanded exports list, rebuilt dependency table per-crate, added 8 new architecture constraints (three-layer model, event boundary, OperationEnv, forwarding policy, static/dynamic config, unified auth, config split), expanded ADR table from 19 to 31 entries, updated references to include all new specs + irpc.
 
 ## Summary
 
-> To be filled on completion
+Overview spec updated from alpha scope to full Phase 0 scope. All acceptance criteria met.

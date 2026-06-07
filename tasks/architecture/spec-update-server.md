@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-server
 name: Update server.md — add DynamicConfig, ForwardingPolicy, IdentityProvider references
-status: pending
+status: completed
 depends_on:
   - architecture/adr-030-static-dynamic-config-split
   - architecture/adr-031-forwarding-policy
@@ -56,8 +56,8 @@ The current server.md is thorough but reflects the alpha architecture where auth
 
 ## Notes
 
-> To be filled by implementation agent
+Rewrote Authentication section around IdentityProvider trait with Phase 1/Phase 2 boundary. Added ForwardingPolicy check before proxy spawn. Added Interface Abstraction section (ServerHandler → SshInterface refactoring). Added --config flag and [[listeners]] TOML to CLI section. Softened single-transport constraint. Added ADRs 026/028/029/030/031 to design decisions and references section.
 
 ## Summary
 
-> To be filled on completion
+Server spec updated for IdentityProvider, ForwardingPolicy, DynamicConfig, and Interface abstraction. Phase 1 boundary clear. All acceptance criteria met.

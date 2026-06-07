@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-napi
 name: Update napi-and-pubsub.md — add reload API and call protocol references
-status: pending
+status: completed
 depends_on:
   - architecture/spec-configuration
   - architecture/adr-033-operationenv-irpc-call-protocol
@@ -43,8 +43,8 @@ The current spec is reviewed and stable. Changes are additive:
 
 ## Notes
 
-> To be filled by implementation agent
+Added reload API (reloadAuth, reloadForwarding, reloadAll with ForwardingPolicyConfig and ForwardingRuleConfig interfaces), call protocol integration note, irpc service creation note (Phase 2+), ADR-030 reference, and references to configuration.md, services.md, call-protocol.md.
 
 ## Summary
 
-> To be filled on completion
+NAPI spec updated with dynamic config reload API per ADR-030. All acceptance criteria met.

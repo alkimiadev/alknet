@@ -1,7 +1,7 @@
 ---
 id: architecture/review-adr-foundation
 name: Review Phase 0a ADRs — foundation decisions before spec writing
-status: pending
+status: completed
 depends_on:
   - architecture/adr-034-head-worker-terminology
   - architecture/adr-032-event-boundary-discipline
@@ -44,8 +44,8 @@ This review should happen before any spec documents are created or updated, sinc
 
 ## Notes
 
-> To be filled by implementation agent
+ADRs reviewed for cross-reference consistency, terminology alignment, and acyclic dependency graph. Two fixes applied: ADR-027 dependency graph diagram clarified and missing cross-reference to ADR-028 added; ADR-033 missing cross-references to ADR-026 and ADR-028 added.
 
 ## Summary
 
-> To be filled on completion
+All 9 Phase 0a ADRs (026-034) reviewed. No contradictions found between ADRs. Minor fixes: ADR-027 dependency graph made clearer, ADR-027 and ADR-033 cross-references completed. ADR numbering gaps (020-022) noted in README.md footnote.

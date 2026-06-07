@@ -1,7 +1,7 @@
 ---
 id: architecture/review-spec-foundation
 name: Review Phase 0 specs — validate consistency, completeness, and ADR alignment
-status: pending
+status: completed
 depends_on:
   - architecture/spec-configuration
   - architecture/spec-identity
@@ -51,8 +51,8 @@ Review all Phase 0 spec documents after they're written. This is the Phase 0 rev
 
 ## Notes
 
-> To be filled by implementation agent
+Architecture-reviewer subagent found 4 critical, 14 warnings, 8 suggestions. All 4 critical issues fixed: OQ-SVC-05 added to open-questions.md, "NAPI/hub" → "NAPI/head", "AuthService" → "AuthProtocol"/"ConfigIdentityProvider", "noq" → "irpc over iroh QUIC streams". Key warnings fixed: inline OQ text replaced with cross-references in services.md/secret-service.md/storage.md, OQ-SVC-04 status corrected to resolved, duplicate links removed, server.md ForwardingPolicy phrasing aligned with ADR-031, ADR numbering gap footnote added. Additional improvements: ConfigServiceImpl defined in configuration.md, broken workspace-absolute links fixed (feasibility/certbot/fail2ban/event_source_types copied into docs/research/), README doc descriptions updated.
 
 ## Summary
 
-> To be filled on completion
+All Phase 0 specs reviewed for consistency, completeness, and ADR alignment. 4 critical issues and key warnings resolved. ConfigServiceImpl formally defined. Link portability addressed by copying referenced docs into project tree.

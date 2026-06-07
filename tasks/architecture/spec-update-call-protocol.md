@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-call-protocol
 name: Update call-protocol.md — add OperationEnv dispatch paths, irpc as backend
-status: pending
+status: completed
 depends_on:
   - architecture/adr-033-operationenv-irpc-call-protocol
   - architecture/spec-services
@@ -57,8 +57,8 @@ The current call-protocol.md already covers: operation paths, EventEnvelope wire
 
 ## Notes
 
-> To be filled by implementation agent
+Added OperationEnv section (universal composition, three dispatch paths, service assembly, Phase boundary), OperationContext struct, ResponseEnvelope/CallError types, irpc-as-one-backend positioning, Phase 1 local-only constraint, agent service pattern clarified as downstream concern, ADRs 028/033 added, references to identity.md/interface.md/services.md added.
 
 ## Summary
 
-> To be filled on completion
+Call protocol spec updated with OperationEnv, three dispatch paths, OperationContext, and clear irpc positioning. All acceptance criteria met.
