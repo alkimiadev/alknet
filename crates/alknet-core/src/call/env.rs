@@ -19,8 +19,8 @@ impl OperationEnv {
     }
 
     pub fn invoke(&self, namespace: &str, operation: &str, input: Value) -> ResponseEnvelope {
-        let name = format!("{namespace}/{operation}");
-        let request_id = format!("env-{name}");
+        let name = format!("/{namespace}/{operation}");
+        let request_id = format!("env{name}");
         let context = OperationContext {
             request_id: request_id.clone(),
             parent_request_id: None,
@@ -30,6 +30,10 @@ impl OperationEnv {
             trusted: true,
         };
         self.registry.invoke(&name, input, context)
+    }
+
+    pub fn registry_ref(&self) -> &OperationRegistry {
+        &self.registry
     }
 }
 
@@ -59,9 +63,9 @@ mod tests {
     fn operation_env_local_invoke() {
         let registry = OperationRegistryBuilder::new()
             .with(
-                make_spec("auth/verify", "auth"),
+                make_spec("/auth/verify", "auth"),
                 Arc::new(|_input, _ctx| {
-                    ResponseEnvelope::ok("env-auth/verify", serde_json::json!({"verified": true}))
+                    ResponseEnvelope::ok("env-/auth/verify", serde_json::json!({"verified": true}))
                 }),
             )
             .build();
@@ -85,7 +89,7 @@ mod tests {
     fn operation_env_invoke_trusted() {
         let registry = OperationRegistryBuilder::new()
             .with(
-                make_spec("auth/verify", "auth"),
+                make_spec("/auth/verify", "auth"),
                 Arc::new(|_input, ctx| {
                     assert!(ctx.trusted);
                     ResponseEnvelope::ok(&ctx.request_id, serde_json::json!({"ok": true}))

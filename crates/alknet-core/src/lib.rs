@@ -67,9 +67,16 @@ pub mod testutil;
 pub use auth::{AuthProtocol, AuthResult, AuthServiceImpl};
 pub use auth::{AuthToken, ConfigIdentityProvider, Identity, IdentityProvider};
 pub use call::{
-    AccessControl, CallError, Handler, OperationContext, OperationEnv, OperationRegistry,
-    OperationRegistryBuilder, OperationSpec, OperationType, ResponseEnvelope,
+    decode as decode_frame, decode_with_remainder as decode_frame_with_remainder,
+    encode as encode_frame,
 };
+pub use call::{
+    register_default_operations, services_list_spec, services_schema_spec, AccessControl,
+    CallError, EventEnvelope, FrameDecodeError, Handler, OperationContext, OperationEnv,
+    OperationRegistry, OperationRegistryBuilder, OperationSpec, OperationType, PendingRequestMap,
+    ResponseEnvelope,
+};
+pub use call::{CALL_ABORTED, CALL_COMPLETED, CALL_ERROR, CALL_REQUESTED, CALL_RESPONDED};
 pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};
 pub use config::{
