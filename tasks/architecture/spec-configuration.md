@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-configuration
 name: Promote configuration.md from research to architecture spec
-status: pending
+status: completed
 depends_on:
   - architecture/adr-030-static-dynamic-config-split
   - architecture/adr-031-forwarding-policy

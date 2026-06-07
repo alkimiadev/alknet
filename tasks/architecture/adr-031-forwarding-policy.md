@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-031-forwarding-policy
 name: Write ADR-031 — Forwarding policy
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low

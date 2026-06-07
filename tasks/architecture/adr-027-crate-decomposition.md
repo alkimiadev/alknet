@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-027-crate-decomposition
 name: Write ADR-027 — Crate decomposition
-status: pending
+status: completed
 depends_on:
   - architecture/adr-029-identity-core-type
 scope: moderate

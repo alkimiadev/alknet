@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-storage
 name: Create storage.md architecture spec (or stub referencing crate docs)
-status: pending
+status: completed
 depends_on:
   - architecture/adr-027-crate-decomposition
   - architecture/adr-029-identity-core-type

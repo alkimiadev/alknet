@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-028-auth-irpc-service
 name: Write ADR-028 — Auth as irpc service
-status: pending
+status: completed
 depends_on:
   - architecture/adr-029-identity-core-type
 scope: narrow

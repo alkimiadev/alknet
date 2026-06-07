@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-interface
 name: Create interface.md architecture spec (Layer 2)
-status: pending
+status: completed
 depends_on:
   - architecture/adr-026-transport-interface-separation
   - architecture/adr-033-operationenv-irpc-call-protocol

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-04
+last_updated: 2026-06-07
 ---
 
 # Open Questions
@@ -96,10 +96,10 @@ last_updated: 2026-06-04
 
 ### OQ-12: Per-user forwarding scope vs global rules
 - **Origin**: [research/configuration.md](../research/configuration.md)
-- **Status**: open
-- **Priority**: medium
-- **Resolution**: (pending)
-- **Cross-references**: configuration.md
+- **Status**: ~~resolved~~
+- **Priority**: ~~medium~~ —
+- **Resolution**: ADR-031 — Start with global rules + principal matching from `Identity.scopes`. Per-user scope from `peer_credentials.metadata.scopes` via `IdentityProvider`. The `ForwardingPolicy` evaluates rules against `Identity.id` and `Identity.scopes` from the authenticated identity.
+- **Cross-references**: [ADR-031](decisions/031-forwarding-policy.md), [configuration.md](configuration.md)
 
 ### OQ-13: Config file auto-reload via file watching
 - **Origin**: [research/configuration.md](../research/configuration.md)
@@ -119,38 +119,59 @@ last_updated: 2026-06-04
 - **Origin**: [research/configuration.md](../research/configuration.md)
 - **Status**: open
 - **Priority**: medium
-- **Resolution**: (pending — needs R&D in WebTransport transport session)
-- **Cross-references**: [auth.md](auth.md), OQ-19
+- **Resolution**: (deferred to Phase 4 — needs R&D in WebTransport transport session)
+- **Cross-references**: [auth.md](auth.md), OQ-19, [interface.md](interface.md)
 
 ### OQ-16: Transport-specific forwarding policy (e.g., WebTransport clients restricted to alknet-* channels)
 - **Origin**: [research/configuration.md](../research/configuration.md)
-- **Status**: open
-- **Priority**: low
-- **Resolution**: (pending — defer to forwarding policy design)
-- **Cross-references**: configuration.md
+- **Status**: ~~resolved~~
+- **Priority**: ~~low~~ —
+- **Resolution**: ADR-031 — Add `TransportKind` match in `ForwardingRule`. WebTransport clients can be restricted to `alknet-*` channels via `TargetPattern::AlknetPrefix` combined with a `TransportKind::WebTransport` filter.
+- **Cross-references**: [ADR-031](decisions/031-forwarding-policy.md), [configuration.md](configuration.md)
 
 ### OQ-17: Transport-aware auth layer (SSH keys vs API keys for non-SSH transports)
 - **Origin**: [research/configuration.md](../research/configuration.md)
 - **Status**: ~~resolved~~
 - **Priority**: ~~medium~~ —
 - **Resolution**: ADR-023 — Unified auth with shared key material. SSH transports use SSH pubkey auth. Non-SSH transports (WebTransport) use Ed25519-signed timestamp tokens. Both verify against the same `authorized_keys` set. The presentation differs per transport, but the identity is unified. `AuthPolicy` holds both `SshAuthConfig` and `TokenAuthConfig`, with `TokenKeySource::Shared` as the default (same keys for both paths). `IdentityProvider` trait decouples alknet-core from identity storage.
-- **Cross-references**: [ADR-023](decisions/023-unified-auth-shared-key-material.md), [auth.md](auth.md), OQ-15
+- **Cross-references**: [ADR-023](decisions/023-unified-auth-shared-key-material.md), [identity.md](identity.md), OQ-15
+
+### OQ-23: irpc dependency — always or behind feature flag?
+- **Origin**: [research/integration-plan.md](../research/integration-plan.md)
+- **Status**: ~~resolved~~
+- **Priority**: medium —
+- **Resolution**: ADR-027 — Feature flag. Nodes that only do SSH tunneling don't need the service layer. irpc is behind a feature flag in alknet-core and an independent dependency in alknet-secret and alknet-storage.
+- **Cross-references**: [ADR-027](decisions/027-crate-decomposition.md)
+
+### OQ-24: DNS control channel scope for initial implementation?
+- **Origin**: [research/integration-plan.md](../research/integration-plan.md)
+- **Status**: ~~resolved~~
+- **Priority**: medium —
+- **Resolution**: ADR-026 — DNS control channel carries call protocol frames only (no SSH tunneling over DNS). The (DNS transport, raw framing interface) pair sends `EventEnvelope` directly. SSH-over-DNS is a future possibility but out of scope.
+- **Cross-references**: [ADR-026](decisions/026-transport-interface-separation.md), [interface.md](interface.md)
+
+### OQ-25: alknet-storage and alknet-secret irpc dependency
+- **Origin**: [research/integration-plan.md](../research/integration-plan.md)
+- **Status**: ~~resolved~~
+- **Priority**: low —
+- **Resolution**: ADR-027 — Independently. They're separate crates. irpc is a shared library they both use as an independent dependency.
+- **Cross-references**: [ADR-027](decisions/027-crate-decomposition.md)
 
 ## Auth
 
 ### OQ-18: Source of Identity.scopes — ForwardingPolicy, IdentityProvider, or both?
 - **Origin**: [auth.md](auth.md)
-- **Status**: open
-- **Priority**: medium
-- **Resolution**: (pending)
-- **Cross-references**: ADR-023, [call-protocol.md](call-protocol.md)
+- **Status**: ~~resolved~~
+- **Priority**: ~~medium~~ —
+- **Resolution**: ADR-029 and ADR-031 — `IdentityProvider` owns scopes. The `Identity` struct includes `scopes` and `resources` fields populated by the `IdentityProvider` implementation (config-based or database-backed). `ForwardingPolicy` uses scopes from `Identity` — it consumes them, it doesn't produce them.
+- **Cross-references**: [ADR-029](decisions/029-identity-core-type.md), [ADR-031](decisions/031-forwarding-policy.md), [identity.md](identity.md)
 
 ### OQ-19: Separate TLS identity for WebTransport vs shared with SSH-over-TLS?
 - **Origin**: [auth.md](auth.md)
 - **Status**: open
 - **Priority**: low
-- **Resolution**: (pending)
-- **Cross-references**: OQ-15
+- **Resolution**: (deferred to Phase 4 — QUIC is UDP, TLS-over-TCP is TCP, they can share port 443 without conflict)
+- **Cross-references**: OQ-15, [interface.md](interface.md)
 
 ## Call Protocol
 
@@ -158,19 +179,65 @@ last_updated: 2026-06-04
 - **Origin**: [call-protocol.md](call-protocol.md)
 - **Status**: open
 - **Priority**: medium
-- **Resolution**: (pending — registration on connect / cleanup on disconnect is the leading approach)
+- **Resolution**: (pending — registration on connect / cleanup on disconnect is the leading approach but needs spec in call-protocol.md)
 - **Cross-references**: ADR-024, ADR-025
 
 ### OQ-21: Routing calls to specific workers with same-service operations
 - **Origin**: [call-protocol.md](call-protocol.md)
 - **Status**: ~~resolved~~
 - **Priority**: ~~medium~~ —
-- **Resolution**: ADR-024, ADR-025 — Operation paths use `/{node}/{service}/{op}` format. The first path segment identifies the node and routes the call to the correct connected node. Multiple workers exposing the same service (e.g., two dev envs both with `/fs/*`) are differentiated by the node prefix (`/dev1/fs/readFile` vs `/dev2/fs/readFile`). The head maintains a routing table mapping node identity to connection. This mirrors iroh's ALPN dispatch: first segment = routing key.
+- **Resolution**: ADR-024, ADR-025 — Operation paths use `/{node}/{service}/{op}` format. The first path segment identifies the node and routes the call to the correct connected node. Multiple workers exposing the same service are differentiated by the node prefix (`/dev1/fs/readFile` vs `/dev2/fs/readFile`). The head maintains a routing table mapping node identity to connection.
 - **Cross-references**: [call-protocol.md](call-protocol.md), ADR-024, ADR-025
 
 ### OQ-22: Client streaming (streaming inputs) in the call protocol?
 - **Origin**: [call-protocol.md](call-protocol.md)
+- **Status**: ~~resolved~~
+- **Priority**: ~~low~~ —
+- **Resolution**: Deferred. Current model (single request, optional streaming response) covers all identified use cases. Client streaming can be added later if needed.
+- **Cross-references**: ADR-024
+
+## Services
+
+### OQ-SVC-01: Should the secret service support multiple seed phrases (one per tenant)?
+- **Origin**: [secret-service.md](secret-service.md)
 - **Status**: open
 - **Priority**: low
-- **Resolution**: (pending)
-- **Cross-references**: ADR-024
+- **Resolution**: (deferred — one seed per node is simplest; multi-seed can be added later by indexing `Unlock` with a tenant ID)
+- **Cross-references**: [secret-service.md](secret-service.md)
+
+### OQ-SVC-02: Should service protocols use postcard (binary) or JSON for remote calls?
+- **Origin**: [research/services.md](../research/services.md)
+- **Status**: ~~resolved~~
+- **Priority**: low —
+- **Resolution**: Postcard for irpc (Rust-to-Rust, efficient). JSON for call protocol (cross-language, universal). The irpc remote path naturally uses postcard.
+- **Cross-references**: [services.md](services.md)
+
+### OQ-SVC-03: How does the secret service integrate with the existing EncryptedDataSchema from @alkdev/storage?
+- **Origin**: [secret-service.md](secret-service.md)
+- **Status**: open
+- **Priority**: medium
+- **Resolution**: (pending — Rust implementation replaces PBKDF2 password-based encryption with derived AES-256-GCM keys; EncryptedData format is a superset; migration by re-encrypting)
+- **Cross-references**: [secret-service.md](secret-service.md), [storage.md](storage.md)
+
+### OQ-SVC-04: Should workers cache derived keys locally?
+- **Origin**: [secret-service.md](secret-service.md)
+- **Status**: open
+- **Priority**: low
+- **Resolution**: Yes, with a TTL (default: 1 hour). The head can revoke by invalidating the session.
+- **Cross-references**: [secret-service.md](secret-service.md)
+
+## Interface
+
+### OQ-IF-01: How does the Interface session type relate to the call protocol's EventEnvelope stream?
+- **Origin**: [interface.md](interface.md)
+- **Status**: open
+- **Priority**: high
+- **Resolution**: (pending — needs design during Phase 1.8 implementation)
+- **Cross-references**: [interface.md](interface.md), [ADR-026](decisions/026-transport-interface-separation.md)
+
+### OQ-IF-02: Should SshInterface own ForwardingPolicy checks or should they move to Layer 3?
+- **Origin**: [interface.md](interface.md)
+- **Status**: open
+- **Priority**: medium
+- **Resolution**: (pending — current thinking: forwarding check is Layer 3 policy, but channel open/close lifecycle is Layer 2. The Interface reports channel open requests to Layer 3; Layer 3 applies ForwardingPolicy.)
+- **Cross-references**: [interface.md](interface.md), [ADR-031](decisions/031-forwarding-policy.md)

@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-032-event-boundary-discipline
 name: Write ADR-032 — Event boundary discipline
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low

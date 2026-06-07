@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-services
 name: Create services.md architecture spec (irpc service layer + OperationEnv)
-status: pending
+status: completed
 depends_on:
   - architecture/adr-033-operationenv-irpc-call-protocol
   - architecture/adr-027-crate-decomposition

@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-secret-service
 name: Create secret-service.md architecture spec
-status: pending
+status: completed
 depends_on:
   - architecture/adr-027-crate-decomposition
   - architecture/adr-032-event-boundary-discipline

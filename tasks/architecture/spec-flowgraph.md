@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-flowgraph
 name: Create flowgraph.md architecture spec (or stub referencing crate docs)
-status: pending
+status: completed
 depends_on:
   - architecture/adr-027-crate-decomposition
 scope: narrow

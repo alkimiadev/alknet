@@ -3,15 +3,15 @@ status: draft
 last_updated: 2026-06-07
 ---
 
-# Authentication & Identity
+# Authentication
 
 ## What
 
-A unified authentication and identity layer that works across all transports —
-SSH-over-any-transport and WebTransport (non-SSH HTTP-level transports). The
-same key material (Ed25519 authorized keys and certificate authorities) is
-shared across both auth paths. Identity resolution produces a transport-agnostic
-`Identity` that carries scopes and resources for downstream authorization.
+A unified authentication layer that works across all transports — SSH-over-any-
+transport and WebTransport (non-SSH HTTP-level transports). The same key
+material (Ed25519 authorized keys and certificate authorities) is shared across
+both auth paths. Identity resolution produces a transport-agnostic `Identity`
+that carries scopes and resources for downstream authorization.
 
 ## Why
 
@@ -21,7 +21,26 @@ need a different auth presentation that shares the same key material. The
 unified auth layer ensures one key set, one identity, one rotation mechanism
 across all transports. See ADR-023 for the decision context.
 
+The canonical definitions of `Identity` and `IdentityProvider` are in
+[identity.md](identity.md). This document covers auth-specific behavior:
+auth presentation per transport, `AuthPolicy` structure, and the auth service
+relationship.
+
 ## Architecture
+
+### Identity and IdentityProvider
+
+See [identity.md](identity.md) for the canonical definitions of:
+- `Identity` struct (`{ id, scopes, resources }`)
+- `IdentityProvider` trait (`resolve_from_fingerprint()`, `resolve_from_token()`)
+- `ConfigIdentityProvider` (default, ArcSwap-backed)
+- `StorageIdentityProvider` (production, SQLite-backed, in alknet-storage)
+- `AuthProtocol` irpc service (behind `irpc` feature flag)
+
+The key relationship: `IdentityProvider` is the contract. `ConfigIdentityProvider`
+is the default implementation (reads from `DynamicConfig.auth`). `AuthProtocol`
+irpc service is one way to satisfy the trait, behind a feature flag. Both paths
+produce the same `Identity` result. See ADR-028 and ADR-029.
 
 ### Auth Presentation Per Transport
 
@@ -72,44 +91,23 @@ V1 uses timestamp-only (±300s window, no server state). The replay trade-offs
 and future zero-replay options (nonce challenge-response) are documented in
 ADR-023.
 
-### IdentityProvider Trait
+### IdentityProvider and Auth Service Relationship
 
-The `IdentityProvider` trait decouples alknet-core from any specific identity
-storage. It resolves a key fingerprint or auth token to an `Identity` with
-scopes and resources.
+The `IdentityProvider` trait (defined in [identity.md](identity.md)) decouples
+alknet-core from any specific identity storage. Two implementations exist:
 
-```rust
-pub trait IdentityProvider: Send + Sync + 'static {
-    /// Resolve an SSH public key fingerprint to an identity.
-    fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity>;
+- **ConfigIdentityProvider** (in alknet-core) — reads from
+  `ArcSwap<DynamicConfig.auth>`. Every authorized key gets a default scope set.
+  No database required. This is the default for minimal deployments.
 
-    /// Resolve an auth token to an identity.
-    /// Returns None if the token is invalid, expired, or the key is not authorized.
-    fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity>;
-}
+- **StorageIdentityProvider** (in alknet-storage) — backed by SQLite
+  `peer_credentials` and `api_keys` tables plus the ACL graph. Resolves
+  fingerprint → account → organization membership → effective scopes.
 
-pub struct Identity {
-    pub id: String,                              // Unique identifier — fingerprint (config) or account UUID (database)
-    pub scopes: Vec<String>,                     // e.g., ["relay:connect", "service:gitea:read"]
-    pub resources: HashMap<String, Vec<String>>,  // e.g., {"service": ["gitea", "registry"]}
-}
-```
-
-> **Note on identity models**: Earlier research used `{node_id, fingerprint, scopes}`.
-> The unified model uses `{id, scopes, resources}` where `id` serves as both
-> fingerprint (for key-based auth from config) and account UUID (for
-> database-backed auth). The `resources` field provides resource-level
-> authorization beyond what scopes offer. This is the canonical definition
-> that all components should use.
-```
-
-**Default implementation**: `ConfigIdentityProvider` loads from
-`DynamicConfig.auth` (the `authorized_keys` set). Every authorized key gets a
-default scope set. No database required.
-
-**Head implementation**: Backed by `@alkdev/storage`'s `peer_credentials` and
-`accounts` tables plus the ACL graph. Resolves fingerprint → account →
-organization membership → effective scopes. Uses `ArcSwap` for hot reload.
+The `AuthProtocol` irpc service (behind the `irpc` feature flag, per ADR-028)
+provides an async boundary for auth verification. It is one way to satisfy the
+`IdentityProvider` trait, not a replacement for it. Both the trait path and the
+irpc path produce the same `Identity` result.
 
 The trait is the contract. The backing store is pluggable. Alknet-core never
 depends on Honker, SQLite, or any specific database.
@@ -240,13 +238,13 @@ security consideration:
 
 ## Open Questions
 
-- **OQ-18**: Should `Identity.scopes` be populated from `ForwardingPolicy`
-  rules, from an external `IdentityProvider`, or from both? See
-  [open-questions.md](open-questions.md).
+- **OQ-18**: ~~Source of Identity.scopes~~ Resolved per ADR-029 and ADR-031.
+  `IdentityProvider` owns scopes, `ForwardingPolicy` uses scopes from `Identity`.
+  See [open-questions.md](open-questions.md).
 
 - **OQ-19**: Should the WebTransport listener require its own TLS identity
   (separate from the SSH-over-TLS listener), or can they share the same
-  certificate? See [open-questions.md](open-questions.md).
+  certificate? Deferred to Phase 4. See [open-questions.md](open-questions.md).
 
 ## Design Decisions
 
@@ -254,16 +252,16 @@ security consideration:
 |-----|----------|---------|
 | [012](decisions/012-auth-ed25519-and-cert-authority.md) | Ed25519 + cert-authority | Key-based auth, no passwords |
 | [023](decisions/023-unified-auth-shared-key-material.md) | Unified auth, shared key material | Same keys for SSH and token auth |
+| [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | AuthProtocol behind feature flag; IdentityProvider is the contract |
+| [029](decisions/029-identity-core-type.md) | Identity as core type | `Identity` and `IdentityProvider` in alknet-core |
 
 ## References
 
+- [identity.md](identity.md) — Canonical Identity and IdentityProvider definitions
 - [server.md](server.md) — Current SSH auth handler
 - [transport.md](transport.md) — Transport abstraction
-- [configuration.md](../research/configuration.md) — DynamicConfig, AuthPolicy structure
-- [open-questions.md](open-questions.md) — OQ-17 (resolved), OQ-18, OQ-19
-- `server/handler.rs` — Current `auth_publickey()` callback
-- `auth/server_auth.rs` — Current `ServerAuthConfig` struct
-- `auth/keys.rs` — `KeySource` and key loading
+- [configuration.md](configuration.md) — DynamicConfig, AuthPolicy, ConfigReloadHandle
+- [services.md](services.md) — AuthProtocol irpc service
+- [open-questions.md](open-questions.md) — OQ-17 (resolved), OQ-18 (resolved), OQ-19
 - [wtransport](https://github.com/BiagioFesta/wtransport) — Rust WebTransport library
 - [WebTransport W3C Spec](https://www.w3.org/TR/webtransport/) — Browser API
-- [@alkdev/storage](/workspace/@alkdev/storage) — `peer_credentials` table, ACL graph

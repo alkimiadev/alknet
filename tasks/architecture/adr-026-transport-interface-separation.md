@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-026-transport-interface-separation
 name: Write ADR-026 — Transport/interface separation (three-layer model)
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: high

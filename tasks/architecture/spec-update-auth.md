@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-auth
 name: Update auth.md — add IdentityProvider vs AuthService relationship
-status: pending
+status: completed
 depends_on:
   - architecture/spec-identity
   - architecture/adr-028-auth-irpc-service

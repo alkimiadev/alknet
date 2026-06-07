@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-identity
 name: Create identity.md architecture spec
-status: pending
+status: completed
 depends_on:
   - architecture/adr-029-identity-core-type
   - architecture/adr-028-auth-irpc-service

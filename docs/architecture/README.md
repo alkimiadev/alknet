@@ -1,16 +1,18 @@
 ---
 status: draft
-last_updated: 2026-06-04
+last_updated: 2026-06-07
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-Architecture specification in active development. 22 ADRs accepted. Unified
-auth and call protocol architecture being specified — see [auth.md](auth.md)
-and [call-protocol.md](call-protocol.md). Configuration architecture under
-exploration — see [research/configuration.md](../research/configuration.md).
+Architecture specification in active development. Phase 0 foundation ADRs
+completed (026–034). New spec documents created for identity, services,
+interface, configuration, storage, flowgraph, and secret service. Existing
+specs updated for the three-layer model, crate decomposition, and unified
+identity. See [open-questions.md](open-questions.md) for remaining open
+questions.
 
 ## Architecture Documents
 
@@ -24,12 +26,24 @@ exploration — see [research/configuration.md](../research/configuration.md).
 | [server.md](server.md) | reviewed | Server acceptance, channel handling, proxy |
 | [tun-shim.md](tun-shim.md) | deprecated | TUN interface wrapper — **deferred**, use tun2proxy |
 | [napi-and-pubsub.md](napi-and-pubsub.md) | reviewed | NAPI wrapper and pubsub event target adapter |
+| [identity.md](identity.md) | draft | Identity type, IdentityProvider trait, auth flows |
+| [services.md](services.md) | draft | irpc service layer, OperationEnv, three dispatch paths |
+| [interface.md](interface.md) | draft | Layer 2: Interface trait, SshInterface, RawFramingInterface |
+| [configuration.md](configuration.md) | draft | StaticConfig, DynamicConfig, forwarding policy, reload |
+| [storage.md](storage.md) | draft | alknet-storage: metagraph, identity, ACL, honker |
+| [flowgraph.md](flowgraph.md) | draft | alknet-flowgraph: call graph, operation graph, petgraph |
+| [secret-service.md](secret-service.md) | draft | alknet-secret: BIP39, SLIP-0010, AES-GCM, SecretProtocol |
 
 ## Research Documents
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [configuration.md](../research/configuration.md) | draft | Configuration architecture: static/dynamic split, hot reload, forwarding policy |
+| [configuration.md](../research/configuration.md) | draft | Configuration architecture (source for promoted spec) |
+| [core.md](../research/core.md) | draft | Core overview, transport, call protocol, DNS |
+| [services.md](../research/services.md) | draft | irpc service protocols, OperationContext, application services |
+| [storage.md](../research/storage.md) | draft | Metagraph, identity, ACL, secrets, honker |
+| [flow.md](../research/flow.md) | draft | FlowGraph, operation graph, call graph, petgraph mapping |
+| [integration-plan.md](../research/integration-plan.md) | draft | Phased integration plan for services, pubsub, and operations |
 
 ## ADR Table
 
@@ -57,12 +71,24 @@ exploration — see [research/configuration.md](../research/configuration.md).
 | [023](decisions/023-unified-auth-shared-key-material.md) | Unified auth with shared key material + token auth | Accepted |
 | [024](decisions/024-bidirectional-call-protocol.md) | Bidirectional call protocol (EventEnvelope) | Accepted |
 | [025](decisions/025-handler-spec-separation.md) | Handler/spec separation for downstream service registration | Accepted |
+| [026](decisions/026-transport-interface-separation.md) | Transport/interface separation (three-layer model) | Accepted |
+| [027](decisions/027-crate-decomposition.md) | Crate decomposition (core, secret, storage, flowgraph) | Accepted |
+| [028](decisions/028-auth-irpc-service.md) | Auth as irpc service behind feature flag | Accepted |
+| [029](decisions/029-identity-core-type.md) | Identity as core type in alknet-core | Accepted |
+| [030](decisions/030-static-dynamic-config-split.md) | Static/dynamic config split with ArcSwap | Accepted |
+| [031](decisions/031-forwarding-policy.md) | Forwarding policy with rule-based allow/deny | Accepted |
+| [032](decisions/032-event-boundary-discipline.md) | Event boundary discipline (domain, irpc, call protocol) | Accepted |
+| [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv as universal composition mechanism | Accepted |
+| [034](decisions/034-head-worker-terminology.md) | Head/worker terminology replacing hub/spoke | Accepted |
 
 ## Open Questions
 
-Most open questions have been resolved. Open questions remain for
-configuration, auth, and call protocol — see
-[open-questions.md](open-questions.md) for details.
+See [open-questions.md](open-questions.md) for all open and resolved questions.
+Key resolved questions from Phase 0: OQ-12, OQ-16, OQ-18 (forwarding policy
+and identity scopes), OQ-17 (transport-aware auth), OQ-23 (irpc feature flag),
+OQ-24 (DNS control channel scope), OQ-25 (crate irpc dependencies). Key open
+questions: OQ-15 (QUIC coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker
+registration).
 
 ## Lifecycle Definitions
 

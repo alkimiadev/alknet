@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-034-head-worker-terminology
 name: Write ADR-034 — Head/worker terminology
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial

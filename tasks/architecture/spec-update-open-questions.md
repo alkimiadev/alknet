@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-open-questions
 name: Update open-questions.md — resolve questions per ADR decisions
-status: pending
+status: completed
 depends_on:
   - architecture/adr-031-forwarding-policy
   - architecture/adr-029-identity-core-type

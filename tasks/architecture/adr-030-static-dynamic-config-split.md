@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-030-static-dynamic-config-split
 name: Write ADR-030 — Static/dynamic config split
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low

@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-029-identity-core-type
 name: Write ADR-029 — Identity as core type
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low

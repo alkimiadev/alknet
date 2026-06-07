@@ -1,7 +1,7 @@
 ---
 id: architecture/spec-update-readme
 name: Update architecture README.md — add new docs and ADRs to tables
-status: pending
+status: completed
 depends_on:
   - architecture/spec-configuration
   - architecture/spec-identity

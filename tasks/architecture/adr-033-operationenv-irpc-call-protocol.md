@@ -1,7 +1,7 @@
 ---
 id: architecture/adr-033-operationenv-irpc-call-protocol
 name: Write ADR-033 — OperationEnv, irpc, and call protocol relationship
-status: pending
+status: completed
 depends_on:
   - architecture/adr-028-auth-irpc-service
   - architecture/adr-027-crate-decomposition
