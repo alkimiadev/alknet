@@ -1,6 +1,6 @@
 ---
 status: reviewed
-last_updated: 2026-06-02
+last_updated: 2026-06-07
 ---
 
 # Server
@@ -51,21 +51,30 @@ The server is the tunnel endpoint. It receives SSH channels requesting TCP conne
 
 ### Authentication
 
-The server supports Ed25519 public key authentication (default) and OpenSSH certificate authority authentication (ADR-012):
+The server authenticates connections through the `IdentityProvider` trait (ADR-029, [identity.md](identity.md)). `IdentityProvider` decouples the server from any specific identity storage — the server resolves an identity, it doesn't manage keys.
 
-**Ed25519 public key** (default):
-1. Load authorized keys from a specified path or in-memory data
-2. `auth_publickey()` checks the presented key against the authorized set
-3. Uses constant-time comparison to prevent timing attacks
+**Phase 1 implementation**: `ConfigIdentityProvider` (in alknet-core) reads from `ArcSwap<DynamicConfig.auth>` (ADR-030). Every authorized key gets a default scope set. No database required. This is the default for CLI and single-node deployments.
 
-**OpenSSH certificate authority** (ADR-012):
-1. Load a trusted CA public key (`--cert-authority <path>`)
-2. `auth_publickey()` validates the presented certificate: checks CA signature, expiry, and principal restrictions
-3. Supports certificate options: `permit-port-forwarding`, `no-pty`, `source-address`
+**Future implementation**: `StorageIdentityProvider` (in alknet-storage, not yet built) backed by SQLite `peer_credentials` and `api_keys` tables plus the ACL graph. The server doesn't need to know which implementation is active — it goes through the trait.
 
-This enables multi-user deployments where adding one CA line to `authorized_keys` is simpler than managing individual keys for every user.
+The server supports two auth presentation paths (ADR-023, [auth.md](auth.md)):
 
-**No password authentication over SSH.** Keys and certificates are sufficient and more secure. If a local SOCKS5 proxy needs its own auth layer, that's a separate concern.
+**SSH public key auth** (SSH transports):
+1. `auth_publickey()` callback receives the presented key
+2. Delegates to `IdentityProvider::resolve_from_fingerprint()` with the key fingerprint
+3. Returns `Accept` (with `Identity` attached) or `Reject`
+
+**Ed25519 + OpenSSH certificate authority** (ADR-012):
+1. If no direct key match, validate the presented certificate against trusted cert-authorities
+2. Check CA signature, expiry, and principal restrictions
+3. Certificate options: `permit-port-forwarding`, `no-pty`, `source-address`
+
+**Token auth** (non-SSH transports, WebTransport):
+1. Extract token from URL path or `Authorization` header
+2. Delegate to `IdentityProvider::resolve_from_token()`
+3. Same verification: same authorized keys set, same `Identity` result (ADR-023)
+
+**No password authentication over SSH channels.** Keys and certificates are sufficient and more secure. If a local SOCKS5 proxy needs its own auth layer, that's a separate concern.
 
 ### Key Material Format
 
@@ -87,7 +96,9 @@ When a client opens a `channel_open_direct_tcpip(host, port, originator_addr, or
 
 **Reserved destination** — If `host` starts with `alknet-` (e.g., `alknet-control`), the server routes the channel internally instead of connecting to a TCP target. The primary reserved destination is `alknet-control:0`, which bridges the channel to the local pubsub event bus (ADR-018).
 
-**Regular destination** — For all other targets:
+**Forwarding policy check** — Before the proxy task is spawned for any non-reserved destination, the server evaluates `ForwardingPolicy` against the authenticated `Identity` (ADR-031, [configuration.md](configuration.md)). The policy check uses `Identity.id` and `Identity.scopes` from the identity resolved during auth. If the policy denies the destination, the channel open is rejected — no TCP connection is attempted. The default policy (`ForwardingPolicy::allow_all()`) preserves current behavior.
+
+**Regular destination** — For targets that pass the forwarding policy check:
 
 1. **Connection** — connect to `host:port`, either directly or via the configured outbound proxy
 2. **Outbound connection** — connect to the target, either directly or via the configured outbound proxy
@@ -122,16 +133,22 @@ This makes the server appear as an ordinary web server to port scanners and DPI 
 The server handler implements `russh::server::Handler` with two primary responsibilities:
 
 **Authentication (`auth_publickey`)**:
-- Check the presented key against the configured `authorized_keys` set (constant-time comparison)
-- If no direct match, check whether the key is a certificate signed by a trusted cert-authority
-- Validate certificate signature, expiry, and principal restrictions (e.g., `permit-port-forwarding`, `no-pty`, `source-address`)
+- Delegate to `IdentityProvider::resolve_from_fingerprint()` with the presented key fingerprint
+- If identity resolved, return `Accept` with the `Identity` attached to the session
+- If no identity, check certificate authority: validate CA signature, expiry, principals
 - Return `Accept` or `Reject`
 
 **Channel handling (`channel_open_direct_tcpip`)**:
 - If the destination host starts with `alknet-`, route internally (control channel, ADR-018)
-- Otherwise, connect to `host:port` (directly or via the configured outbound proxy)
+- Otherwise, evaluate `ForwardingPolicy` against the session's `Identity` (ADR-031)
+- If denied, reject the channel open
+- If allowed, connect to `host:port` (directly or via the configured outbound proxy)
 - Spawn a bidirectional proxy task between the SSH channel and the outbound TCP stream
 - Return the channel for data flow
+
+### Interface Abstraction
+
+SSH is one interface at Layer 2 in the three-layer model (ADR-026, [interface.md](interface.md)). The current `ServerHandler` will be refactored into `SshInterface` — it manages SSH session concerns (handshake, auth delegation, channel multiplexing). Forwarding policy, operation routing, and call protocol handling are Layer 3 concerns that live outside the interface. This refactoring is the most invasive code change in Phase 1 (integration-plan, Phase 1.8).
 
 ### Logging and Rate Limiting
 
@@ -158,6 +175,25 @@ INFO connection opened remote_addr=203.0.113.50 transport=tls
 These provide abuse protection on platforms without fail2ban (macOS, Windows, BSD) and complement fail2ban on Linux.
 
 ### CLI Interface
+
+Configuration sources (in priority order): CLI flags, environment variables, optional `--config` TOML file (ADR-030). The TOML config file is a convenience input for reproducible deployments; it does not replace `ServeOptions` (ADR-011).
+
+Multi-transport listeners use `[[listeners]]` in the TOML config (ADR-030):
+
+```toml
+[[listeners]]
+transport = "tls"
+listen = "0.0.0.0:443"
+
+[listeners.tls]
+cert = "/etc/alknet/tls/cert.pem"
+key = "/etc/alknet/tls/key.pem"
+
+[[listeners]]
+transport = "iroh"
+```
+
+Currently, the server binds to a single transport at a time. Multi-transport via `[[listeners]]` is coming per ADR-030.
 
 ```bash
 # Basic server (SSH on port 22)
@@ -230,7 +266,9 @@ No listening port is needed. The server connects outbound to the iroh relay (def
 - The server does not log tunnel destinations (ADR-006). Auth events and connection events are logged for fail2ban integration (ADR-013).
 - Destination strings beginning with `alknet-` are reserved for internal use (ADR-018). The server must not attempt TCP connections to `alknet-*` destinations — these are intercepted for control channel routing.
 - One `ServerHandler` instance per connection. Handler state is not shared between connections (unless explicitly configured via `Arc` shared state for things like connection limits).
-- The server binds to a single transport at a time. Running multiple transports (e.g., TCP + iroh) simultaneously requires separate processes or a future multiplexing feature.
+- The server currently binds to a single transport at a time. Multi-transport via `[[listeners]]` is coming per ADR-030.
+- Forwarding policy is evaluated before every channel proxy spawn. Denied channels are rejected immediately (ADR-031).
+- Auth resolves through `IdentityProvider` (ADR-029). Phase 1 uses `ConfigIdentityProvider` backed by `ArcSwap<DynamicConfig>` (ADR-030). `StorageIdentityProvider` (Phase 2+) replaces it for production deployments with SQLite.
 - ACME support requires the `acme` feature flag. Without it, only manual TLS certs are supported.
 - No password authentication over SSH channels. Key-based and cert-authority only (ADR-012).
 - Stealth mode (`--stealth`) requires TLS transport. It has no effect on TCP or iroh transports (ADR-017).
@@ -273,3 +311,15 @@ None — all resolved.
 | [017](decisions/017-stealth-mode-protocol-multiplexing.md) | Stealth mode | Protocol multiplexing on port 443 |
 | [018](decisions/018-control-channel-for-pubsub.md) | Control channel | Reserved `alknet-control` destination for pubsub |
 | [019](decisions/019-proxy-dual-semantics.md) | Proxy dual semantics | `--proxy` routes transport on client, data on server |
+| [026](decisions/026-transport-interface-separation.md) | Three-layer model | SSH is Layer 2 interface, ServerHandler → SshInterface |
+| [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | IdentityProvider is the contract; irpc service is one backend |
+| [029](decisions/029-identity-core-type.md) | Identity as core type | IdentityProvider trait in alknet-core |
+| [030](decisions/030-static-dynamic-config-split.md) | Static/dynamic config split | ArcSwap for dynamic config, ConfigReloadHandle |
+| [031](decisions/031-forwarding-policy.md) | Forwarding policy | Evaluated before channel proxy spawn |
+
+## References
+
+- [configuration.md](configuration.md) — DynamicConfig, ForwardingPolicy, ConfigReloadHandle
+- [identity.md](identity.md) — IdentityProvider trait, Identity struct
+- [auth.md](auth.md) — Unified auth, AuthPolicy, token auth
+- [interface.md](interface.md) — Interface trait, SshInterface, three-layer model

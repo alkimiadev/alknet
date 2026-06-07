@@ -7,25 +7,26 @@ last_updated: 2026-06-07
 
 ## Current State
 
-Architecture specification in active development. Phase 0 foundation ADRs
-completed (026–034). New spec documents created for identity, services,
-interface, configuration, storage, flowgraph, and secret service. Existing
-specs updated for the three-layer model, crate decomposition, and unified
-identity. See [open-questions.md](open-questions.md) for remaining open
-questions.
+Architecture specification in active development. Phase 0 foundation complete:
+ADRs 001–034 accepted, new spec documents created for all components, existing
+specs updated for the three-layer model, crate decomposition, unified identity,
+OperationEnv, and forwarding policy. Remaining open questions: OQ-15 (QUIC
+coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
+(Interface session/EventEnvelope), OQ-IF-02 (ForwardingPolicy placement). See
+[open-questions.md](open-questions.md).
 
 ## Architecture Documents
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [overview.md](overview.md) | reviewed | Package purpose, exports, dependencies |
+| [overview.md](overview.md) | reviewed | Package purpose, crate structure, three-layer model, exports, dependencies |
 | [transport.md](transport.md) | reviewed | Transport abstraction: TCP, TLS, iroh |
 | [auth.md](auth.md) | draft | Unified auth: SSH + token, IdentityProvider trait |
-| [call-protocol.md](call-protocol.md) | draft | Bidirectional call/event protocol, operation registry |
+| [call-protocol.md](call-protocol.md) | draft | Bidirectional call/event protocol, OperationEnv, three dispatch paths |
 | [client.md](client.md) | reviewed | Client connection, SOCKS5, port forwarding |
-| [server.md](server.md) | reviewed | Server acceptance, channel handling, proxy |
+| [server.md](server.md) | reviewed | Server acceptance, IdentityProvider, ForwardingPolicy, channel handling |
 | [tun-shim.md](tun-shim.md) | deprecated | TUN interface wrapper — **deferred**, use tun2proxy |
-| [napi-and-pubsub.md](napi-and-pubsub.md) | reviewed | NAPI wrapper and pubsub event target adapter |
+| [napi-and-pubsub.md](napi-and-pubsub.md) | reviewed | NAPI wrapper, reload API, pubsub event target adapter |
 | [identity.md](identity.md) | draft | Identity type, IdentityProvider trait, auth flows |
 | [services.md](services.md) | draft | irpc service layer, OperationEnv, three dispatch paths |
 | [interface.md](interface.md) | draft | Layer 2: Interface trait, SshInterface, RawFramingInterface |
@@ -44,6 +45,9 @@ questions.
 | [storage.md](../research/storage.md) | draft | Metagraph, identity, ACL, secrets, honker |
 | [flow.md](../research/flow.md) | draft | FlowGraph, operation graph, call graph, petgraph mapping |
 | [integration-plan.md](../research/integration-plan.md) | draft | Phased integration plan for services, pubsub, and operations |
+| [feasibility/](../research/feasibility/) | — | SSH tunnel feasibility assessment and related analyses |
+| [event-sourcing/](../research/event-sourcing/) | — | Event sourcing patterns and event-driven architecture reference |
+| [ops/](../research/ops/) | — | Production ops reference: certbot, fail2ban |
 
 ## ADR Table
 
@@ -80,6 +84,9 @@ questions.
 | [032](decisions/032-event-boundary-discipline.md) | Event boundary discipline (domain, irpc, call protocol) | Accepted |
 | [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv as universal composition mechanism | Accepted |
 | [034](decisions/034-head-worker-terminology.md) | Head/worker terminology replacing hub/spoke | Accepted |
+
+> ADR numbers 020–022 were allocated to proposals that were withdrawn before
+> acceptance and are not listed.
 
 ## Open Questions
 

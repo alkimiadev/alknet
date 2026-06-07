@@ -197,17 +197,12 @@ dependency.
 ## Open Questions
 
 - **OQ-SVC-03**: How does the secret service integrate with the existing
-  `EncryptedDataSchema` from `@alkdev/storage`? The Rust implementation replaces
-  PBKDF2 password-based encryption with derived AES-256-GCM keys. The
-  `EncryptedData` format is a superset — old format can be migrated by
-  re-encrypting with the new key.
+  `EncryptedDataSchema` from `@alkdev/storage`? See [open-questions.md](open-questions.md).
 
-- **OQ-SVC-04**: Should workers cache derived keys locally? Yes, with a TTL
-  (default: 1 hour). The head can revoke by invalidating the session.
+- **OQ-SVC-04**: Should workers cache derived keys locally? See [open-questions.md](open-questions.md).
 
-- **OQ-SVC-05**: How does the smart contract (NFT-based ACL) interact with the
-  secret service? The Ethereum signing key (`m/44'/60'/0'/0/0`) is derived from
-  the same seed. The smart contract is a separate concern.
+- **OQ-SVC-05**: How does the NFT-based ACL smart contract interact with the
+  secret service? See [open-questions.md](open-questions.md).
 
 ## Design Decisions
 

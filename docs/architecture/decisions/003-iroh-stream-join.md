@@ -28,4 +28,4 @@ Option 3 was rejected because it would require modifying russh to understand iro
 
 ## References
 - [transport.md](../transport.md)
-- [Feasibility assessment §11](../../../../conversations/research/ssh-tunnel-vpn-alternative-feasibility.md)
+- [Feasibility assessment §11](../../research/feasibility/ssh-tunnel-vpn-alternative-feasibility.md)

@@ -23,4 +23,4 @@ This makes adding a new transport (e.g., WebSocket, QUIC directly) a matter of i
 
 ## References
 - [transport.md](../transport.md)
-- [Feasibility assessment §3](../../../../conversations/research/ssh-tunnel-vpn-alternative-feasibility.md)
+- [Feasibility assessment §3](../../research/feasibility/ssh-tunnel-vpn-alternative-feasibility.md)

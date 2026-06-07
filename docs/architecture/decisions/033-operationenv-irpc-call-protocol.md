@@ -125,6 +125,8 @@ operations universally composable across all interfaces.
 
 - [research/services.md](../../research/services.md) — OperationContext, OperationEnv
 - [research/integration-plan.md](../../research/integration-plan.md) — Phase 1.5, OperationEnv wiring
+- [ADR-026](026-transport-interface-separation.md) — Three-layer model (OperationEnv is Layer 3)
+- [ADR-028](028-auth-irpc-service.md) — Auth as irpc service (one dispatch backend)
 - [ADR-032](032-event-boundary-discipline.md) — Event boundary discipline
 - [ADR-024](024-bidirectional-call-protocol.md) — Bidirectional call protocol
 - [ADR-025](025-handler-spec-separation.md) — Handler/spec separation

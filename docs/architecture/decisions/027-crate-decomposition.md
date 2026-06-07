@@ -64,16 +64,29 @@ format, but not as a crate dependency.
 ### Dependency Graph
 
 ```
-                  alknet-secret
-                 /             \
-                /               \
-alknet-core ←────                ←── alknet-storage
-     ↑               \           /
-     │                alknet-flowgraph
-     │
-alknet-napi
-alknet (CLI binary — assembles everything)
+alknet-secret       alknet-storage      alknet-flowgraph
+   (standalone)        (standalone)        (standalone)
+        │                   │                  │
+        │  (feature flags   │   (trait impl    │  (type compat
+        │   in CLI binary)  │    via CLI wire)  │   via JSON)
+        ▼                   ▼                  ▼
+                 ┌─────────────────────┐
+                 │    alknet-core       │
+                 │  (transport, SSH,     │
+                 │   call protocol,     │
+                 │   Identity, Config)  │
+                 └─────────┬───────────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+        alknet-napi    alknet (CLI binary — assembles everything)
 ```
+
+All four library crates (core, secret, storage, flowgraph) are independent of
+each other. Dependencies flow **upward** only. The CLI binary sits at the top
+and wires concrete implementations together. alknet-storage implements
+alknet-core's `IdentityProvider` trait without a crate dependency — the CLI
+binary provides the bridge.
 
 ### Narrow Interface Points
 
@@ -147,4 +160,5 @@ alknet-storage does NOT depend on alknet-secret as a crate. Instead:
 - [research/services.md](../../research/services.md) — Service protocols
 - [research/storage.md](../../research/storage.md) — alknet-storage contents
 - [research/flow.md](../../research/flow.md) — alknet-flowgraph contents
+- [ADR-028](028-auth-irpc-service.md) — Auth as irpc service (service protocol enabled by decomposition)
 - [ADR-029](029-identity-core-type.md) — Identity as core type (narrow interface point)

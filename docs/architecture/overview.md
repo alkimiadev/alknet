@@ -1,6 +1,6 @@
 ---
 status: reviewed
-last_updated: 2026-06-02
+last_updated: 2026-06-07
 ---
 
 # Alknet Overview
@@ -15,6 +15,64 @@ Alknet is a self-hostable SSH-based tunnel tool that provides VPN-like functiona
 - **Service mesh connectivity** — a lightweight transport layer for the pubsub/operations event system
 
 The core insight: SSH tunnels work because SSH is fundamental infrastructure. Blocking it breaks the internet. Alknet makes SSH tunneling accessible through a simple CLI with pluggable transports.
+
+## Crate Structure
+
+Alknet is decomposed into six crates with a strict acyclic dependency graph (ADR-027):
+
+| Crate | Purpose | Exists Now? |
+|-------|---------|-------------|
+| **alknet-core** | Transport, SSH, call protocol, config, auth types, `OperationSpec`, `Interface` trait | Yes |
+| **alknet-napi** | Node.js native addon via napi-rs | Yes |
+| **alknet-secret** | BIP39, SLIP-0010 HD key derivation, AES-256-GCM, `SecretProtocol` irpc service | Phase 2+ |
+| **alknet-storage** | SQLite-backed metagraph, identity tables, ACL graph, honker, `StorageProtocol` | Phase 2+ |
+| **alknet-flowgraph** | `FlowGraph<N,E>` over petgraph, operation graph, call graph | Phase 2+ |
+| **alknet** (CLI) | Binary that assembles everything with feature flags | Yes |
+
+The four library crates (core, secret, storage, flowgraph) are independent of each other. Dependencies flow upward only: the CLI binary sits at the top and wires concrete implementations together. alknet-storage implements alknet-core's `IdentityProvider` trait without a crate dependency — the CLI binary provides the bridge.
+
+irpc is behind a feature flag in alknet-core. Nodes that only do SSH tunneling don't need the service layer overhead.
+
+## Three-Layer Model
+
+Alknet uses a three-layer model (ADR-026):
+
+| Layer | Responsibility | Examples |
+|-------|---------------|----------|
+| **Layer 1: Transport** | Produces byte streams (`AsyncRead + AsyncWrite + Unpin + Send`) | TCP, TLS, iroh, DNS (future), WebTransport (future) |
+| **Layer 2: Interface** | Consumes a transport stream and produces call protocol sessions | SSH (handshake + auth + channel multiplexing), raw framing (length-prefix + JSON) |
+| **Layer 3: Protocol** | Carries semantics — operation registry, service calls, events | Call protocol, OperationEnv, operation dispatch |
+
+SSH is an interface, not a transport. The three-layer model enables DNS control channels (DNS transport + raw framing), local service mesh (TCP + raw framing), and browser direct call protocol (WebTransport + raw framing) without wrapping SSH inside those transports.
+
+A connection is always a (Transport, Interface) pair. The protocol layer is agnostic to both.
+
+## Service Layer
+
+The irpc service layer decomposes alknet's core responsibilities into independently testable, deployable, and replaceable components (ADR-033, [services.md](services.md)):
+
+- **Auth** (`AuthProtocol`) — verify identities, check credentials
+- **Secret** (`SecretProtocol`) — derive keys, encrypt/decrypt
+- **Config** (`ConfigProtocol`) — dynamic config reload
+- **Storage** (`StorageProtocol`) — graph CRUD, metagraph operations
+
+**OperationEnv** is the universal composition mechanism. A handler receives `context.env.invoke("secrets", "derive", input)` and doesn't know whether the dispatch is local (direct function call), in-cluster (irpc service), or cross-node (call protocol `EventEnvelope`). Three dispatch paths, one handler-facing API.
+
+**Phase boundary**: Phase 1 ships `ConfigIdentityProvider` (ArcSwap-backed) and `ConfigServiceImpl` (ArcSwap-backed) as the only auth and config implementations. The irpc service protocols (`AuthProtocol`, `SecretProtocol`, etc.) and the production deployment topology (multi-node with `StorageIdentityProvider`) are contracted in the specs but will be implemented in Phase 2+. Application services (DockerService, NodeService, agent services) are downstream concerns that build on top of the call protocol and OperationEnv.
+
+## Identity
+
+`Identity` struct and `IdentityProvider` trait are core types in alknet-core (ADR-029, [identity.md](identity.md)):
+
+```rust
+pub struct Identity {
+    pub id: String,          // Fingerprint (config auth) or account UUID (database auth)
+    pub scopes: Vec<String>, // Authorization scope strings
+    pub resources: HashMap<String, Vec<String>>, // Resource-level authorization
+}
+```
+
+`IdentityProvider` decouples alknet-core from identity storage. Phase 1 ships `ConfigIdentityProvider` (reads from `ArcSwap<DynamicConfig.auth>`). `StorageIdentityProvider` (Phase 2+, backed by SQLite) replaces it for production deployments. Both produce the same `Identity` result.
 
 ## Exports
 
@@ -35,24 +93,40 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 - `TcpTransport` — direct TCP connection
 - `TlsTransport` — TCP + tokio-rustls TLS
 - `IrohTransport` — iroh QUIC P2P connection
+- `Interface` trait — consumes transport stream, produces call protocol session
 - `Socks5Server` — local SOCKS5 proxy that forwards through SSH channels
 - `PortForwarder` — manages local/remote port forwards
 - `ServerHandler` — russh server handler with configurable auth and channel policies
-- `ConnectOptions` / `ServeOptions` — programmatic configuration structs (no file parsing)
+- `Identity` / `IdentityProvider` — core identity types (ADR-029)
+- `OperationSpec` — operation registration for call protocol (ADR-025)
+- `ConnectOptions` / `ServeOptions` — programmatic configuration structs
+- `StaticConfig` / `DynamicConfig` — static/immutable vs. hot-reloadable config (ADR-030)
+- `ConfigReloadHandle` — programmatic reload of dynamic config
 
 ## Dependencies
 
-| Dependency | Purpose | Feature-gated |
-|------------|---------|---------------|
-| `russh` | SSH client & server | No (core) |
-| `tokio` | Async runtime | No (core) |
-| `tokio-rustls` | TLS wrapping | Yes (`tls`) |
-| `rustls` | TLS implementation | Yes (`tls`) |
-| `rustls-acme` | ACME/Let's Encrypt auto-cert | Yes (`acme`) |
-| `iroh` | P2P QUIC transport | Yes (`iroh`) |
-| `clap` | CLI argument parsing | No (core) |
-| `tracing` | Structured logging | No (core) |
-| `anyhow` / `thiserror` | Error handling | No (core) |
+| Dependency | Purpose | Crate | Feature-gated |
+|------------|---------|-------|---------------|
+| `russh` | SSH client & server | core | No (core) |
+| `tokio` | Async runtime | core | No (core) |
+| `tokio-rustls` | TLS wrapping | core | Yes (`tls`) |
+| `rustls` | TLS implementation | core | Yes (`tls`) |
+| `rustls-acme` | ACME/Let's Encrypt auto-cert | core | Yes (`acme`) |
+| `iroh` | P2P QUIC transport | core | Yes (`iroh`) |
+| `irpc` | Streaming RPC service layer | core | Yes (`irpc`) |
+| `arc-swap` | Lock-free dynamic config | core | No (core) |
+| `serde` | Serialization | core | No (core) |
+| `clap` | CLI argument parsing | CLI | No (CLI) |
+| `toml` | TOML config file | CLI | No (CLI) |
+| `tracing` | Structured logging | core | No (core) |
+| `anyhow` / `thiserror` | Error handling | core | No (core) |
+| `bip39` | Mnemonic generation | secret | No (secret) |
+| `ed25519-bip32` | HD key derivation | secret | No (secret) |
+| `aes-gcm` | AES-256-GCM encryption | secret | No (secret) |
+| `rusqlite` | SQLite (via honker) | storage | No (storage) |
+| `honker` | Event-sourced storage | storage | No (storage) |
+| `petgraph` | Graph data structure | storage, flowgraph | No |
+| `jsonschema` | JSON Schema validation | storage, flowgraph | No |
 
 > Note: `tun-rs` is no longer a dependency. TUN support is deferred in favor of the external `tun2proxy` tool (ADR-014).
 
@@ -60,19 +134,29 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 
 1. **SSH runs over transport, not alongside** — The transport layer produces a single `AsyncRead+AsyncWrite+Unpin+Send` stream. SSH runs over that stream via `russh::client::connect_stream()` / `russh::server::run_stream()`. The SSH layer never knows what transport it's on. (ADR-001, ADR-004)
 
-2. **SOCKS5 is the primary client interface** — Port forwarding is built on top of SOCKS5-like channel management. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside alknet's SOCKS5 proxy. TUN is not in the project scope. (ADR-005, ADR-014)
+2. **Three-layer model: Transport, Interface, Protocol** — SSH is an interface (Layer 2), not a transport (Layer 1). A connection is always a (Transport, Interface) pair. The call protocol (Layer 3) is agnostic to both. This enables DNS control channels, raw framing, and WebTransport direct call protocol without wrapping SSH inside those transports. (ADR-026)
 
-3. **No logging of tunnel destinations** — The server logs auth attempts and connections (for fail2ban) but does not log `channel_open_direct_tcpip` destinations, DNS lookups, or bytes transferred. (ADR-006, ADR-013)
+3. **SOCKS5 is the primary client interface** — Port forwarding is built on top of SOCKS5-like channel management. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside alknet's SOCKS5 proxy. TUN is not in the project scope. (ADR-005, ADR-014)
 
-4. **Programmatic-first API** — Configuration via CLI flags, library API structs (`ConnectOptions`, `ServeOptions`), and environment variables. No `~/.ssh/config` parsing, no custom config files. (ADR-011)
+4. **No logging of tunnel destinations** — The server logs auth attempts and connections (for fail2ban) but does not log `channel_open_direct_tcpip` destinations, DNS lookups, or bytes transferred. (ADR-006, ADR-013)
 
-5. **Feature flags control transport inclusion** — `tls`, `iroh`, `acme` are feature-gated so the base install is lean. Users opt in to heavier dependencies.
+5. **Programmatic-first API** — Configuration via CLI flags, library API structs (`ConnectOptions`, `ServeOptions`), and environment variables. No `~/.ssh/config` parsing. Optional `--config` TOML file for reproducible deployments. (ADR-011, ADR-030)
 
-6. **Authentication is key-based** — Ed25519 public key (default) and OpenSSH certificate authority. No password authentication over SSH. (ADR-012)
+6. **Feature flags control transport inclusion** — `tls`, `iroh`, `acme`, `irpc` are feature-gated so the base install is lean. Users opt in to heavier dependencies.
 
-7. **NAPI exposes both connect() and serve()** — The napi-rs wrapper provides client and server functionality, using napi-rs as the FFI bridge. The NAPI layer is transport-agnostic and not tied to pubsub. (ADR-015, ADR-016)
+7. **Authentication is key-based and unified** — Ed25519 public key (default) and OpenSSH certificate authority. Same key material for SSH and token auth. Identity resolves through `IdentityProvider` trait, decoupling core from identity storage. (ADR-012, ADR-023, ADR-029)
 
-8. **Error handling follows a consistent layered pattern** — Transport and auth errors cause reconnection (client, with exponential backoff) or connection rejection (server). Channel-level errors (target unreachable, proxy failure) close the individual channel without killing the session. Library API errors propagate via `anyhow::Result` / `thiserror` types. CLI reports errors to stderr with appropriate exit codes. NAPI errors are marshalled as JavaScript exceptions.
+8. **NAPI exposes both connect() and serve()** — The napi-rs wrapper provides client and server functionality, using napi-rs as the FFI bridge. The NAPI layer is transport-agnostic and not tied to pubsub. (ADR-015, ADR-016)
+
+9. **Static/dynamic config split** — Transport-level settings (listen address, TLS certs) are immutable after startup. Auth, forwarding policy, and rate limits are hot-reloadable via `ArcSwap<DynamicConfig>`. (ADR-030)
+
+10. **Forwarding policy enforced before proxy spawn** — Each `channel_open_direct_tcpip` is checked against `ForwardingPolicy` before a TCP connection is made. Default-allow preserves current behavior. (ADR-031)
+
+11. **OperationEnv as universal composition mechanism** — Handlers call `context.env.invoke(namespace, op, input)` regardless of dispatch path (local, irpc service, remote call protocol). (ADR-033)
+
+12. **Event boundary discipline** — Domain events (Honker streams) stay within the owning service. irpc calls are synchronous and in-cluster. Call protocol `EventEnvelope` is the only thing that crosses node boundaries. (ADR-032)
+
+13. **Error handling follows a consistent layered pattern** — Transport and auth errors cause reconnection (client, with exponential backoff) or connection rejection (server). Channel-level errors (target unreachable, proxy failure) close the individual channel without killing the session. Library API errors propagate via `anyhow::Result` / `thiserror` types. CLI reports errors to stderr with appropriate exit codes. NAPI errors are marshalled as JavaScript exceptions.
 
 ## Design Decisions
 
@@ -88,7 +172,7 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 | [008](decisions/008-acme-lets-encrypt.md) | ACME/Let's Encrypt | Auto-provision TLS certs, domain and IP paths |
 | [009](decisions/009-default-iroh-relay.md) | Default iroh relay | n0 relay by default, `--iroh-relay` override |
 | [010](decisions/010-transport-chaining-cli.md) | Transport chaining | `--proxy` works with all transports natively |
-| [011](decisions/011-no-ssh-config-programmatic-api.md) | Programmatic-first | No file-based config; options are structs, env vars, CLI flags |
+| [011](decisions/011-no-ssh-config-programmatic-api.md) | Programmatic-first | No SSH config files; options are structs, env vars, CLI flags (amended by ADR-030 for optional TOML) |
 | [012](decisions/012-auth-ed25519-and-cert-authority.md) | Key + cert-authority | Ed25519 keys + OpenSSH CA; no password auth |
 | [013](decisions/013-fail2ban-friendly-logging.md) | Fail2ban-friendly | Structured auth logs + built-in rate limiting |
 | [014](decisions/014-defer-tun-recommend-socks5-proxy.md) | Defer TUN | Use tun2proxy for VPN-like behavior; no alknet-tun binary |
@@ -97,17 +181,46 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 | [017](decisions/017-stealth-mode-protocol-multiplexing.md) | Stealth mode | Protocol multiplexing on port 443 |
 | [018](decisions/018-control-channel-for-pubsub.md) | Control channel | Reserved `alknet-control` destination for pubsub |
 | [019](decisions/019-proxy-dual-semantics.md) | Proxy dual semantics | `--proxy` routes transport on client, data on server |
+| [023](decisions/023-unified-auth-shared-key-material.md) | Unified auth | Same key material for SSH and token auth |
+| [024](decisions/024-bidirectional-call-protocol.md) | Bidirectional call protocol | Both sides can initiate calls |
+| [025](decisions/025-handler-spec-separation.md) | Handler/spec separation | Downstream registers operations without modifying core |
+| [026](decisions/026-transport-interface-separation.md) | Three-layer model | SSH is Layer 2, not Layer 1 |
+| [027](decisions/027-crate-decomposition.md) | Crate decomposition | Six crates, acyclic deps, feature-gated irpc |
+| [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | IdentityProvider is the contract, irpc is one backend |
+| [029](decisions/029-identity-core-type.md) | Identity as core type | `Identity` and `IdentityProvider` in alknet-core |
+| [030](decisions/030-static-dynamic-config-split.md) | Static/dynamic config | ArcSwap for hot-reloadable auth and forwarding |
+| [031](decisions/031-forwarding-policy.md) | Forwarding policy | Per-identity, per-destination, per-transport rules |
+| [032](decisions/032-event-boundary-discipline.md) | Event boundary | Domain events never cross service boundaries |
+| [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv | Universal composition, three dispatch paths |
+| [034](decisions/034-head-worker-terminology.md) | Head/worker | Replaces hub/spoke terminology |
 
 ## Open Questions
 
-All open questions have been resolved. See [open-questions.md](open-questions.md) for resolution details.
+See [open-questions.md](open-questions.md) for all open and resolved questions.
+Key open questions: OQ-15 (QUIC coexistence), OQ-19 (WebTransport TLS),
+OQ-20 (worker registration), OQ-IF-01 (Interface session / EventEnvelope
+relationship).
 
 ## References
 
-- [Feasibility Assessment](../../../conversations/research/ssh-tunnel-vpn-alternative-feasibility.md)
+- [transport.md](transport.md) — Transport abstraction (Layer 1)
+- [interface.md](interface.md) — Interface layer (Layer 2)
+- [call-protocol.md](call-protocol.md) — Call protocol (Layer 3)
+- [auth.md](auth.md) — Unified authentication
+- [identity.md](identity.md) — Identity and IdentityProvider
+- [configuration.md](configuration.md) — StaticConfig, DynamicConfig, ForwardingPolicy
+- [services.md](services.md) — irpc service layer, OperationEnv
+- [server.md](server.md) — Server acceptance, channel handling
+- [client.md](client.md) — Client connection, SOCKS5, port forwarding
+- [napi-and-pubsub.md](napi-and-pubsub.md) — NAPI wrapper and pubsub adapter
+- [storage.md](storage.md) — alknet-storage: metagraph, identity, ACL
+- [flowgraph.md](flowgraph.md) — alknet-flowgraph: call graph, operation graph
+- [secret-service.md](secret-service.md) — alknet-secret: BIP39, SLIP-0010, AES-GCM
+- [Feasibility Assessment](../research/feasibility/ssh-tunnel-vpn-alternative-feasibility.md)
 - [russh API](/workspace/russh) — SSH client/server library
 - [Dispatch](/workspace/@alkdev/dispatch) — Reference implementation of russh port forwarding
 - [iroh](/workspace/iroh) — P2P QUIC connections
 - [tun2proxy](https://github.com/tun2proxy/tun2proxy) — Recommended external TUN-to-SOCKS5 tool
-- [Production certbot setup](/workspace/system/dev1/certbot.md) — Let's Encrypt on our infrastructure
-- [Production fail2ban setup](/workspace/system/dev1/fail2ban.md) — fail2ban with nftables on our infrastructure
+- [irpc](/workspace/irpc) — iroh streaming RPC
+- [Production certbot setup](../research/ops/certbot.md) — Let's Encrypt on our infrastructure
+- [Production fail2ban setup](../research/ops/fail2ban.md) — fail2ban with nftables on our infrastructure

@@ -93,4 +93,4 @@ propagate beyond the service boundary without projection.
 - [research/services.md](../../research/services.md) — Event boundary discipline section
 - [research/storage.md](../../research/storage.md) — Honker integration, event boundaries
 - [research/integration-plan.md](../../research/integration-plan.md) — ADR 032 entry
-- [event_source_types.md](/workspace/research/event_sourcing/event_source_types.md) — Event-driven architecture patterns
+- [event_source_types.md](../../research/event-sourcing/event_source_types.md) — Event-driven architecture patterns

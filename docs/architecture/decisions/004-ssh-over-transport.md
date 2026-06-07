@@ -25,4 +25,4 @@ This is directly enabled by russh's `connect_stream()` and `run_stream()` APIs, 
 
 ## References
 - [transport.md](../transport.md)
-- [Feasibility assessment §3.4](../../../../conversations/research/ssh-tunnel-vpn-alternative-feasibility.md)
+- [Feasibility assessment §3.4](../../research/feasibility/ssh-tunnel-vpn-alternative-feasibility.md)

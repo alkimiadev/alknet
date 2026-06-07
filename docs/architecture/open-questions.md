@@ -105,7 +105,7 @@ last_updated: 2026-06-07
 - **Origin**: [research/configuration.md](../research/configuration.md)
 - **Status**: resolved
 - **Priority**: low
-- **Resolution**: No file watching. CLI loads once at startup; NAPI/hub reload explicitly. File watching is a potential attack vector and unnecessary complexity for a security tool.
+- **Resolution**: No file watching. CLI loads once at startup; NAPI/head reload explicitly. File watching is a potential attack vector and unnecessary complexity for a security tool.
 - **Cross-references**: configuration.md
 
 ### OQ-14: ArcSwap vs RwLock for dynamic config
@@ -221,10 +221,17 @@ last_updated: 2026-06-07
 
 ### OQ-SVC-04: Should workers cache derived keys locally?
 - **Origin**: [secret-service.md](secret-service.md)
-- **Status**: open
-- **Priority**: low
+- **Status**: ~~resolved~~
+- **Priority**: low —
 - **Resolution**: Yes, with a TTL (default: 1 hour). The head can revoke by invalidating the session.
 - **Cross-references**: [secret-service.md](secret-service.md)
+
+### OQ-SVC-05: How does the NFT-based ACL smart contract interact with the secret service?
+- **Origin**: [storage.md](storage.md)
+- **Status**: open
+- **Priority**: low
+- **Resolution**: The Ethereum signing key (`m/44'/60'/0'/0/0`) is derived from the same seed as the secret service. The smart contract is a separate concern — it reads on-chain ACL state, it doesn't call the secret service.
+- **Cross-references**: [storage.md](storage.md), [secret-service.md](secret-service.md)
 
 ## Interface
 

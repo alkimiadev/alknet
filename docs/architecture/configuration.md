@@ -69,6 +69,39 @@ impl ConfigReloadHandle {
 
 Obtained from `Server::run()`. Passed to NAPI or CLI for explicit reload.
 
+### ConfigServiceImpl
+
+The Phase 1 implementation of config service logic, backed by
+`ArcSwap<DynamicConfig>`. Where `ConfigIdentityProvider` wraps the auth section
+of `DynamicConfig`, `ConfigServiceImpl` wraps the forwarding and rate-limit
+sections. Both are ArcSwap-backed and share the same `DynamicConfig` instance.
+
+```rust
+pub struct ConfigServiceImpl {
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
+}
+
+impl ConfigServiceImpl {
+    pub fn forwarding_policy(&self) -> Arc<ForwardingPolicy> {
+        self.dynamic.load().forwarding.clone()
+    }
+
+    pub fn rate_limits(&self) -> Arc<RateLimitConfig> {
+        self.dynamic.load().rate_limits.clone()
+    }
+
+    pub fn reload(&self, new_config: DynamicConfig) {
+        self.dynamic.store(Arc::new(new_config));
+    }
+}
+```
+
+Phase 1 deploys `ConfigServiceImpl` directly — no irpc service boundary. The
+`ConfigProtocol` irpc service (behind feature flag) wraps `ConfigServiceImpl`
+for production deployments that use the service layer. This mirrors the
+`ConfigIdentityProvider` / `AuthProtocol` pattern from [identity.md](identity.md)
+and ADR-028.
+
 ### ConfigService irpc Service
 
 ```rust
@@ -155,7 +188,7 @@ iroh_relay = "https://relay.alk.dev"
 | Interface | Static config | Dynamic config | Reload mechanism |
 |-----------|--------------|----------------|------------------|
 | CLI | Flags + optional `--config` file | Loaded at startup from `--authorized-keys` | None (restart to change) |
-| Core Rust | `StaticConfig` struct | `AuthService` (irpc) or `ArcSwap<DynamicConfig>` (minimal) | `ConfigService::reload()` or `ConfigReloadHandle::reload()` |
+| Core Rust | `StaticConfig` struct | `AuthProtocol` (irpc) or `ConfigIdentityProvider` (ArcSwap) | `ConfigProtocol::ReloadDynamicConfig` or `ConfigReloadHandle::reload()` |
 | NAPI | `serve()` options | Same | `server.reloadAuth()`, `server.reloadForwarding()` |
 
 ## Constraints

@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-The server needs to handle abuse on public-facing deployments. Our production infrastructure uses fail2ban on Linux (documented in `/workspace/system/dev1/fail2ban.md`) with nftables and systemd journal backend. fail2ban needs structured, parseable logs to identify abusive IP addresses.
+The server needs to handle abuse on public-facing deployments. Our production infrastructure uses fail2ban on Linux (documented in [fail2ban.md](../../research/ops/fail2ban.md)) with nftables and systemd journal backend. fail2ban needs structured, parseable logs to identify abusive IP addresses.
 
 However, fail2ban is Linux-specific. On other platforms (macOS, Windows, BSD), users need a different approach to reject abusive connections. The server should provide enough logging for fail2ban on Linux and enough built-in protection for other platforms.
 
@@ -36,4 +36,4 @@ This ensures that even without fail2ban, the server rejects obviously abusive co
 ## References
 - [server.md](../server.md)
 - [OQ-08](../open-questions.md) — resolved by this ADR
-- Production fail2ban setup: `/workspace/system/dev1/fail2ban.md`
+- Production fail2ban setup: [fail2ban.md](../../research/ops/fail2ban.md)

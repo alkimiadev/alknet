@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-TLS transport mode requires certificates. Manual certificate management is error-prone — users need to obtain, install, and renew certificates. Our production setup uses certbot with Let's Encrypt (documented in `/workspace/system/dev1/certbot.md`), which automates this via the ACME protocol.
+TLS transport mode requires certificates. Manual certificate management is error-prone — users need to obtain, install, and renew certificates. Our production setup uses certbot with Let's Encrypt (documented in [certbot.md](../../research/ops/certbot.md)), which automates this via the ACME protocol.
 
 There are two ACME flows:
 1. **Domain-based**: Standard flow with DNS-01 or HTTP-01 challenge. Certificate is tied to a domain name, auto-renews via certbot/systemd timer. Requires port 80 or DNS access for challenges.
@@ -35,4 +35,4 @@ The implementation should use the `rustls-acme` crate (or similar pure-Rust ACME
 - [server.md](../server.md)
 - [OQ-01](../open-questions.md) — resolved by this ADR
 - [OQ-07](../open-questions.md) — resolved by this ADR
-- Production certbot setup: `/workspace/system/dev1/certbot.md`
+- Production certbot setup: [certbot.md](../../research/ops/certbot.md)

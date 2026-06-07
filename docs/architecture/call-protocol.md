@@ -13,6 +13,11 @@ subscriptions, and unidirectional events — all using the same wire format. The
 protocol is defined as a spec + handler + registry; downstream consumers (NAPI,
 Python, head/worker) register their own operations without modifying core.
 
+OperationEnv extends the call protocol with a universal composition mechanism
+that unifies local dispatch, irpc service dispatch, and remote dispatch. A
+handler receives `context.env.invoke(namespace, op, input)` and doesn't know
+whether the operation runs locally, in-cluster, or on a remote node.
+
 ## Why
 
 The current control channel (ADR-018) is unidirectional (client → server) and
@@ -20,6 +25,10 @@ provides fire-and-forget event dispatch without request/response semantics.
 The call protocol generalizes it to support bidirectional calls (ADR-024) and
 downstream service registration (ADR-025), enabling the head/worker model where
 workers expose operations the head invokes.
+
+Without OperationEnv, handlers calling other operations would need to know
+whether the target is local, in-cluster, or on a remote node. OperationEnv
+abstracts this away — one handler-facing API, three dispatch backends (ADR-033).
 
 ## Architecture
 
@@ -316,6 +325,101 @@ that carries `EventEnvelope` frames:
 The framing is always: 4-byte BE length prefix + JSON. The envelope shape is
 the same regardless of transport.
 
+### OperationEnv — Universal Composition Mechanism
+
+OperationEnv provides the handler-facing API for composing operations. A handler
+receives `context.env.invoke(namespace, operation, input)` and gets back a
+`ResponseEnvelope` — regardless of which dispatch path the operation takes
+(ADR-033).
+
+Three dispatch paths, one API:
+
+| Path | Mechanism | Serialization | Scope |
+|------|-----------|---------------|-------|
+| **Local** | Direct function call through registry | None (in-process) | Same process |
+| **Service** | irpc protocol enum dispatch | postcard (binary) | Same cluster |
+| **Remote** | Call protocol `EventEnvelope` | JSON | Cross-node |
+
+All three produce the same `ResponseEnvelope`. Service assembly determines
+which path each operation uses:
+
+```rust
+// Minimal deployment (Phase 1: single node, all local)
+let env = OperationEnv::local(local_registry);
+
+// Production deployment (Phase 2+: mix of local and remote)
+let env = OperationEnv::new()
+    .local("auth", auth_registry)
+    .local("config", config_registry)
+    .service("secrets", secret_irpc_client)
+    .remote("worker-1", call_protocol_conn);
+```
+
+**Phase boundary**: Phase 1 ships with local dispatch only (direct function
+calls through the operation registry). The irpc service dispatch and remote
+dispatch paths are contracted here but not built yet. irpc service protocols
+(`AuthProtocol`, `SecretProtocol`, etc.) are defined in the specs but the
+implementations are Phase 2+ work.
+
+**irpc is one dispatch backend for OperationEnv, not a replacement for the
+call protocol or for OperationEnv.** A call protocol handler can call an irpc
+service internally (e.g., `/head/auth/verify` calls
+`AuthProtocol::VerifyPubkey`) — the layers compose. irpc is behind a feature
+flag in alknet-core. See [services.md](services.md) for full OperationEnv and
+irpc service details.
+
+### OperationContext
+
+Every handler receives an `OperationContext`:
+
+```rust
+pub struct OperationContext {
+    pub request_id: String,
+    pub parent_request_id: Option<String>,
+    pub identity: Option<Identity>,
+    pub metadata: HashMap<String, Value>,
+    pub env: OperationEnv,
+    pub trusted: bool,  // set by buildEnv(), not by callers
+}
+```
+
+- **`identity`**: The authenticated identity making the call. Populated by
+  `IdentityProvider` from the interface layer ([identity.md](identity.md)).
+- **`env`**: The operation environment — namespaced access to other operations.
+- **`trusted`**: When a handler calls another operation through `env`, the
+  nested call is `trusted` (skips ACL checks). This prevents double-checking:
+  if `/head/agent/chat` is allowed, and it internally calls
+  `/head/auth/verify`, the auth check is trusted.
+
+Handler signature:
+
+```rust
+fn handle(input: Value, context: OperationContext) -> ResponseEnvelope;
+```
+
+### ResponseEnvelope
+
+The universal return type from all three dispatch paths:
+
+```rust
+pub struct ResponseEnvelope {
+    pub request_id: String,
+    pub result: Result<Value, CallError>,
+}
+
+pub struct CallError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+```
+
+Local dispatch produces `ResponseEnvelope` with no serialization. irpc service
+dispatch produces postcard-encoded results that are decoded into
+`ResponseEnvelope`. Remote dispatch receives `call.responded` EventEnvelope
+frames and maps them to `ResponseEnvelope`. The handler always gets the same
+type back.
+
 ### Relationship to @alkdev/pubsub and @alkdev/operations
 
 The call protocol in core is a Rust reimplementation of the same protocol
@@ -335,11 +439,11 @@ through core, out over SSH channel, into a JavaScript pubsub adapter, and
 be dispatched through `@alkdev/operations`'s call handler** — with zero
 translation at the wire level.
 
-### Agent Service Pattern (Future)
+### Agent Service Pattern (Downstream Application Concern)
 
 An agent service — coordinating between LLM providers and tool calls — is a
-primary use case for the call protocol. It would be just another set of
-registered operations with no special treatment:
+primary downstream use case for the call protocol. It would be just another set
+of registered operations with no special treatment:
 
 - `/head/agent/chat` — send a message, get a completion. Routes to the
   appropriate LLM provider based on available workers and configuration.
@@ -348,12 +452,10 @@ registered operations with no special treatment:
   durable storage).
 - `/head/sessions/history` — retrieve a specific session's message history.
 
-The agent service would use the same call protocol to invoke tools on workers
-(e.g., `/dev1/fs/readFile` for file access, `/dev1/bash/exec` for shell
-commands). This is a **downstream application concern**, not a core
-requirement. The call protocol enables it by providing the universal composition
-mechanism (OperationEnv, ADR-033), but the agent service itself is built on
-top, not into the core.
+The agent service uses OperationEnv to invoke tools on workers. **This is a
+downstream application concern, not a core requirement.** The call protocol
+enables it by providing the universal composition mechanism (ADR-033), but the
+agent service itself is built on top, not into the core.
 
 ## Constraints
 
@@ -370,6 +472,16 @@ top, not into the core.
   boundary. ACL is enforced at the `AccessControl` level, not by path prefix
   alone. A worker that exposes `/dev1/bash/exec` can restrict access via
   `required_scopes` — not every authenticated identity should have shell access.
+- **OperationEnv composition model matches the `@alkdev/operations` behavioral
+  contract**: namespace + operation name → invoke with input, return output.
+  The Rust implementation may differ in structure but must preserve this
+  contract (ADR-033).
+- **irpc is explicitly positioned as one dispatch backend for OperationEnv**
+  (ADR-033, ADR-028). It is not a replacement for the call protocol or for
+  OperationEnv.
+- **Phase 1 is local dispatch only.** irpc service dispatch and remote dispatch
+  are contracted in this spec but not built yet. The `OperationEnv::local()`
+  path is the Phase 1 implementation.
 
 ## Open Questions
 
@@ -378,9 +490,13 @@ top, not into the core.
   disconnect, or heartbeat-based discovery? See
   [open-questions.md](open-questions.md).
 
-- **OQ-22**: Should the call protocol support streaming inputs (client streaming
-  in gRPC terms), or is client→server always a single request payload with
-  streaming only server→client? See [open-questions.md](open-questions.md).
+- **OQ-22**: ~~Should the call protocol support streaming inputs (client streaming
+  in gRPC terms)?~~ Resolved — deferred. Current model covers all identified use
+  cases. See [open-questions.md](open-questions.md).
+
+- **OQ-IF-01**: How does the `Interface` session type relate to the call
+  protocol's `EventEnvelope` stream? This needs design during Phase 1.8
+  implementation. See [open-questions.md](open-questions.md).
 
 ## Design Decisions
 
@@ -389,6 +505,8 @@ top, not into the core.
 | [018](decisions/018-control-channel-for-pubsub.md) | Control channel for pubsub | Reserved destination for event bus |
 | [024](decisions/024-bidirectional-call-protocol.md) | Bidirectional call protocol | Generalizes ADR-018, both sides can call |
 | [025](decisions/025-handler-spec-separation.md) | Handler/spec separation | Downstream registers operations without modifying core |
+| [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | irpc is one dispatch backend for OperationEnv |
+| [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv | Universal composition with three dispatch paths |
 
 ## References
 
@@ -396,7 +514,10 @@ top, not into the core.
 - [napi-and-pubsub.md](napi-and-pubsub.md) — NAPI wrapper and pubsub adapter
 - [server.md](server.md) — Channel handling and control channel routing
 - [transport.md](transport.md) — Transport abstraction
-- [configuration.md](../research/configuration.md) — ForwardingPolicy, service metadata
+- [identity.md](identity.md) — Identity struct, IdentityProvider trait
+- [interface.md](interface.md) — Interface layer, EventEnvelope stream from interfaces
+- [configuration.md](configuration.md) — ForwardingPolicy, service metadata
+- [services.md](services.md) — OperationEnv, OperationContext, irpc service layer
 - `@alkdev/pubsub` — TypeScript event target adapters and `EventEnvelope`
 - `@alkdev/operations` — TypeScript call protocol, `OperationSpec`, registry
 - `@alkdev/storage` — `peer_credentials` table, ACL graph, `Identity`

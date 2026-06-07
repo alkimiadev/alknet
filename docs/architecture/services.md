@@ -20,8 +20,8 @@ last_updated: 2026-06-07
 The irpc service layer decomposes alknet's core responsibilities into
 independently testable, deployable, and replaceable components. Auth, Secret,
 Config, and Storage are irpc protocol enums that work both as in-process async
-boundaries (tokio channels) and cross-process/cross-network (QUIC streams via
-noq). OperationEnv is the universal composition mechanism that unifies local
+boundaries (tokio channels) and cross-process/cross-network (irpc over iroh
+QUIC streams). OperationEnv is the universal composition mechanism that unifies local
 dispatch, irpc service dispatch, and remote call protocol dispatch.
 
 ## Why
@@ -209,13 +209,10 @@ layer to be built — they are Phase 2+ concerns.
 ## Open Questions
 
 - **OQ-SVC-01**: Should the secret service support multiple seed phrases (one
-  per tenant)? Defer for now — one seed per node. Multi-seed can be added
-  later by indexing the `Unlock` call with a tenant ID.
+  per tenant)? See [open-questions.md](open-questions.md).
 
 - **OQ-SVC-02**: Should service protocols use postcard (binary) or JSON for
-  remote calls? Postcard for irpc (Rust-to-Rust, efficient). JSON for call
-  protocol (cross-language, universal). The irpc remote path naturally uses
-  postcard.
+  remote calls? See [open-questions.md](open-questions.md).
 
 ## Design Decisions
 

@@ -1,6 +1,6 @@
 ---
 status: reviewed
-last_updated: 2026-06-02
+last_updated: 2026-06-07
 ---
 
 # NAPI Wrapper & PubSub Event Target
@@ -71,10 +71,35 @@ function serve(options: AlknetServeOptions): Promise<AlknetServer>;
 interface AlknetServer {
   close(): Promise<void>;
   onConnection(callback: (stream: Duplex, info: ConnectionInfo) => void): void;
+  // Dynamic config reload (ADR-030)
+  reloadAuth(auth: { authorizedKeys?: Buffer, certAuthority?: Buffer }): void;
+  reloadForwarding(policy: ForwardingPolicyConfig): void;
+  reloadAll(config: DynamicConfig): void;
+}
+
+interface ForwardingPolicyConfig {
+  default: 'allow' | 'deny';
+  rules: ForwardingRuleConfig[];
+}
+
+interface ForwardingRuleConfig {
+  target: string;        // "localhost:*", "10.0.0.0/8:80", "alknet-*"
+  action: 'allow' | 'deny';
+  principals?: string[]; // default ["*"]
 }
 ```
 
 The NAPI layer is **transport-agnostic** — it doesn't know about pubsub's `EventEnvelope`. The pubsub adapter wraps the `Duplex` stream to implement `TypedEventTarget`. This separation ensures the NAPI wrapper is reusable for any stream-based protocol, not tied specifically to pubsub.
+
+### NAPI Call Protocol Integration
+
+NAPI consumers can register operation handlers to participate in the call protocol. The `Duplex` stream from `connect()` or `serve()` carries `EventEnvelope` frames (4-byte BE length prefix + JSON). A TypeScript consumer can implement a call protocol handler that reads these frames and dispatches to registered operations — the same wire protocol used by `@alkdev/operations`.
+
+See [call-protocol.md](call-protocol.md) for the call protocol spec and [services.md](services.md) for OperationEnv and dispatch paths.
+
+### NAPI irpc Service Creation
+
+Behind the `irpc` feature flag, NAPI consumers can create irpc service instances for in-cluster communication. This is a Phase 2+ capability — Phase 1 uses `ConfigIdentityProvider` and direct `ConfigReloadHandle` calls. See [services.md](services.md) for the irpc service layer and ADR-027 for crate decomposition.
 
 ### NAPI `connect()` vs CLI `alknet connect`
 
@@ -155,3 +180,10 @@ None — all resolved.
 | [015](decisions/015-napi-rs-for-ffi-bridge.md) | napi-rs for FFI | Standard Node.js native addon tooling |
 | [016](decisions/016-napi-expose-connect-and-serve.md) | Both connect() and serve() | NAPI exposes client and server sides from the start |
 | [018](decisions/018-control-channel-for-pubsub.md) | Control channel for pubsub | Reserved `alknet-control` destination for event bus |
+| [030](decisions/030-static-dynamic-config-split.md) | Static/dynamic config split | NAPI reload methods for auth, forwarding, and all dynamic config |
+
+## References
+
+- [configuration.md](configuration.md) — DynamicConfig, ForwardingPolicy, reload mechanism
+- [services.md](services.md) — OperationEnv, irpc service layer
+- [call-protocol.md](call-protocol.md) — Call protocol wire format and operation registry
