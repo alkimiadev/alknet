@@ -8,12 +8,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use russh::server::{self, Config};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{error, info, warn};
 
 use crate::auth::keys::KeySource;
 use crate::auth::server_auth::ServerAuthConfig;
+use crate::config::{AuthPolicy, ConfigReloadHandle, DynamicConfig};
 use crate::error::ConfigError;
 use crate::server::handler::{ProxyConfig, ProxyMode, ServerHandler, TransportKind};
 use crate::server::rate_limit::ConnectionRateLimiter;
@@ -228,7 +230,7 @@ struct ActiveSession {
 /// Supports stealth mode (TLS only), outbound proxy routing, and connection rate limiting.
 pub struct Server {
     config: Arc<server::Config>,
-    auth_config: Arc<ServerAuthConfig>,
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
     connection_limiter: Arc<ConnectionRateLimiter>,
     outbound_proxy: Option<ProxyConfig>,
     stealth: bool,
@@ -244,17 +246,24 @@ impl Server {
     pub fn new(opts: ServeOptions) -> Result<Self, ServeError> {
         opts.validate().map_err(ServeError::Config)?;
 
-        let private_key =
-            crate::auth::keys::load_private_key(opts.key.clone()).map_err(ServeError::KeyLoadFailed)?;
+        let private_key = crate::auth::keys::load_private_key(opts.key.clone())
+            .map_err(ServeError::KeyLoadFailed)?;
 
-        let auth_config = Arc::new(
-            ServerAuthConfig::from_keys_and_ca(opts.authorized_keys.clone(), opts.cert_authority.clone())
-                .map_err(ServeError::KeyLoadFailed)?,
-        );
+        let auth_config = ServerAuthConfig::from_keys_and_ca(
+            opts.authorized_keys.clone(),
+            opts.cert_authority.clone(),
+        )
+        .map_err(ServeError::KeyLoadFailed)?;
+
+        let auth_policy = AuthPolicy::from_server_auth_config(auth_config);
+        let dynamic_config = DynamicConfig::new(auth_policy);
+
+        let max_auth_attempts = opts.max_auth_attempts;
+        let max_connections_per_ip = opts.max_connections_per_ip;
 
         let config = Arc::new(Config {
             keys: vec![private_key],
-            max_auth_attempts: opts.max_auth_attempts,
+            max_auth_attempts,
             methods: russh::MethodSet::PUBLICKEY,
             preferred: russh::Preferred::DEFAULT,
             ..Default::default()
@@ -262,19 +271,21 @@ impl Server {
 
         let outbound_proxy = parse_proxy_config(opts.proxy.as_deref());
 
-        let connection_limiter = Arc::new(ConnectionRateLimiter::new(opts.max_connections_per_ip));
+        let connection_limiter = Arc::new(ConnectionRateLimiter::new(max_connections_per_ip));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+        let dynamic = Arc::new(ArcSwap::new(Arc::new(dynamic_config)));
+
         Ok(Self {
             config,
-            auth_config,
+            dynamic,
             connection_limiter,
             outbound_proxy,
             stealth: opts.stealth,
             transport_mode: opts.transport_mode,
             listen_addr: opts.listen_addr,
-            max_auth_attempts: opts.max_auth_attempts,
+            max_auth_attempts,
             shutdown_tx,
             shutdown_rx,
             sessions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -285,6 +296,12 @@ impl Server {
         self.shutdown_tx.clone()
     }
 
+    pub fn config_reload_handle(&self) -> ConfigReloadHandle {
+        ConfigReloadHandle {
+            dynamic: Arc::clone(&self.dynamic),
+        }
+    }
+
     pub async fn shutdown(&self) -> Result<(), ServeError> {
         info!("initiating graceful shutdown");
         let _ = self.shutdown_tx.send(true);
@@ -292,11 +309,15 @@ impl Server {
         {
             let sessions = self.sessions.lock().await;
             for session in sessions.iter() {
-                if let Err(e) = session.handle.disconnect(
-                    russh::Disconnect::ByApplication,
-                    "shutdown".to_string(),
-                    String::new(),
-                ).await {
+                if let Err(e) = session
+                    .handle
+                    .disconnect(
+                        russh::Disconnect::ByApplication,
+                        "shutdown".to_string(),
+                        String::new(),
+                    )
+                    .await
+                {
                     warn!("failed to send SSH disconnect: {e}");
                 }
             }
@@ -392,7 +413,7 @@ impl Server {
             let handler_transport_kind = transport_kind;
 
             let handler = ServerHandler::new(
-                Arc::clone(&server.auth_config),
+                Arc::clone(&server.dynamic),
                 server.outbound_proxy.clone(),
                 remote_addr,
                 handler_transport_kind,
@@ -410,15 +431,9 @@ impl Server {
             let transport_is_tls = server.transport_mode == ServeTransportMode::Tls;
 
             tokio::spawn(async move {
-                let result = handle_connection(
-                    stream,
-                    config,
-                    handler,
-                    sessions,
-                    stealth,
-                    transport_is_tls,
-                )
-                .await;
+                let result =
+                    handle_connection(stream, config, handler, sessions, stealth, transport_is_tls)
+                        .await;
 
                 if let Err(e) = result {
                     warn!("connection error: {e}");
@@ -611,8 +626,7 @@ mod tests {
 
     #[test]
     fn serve_options_validate_tcp_with_acme_rejected() {
-        let opts =
-            ServeOptions::new(make_key_source()).acme_domain("example.com");
+        let opts = ServeOptions::new(make_key_source()).acme_domain("example.com");
         assert!(opts.validate().is_err());
     }
 
@@ -626,8 +640,8 @@ mod tests {
 
     #[test]
     fn server_new_creates_server() {
-        let opts = ServeOptions::new(make_key_source())
-            .authorized_keys(make_authorized_keys_source());
+        let opts =
+            ServeOptions::new(make_key_source()).authorized_keys(make_authorized_keys_source());
         let server = Server::new(opts).unwrap();
         assert_eq!(server.max_auth_attempts, 10);
     }
@@ -662,8 +676,8 @@ mod tests {
 
     #[test]
     fn serve_options_debug_redacts_keys() {
-        let opts = ServeOptions::new(make_key_source())
-            .authorized_keys(make_authorized_keys_source());
+        let opts =
+            ServeOptions::new(make_key_source()).authorized_keys(make_authorized_keys_source());
         let debug_str = format!("{:?}", opts);
         assert!(debug_str.contains("<KeySource>"));
         assert!(!debug_str.contains("OPENSSH"));
@@ -715,8 +729,8 @@ mod tests {
 
     #[test]
     fn server_shutdown_sender_clones() {
-        let opts = ServeOptions::new(make_key_source())
-            .authorized_keys(make_authorized_keys_source());
+        let opts =
+            ServeOptions::new(make_key_source()).authorized_keys(make_authorized_keys_source());
         let server = Server::new(opts).unwrap();
         let sender = server.shutdown_sender();
         assert!(!server.is_shutdown());
@@ -726,8 +740,7 @@ mod tests {
 
     #[test]
     fn server_holds_listen_addr() {
-        let opts = ServeOptions::new(make_key_source())
-            .listen_addr("0.0.0.0:443");
+        let opts = ServeOptions::new(make_key_source()).listen_addr("0.0.0.0:443");
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listen_addr, "0.0.0.0:443");
     }
@@ -747,12 +760,10 @@ mod tests {
         let server = Server::new(opts).unwrap();
         let shutdown_tx = server.shutdown_sender();
 
-        let server_handle = tokio::spawn(async move {
-            server
-                .run(acceptor, None)
-                .await
-                .expect("server run failed")
-        });
+        let server_handle =
+            tokio::spawn(
+                async move { server.run(acceptor, None).await.expect("server run failed") },
+            );
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -760,6 +771,9 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
 
-        assert!(result.is_ok(), "server should have shut down within timeout");
+        assert!(
+            result.is_ok(),
+            "server should have shut down within timeout"
+        );
     }
 }

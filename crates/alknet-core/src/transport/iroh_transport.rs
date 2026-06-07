@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use iroh::{
-    endpoint::RecvStream,
-    node_info::NodeIdExt,
-    Endpoint, NodeId, RelayMap, RelayMode, RelayUrl,
+    endpoint::RecvStream, node_info::NodeIdExt, Endpoint, NodeId, RelayMap, RelayMode, RelayUrl,
 };
 use tokio::io;
 
@@ -39,7 +37,9 @@ impl IrohTransport {
         proxy_url: Option<url::Url>,
     ) -> Result<Self> {
         let relay_url = relay_url.unwrap_or_else(|| {
-            DEFAULT_RELAY_URL.parse().expect("default relay URL is valid")
+            DEFAULT_RELAY_URL
+                .parse()
+                .expect("default relay URL is valid")
         });
         let relay_map = RelayMap::from_url(relay_url);
         let mut builder = Endpoint::builder()
@@ -49,7 +49,11 @@ impl IrohTransport {
             builder = builder.proxy_url(proxy.clone());
         }
         let endpoint = builder.bind().await?;
-        Ok(Self { node_id, endpoint, owned: true })
+        Ok(Self {
+            node_id,
+            endpoint,
+            owned: true,
+        })
     }
 
     /// Create an iroh transport using an existing shared endpoint.
@@ -60,7 +64,11 @@ impl IrohTransport {
     /// other protocol handlers on the same QUIC endpoint — one connection
     /// per peer, multiplexed by ALPN.
     pub fn from_endpoint(node_id: NodeId, endpoint: Endpoint) -> Self {
-        Self { node_id, endpoint, owned: false }
+        Self {
+            node_id,
+            endpoint,
+            owned: false,
+        }
     }
 
     pub fn endpoint_id(&self) -> String {
@@ -115,12 +123,11 @@ impl IrohAcceptor {
     /// Bind a new iroh endpoint with a dedicated `alknet-ssh` ALPN.
     ///
     /// Use this when alknet is the only iroh service on this node.
-    pub async fn bind(
-        relay_url: Option<RelayUrl>,
-        proxy_url: Option<url::Url>,
-    ) -> Result<Self> {
+    pub async fn bind(relay_url: Option<RelayUrl>, proxy_url: Option<url::Url>) -> Result<Self> {
         let relay_url = relay_url.unwrap_or_else(|| {
-            DEFAULT_RELAY_URL.parse().expect("default relay URL is valid")
+            DEFAULT_RELAY_URL
+                .parse()
+                .expect("default relay URL is valid")
         });
         let relay_map = RelayMap::from_url(relay_url);
         let mut builder = Endpoint::builder()
@@ -130,7 +137,10 @@ impl IrohAcceptor {
             builder = builder.proxy_url(proxy.clone());
         }
         let endpoint = builder.bind().await?;
-        Ok(Self { endpoint, owned: true })
+        Ok(Self {
+            endpoint,
+            owned: true,
+        })
     }
 
     /// Create an iroh acceptor using an existing shared endpoint.
@@ -146,7 +156,10 @@ impl IrohAcceptor {
     /// [`IrohAcceptor::bind`] instead, which handles the accept loop
     /// internally.
     pub fn from_endpoint(endpoint: Endpoint) -> Self {
-        Self { endpoint, owned: false }
+        Self {
+            endpoint,
+            owned: false,
+        }
     }
 
     pub fn endpoint_id(&self) -> String {
@@ -219,18 +232,14 @@ mod tests {
 
     #[test]
     fn iroh_transport_describe_format() {
-        let node_id: NodeId = iroh::SecretKey::generate(rand_core::OsRng)
-            .public()
-            .into();
+        let node_id: NodeId = iroh::SecretKey::generate(rand_core::OsRng).public().into();
         let desc = format!("iroh://{}", node_id.to_z32());
         assert!(desc.starts_with("iroh://"));
     }
 
     #[tokio::test]
     async fn iroh_transport_connect_builds_endpoint() {
-        let node_id: NodeId = iroh::SecretKey::generate(rand_core::OsRng)
-            .public()
-            .into();
+        let node_id: NodeId = iroh::SecretKey::generate(rand_core::OsRng).public().into();
         let transport = IrohTransport::new(node_id, None, None).await.unwrap();
         assert!(transport.describe().starts_with("iroh://"));
         assert!(!transport.endpoint_id().is_empty());
@@ -239,9 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn iroh_transport_from_endpoint() {
-        let node_id: NodeId = iroh::SecretKey::generate(rand_core::OsRng)
-            .public()
-            .into();
+        let node_id: NodeId = iroh::SecretKey::generate(rand_core::OsRng).public().into();
         let acceptor = IrohAcceptor::bind(None, None).await.unwrap();
         let endpoint = acceptor.endpoint.clone();
         let transport = IrohTransport::from_endpoint(node_id, endpoint);

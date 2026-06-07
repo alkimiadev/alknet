@@ -10,8 +10,6 @@ use std::net::SocketAddr;
 use std::process;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use clap::{Parser, Subcommand, ValueEnum};
 use alknet_core::auth::keys::KeySource;
 use alknet_core::client::{ConnectOptions, TransportMode};
 use alknet_core::server::{ServeOptions, ServeTransportMode, Server};
@@ -21,6 +19,8 @@ use alknet_core::transport::TcpTransport;
 #[cfg(feature = "tls")]
 use alknet_core::transport::TlsTransport;
 use alknet_core::transport::Transport;
+use anyhow::{anyhow, Result};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "alknet", version, about = "Alknet SSH tunnel tool")]
@@ -76,7 +76,7 @@ enum Commands {
         insecure: bool,
     },
 
-    #[command(    about = "Start the alknet server (accept SSH connections)")]
+    #[command(about = "Start the alknet server (accept SSH connections)")]
     Serve {
         #[arg(long, help = "SSH host key path (required)")]
         key: String,

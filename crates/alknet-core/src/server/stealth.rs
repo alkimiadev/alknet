@@ -134,7 +134,10 @@ mod tests {
 
         let mut all_data = Vec::new();
         reader.read_to_end(&mut all_data).await.unwrap();
-        assert!(all_data.starts_with(banner), "banner bytes must be preserved after detection");
+        assert!(
+            all_data.starts_with(banner),
+            "banner bytes must be preserved after detection"
+        );
     }
 
     #[tokio::test]
@@ -142,7 +145,10 @@ mod tests {
         let (client, server) = duplex(1024);
         let (mut client_read, mut client_write) = tokio::io::split(client);
 
-        client_write.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n").await.unwrap();
+        client_write
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .await
+            .unwrap();
         drop(client_write);
 
         let (detection, mut reader) = detect_protocol(server).await;
@@ -206,7 +212,10 @@ mod tests {
         let (client, server) = duplex(1024);
         let mut client = client;
 
-        client.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n").await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .await
+            .unwrap();
 
         let (detection, mut reader) = detect_protocol(server).await;
         assert_eq!(detection, ProtocolDetection::Http);

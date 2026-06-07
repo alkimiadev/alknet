@@ -1,5 +1,5 @@
-use tokio::io::{DuplexStream, AsyncRead, AsyncWrite};
 use anyhow::Result;
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 
 #[cfg(feature = "transport-traits")]
 pub use crate::transport::{Transport, TransportAcceptor, TransportInfo, TransportKind};
@@ -9,10 +9,10 @@ pub use local_traits::{Transport, TransportAcceptor, TransportInfo, TransportKin
 
 #[cfg(not(feature = "transport-traits"))]
 mod local_traits {
-    use std::net::SocketAddr;
     use anyhow::Result;
-    use tokio::io::{AsyncRead, AsyncWrite};
     use async_trait::async_trait;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncRead, AsyncWrite};
 
     #[async_trait]
     pub trait Transport: Send + Sync + 'static {

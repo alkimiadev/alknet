@@ -169,10 +169,7 @@ mod tests {
         let req = Socks5Request::read_from(&mut cursor).await.unwrap();
         assert_eq!(req.version, 0x05);
         assert_eq!(req.command, 0x01);
-        assert_eq!(
-            req.address,
-            Socks5Address::Ipv4(Ipv4Addr::new(10, 0, 0, 1))
-        );
+        assert_eq!(req.address, Socks5Address::Ipv4(Ipv4Addr::new(10, 0, 0, 1)));
         assert_eq!(req.port, 443);
     }
 
@@ -201,7 +198,10 @@ mod tests {
         let req = Socks5Request::read_from(&mut cursor).await.unwrap();
         assert_eq!(req.version, 0x05);
         assert_eq!(req.command, 0x01);
-        assert_eq!(req.address, Socks5Address::Domain("example.com".to_string()));
+        assert_eq!(
+            req.address,
+            Socks5Address::Domain("example.com".to_string())
+        );
         assert_eq!(req.port, 443);
     }
 

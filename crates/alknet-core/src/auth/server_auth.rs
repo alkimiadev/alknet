@@ -13,7 +13,7 @@ use ipnetwork::IpNetwork;
 use russh::keys::helpers::EncodedExt;
 use russh::keys::{Certificate, PublicKey};
 
-use super::keys::{CertAuthorityEntry, KeySource, load_cert_authority_entries, load_public_keys};
+use super::keys::{load_cert_authority_entries, load_public_keys, CertAuthorityEntry, KeySource};
 use crate::error::AuthError;
 
 /// Server-side authentication configuration.
@@ -41,10 +41,7 @@ impl ServerAuthConfig {
             None => HashSet::new(),
         };
 
-        let encoded_keys: HashSet<Vec<u8>> = authorized_keys
-            .iter()
-            .map(encode_key_data)
-            .collect();
+        let encoded_keys: HashSet<Vec<u8>> = authorized_keys.iter().map(encode_key_data).collect();
 
         let cert_authorities = match cert_authority_source {
             Some(src) => load_cert_authority_entries(src)?,
@@ -135,10 +132,7 @@ fn check_critical_options(
     Ok(())
 }
 
-fn check_extensions(
-    cert: &Certificate,
-    ca_entry: &CertAuthorityEntry,
-) -> Result<(), AuthError> {
+fn check_extensions(cert: &Certificate, ca_entry: &CertAuthorityEntry) -> Result<(), AuthError> {
     let ca_permit_port_forwarding = ca_entry
         .options
         .iter()
@@ -188,8 +182,8 @@ fn check_source_address(allowed: &str, client_ip: Option<IpAddr>) -> bool {
 mod tests {
     use super::*;
     use rand_core::OsRng;
-    use russh::keys::{Certificate, PrivateKey, decode_secret_key};
     use russh::keys::ssh_key::certificate::{Builder, CertType};
+    use russh::keys::{decode_secret_key, Certificate, PrivateKey};
     use std::io::Write;
 
     const CA_PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACA6pFKBI327JsRFmZULalNjpoUPJMVxzsk9bGbDByat+gAAAJjP22Bpz9tg\naQAAAAtzc2gtZWQyNTUxOQAAACA6pFKBI327JsRFmZULalNjpoUPJMVxzsk9bGbDByat+g\nAAAEBcRrWyUU+lLpjHbaaYN5YeOlvz6HnuBndUWevEmHk00jqkUoEjfbsmxEWZlQtqU2Om\nhQ8kxXHOyT1sZsMHJq36AAAAD3VidW50dUBuczUyODA5NgECAwQFBg==\n-----END OPENSSH PRIVATE KEY-----\n";
@@ -218,13 +212,9 @@ mod tests {
         principals: Vec<&str>,
     ) -> Certificate {
         let key_data: russh::keys::ssh_key::public::KeyData = user_pub.into();
-        let mut builder = Builder::new_with_random_nonce(
-            &mut OsRng,
-            key_data,
-            valid_after,
-            valid_before,
-        )
-        .unwrap();
+        let mut builder =
+            Builder::new_with_random_nonce(&mut OsRng, key_data, valid_after, valid_before)
+                .unwrap();
 
         builder.cert_type(CertType::User).unwrap();
 
@@ -252,11 +242,7 @@ mod tests {
         } else {
             format!("cert-authority,{}", options.join(","))
         };
-        let line = format!(
-            "{} {} CA\n",
-            opts,
-            ca_pub.to_openssh().unwrap()
-        );
+        let line = format!("{} {} CA\n", opts, ca_pub.to_openssh().unwrap());
         f.write_all(line.as_bytes()).unwrap();
         f.flush().unwrap();
         f
@@ -357,13 +343,8 @@ mod tests {
         let user_pub = user_key.public_key().clone();
         let now = now_secs();
         let key_data: russh::keys::ssh_key::public::KeyData = (&user_pub).into();
-        let mut builder = Builder::new_with_random_nonce(
-            &mut OsRng,
-            key_data,
-            now - 60,
-            now + 3600,
-        )
-        .unwrap();
+        let mut builder =
+            Builder::new_with_random_nonce(&mut OsRng, key_data, now - 60, now + 3600).unwrap();
         builder.cert_type(CertType::User).unwrap();
         builder.all_principals_valid().unwrap();
         let cert = builder.sign(&ca_key).unwrap();
@@ -383,7 +364,13 @@ mod tests {
         let other_ca_key = load_other_key();
         let user_pub = user_key.public_key().clone();
         let now = now_secs();
-        let cert = make_cert(&other_ca_key, &user_pub, now - 60, now + 3600, vec!["testuser"]);
+        let cert = make_cert(
+            &other_ca_key,
+            &user_pub,
+            now - 60,
+            now + 3600,
+            vec!["testuser"],
+        );
         let ca_key = load_ca_key();
         let ca_pub = ca_key.public_key().clone();
         let f = make_ca_file(&ca_pub, &[]);
@@ -398,8 +385,7 @@ mod tests {
 
     #[test]
     fn no_config_accepts_nothing() {
-        let config =
-            ServerAuthConfig::from_keys_and_ca(None, None).unwrap();
+        let config = ServerAuthConfig::from_keys_and_ca(None, None).unwrap();
         let other_pub = load_other_key().public_key().clone();
         assert_eq!(
             config.authenticate_publickey(&other_pub),

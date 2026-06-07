@@ -328,7 +328,12 @@ impl russh::server::Handler for NapiServerHandler {
         session: &mut russh::server::Session,
     ) -> std::result::Result<(), Self::Error> {
         tracing::warn!(channel = %channel, "rejected x11 request");
-        let _ = (single_connection, x11_auth_protocol, x11_auth_cookie, x11_screen_number);
+        let _ = (
+            single_connection,
+            x11_auth_protocol,
+            x11_auth_cookie,
+            x11_screen_number,
+        );
         let _ = session.channel_failure(channel);
         Ok(())
     }
@@ -348,7 +353,11 @@ impl russh::server::Handler for NapiServerHandler {
         port: &mut u32,
         _session: &mut russh::server::Session,
     ) -> std::result::Result<bool, Self::Error> {
-        tracing::warn!(address = address, port = *port, "rejected tcpip-forward request");
+        tracing::warn!(
+            address = address,
+            port = *port,
+            "rejected tcpip-forward request"
+        );
         Ok(false)
     }
 
@@ -367,7 +376,10 @@ impl russh::server::Handler for NapiServerHandler {
         socket_path: &str,
         _session: &mut russh::server::Session,
     ) -> std::result::Result<bool, Self::Error> {
-        tracing::warn!(socket_path = socket_path, "rejected streamlocal-forward request");
+        tracing::warn!(
+            socket_path = socket_path,
+            "rejected streamlocal-forward request"
+        );
         Ok(false)
     }
 
@@ -542,8 +554,8 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 })?,
             );
 
-            let private_key =
-                alknet_core::auth::keys::load_private_key(host_key_source.clone()).map_err(|e| {
+            let private_key = alknet_core::auth::keys::load_private_key(host_key_source.clone())
+                .map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
                 })?;
 
@@ -635,26 +647,28 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                         )
                     })?;
 
-            let acceptor = TlsAcceptor::bind(addr, certs, key, None).await.map_err(|e| {
-                napi::Error::new(
-                    napi::Status::GenericFailure,
-                    format!("tls bind failed: {}", e),
-                )
-            })?;
+            let acceptor = TlsAcceptor::bind(addr, certs, key, None)
+                .await
+                .map_err(|e| {
+                    napi::Error::new(
+                        napi::Status::GenericFailure,
+                        format!("tls bind failed: {}", e),
+                    )
+                })?;
             let actual_listen = acceptor.listen_addr().to_string();
 
             let auth_config = Arc::new(
                 ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source)
                     .map_err(|e| {
-                        napi::Error::new(
-                            napi::Status::InvalidArg,
-                            format!("auth config error: {}", e),
-                        )
-                    })?,
+                    napi::Error::new(
+                        napi::Status::InvalidArg,
+                        format!("auth config error: {}", e),
+                    )
+                })?,
             );
 
-            let private_key =
-                alknet_core::auth::keys::load_private_key(host_key_source.clone()).map_err(|e| {
+            let private_key = alknet_core::auth::keys::load_private_key(host_key_source.clone())
+                .map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
                 })?;
 
@@ -728,11 +742,11 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
             let auth_config = Arc::new(
                 ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source)
                     .map_err(|e| {
-                        napi::Error::new(
-                            napi::Status::InvalidArg,
-                            format!("auth config error: {}", e),
-                        )
-                    })?,
+                    napi::Error::new(
+                        napi::Status::InvalidArg,
+                        format!("auth config error: {}", e),
+                    )
+                })?,
             );
 
             let private_key =

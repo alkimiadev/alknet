@@ -34,6 +34,7 @@ iroh = { version = "0.34", optional = true }
 url = { version = "2", optional = true }
 async-trait = "0.1"
 ipnetwork = "0.21.1"
+arc-swap = "1"
 
 [dev-dependencies]
 alknet-core = { path = ".", features = ["testutil", "tls", "iroh"] }

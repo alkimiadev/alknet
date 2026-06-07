@@ -1,4 +1,6 @@
-use alknet_core::testutil::{MockTransport, MockTransportAcceptor, Transport, TransportAcceptor, mock_pair};
+use alknet_core::testutil::{
+    mock_pair, MockTransport, MockTransportAcceptor, Transport, TransportAcceptor,
+};
 
 #[tokio::test]
 async fn mock_transport_connect() {

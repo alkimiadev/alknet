@@ -7,9 +7,9 @@ use rustls::crypto::aws_lc_rs::default_provider;
 use rustls::ServerConfig;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{AcmeConfig, AcmeState, ResolvesServerCertAcme};
-use tracing::{error, info};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor as TokioTlsAcceptor;
+use tracing::{error, info};
 
 use super::{TransportAcceptor, TransportInfo, TransportKind};
 
@@ -94,14 +94,10 @@ impl AcmeCertProvider {
             .contact(self.contact.clone());
 
         let state = match &self.cache_dir {
-            Some(cache_dir) => {
-                base_config.cache(DirCache::new(cache_dir.clone())).state()
-            }
-            None => {
-                base_config
-                    .cache(rustls_acme::caches::NoCache::default())
-                    .state()
-            }
+            Some(cache_dir) => base_config.cache(DirCache::new(cache_dir.clone())).state(),
+            None => base_config
+                .cache(rustls_acme::caches::NoCache::default())
+                .state(),
         };
 
         let resolver = state.resolver();
@@ -132,10 +128,7 @@ pub struct AcmeTlsAcceptor {
 }
 
 impl AcmeTlsAcceptor {
-    pub async fn bind_acme(
-        addr: SocketAddr,
-        provider: Arc<AcmeCertProvider>,
-    ) -> Result<Self> {
+    pub async fn bind_acme(addr: SocketAddr, provider: Arc<AcmeCertProvider>) -> Result<Self> {
         let (state, resolver) = provider.build_acme_state();
 
         let server_config = provider.build_server_config_with_resolver(resolver.clone())?;
@@ -193,11 +186,7 @@ impl TransportAcceptor for AcmeTlsAcceptor {
         let (tcp_stream, remote_addr) = self.listener.accept().await?;
         let tls_stream = self.tokio_acceptor.accept(tcp_stream).await?;
 
-        let server_name = tls_stream
-            .get_ref()
-            .1
-            .server_name()
-            .map(|s| s.to_string());
+        let server_name = tls_stream.get_ref().1.server_name().map(|s| s.to_string());
 
         let info = TransportInfo {
             remote_addr: Some(remote_addr),
@@ -277,8 +266,7 @@ mod tests {
 
     #[test]
     fn acme_cert_provider_build_state_with_cache() {
-        let provider =
-            AcmeCertProvider::domain("example.com").with_cache_dir("/tmp/test_cache");
+        let provider = AcmeCertProvider::domain("example.com").with_cache_dir("/tmp/test_cache");
         let (_state, resolver) = provider.build_acme_state();
         assert!(Arc::strong_count(&resolver) >= 2);
     }
@@ -288,7 +276,9 @@ mod tests {
         let _ = default_provider().install_default();
         let provider = AcmeCertProvider::domain("example.com");
         let (_, resolver) = provider.build_acme_state();
-        let config = provider.build_server_config_with_resolver(resolver).unwrap();
+        let config = provider
+            .build_server_config_with_resolver(resolver)
+            .unwrap();
         assert!(!config.alpn_protocols.is_empty());
         assert!(config
             .alpn_protocols

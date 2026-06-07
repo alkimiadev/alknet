@@ -113,14 +113,10 @@ impl<T: Transport> ChannelManager<T> {
             .await
             .map_err(|_| ChannelError::ChannelClosed)?;
 
-        self.inner
-            .forwards
-            .write()
-            .await
-            .insert(ForwardRequest {
-                addr: addr.to_string(),
-                port,
-            });
+        self.inner.forwards.write().await.insert(ForwardRequest {
+            addr: addr.to_string(),
+            port,
+        });
 
         Ok(result)
     }
@@ -132,14 +128,10 @@ impl<T: Transport> ChannelManager<T> {
             .await
             .map_err(|_| ChannelError::ChannelClosed)?;
 
-        self.inner
-            .forwards
-            .write()
-            .await
-            .remove(&ForwardRequest {
-                addr: addr.to_string(),
-                port,
-            });
+        self.inner.forwards.write().await.remove(&ForwardRequest {
+            addr: addr.to_string(),
+            port,
+        });
 
         Ok(())
     }
@@ -226,10 +218,7 @@ impl<T: Transport> ChannelManager<T> {
         for fwd in forwards.iter() {
             match handle.tcpip_forward(&fwd.addr, fwd.port).await {
                 Ok(_) => {
-                    debug!(
-                        "re-registered tcpip_forward: {}:{}",
-                        fwd.addr, fwd.port
-                    );
+                    debug!("re-registered tcpip_forward: {}:{}", fwd.addr, fwd.port);
                 }
                 Err(e) => {
                     warn!(

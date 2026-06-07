@@ -52,9 +52,7 @@ impl<C: ChannelOpener> Socks5Server<C> {
     }
 
     pub fn with_addr(channel_opener: C, addr: &str) -> Self {
-        let listen_addr: SocketAddr = addr
-            .parse()
-            .expect("invalid SOCKS5 listen address");
+        let listen_addr: SocketAddr = addr.parse().expect("invalid SOCKS5 listen address");
         Self {
             listen_addr,
             channel_opener: Arc::new(channel_opener),
@@ -80,10 +78,7 @@ impl<C: ChannelOpener> Socks5Server<C> {
     }
 }
 
-async fn handle_socks5_connection<S, C>(
-    mut socket: S,
-    opener: Arc<C>,
-) -> Result<(), Socks5Error>
+async fn handle_socks5_connection<S, C>(mut socket: S, opener: Arc<C>) -> Result<(), Socks5Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     C: ChannelOpener,
@@ -173,7 +168,11 @@ impl<H: russh::client::Handler> HandleChannelOpener<H> {
 impl<H: russh::client::Handler + Send + Sync + 'static> ChannelOpener for HandleChannelOpener<H> {
     type Stream = russh::ChannelStream<russh::client::Msg>;
 
-    async fn open_channel(&self, host: String, port: u16) -> Result<Self::Stream, ChannelOpenError> {
+    async fn open_channel(
+        &self,
+        host: String,
+        port: u16,
+    ) -> Result<Self::Stream, ChannelOpenError> {
         let handle = self.handle.lock().await;
         if handle.is_closed() {
             return Err(ChannelOpenError::SessionClosed);
@@ -241,7 +240,10 @@ mod tests {
     }
 
     async fn do_handshake(client: &mut DuplexStream) -> [u8; 2] {
-        client.write_all(&build_socks5_greeting(&[0x00])).await.unwrap();
+        client
+            .write_all(&build_socks5_greeting(&[0x00]))
+            .await
+            .unwrap();
         client.flush().await.unwrap();
         let mut resp = [0u8; 2];
         client.read_exact(&mut resp).await.unwrap();
@@ -264,9 +266,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: false };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         let resp = do_handshake(&mut client).await;
         assert_eq!(resp, [0x05, 0x00]);
@@ -284,9 +285,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: false };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         client
             .write_all(&build_socks5_greeting(&[0x02]))
@@ -301,10 +301,7 @@ mod tests {
         drop(client);
         let result = server_handle.await.unwrap();
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Socks5Error::NoAcceptableAuth
-        ));
+        assert!(matches!(result.unwrap_err(), Socks5Error::NoAcceptableAuth));
     }
 
     #[tokio::test]
@@ -312,9 +309,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: false };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         do_handshake(&mut client).await;
         let reply_buf = do_connect_ipv4(&mut client, [10, 0, 0, 1], 443).await;
@@ -329,9 +325,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: false };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         do_handshake(&mut client).await;
 
@@ -354,9 +349,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: false };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         do_handshake(&mut client).await;
 
@@ -381,9 +375,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: true };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         do_handshake(&mut client).await;
         let reply_buf = do_connect_ipv4(&mut client, [10, 0, 0, 1], 80).await;
@@ -399,9 +392,8 @@ mod tests {
         let (mut client, server) = duplex(4096);
         let opener = MockChannelOpener { fail: false };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(async move { handle_socks5_connection(server, Arc::new(opener)).await });
 
         do_handshake(&mut client).await;
 
@@ -450,9 +442,10 @@ mod tests {
             stream: Arc::clone(&ssh_stream),
         };
 
-        let server_handle = tokio::spawn(async move {
-            handle_socks5_connection(server_sock, Arc::new(opener)).await
-        });
+        let server_handle =
+            tokio::spawn(
+                async move { handle_socks5_connection(server_sock, Arc::new(opener)).await },
+            );
 
         do_handshake(&mut client_sock).await;
         let reply_buf = do_connect_ipv4(&mut client_sock, [127, 0, 0, 1], 80).await;

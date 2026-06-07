@@ -46,7 +46,10 @@ async fn connect_direct(target: SocketAddr) -> Result<TcpStream, ChannelProxyErr
         .map_err(|e| map_connection_error(e, target))
 }
 
-async fn connect_socks5(target: SocketAddr, proxy_addr: SocketAddr) -> Result<TcpStream, ChannelProxyError> {
+async fn connect_socks5(
+    target: SocketAddr,
+    proxy_addr: SocketAddr,
+) -> Result<TcpStream, ChannelProxyError> {
     let mut stream = TcpStream::connect(proxy_addr)
         .await
         .map_err(ChannelProxyError::from)?;
@@ -134,10 +137,7 @@ async fn connect_http_connect(
     }
 
     let response_str = String::from_utf8_lossy(&response);
-    let status_line = response_str
-        .lines()
-        .next()
-        .unwrap_or("");
+    let status_line = response_str.lines().next().unwrap_or("");
 
     if status_line.contains("200") {
         Ok(stream)
@@ -279,11 +279,7 @@ mod tests {
             .parse()
             .unwrap();
 
-            let reply = vec![
-                0x05, 0x00, 0x00, 0x01,
-                0, 0, 0, 0,
-                0, 0,
-            ];
+            let reply = vec![0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
             proxy_sock.write_all(&reply).await.unwrap();
 
             let mut target_stream = TcpStream::connect(target).await.unwrap();
@@ -323,11 +319,7 @@ mod tests {
             let mut port_bytes = [0u8; 2];
             proxy_sock.read_exact(&mut port_bytes).await.unwrap();
 
-            let reply = vec![
-                0x05, 0x05, 0x00, 0x01,
-                0, 0, 0, 0,
-                0, 0,
-            ];
+            let reply = vec![0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
             proxy_sock.write_all(&reply).await.unwrap();
         });
 

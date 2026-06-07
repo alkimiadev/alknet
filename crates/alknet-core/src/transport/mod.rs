@@ -13,13 +13,13 @@
 //! See [ADR-001](docs/architecture/decisions/001-pluggable-transport.md) and
 //! [ADR-004](docs/architecture/decisions/004-ssh-over-transport.md) for design rationale.
 
-mod tcp;
 #[cfg(feature = "iroh")]
 mod iroh_transport;
+mod tcp;
 
-pub use tcp::{TcpAcceptor, TcpTransport};
 #[cfg(feature = "iroh")]
 pub use iroh_transport::{IrohAcceptor, IrohTransport, ALPN as IROH_ALPN};
+pub use tcp::{TcpAcceptor, TcpTransport};
 
 #[cfg(feature = "tls")]
 mod tls;
@@ -89,12 +89,8 @@ pub struct TransportInfo {
 #[derive(Debug, Clone)]
 pub enum TransportKind {
     Tcp,
-    Tls {
-        server_name: Option<String>,
-    },
-    Iroh {
-        endpoint_id: String,
-    },
+    Tls { server_name: Option<String> },
+    Iroh { endpoint_id: String },
 }
 
 #[cfg(test)]

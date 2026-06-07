@@ -197,10 +197,7 @@ pub struct ClientSession<T: Transport> {
 }
 
 impl<T: Transport> ClientSession<T> {
-    pub async fn new(
-        opts: ConnectOptions,
-        transport: Arc<T>,
-    ) -> Result<Self, ConnectError> {
+    pub async fn new(opts: ConnectOptions, transport: Arc<T>) -> Result<Self, ConnectError> {
         opts.validate().map_err(ConnectError::Config)?;
 
         let auth_config = Arc::new(
@@ -283,16 +280,13 @@ impl<T: Transport> ClientSession<T> {
         let remote_specs = build_remote_specs(&self.opts)?;
 
         for spec in &remote_specs {
-            let remote_forwarder = RemoteForwarder::new(spec.clone())
-                .map_err(|_| ConnectError::ForwardFailed)?;
+            let remote_forwarder =
+                RemoteForwarder::new(spec.clone()).map_err(|_| ConnectError::ForwardFailed)?;
             let mut h = self.handle.lock().await;
-            remote_forwarder
-                .register(&mut h)
-                .await
-                .map_err(|_| {
-                    warn!("failed to register remote forward {}", spec);
-                    ConnectError::ForwardFailed
-                })?;
+            remote_forwarder.register(&mut h).await.map_err(|_| {
+                warn!("failed to register remote forward {}", spec);
+                ConnectError::ForwardFailed
+            })?;
             info!("registered remote forward: {}", spec);
         }
 
@@ -307,7 +301,9 @@ impl<T: Transport> ClientSession<T> {
         let fwd_shutdown = self.shutdown_rx.clone();
         let forward_task = tokio::spawn(async move {
             crate::client::forward::run_local_forwarders(
-                local_forwarders, fwd_handle, fwd_shutdown,
+                local_forwarders,
+                fwd_handle,
+                fwd_shutdown,
             )
             .await;
         });
@@ -358,7 +354,14 @@ impl<T: Transport> ClientSession<T> {
 
                     let handler = ClientHandler::from_config(&reconnect_auth);
                     let username = reconnect_username.clone();
-                    match establish_session(&*reconnect_transport, handler, &reconnect_auth, &username).await {
+                    match establish_session(
+                        &*reconnect_transport,
+                        handler,
+                        &reconnect_auth,
+                        &username,
+                    )
+                    .await
+                    {
                         Ok(new_handle) => {
                             info!("reconnection successful");
                             {
@@ -370,8 +373,13 @@ impl<T: Transport> ClientSession<T> {
                                     Ok(rf) => {
                                         let mut h = reconnect_handle.lock().await;
                                         match rf.register(&mut h).await {
-                                            Ok(_) => debug!("re-registered remote forward: {}", spec),
-                                            Err(e) => warn!("failed to re-register remote forward {}: {e}", spec),
+                                            Ok(_) => {
+                                                debug!("re-registered remote forward: {}", spec)
+                                            }
+                                            Err(e) => warn!(
+                                                "failed to re-register remote forward {}: {e}",
+                                                spec
+                                            ),
                                         }
                                     }
                                     Err(e) => warn!("failed to create remote forwarder: {e}"),
@@ -493,12 +501,10 @@ fn build_local_forwarders(opts: &ConnectOptions) -> Result<Vec<LocalForwarder>, 
                 name: format!("invalid forward spec: {}", spec_str),
             })
         })?;
-        forwarders.push(
-            LocalForwarder::new(spec).map_err(|e| {
-                warn!("failed to create local forwarder: {}", e);
-                ConnectError::ForwardFailed
-            })?,
-        );
+        forwarders.push(LocalForwarder::new(spec).map_err(|e| {
+            warn!("failed to create local forwarder: {}", e);
+            ConnectError::ForwardFailed
+        })?);
     }
     Ok(forwarders)
 }
@@ -576,7 +582,10 @@ mod tests {
         assert_eq!(opts.forwards.len(), 1);
         assert_eq!(opts.remote_forwards.len(), 1);
         assert_eq!(opts.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
-        assert_eq!(opts.iroh_relay.as_deref(), Some("https://relay.example.com"));
+        assert_eq!(
+            opts.iroh_relay.as_deref(),
+            Some("https://relay.example.com")
+        );
         assert_eq!(opts.tls_server_name.as_deref(), Some("alknet.test"));
         assert!(opts.insecure);
     }
@@ -650,9 +659,18 @@ mod tests {
 
     #[test]
     fn connect_error_variants() {
-        assert_eq!(ConnectError::ConnectionFailed.to_string(), "connection failed");
-        assert_eq!(ConnectError::AuthFailed.to_string(), "authentication failed");
-        assert_eq!(ConnectError::ForwardFailed.to_string(), "forward setup failed");
+        assert_eq!(
+            ConnectError::ConnectionFailed.to_string(),
+            "connection failed"
+        );
+        assert_eq!(
+            ConnectError::AuthFailed.to_string(),
+            "authentication failed"
+        );
+        assert_eq!(
+            ConnectError::ForwardFailed.to_string(),
+            "forward setup failed"
+        );
     }
 
     #[test]
@@ -703,7 +721,10 @@ mod tests {
         let transport = Arc::new(FailTransport);
         let result = ClientSession::new(opts, transport).await;
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), ConnectError::ConnectionFailed));
+        assert!(matches!(
+            result.err().unwrap(),
+            ConnectError::ConnectionFailed
+        ));
     }
 
     #[tokio::test]
@@ -714,7 +735,10 @@ mod tests {
         let opts = ConnectOptions::new(make_identity()).server("example.com:22");
         let result = ClientSession::new(opts, transport).await;
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), ConnectError::ConnectionFailed));
+        assert!(matches!(
+            result.err().unwrap(),
+            ConnectError::ConnectionFailed
+        ));
     }
 
     #[test]
@@ -750,7 +774,8 @@ mod tests {
 
     #[test]
     fn build_remote_specs_valid() {
-        let opts = ConnectOptions::new(make_identity()).remote_forward("0.0.0.0:8080:127.0.0.1:3000");
+        let opts =
+            ConnectOptions::new(make_identity()).remote_forward("0.0.0.0:8080:127.0.0.1:3000");
         let result = build_remote_specs(&opts);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 1);
@@ -798,8 +823,8 @@ mod tests {
 
     #[tokio::test]
     async fn integration_mock_transport_session() {
-        use crate::socks5::{ChannelOpener, ChannelOpenError};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+        use crate::socks5::{ChannelOpenError, ChannelOpener};
+        use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
 
         struct MockOpener;
@@ -839,9 +864,7 @@ mod tests {
         conn.read_exact(&mut auth_resp).await.unwrap();
         assert_eq!(auth_resp, [0x05, 0x00]);
 
-        let connect_req = [
-            0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 80,
-        ];
+        let connect_req = [0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 80];
         conn.write_all(&connect_req).await.unwrap();
 
         let mut reply = [0u8; 10];

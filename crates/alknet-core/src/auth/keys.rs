@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use russh::keys::{PrivateKey, PublicKey, decode_secret_key, parse_public_key_base64};
+use russh::keys::{decode_secret_key, parse_public_key_base64, PrivateKey, PublicKey};
 
 use crate::error::ConfigError;
 
@@ -98,10 +98,7 @@ fn parse_authorized_keys_line(line: &str) -> Option<Result<(PublicKey, Vec<Strin
         || parts[0].starts_with("principals=")
     {
         let opts_str = parts[0];
-        options = opts_str
-            .split(',')
-            .map(|s| s.to_string())
-            .collect();
+        options = opts_str.split(',').map(|s| s.to_string()).collect();
         key_type_idx = 1;
     } else if parts[0].starts_with("ssh-") || parts[0].starts_with("ecdsa-") {
         key_type_idx = 0;
@@ -218,9 +215,7 @@ mod tests {
 
     #[test]
     fn parse_authorized_keys_multiple_entries() {
-        let content = format!(
-            "{ED25519_PUBLIC_KEY}\n# comment line\n\n{ED25519_PUBLIC_KEY_2}\n"
-        );
+        let content = format!("{ED25519_PUBLIC_KEY}\n# comment line\n\n{ED25519_PUBLIC_KEY_2}\n");
         let f = make_authorized_keys(&content);
         let source = KeySource::File(f.path().to_path_buf());
         let keys = load_public_keys(source).unwrap();

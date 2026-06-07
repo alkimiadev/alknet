@@ -97,7 +97,10 @@ mod tests {
 
     #[test]
     fn transport_error_display() {
-        assert_eq!(TransportError::ConnectionFailed.to_string(), "connection failed");
+        assert_eq!(
+            TransportError::ConnectionFailed.to_string(),
+            "connection failed"
+        );
         assert_eq!(
             TransportError::HandshakeFailed {
                 source: io::Error::new(io::ErrorKind::ConnectionRefused, "tls failed")
@@ -120,13 +123,19 @@ mod tests {
         assert_eq!(AuthError::KeyRejected.to_string(), "key rejected");
         assert_eq!(AuthError::CertInvalid.to_string(), "certificate invalid");
         assert_eq!(AuthError::CertExpired.to_string(), "certificate expired");
-        assert_eq!(AuthError::CertPrincipalMismatch.to_string(), "certificate principal mismatch");
+        assert_eq!(
+            AuthError::CertPrincipalMismatch.to_string(),
+            "certificate principal mismatch"
+        );
         assert_eq!(AuthError::NoMatchingKey.to_string(), "no matching key");
     }
 
     #[test]
     fn channel_error_display() {
-        assert_eq!(ChannelError::TargetUnreachable.to_string(), "target unreachable");
+        assert_eq!(
+            ChannelError::TargetUnreachable.to_string(),
+            "target unreachable"
+        );
         assert_eq!(
             ChannelError::ProxyConnectFailed {
                 source: io::Error::new(io::ErrorKind::ConnectionRefused, "refused")
@@ -160,7 +169,10 @@ mod tests {
             .to_string(),
             "bind failed"
         );
-        assert_eq!(ConfigError::IncompatibleOptions.to_string(), "incompatible options");
+        assert_eq!(
+            ConfigError::IncompatibleOptions.to_string(),
+            "incompatible options"
+        );
     }
 
     #[test]
@@ -184,7 +196,10 @@ mod tests {
     #[test]
     fn forward_error_display() {
         assert_eq!(
-            ForwardError::InvalidSpec { spec: "bad".to_string() }.to_string(),
+            ForwardError::InvalidSpec {
+                spec: "bad".to_string()
+            }
+            .to_string(),
             "invalid port forward spec: bad"
         );
         assert_eq!(
@@ -209,7 +224,9 @@ mod tests {
         let forward_err = ForwardError::BindFailed { source: io_err };
         assert!(forward_err.source().is_some());
 
-        let plain = ForwardError::InvalidSpec { spec: "bad".to_string() };
+        let plain = ForwardError::InvalidSpec {
+            spec: "bad".to_string(),
+        };
         assert!(plain.source().is_none());
     }
 }

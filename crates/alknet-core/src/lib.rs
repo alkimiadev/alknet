@@ -50,18 +50,23 @@
 //! }
 //! ```
 
-pub mod transport;
-pub mod client;
-pub mod server;
 pub mod auth;
-pub mod socks5;
+pub mod client;
+pub mod config;
 pub mod error;
+pub mod server;
+pub mod socks5;
+pub mod transport;
 
 #[cfg(feature = "testutil")]
 pub mod testutil;
 
-pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
-pub use transport::{Transport, TransportAcceptor, TransportInfo, TransportKind};
 pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};
-pub use server::serve::{Server, ServeError, ServeOptions, ServeTransportMode};
+pub use config::{
+    AuthPolicy, ConfigReloadHandle, DynamicConfig, ForwardingAction, ForwardingPolicy,
+    ForwardingRule, RateLimitConfig, StaticConfig,
+};
+pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
+pub use server::serve::{ServeError, ServeOptions, ServeTransportMode, Server};
+pub use transport::{Transport, TransportAcceptor, TransportInfo, TransportKind};

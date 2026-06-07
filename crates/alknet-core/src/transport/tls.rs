@@ -7,7 +7,9 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::{client::TlsStream as ClientTlsStream, TlsAcceptor as TokioTlsAcceptor, TlsConnector};
+use tokio_rustls::{
+    client::TlsStream as ClientTlsStream, TlsAcceptor as TokioTlsAcceptor, TlsConnector,
+};
 
 #[cfg(feature = "acme")]
 use rustls::crypto::aws_lc_rs::default_provider;
@@ -169,7 +171,9 @@ impl TlsAcceptor {
             .map_err(|e| anyhow!("failed to set protocol versions: {}", e))?
             .with_no_client_auth()
             .with_cert_resolver(acme_resolver);
-        server_config.alpn_protocols.push(ACME_TLS_ALPN_NAME.to_vec());
+        server_config
+            .alpn_protocols
+            .push(ACME_TLS_ALPN_NAME.to_vec());
 
         let server_config = Arc::new(server_config);
         let tokio_acceptor = TokioTlsAcceptor::from(server_config.clone());
@@ -195,11 +199,7 @@ impl TransportAcceptor for TlsAcceptor {
         let (tcp_stream, remote_addr) = self.listener.accept().await?;
         let tls_stream = self.tokio_acceptor.accept(tcp_stream).await?;
 
-        let server_name = tls_stream
-            .get_ref()
-            .1
-            .server_name()
-            .map(|s| s.to_string());
+        let server_name = tls_stream.get_ref().1.server_name().map(|s| s.to_string());
 
         let info = TransportInfo {
             remote_addr: Some(remote_addr),
@@ -324,10 +324,7 @@ mod tests {
 
         let (mut server, info) = accept_handle.await.unwrap();
         assert!(info.remote_addr.is_some());
-        assert!(matches!(
-            info.transport_kind,
-            TransportKind::Tls { .. }
-        ));
+        assert!(matches!(info.transport_kind, TransportKind::Tls { .. }));
 
         client.write_all(b"hello tls").await.unwrap();
         let mut buf = [0u8; 9];

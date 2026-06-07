@@ -16,10 +16,12 @@ pub mod stealth;
 
 pub use channel_proxy::{connect_outbound, proxy_channel};
 pub use control_channel::{
-    ControlChannelHandler, ControlChannelRouter, DuplexStream, ALKNET_CONTROL_DESTINATION,
-    ALKNET_PREFIX, is_reserved_destination,
+    is_reserved_destination, ControlChannelHandler, ControlChannelRouter, DuplexStream,
+    ALKNET_CONTROL_DESTINATION, ALKNET_PREFIX,
 };
 pub use handler::{ProxyConfig, ProxyMode, ServerHandler, TransportKind};
 pub use rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
-pub use serve::{Server, ServeError, ServeOptions, ServeTransportMode};
-pub use stealth::{ProtocolDetection, detect_protocol, send_fake_nginx_404, validate_stealth_config};
+pub use serve::{ServeError, ServeOptions, ServeTransportMode, Server};
+pub use stealth::{
+    detect_protocol, send_fake_nginx_404, validate_stealth_config, ProtocolDetection,
+};

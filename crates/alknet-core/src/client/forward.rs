@@ -205,12 +205,7 @@ async fn proxy_local_to_remote<H: client::Handler + Send + 'static>(
 
     let handle_guard = handle.lock().await;
     let channel = handle_guard
-        .channel_open_direct_tcpip(
-            remote_host,
-            remote_port as u32,
-            &local_addr,
-            0,
-        )
+        .channel_open_direct_tcpip(remote_host, remote_port as u32, &local_addr, 0)
         .await
         .map_err(|e| ForwardError::ChannelOpenFailed {
             source: Box::new(e) as _,
@@ -470,11 +465,8 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
         drop(listener);
 
-        let spec = PortForwardSpec::local(&format!(
-            "127.0.0.1:{}:remote:5432",
-            bound_addr.port()
-        ))
-        .unwrap();
+        let spec = PortForwardSpec::local(&format!("127.0.0.1:{}:remote:5432", bound_addr.port()))
+            .unwrap();
         let forwarder = LocalForwarder::new(spec).unwrap();
         assert_eq!(forwarder.local_port(), bound_addr.port());
     }

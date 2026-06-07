@@ -2,16 +2,15 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use russh::keys::ssh_key::HashAlg;
 use russh::server::{Auth, Handler, Msg, Session};
 use russh::Channel;
 use russh::ChannelId;
 
-use crate::auth::ServerAuthConfig;
-use crate::server::control_channel::{
-    ControlChannelHandler, ControlChannelRouter, ALKNET_PREFIX,
-};
+use crate::config::DynamicConfig;
+use crate::server::control_channel::{ControlChannelHandler, ControlChannelRouter, ALKNET_PREFIX};
 use crate::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 
 #[derive(Debug, Clone)]
@@ -44,7 +43,7 @@ impl std::fmt::Display for TransportKind {
 }
 
 pub struct ServerHandler {
-    auth_config: Arc<ServerAuthConfig>,
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
     #[allow(dead_code)]
     outbound_proxy: Option<ProxyConfig>,
     remote_addr: Option<SocketAddr>,
@@ -59,7 +58,7 @@ pub struct ServerHandler {
 
 impl ServerHandler {
     pub fn new(
-        auth_config: Arc<ServerAuthConfig>,
+        dynamic: Arc<ArcSwap<DynamicConfig>>,
         outbound_proxy: Option<ProxyConfig>,
         remote_addr: Option<SocketAddr>,
         transport: TransportKind,
@@ -89,7 +88,7 @@ impl ServerHandler {
         };
 
         Self {
-            auth_config,
+            dynamic,
             outbound_proxy,
             remote_addr,
             control_channel_router: ControlChannelRouter::without_handler(),
@@ -127,10 +126,7 @@ impl Drop for ServerHandler {
 }
 
 impl ServerHandler {
-    pub fn with_control_channel_handler(
-        mut self,
-        handler: Box<dyn ControlChannelHandler>,
-    ) -> Self {
+    pub fn with_control_channel_handler(mut self, handler: Box<dyn ControlChannelHandler>) -> Self {
         self.control_channel_router = ControlChannelRouter::with_handler(handler);
         self
     }
@@ -172,7 +168,8 @@ impl Handler for ServerHandler {
             .map_or("unknown".to_string(), |a| a.to_string());
 
         let russh_pub = russh::keys::PublicKey::new(public_key.key_data().clone(), user);
-        let result = self.auth_config.authenticate_publickey(&russh_pub);
+        let auth_config = self.dynamic.load();
+        let result = auth_config.auth.authenticate_publickey(&russh_pub);
 
         match result {
             Ok(()) => {
@@ -226,17 +223,25 @@ impl Handler for ServerHandler {
         });
 
         tokio::spawn(async move {
-            let target = match format!("{target_host}:{target_port}").parse::<std::net::SocketAddr>() {
-                Ok(addr) => addr,
-                Err(_) => match tokio::net::lookup_host((&target_host[..], target_port as u16)).await {
-                    Ok(mut addrs) => match addrs.next() {
-                        Some(addr) => addr,
-                        None => return,
+            let target =
+                match format!("{target_host}:{target_port}").parse::<std::net::SocketAddr>() {
+                    Ok(addr) => addr,
+                    Err(_) => match tokio::net::lookup_host((&target_host[..], target_port as u16))
+                        .await
+                    {
+                        Ok(mut addrs) => match addrs.next() {
+                            Some(addr) => addr,
+                            None => return,
+                        },
+                        Err(_) => return,
                     },
-                    Err(_) => return,
-                },
-            };
-            crate::server::channel_proxy::proxy_channel(channel.into_stream(), target, &proxy_config).await;
+                };
+            crate::server::channel_proxy::proxy_channel(
+                channel.into_stream(),
+                target,
+                &proxy_config,
+            )
+            .await;
         });
 
         let _ = (originator_address, originator_port);
@@ -389,7 +394,12 @@ impl Handler for ServerHandler {
             channel = %channel,
             "rejected x11 request on channel"
         );
-        let _ = (single_connection, x11_auth_protocol, x11_auth_cookie, x11_screen_number);
+        let _ = (
+            single_connection,
+            x11_auth_protocol,
+            x11_auth_cookie,
+            x11_screen_number,
+        );
         let _ = session.channel_failure(channel);
         Ok(())
     }
@@ -469,6 +479,8 @@ impl Handler for ServerHandler {
 mod tests {
     use super::*;
     use crate::auth::keys::KeySource;
+    use crate::auth::ServerAuthConfig;
+    use crate::config::AuthPolicy;
     use russh::keys::{decode_secret_key, PrivateKey};
     use std::io::Write;
 
@@ -487,19 +499,19 @@ mod tests {
         decode_secret_key(ED25519_PRIVATE_KEY, None).unwrap()
     }
 
-    fn make_auth_config(keys_content: &str) -> Arc<ServerAuthConfig> {
+    fn make_auth_config(keys_content: &str) -> Arc<ArcSwap<DynamicConfig>> {
         let f = make_authorized_keys_file(keys_content);
-        Arc::new(
-            ServerAuthConfig::from_keys_and_ca(
-                Some(KeySource::File(f.path().to_path_buf())),
-                None,
-            )
-            .unwrap(),
-        )
+        let server_auth =
+            ServerAuthConfig::from_keys_and_ca(Some(KeySource::File(f.path().to_path_buf())), None)
+                .unwrap();
+        let auth_policy = AuthPolicy::from_server_auth_config(server_auth);
+        let dynamic = DynamicConfig::new(auth_policy);
+        Arc::new(ArcSwap::new(Arc::new(dynamic)))
     }
 
-    fn make_empty_auth_config() -> Arc<ServerAuthConfig> {
-        Arc::new(ServerAuthConfig::from_keys_and_ca(None, None).unwrap())
+    fn make_empty_auth_config() -> Arc<ArcSwap<DynamicConfig>> {
+        let dynamic = DynamicConfig::default();
+        Arc::new(ArcSwap::new(Arc::new(dynamic)))
     }
 
     fn default_limiter() -> Arc<ConnectionRateLimiter> {
@@ -507,11 +519,18 @@ mod tests {
     }
 
     fn make_handler(
-        auth_config: Arc<ServerAuthConfig>,
+        dynamic: Arc<ArcSwap<DynamicConfig>>,
         outbound_proxy: Option<ProxyConfig>,
         remote_addr: Option<SocketAddr>,
     ) -> ServerHandler {
-        ServerHandler::new(auth_config, outbound_proxy, remote_addr, TransportKind::Tcp, default_limiter(), 10)
+        ServerHandler::new(
+            dynamic,
+            outbound_proxy,
+            remote_addr,
+            TransportKind::Tcp,
+            default_limiter(),
+            10,
+        )
     }
 
     #[tokio::test]
@@ -530,10 +549,9 @@ mod tests {
         let mut handler = make_handler(auth_config, None, None);
 
         let other_key_text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHeLC1lWiCYrXsf/85O/pkbUFZ6OGIt49PX3nw8iRoXE other@host";
-        let other_ssh_key = russh::keys::parse_public_key_base64(
-            other_key_text.split_whitespace().nth(1).unwrap(),
-        )
-        .unwrap();
+        let other_ssh_key =
+            russh::keys::parse_public_key_base64(other_key_text.split_whitespace().nth(1).unwrap())
+                .unwrap();
 
         let result = handler
             .auth_publickey("testuser", &other_ssh_key)
@@ -553,10 +571,7 @@ mod tests {
         let mut handler = make_handler(auth_config, None, None);
 
         let ssh_key = load_key().public_key().clone();
-        let result = handler
-            .auth_publickey("testuser", &ssh_key)
-            .await
-            .unwrap();
+        let result = handler.auth_publickey("testuser", &ssh_key).await.unwrap();
         assert_eq!(
             result,
             Auth::Reject {
@@ -629,8 +644,16 @@ mod tests {
     #[test]
     fn one_handler_per_connection() {
         let auth_config = make_empty_auth_config();
-        let handler1 = make_handler(auth_config.clone(), None, Some("10.0.0.1:22".parse().unwrap()));
-        let handler2 = make_handler(auth_config.clone(), None, Some("10.0.0.2:22".parse().unwrap()));
+        let handler1 = make_handler(
+            auth_config.clone(),
+            None,
+            Some("10.0.0.1:22".parse().unwrap()),
+        );
+        let handler2 = make_handler(
+            auth_config.clone(),
+            None,
+            Some("10.0.0.2:22".parse().unwrap()),
+        );
 
         assert!(handler1.remote_addr != handler2.remote_addr);
     }
@@ -651,10 +674,20 @@ mod tests {
         let ssh_key = load_key().public_key().clone();
 
         let r1 = handler.auth_publickey("user", &ssh_key).await.unwrap();
-        assert_eq!(r1, Auth::Reject { proceed_with_methods: None });
+        assert_eq!(
+            r1,
+            Auth::Reject {
+                proceed_with_methods: None
+            }
+        );
 
         let r2 = handler.auth_publickey("user", &ssh_key).await.unwrap();
-        assert_eq!(r2, Auth::Reject { proceed_with_methods: None });
+        assert_eq!(
+            r2,
+            Auth::Reject {
+                proceed_with_methods: None
+            }
+        );
 
         assert!(!handler.auth_limiter.check());
     }
