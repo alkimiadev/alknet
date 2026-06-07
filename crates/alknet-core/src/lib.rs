@@ -61,6 +61,7 @@ pub mod transport;
 #[cfg(feature = "testutil")]
 pub mod testutil;
 
+pub use auth::{AuthToken, ConfigIdentityProvider, Identity, IdentityProvider};
 pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};
 pub use config::{
