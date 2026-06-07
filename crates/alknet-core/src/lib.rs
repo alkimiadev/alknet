@@ -51,6 +51,7 @@
 //! ```
 
 pub mod auth;
+pub mod call;
 pub mod client;
 pub mod config;
 pub mod error;
@@ -62,6 +63,10 @@ pub mod transport;
 pub mod testutil;
 
 pub use auth::{AuthToken, ConfigIdentityProvider, Identity, IdentityProvider};
+pub use call::{
+    AccessControl, CallError, Handler, OperationContext, OperationEnv, OperationRegistry,
+    OperationRegistryBuilder, OperationSpec, OperationType, ResponseEnvelope,
+};
 pub use client::channel_manager::{ChannelManager, ForwardRequest};
 pub use client::connect::{ClientSession, ConnectError, ConnectOptions, TransportMode};
 pub use config::{

@@ -87,6 +87,8 @@ dependencies = [
  "rustls",
  "rustls-acme",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "ssh-key",
  "tempfile",
  "thiserror 2.0.18",
