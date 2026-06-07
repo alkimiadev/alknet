@@ -23,7 +23,9 @@
 
 pub mod config;
 pub mod pairs;
+pub mod raw_framing;
 pub mod session;
+pub mod ssh;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -31,7 +33,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 pub use config::{InterfaceConfig, InterfaceKind, RawFramingConfig, SshInterfaceConfig};
 pub use pairs::{is_valid_pair, TransportKindBase, VALID_TRANSPORT_INTERFACE_PAIRS};
+pub use raw_framing::{RawFramingInterface, RawFramingSession};
 pub use session::{InterfaceEvent, InterfaceSession};
+pub use ssh::{SshInterface, SshSession};
 
 pub trait TransportStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 

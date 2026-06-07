@@ -86,13 +86,25 @@ pub struct TransportInfo {
 /// Each variant identifies the transport mechanism. Used by the
 /// server handler for logging and authorization decisions.
 /// See ADR-001 and ADR-004.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportKind {
     Tcp,
     Tls { server_name: Option<String> },
     Iroh { endpoint_id: String },
     Dns { domain: String },
     WebTransport { host: String },
+}
+
+impl std::fmt::Display for TransportKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransportKind::Tcp => write!(f, "tcp"),
+            TransportKind::Tls { .. } => write!(f, "tls"),
+            TransportKind::Iroh { .. } => write!(f, "iroh"),
+            TransportKind::Dns { .. } => write!(f, "dns"),
+            TransportKind::WebTransport { .. } => write!(f, "webtransport"),
+        }
+    }
 }
 
 #[cfg(test)]

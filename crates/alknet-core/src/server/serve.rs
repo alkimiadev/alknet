@@ -16,9 +16,11 @@ use tracing::{error, info, warn};
 use crate::auth::keys::KeySource;
 use crate::config::{ConfigReloadHandle, DynamicConfig};
 use crate::error::ConfigError;
-use crate::server::handler::{ProxyConfig, ServerHandler, TransportKind};
+use crate::interface::InterfaceKind;
+use crate::server::handler::{ProxyConfig, ServerHandler};
 use crate::server::rate_limit::ConnectionRateLimiter;
 use crate::server::stealth::{self, ProtocolDetection};
+use crate::transport::TransportKind;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:22";
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -43,6 +45,7 @@ impl std::fmt::Display for ServeTransportMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListenerConfig {
     pub transport_kind: TransportKind,
+    pub interface_kind: InterfaceKind,
     pub listen_addr: String,
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
@@ -55,6 +58,7 @@ impl ListenerConfig {
     pub fn tcp(addr: impl Into<String>) -> Self {
         Self {
             transport_kind: TransportKind::Tcp,
+            interface_kind: InterfaceKind::Ssh,
             listen_addr: addr.into(),
             tls_cert: None,
             tls_key: None,
@@ -66,7 +70,8 @@ impl ListenerConfig {
 
     pub fn tls(addr: impl Into<String>) -> Self {
         Self {
-            transport_kind: TransportKind::Tls,
+            transport_kind: TransportKind::Tls { server_name: None },
+            interface_kind: InterfaceKind::Ssh,
             listen_addr: addr.into(),
             tls_cert: None,
             tls_key: None,
@@ -78,7 +83,10 @@ impl ListenerConfig {
 
     pub fn iroh(addr: impl Into<String>) -> Self {
         Self {
-            transport_kind: TransportKind::Iroh,
+            transport_kind: TransportKind::Iroh {
+                endpoint_id: String::new(),
+            },
+            interface_kind: InterfaceKind::Ssh,
             listen_addr: addr.into(),
             tls_cert: None,
             tls_key: None,
@@ -90,7 +98,10 @@ impl ListenerConfig {
 
     pub fn dns(domain: impl Into<String>) -> Self {
         Self {
-            transport_kind: TransportKind::Dns,
+            transport_kind: TransportKind::Dns {
+                domain: String::new(),
+            },
+            interface_kind: InterfaceKind::RawFraming,
             listen_addr: domain.into(),
             tls_cert: None,
             tls_key: None,
@@ -102,7 +113,10 @@ impl ListenerConfig {
 
     pub fn webtransport(host: impl Into<String>) -> Self {
         Self {
-            transport_kind: TransportKind::WebTransport,
+            transport_kind: TransportKind::WebTransport {
+                host: String::new(),
+            },
+            interface_kind: InterfaceKind::Ssh,
             listen_addr: host.into(),
             tls_cert: None,
             tls_key: None,
@@ -138,14 +152,14 @@ impl ListenerConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.stealth && self.transport_kind != TransportKind::Tls {
+        if self.stealth && !matches!(self.transport_kind, TransportKind::Tls { .. }) {
             return Err(ConfigError::InvalidFlag {
                 name: "stealth mode requires TLS transport".to_string(),
             });
         }
 
         match self.transport_kind {
-            TransportKind::Tls => {
+            TransportKind::Tls { .. } => {
                 if self.tls_cert.is_none() && self.acme_domain.is_none() {
                     return Err(ConfigError::InvalidFlag {
                         name: "TLS transport requires tls_cert/tls_key or acme_domain".to_string(),
@@ -163,9 +177,9 @@ impl ListenerConfig {
                 }
             }
             TransportKind::Tcp
-            | TransportKind::Iroh
-            | TransportKind::Dns
-            | TransportKind::WebTransport => {
+            | TransportKind::Iroh { .. }
+            | TransportKind::Dns { .. }
+            | TransportKind::WebTransport { .. } => {
                 if self.tls_cert.is_some() || self.tls_key.is_some() || self.acme_domain.is_some() {
                     return Err(ConfigError::IncompatibleOptions);
                 }
@@ -179,9 +193,9 @@ impl ListenerConfig {
 impl std::fmt::Display for ListenerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.transport_kind {
-            TransportKind::Iroh => write!(f, "{} (iroh)", self.listen_addr),
-            TransportKind::Dns => write!(f, "{} (dns)", self.listen_addr),
-            TransportKind::WebTransport => write!(f, "{} (webtransport)", self.listen_addr),
+            TransportKind::Iroh { .. } => write!(f, "{} (iroh)", self.listen_addr),
+            TransportKind::Dns { .. } => write!(f, "{} (dns)", self.listen_addr),
+            TransportKind::WebTransport { .. } => write!(f, "{} (webtransport)", self.listen_addr),
             _ => write!(f, "{} ({})", self.listen_addr, self.transport_kind),
         }
     }
@@ -474,11 +488,11 @@ impl Server {
             .first()
             .expect("at least one listener required");
 
-        let transport_kind = listener.transport_kind;
+        let transport_kind = listener.transport_kind.clone();
         let stealth = listener.stealth;
         let listen_addr = listener.listen_addr.clone();
 
-        if matches!(transport_kind, TransportKind::Iroh) {
+        if matches!(transport_kind, TransportKind::Iroh { .. }) {
             if let Some(id) = endpoint_info {
                 info!("alknet server running: transport=iroh endpoint_id={}", id);
             } else {
@@ -538,7 +552,7 @@ impl Server {
             };
 
             let remote_addr = info.remote_addr;
-            let handler_transport_kind = transport_kind;
+            let handler_transport_kind = transport_kind.clone();
 
             let handler = ServerHandler::new(
                 Arc::clone(&server.dynamic),
@@ -555,7 +569,7 @@ impl Server {
 
             let config = Arc::clone(&server.config);
             let sessions = Arc::clone(&server.sessions);
-            let transport_is_tls = matches!(transport_kind, TransportKind::Tls);
+            let transport_is_tls = matches!(transport_kind, TransportKind::Tls { .. });
 
             tokio::spawn(async move {
                 let result =
@@ -830,7 +844,7 @@ mod tests {
             .tls_cert("/cert.pem")
             .tls_key("/key.pem")
             .stealth(true);
-        assert_eq!(lc.transport_kind, TransportKind::Tls);
+        assert_eq!(lc.transport_kind, TransportKind::Tls { server_name: None });
         assert_eq!(lc.listen_addr, "0.0.0.0:443");
         assert!(lc.stealth);
         assert_eq!(lc.tls_cert.as_deref(), Some("/cert.pem"));
@@ -840,21 +854,36 @@ mod tests {
     #[test]
     fn listener_config_iroh_constructor() {
         let lc = ListenerConfig::iroh("0.0.0.0:0").iroh_relay("https://relay.example.com");
-        assert_eq!(lc.transport_kind, TransportKind::Iroh);
+        assert_eq!(
+            lc.transport_kind,
+            TransportKind::Iroh {
+                endpoint_id: String::new()
+            }
+        );
         assert_eq!(lc.iroh_relay.as_deref(), Some("https://relay.example.com"));
     }
 
     #[test]
     fn listener_config_dns_constructor() {
         let lc = ListenerConfig::dns("example.com");
-        assert_eq!(lc.transport_kind, TransportKind::Dns);
+        assert_eq!(
+            lc.transport_kind,
+            TransportKind::Dns {
+                domain: String::new()
+            }
+        );
         assert_eq!(lc.listen_addr, "example.com");
     }
 
     #[test]
     fn listener_config_webtransport_constructor() {
         let lc = ListenerConfig::webtransport("example.com");
-        assert_eq!(lc.transport_kind, TransportKind::WebTransport);
+        assert_eq!(
+            lc.transport_kind,
+            TransportKind::WebTransport {
+                host: String::new()
+            }
+        );
         assert_eq!(lc.listen_addr, "example.com");
     }
 
@@ -1006,7 +1035,10 @@ mod tests {
             .stealth(true);
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listeners.len(), 1);
-        assert_eq!(server.listeners[0].transport_kind, TransportKind::Tls);
+        assert_eq!(
+            server.listeners[0].transport_kind,
+            TransportKind::Tls { server_name: None }
+        );
         assert!(server.listeners[0].stealth);
         assert_eq!(server.listeners[0].tls_cert.as_deref(), Some("/cert.pem"));
     }
@@ -1025,7 +1057,10 @@ mod tests {
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listeners().len(), 2);
         assert_eq!(server.listeners()[0].transport_kind, TransportKind::Tcp);
-        assert_eq!(server.listeners()[1].transport_kind, TransportKind::Tls);
+        assert_eq!(
+            server.listeners()[1].transport_kind,
+            TransportKind::Tls { server_name: None }
+        );
     }
 
     #[test]

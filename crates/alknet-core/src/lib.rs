@@ -87,8 +87,8 @@ pub use config::{
 pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
 pub use interface::{
     is_valid_pair, Interface, InterfaceConfig, InterfaceEvent, InterfaceKind, InterfaceSession,
-    RawFramingConfig, SshInterfaceConfig, TransportKindBase, TransportStream,
-    VALID_TRANSPORT_INTERFACE_PAIRS,
+    RawFramingConfig, RawFramingInterface, RawFramingSession, SshInterface, SshInterfaceConfig,
+    SshSession, TransportKindBase, TransportStream, VALID_TRANSPORT_INTERFACE_PAIRS,
 };
 pub use server::serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};
 pub use transport::{Transport, TransportAcceptor, TransportInfo, TransportKind};

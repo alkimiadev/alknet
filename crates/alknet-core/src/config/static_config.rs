@@ -1,5 +1,7 @@
+use crate::interface::InterfaceKind;
 use crate::server::handler::{ProxyConfig, ProxyMode};
 use crate::server::serve::{ListenerConfig, ServeTransportMode};
+use crate::transport::TransportKind;
 use std::net::SocketAddr;
 
 pub struct StaticConfig {
@@ -62,10 +64,13 @@ impl StaticConfig {
         } else {
             vec![ListenerConfig {
                 transport_kind: match opts.transport_mode {
-                    ServeTransportMode::Tcp => crate::server::handler::TransportKind::Tcp,
-                    ServeTransportMode::Tls => crate::server::handler::TransportKind::Tls,
-                    ServeTransportMode::Iroh => crate::server::handler::TransportKind::Iroh,
+                    ServeTransportMode::Tcp => TransportKind::Tcp,
+                    ServeTransportMode::Tls => TransportKind::Tls { server_name: None },
+                    ServeTransportMode::Iroh => TransportKind::Iroh {
+                        endpoint_id: String::new(),
+                    },
                 },
+                interface_kind: InterfaceKind::Ssh,
                 listen_addr: opts.listen_addr.clone(),
                 tls_cert: opts.tls_cert.clone(),
                 tls_key: opts.tls_key.clone(),
@@ -125,8 +130,8 @@ fn parse_proxy_config(proxy: Option<&str>) -> Option<ProxyConfig> {
 mod tests {
     use super::*;
     use crate::auth::keys::KeySource;
-    use crate::server::handler::TransportKind;
     use crate::server::serve::ServeOptions;
+    use crate::transport::TransportKind;
 
     const ED25519_PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01QAAAJiQ+NvMkPjb\nzAAAAAtzc2gtZWQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01Q\nAAAECIWwJf7+7MOuZAOOWmoQbE9i/5GxjKsFrtJHjZ34E/fk58icPJFLfckR4M1PzF3XSp\nF3AU3zP9C6QI6AQiS/TVAAAAD3VidW50dUBuczUyODA5NgECAwQFBg==\n-----END OPENSSH PRIVATE KEY-----\n";
 

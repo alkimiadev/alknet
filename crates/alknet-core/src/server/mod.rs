@@ -19,9 +19,11 @@ pub use control_channel::{
     is_reserved_destination, ControlChannelHandler, ControlChannelRouter, DuplexStream,
     ALKNET_CONTROL_DESTINATION, ALKNET_PREFIX,
 };
-pub use handler::{ProxyConfig, ProxyMode, ServerHandler, TransportKind};
+pub use handler::{ProxyConfig, ProxyMode, ServerHandler};
 pub use rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 pub use serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};
+
+pub use crate::transport::TransportKind;
 pub use stealth::{
     detect_protocol, send_fake_nginx_404, validate_stealth_config, ProtocolDetection,
 };

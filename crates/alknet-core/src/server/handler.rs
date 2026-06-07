@@ -14,6 +14,8 @@ use crate::config::DynamicConfig;
 use crate::server::control_channel::{ControlChannelHandler, ControlChannelRouter, ALKNET_PREFIX};
 use crate::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 
+pub use crate::transport::TransportKind;
+
 #[derive(Debug, Clone)]
 pub enum ProxyMode {
     Direct,
@@ -24,27 +26,6 @@ pub enum ProxyMode {
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
     pub mode: ProxyMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TransportKind {
-    Tcp,
-    Tls,
-    Iroh,
-    Dns,
-    WebTransport,
-}
-
-impl std::fmt::Display for TransportKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TransportKind::Tcp => write!(f, "tcp"),
-            TransportKind::Tls => write!(f, "tls"),
-            TransportKind::Iroh => write!(f, "iroh"),
-            TransportKind::Dns => write!(f, "dns"),
-            TransportKind::WebTransport => write!(f, "webtransport"),
-        }
-    }
 }
 
 pub struct ServerHandler {
@@ -252,7 +233,7 @@ impl Handler for ServerHandler {
             host_to_connect,
             port_to_connect as u16,
             &identity,
-            self.transport,
+            self.transport.clone(),
         );
 
         if !allowed {
@@ -784,10 +765,28 @@ mod tests {
     #[test]
     fn transport_kind_display() {
         assert_eq!(TransportKind::Tcp.to_string(), "tcp");
-        assert_eq!(TransportKind::Tls.to_string(), "tls");
-        assert_eq!(TransportKind::Iroh.to_string(), "iroh");
-        assert_eq!(TransportKind::Dns.to_string(), "dns");
-        assert_eq!(TransportKind::WebTransport.to_string(), "webtransport");
+        assert_eq!(TransportKind::Tls { server_name: None }.to_string(), "tls");
+        assert_eq!(
+            TransportKind::Iroh {
+                endpoint_id: String::new()
+            }
+            .to_string(),
+            "iroh"
+        );
+        assert_eq!(
+            TransportKind::Dns {
+                domain: String::new()
+            }
+            .to_string(),
+            "dns"
+        );
+        assert_eq!(
+            TransportKind::WebTransport {
+                host: String::new()
+            }
+            .to_string(),
+            "webtransport"
+        );
     }
 
     #[tokio::test]
@@ -797,7 +796,7 @@ mod tests {
             auth_config,
             None,
             Some("203.0.113.50:12345".parse().unwrap()),
-            TransportKind::Tls,
+            TransportKind::Tls { server_name: None },
             Arc::new(ConnectionRateLimiter::new(0)),
             10,
         );

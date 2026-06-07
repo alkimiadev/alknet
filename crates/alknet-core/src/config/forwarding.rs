@@ -5,7 +5,7 @@ use std::str::FromStr;
 use ipnetwork::IpNetwork;
 
 use crate::auth::identity::Identity;
-use crate::server::handler::TransportKind;
+use crate::transport::TransportKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForwardingAction {
@@ -79,11 +79,11 @@ impl ForwardingRule {
             .any(|p| p == &identity.id || identity.scopes.contains(p))
     }
 
-    fn matches_transport(&self, transport: TransportKind) -> bool {
+    fn matches_transport(&self, transport: &TransportKind) -> bool {
         if self.transports.is_empty() {
             return true;
         }
-        self.transports.contains(&transport)
+        self.transports.contains(transport)
     }
 }
 
@@ -118,7 +118,7 @@ impl ForwardingPolicy {
         for rule in &self.rules {
             if rule.target.matches(target, port)
                 && rule.matches_principal(identity)
-                && rule.matches_transport(transport)
+                && rule.matches_transport(&transport)
             {
                 return rule.action == ForwardingAction::Allow;
             }
@@ -152,7 +152,12 @@ mod tests {
         let policy = ForwardingPolicy::allow_all();
         let identity = make_identity("user1", vec![]);
         assert!(policy.check("example.com", 80, &identity, TransportKind::Tcp));
-        assert!(policy.check("10.0.0.1", 22, &identity, TransportKind::Tls));
+        assert!(policy.check(
+            "10.0.0.1",
+            22,
+            &identity,
+            TransportKind::Tls { server_name: None }
+        ));
     }
 
     #[test]
@@ -160,7 +165,12 @@ mod tests {
         let policy = ForwardingPolicy::deny_all();
         let identity = make_identity("user1", vec![]);
         assert!(!policy.check("example.com", 80, &identity, TransportKind::Tcp));
-        assert!(!policy.check("10.0.0.1", 22, &identity, TransportKind::Tls));
+        assert!(!policy.check(
+            "10.0.0.1",
+            22,
+            &identity,
+            TransportKind::Tls { server_name: None }
+        ));
     }
 
     #[test]
@@ -282,8 +292,20 @@ mod tests {
         };
         let identity = make_identity("user1", vec![]);
         assert!(policy.check("example.com", 80, &identity, TransportKind::Tcp));
-        assert!(policy.check("example.com", 80, &identity, TransportKind::Tls));
-        assert!(policy.check("example.com", 80, &identity, TransportKind::Iroh));
+        assert!(policy.check(
+            "example.com",
+            80,
+            &identity,
+            TransportKind::Tls { server_name: None }
+        ));
+        assert!(policy.check(
+            "example.com",
+            80,
+            &identity,
+            TransportKind::Iroh {
+                endpoint_id: String::new()
+            }
+        ));
     }
 
     #[test]
@@ -294,12 +316,17 @@ mod tests {
                 target: TargetPattern::Any,
                 action: ForwardingAction::Allow,
                 principals: vec![],
-                transports: vec![TransportKind::Tls],
+                transports: vec![TransportKind::Tls { server_name: None }],
             }],
         };
         let identity = make_identity("user1", vec![]);
         assert!(!policy.check("example.com", 443, &identity, TransportKind::Tcp));
-        assert!(policy.check("example.com", 443, &identity, TransportKind::Tls));
+        assert!(policy.check(
+            "example.com",
+            443,
+            &identity,
+            TransportKind::Tls { server_name: None }
+        ));
     }
 
     #[test]
@@ -420,14 +447,24 @@ mod tests {
                 target: TargetPattern::Host("restricted.example.com".to_string()),
                 action: ForwardingAction::Allow,
                 principals: vec!["admin".to_string()],
-                transports: vec![TransportKind::Tls],
+                transports: vec![TransportKind::Tls { server_name: None }],
             }],
         };
         let admin = make_identity("admin-user", vec!["admin"]);
         let viewer = make_identity("viewer-user", vec!["viewer"]);
-        assert!(policy.check("restricted.example.com", 443, &admin, TransportKind::Tls));
+        assert!(policy.check(
+            "restricted.example.com",
+            443,
+            &admin,
+            TransportKind::Tls { server_name: None }
+        ));
         assert!(!policy.check("restricted.example.com", 443, &admin, TransportKind::Tcp));
-        assert!(!policy.check("restricted.example.com", 443, &viewer, TransportKind::Tls));
+        assert!(!policy.check(
+            "restricted.example.com",
+            443,
+            &viewer,
+            TransportKind::Tls { server_name: None }
+        ));
     }
 
     #[test]
@@ -439,19 +476,37 @@ mod tests {
                     target: TargetPattern::AlknetPrefix,
                     action: ForwardingAction::Allow,
                     principals: vec![],
-                    transports: vec![TransportKind::WebTransport],
+                    transports: vec![TransportKind::WebTransport {
+                        host: String::new(),
+                    }],
                 },
                 ForwardingRule {
                     target: TargetPattern::Any,
                     action: ForwardingAction::Deny,
                     principals: vec![],
-                    transports: vec![TransportKind::WebTransport],
+                    transports: vec![TransportKind::WebTransport {
+                        host: String::new(),
+                    }],
                 },
             ],
         };
         let identity = make_identity("user1", vec![]);
-        assert!(policy.check("alknet-control", 0, &identity, TransportKind::WebTransport));
-        assert!(!policy.check("example.com", 443, &identity, TransportKind::WebTransport));
+        assert!(policy.check(
+            "alknet-control",
+            0,
+            &identity,
+            TransportKind::WebTransport {
+                host: String::new()
+            }
+        ));
+        assert!(!policy.check(
+            "example.com",
+            443,
+            &identity,
+            TransportKind::WebTransport {
+                host: String::new()
+            }
+        ));
         assert!(policy.check("example.com", 443, &identity, TransportKind::Tcp));
     }
 
