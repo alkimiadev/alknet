@@ -154,18 +154,18 @@ last_updated: 2026-06-04
 
 ## Call Protocol
 
-### OQ-20: Spoke registration and discovery on connect/disconnect
+### OQ-20: Worker registration and discovery on connect/disconnect
 - **Origin**: [call-protocol.md](call-protocol.md)
 - **Status**: open
 - **Priority**: medium
 - **Resolution**: (pending — registration on connect / cleanup on disconnect is the leading approach)
 - **Cross-references**: ADR-024, ADR-025
 
-### OQ-21: Routing calls to specific spokes with same-service operations
+### OQ-21: Routing calls to specific workers with same-service operations
 - **Origin**: [call-protocol.md](call-protocol.md)
 - **Status**: ~~resolved~~
 - **Priority**: ~~medium~~ —
-- **Resolution**: ADR-024, ADR-025 — Operation paths use `/{spoke}/{service}/{op}` format. The first path segment identifies the spoke and routes the call to the correct connected node. Multiple spokes exposing the same service (e.g., two dev envs both with `/fs/*`) are differentiated by the spoke prefix (`/dev1/fs/readFile` vs `/dev2/fs/readFile`). The hub maintains a routing table mapping spoke identity to connection. This mirrors iroh's ALPN dispatch: first segment = routing key.
+- **Resolution**: ADR-024, ADR-025 — Operation paths use `/{node}/{service}/{op}` format. The first path segment identifies the node and routes the call to the correct connected node. Multiple workers exposing the same service (e.g., two dev envs both with `/fs/*`) are differentiated by the node prefix (`/dev1/fs/readFile` vs `/dev2/fs/readFile`). The head maintains a routing table mapping node identity to connection. This mirrors iroh's ALPN dispatch: first segment = routing key.
 - **Cross-references**: [call-protocol.md](call-protocol.md), ADR-024, ADR-025
 
 ### OQ-22: Client streaming (streaming inputs) in the call protocol?

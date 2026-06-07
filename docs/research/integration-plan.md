@@ -628,17 +628,18 @@ These must have answers before implementation begins:
 
 The research documents have a few areas that need reconciliation:
 
-1. **Hub/spoke vs head/worker**: core.md and services.md use head/worker. call-protocol.md still uses hub/spoke in several places. All docs need to be updated consistently. ADR-034 formalizes this.
+1. **Hub/spoke vs head/worker**~~: core.md and services.md use head/worker. call-protocol.md still uses hub/spoke in several places. All docs need to be updated consistently. ADR-034 formalizes this.~~ **Fixed**: call-protocol.md, auth.md, open-questions.md, and napi-and-pubsub.md updated to head/worker terminology. ADRs are historical records and retain original terminology. ADR-034 still needed to formalize the decision.
 
 2. **DNS as transport vs interface**: core.md conflates "DNS as transport" (encoding bytes as DNS queries) with "DNS as naming/discovery" (TXT records). The three-layer model cleanly separates these: DNS transport is Layer 1, DNS naming is a separate concern (similar to DNS-SD or iroh-dns).
 
-3. **Service naming collision — irpc service vs call protocol operation**: The research uses "service" for both irpc protocol enums (AuthProtocol, SecretProtocol) and call protocol path-based handlers (`/head/auth/verify`, `/head/secrets/derive`). These are different concepts that compose through OperationEnv. The architecture should consistently use:
+3. **Service naming collision — irpc service vs call protocol operation vs external service**: The research uses "service" for both irpc protocol enums (AuthProtocol, SecretProtocol) and call protocol path-based handlers (`/head/auth/verify`, `/head/secrets/derive`). These are different concepts that compose through OperationEnv. The architecture should consistently use:
    - **irpc service** for in-cluster, Rust-to-Rust protocol enums dispatched by variant (AuthProtocol::VerifyPubkey)
    - **operation** for path-based call protocol handlers dispatched by namespace + name (`/head/auth/verify`)
+   - **external service** for any endpoint reachable via the call protocol from another node or over an interface — an HTTP endpoint, a vast.ai instance, another head node. These are "services" in the broadest sense but sit outside the cluster. They're reachable through OperationEnv's remote dispatch path.
    - An irpc service can back an operation — the OperationEnv routes to the right dispatch path automatically
    - Both are "services" in the broad sense, but the dispatch mechanism differs. OperationEnv unifies them.
 
-4. **Identity model divergence**: auth.md defines `Identity` with `{id, scopes, resources}`. services.md defines `Identity` with `{node_id, fingerprint, scopes}`. These need to be unified. Proposed: `{id, scopes, resources}` where `id` is a fingerprint (for key-based auth) or account UUID (for database-backed auth).
+4. **Identity model divergence**~~: auth.md defines `Identity` with `{id, scopes, resources}`. services.md defines `Identity` with `{node_id, fingerprint, scopes}`. These need to be unified. Proposed: `{id, scopes, resources}` where `id` is a fingerprint (for key-based auth) or account UUID (for database-backed auth).~~ **Fixed**: auth.md already has the correct unified definition `{id, scopes, resources}`. Added a note in auth.md calling out the unification. services.md (research) still uses the old form — will be corrected when the services spec is formally written.
 
 5. **OperationEnv is a universal composition mechanism, not an implementation detail**: services.md defines `OperationEnv` as `HashMap<String, HashMap<String, fn(Value, OperationContext) -> ResponseEnvelope>>`. This is not a TypeScript pattern to be "translated" to Rust as an irpc Client<S>. The OperationEnv composition model is what makes operations universally addressable across HTTP, MCP, DNS, call protocol, and irpc. The Rust implementation can use typed method dispatch or a registry behind the scenes, but the behavioral contract — namespace + operation name → invoke with input, return output — must match. Adapters (MCP, HTTP, DNS) map to this interface. Handlers compose through this interface. irpc is one dispatch backend for OperationEnv, not a replacement for it.
 

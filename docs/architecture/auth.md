@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-04
+last_updated: 2026-06-07
 ---
 
 # Authentication & Identity
@@ -95,11 +95,19 @@ pub struct Identity {
 }
 ```
 
+> **Note on identity models**: Earlier research used `{node_id, fingerprint, scopes}`.
+> The unified model uses `{id, scopes, resources}` where `id` serves as both
+> fingerprint (for key-based auth from config) and account UUID (for
+> database-backed auth). The `resources` field provides resource-level
+> authorization beyond what scopes offer. This is the canonical definition
+> that all components should use.
+```
+
 **Default implementation**: `ConfigIdentityProvider` loads from
 `DynamicConfig.auth` (the `authorized_keys` set). Every authorized key gets a
 default scope set. No database required.
 
-**Hub implementation**: Backed by `@alkdev/storage`'s `peer_credentials` and
+**Head implementation**: Backed by `@alkdev/storage`'s `peer_credentials` and
 `accounts` tables plus the ACL graph. Resolves fingerprint → account →
 organization membership → effective scopes. Uses `ArcSwap` for hot reload.
 

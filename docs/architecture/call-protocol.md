@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-04
+last_updated: 2026-06-07
 ---
 
 # Call Protocol
@@ -11,15 +11,15 @@ A bidirectional, transport-agnostic call and event protocol that runs over
 authenticated pipes. It supports request/response calls, streaming
 subscriptions, and unidirectional events — all using the same wire format. The
 protocol is defined as a spec + handler + registry; downstream consumers (NAPI,
-Python, hub/spoke) register their own operations without modifying core.
+Python, head/worker) register their own operations without modifying core.
 
 ## Why
 
 The current control channel (ADR-018) is unidirectional (client → server) and
 provides fire-and-forget event dispatch without request/response semantics.
 The call protocol generalizes it to support bidirectional calls (ADR-024) and
-downstream service registration (ADR-025), enabling the hub/spoke model where
-spokes expose operations the hub invokes.
+downstream service registration (ADR-025), enabling the head/worker model where
+workers expose operations the head invokes.
 
 ## Architecture
 
@@ -28,10 +28,10 @@ spokes expose operations the hub invokes.
 Operation names use slash-based paths aligned with URL routing conventions:
 
 ```
-/{spoke}/{service}/{op}
+/{node}/{service}/{op}
 ```
 
-- **spoke** — identity prefix of the node that exposes the operation. The hub
+- **node** — identity prefix of the node that exposes the operation. The head
   uses this segment to route calls to the correct connected node.
 - **service** — the logical service namespace. Groups related operations
   under one handler prefix.
@@ -41,11 +41,11 @@ Examples:
 
 | Path | Meaning |
 |------|---------|
-| `/dev1/fs/readFile` | Spoke `dev1`, service `fs`, operation `readFile` |
-| `/dev1/bash/exec` | Spoke `dev1`, service `bash`, operation `exec` |
-| `/hub/agent/chat` | Hub's own `agent` service, operation `chat` |
-| `/hub/sessions/list` | Hub's own `sessions` service, operation `list` |
-| `/browser-1/notify/alert` | Browser spoke `browser-1`, `notify` service |
+| `/dev1/fs/readFile` | Node `dev1`, service `fs`, operation `readFile` |
+| `/dev1/bash/exec` | Node `dev1`, service `bash`, operation `exec` |
+| `/head/agent/chat` | Head's own `agent` service, operation `chat` |
+| `/head/sessions/list` | Head's own `sessions` service, operation `list` |
+| `/browser-1/notify/alert` | Worker `browser-1`, `notify` service |
 
 This three-level routing mirrors iroh's ALPN dispatch: the first segment
 routes to a connected node (like ALPN routes to a protocol handler), the
@@ -110,11 +110,11 @@ The `id` field carries the `requestId` for correlation.
 
 ### Bidirectional Calls and Routing
 
-Both sides of a connection can initiate calls. The hub routes calls to spokes
+Both sides of a connection can initiate calls. The head routes calls to workers
 using the first path segment:
 
 ```
-Hub (server)                              Spoke: "dev1" (client)
+Head (server)                              Worker: "dev1" (client)
      │                                           │
      │  call.requested                           │
      │  name: "/dev1/fs/readFile"                │
@@ -126,11 +126,11 @@ Hub (server)                              Spoke: "dev1" (client)
      │  payload: { content: "fn main()..." }     │
      │◀──────────────────────────────────────────│
      │                                           │
-     │          Spoke exposes /dev1/fs/*,        │
-     │          /dev1/bash/* to hub              │
+     │          Worker exposes /dev1/fs/*,        │
+     │          /dev1/bash/* to head              │
      │                                           │
      │◀─ call.requested ────────────────────────│
-     │  name: "/hub/agent/chat"                  │
+     │  name: "/head/agent/chat"                  │
      │  payload: { provider: "anthropic", ... }  │
      │                                           │
      │── call.responded ──────────────────────▶ │
@@ -138,54 +138,54 @@ Hub (server)                              Spoke: "dev1" (client)
      │  payload: { completion: "..." }            │
 ```
 
-The hub's registry includes:
-- **Hub-local operations** (`/hub/*`) — handled directly
-- **Remote operations** (`/{spoke}/*`) — forwarded to the spoke connection
+The head's registry includes:
+- **Head-local operations** (`/head/*`) — handled directly
+- **Remote operations** (`/{node}/*`) — forwarded to the worker connection
 
-When the hub routes `/dev1/fs/readFile` to spoke `dev1`, it strips the spoke
-prefix and delivers the call to the spoke's local registry as `/fs/readFile`.
-The spoke doesn't need to know its own alias.
+When the head routes `/dev1/fs/readFile` to worker `dev1`, it strips the node
+prefix and delivers the call to the worker's local registry as `/fs/readFile`.
+The worker doesn't need to know its own alias.
 
-### Hub/Spoke Architecture
+### Head/Worker Architecture
 
 ```
          ┌─────────────────────────────────┐
-         │              Hub                │
+         │           Head Node             │
          │                                 │
-         │  Hub-local services:            │
-         │  /hub/agent/chat   (LLM coord)  │
-         │  /hub/agent/complete            │
-         │  /hub/sessions/list             │
-         │  /hub/sessions/history          │
+         │  Head-local services:           │
+         │  /head/agent/chat  (LLM coord)  │
+         │  /head/agent/complete           │
+         │  /head/sessions/list            │
+         │  /head/sessions/history         │
          │                                 │
-         │  Spoke registry (discovered):   │
-         │  /dev1/fs/* → dev1 connection    │
-         │  /dev1/bash/* → dev1 connection  │
-         │  /dev2/fs/* → dev2 connection    │
-         │  /browser-1/notify/* → WT conn  │
+         │  Worker registry (discovered):  │
+         │  /dev1/fs/* → dev1 connection   │
+         │  /dev1/bash/* → dev1 connection │
+         │  /dev2/fs/* → dev2 connection   │
+         │  /browser-1/notify/* → WT conn │
          └──────┬───────┬───────┬──────────┘
                 │       │       │
       ┌─────────▼┐ ┌───▼────┐ ┌▼───────────┐
-      │  Dev Spoke│ │Dev Spk │ │Browser Spoke│
-      │  "dev1"   │ │"dev2"  │ │"browser-1"  │
-      │  /fs/*    │ │/fs/*   │ │/notify/*    │
-      │  /bash/*  │ │/bash/* │ │             │
-      │  /search/*│ │        │ │             │
-      └───────────┘ └────────┘ └─────────────┘
+      │  Worker  │ │Worker  │ │Browser Worker│
+      │  "dev1"  │ │"dev2"  │ │"browser-1"  │
+      │  /fs/*   │ │/fs/*   │ │/notify/*    │
+      │  /bash/* │ │/bash/* │ │             │
+      │  /search/*│ │       │ │             │
+      └──────────┘ └────────┘ └─────────────┘
 ```
 
-When a spoke connects, it registers its operations with the hub:
+When a worker connects, it registers its operations with the head:
 
 ```
-spoke → hub:  call.requested { name: "/hub/services/register", payload: {
-  spoke: "dev1",
+worker → head:  call.requested { name: "/head/services/register", payload: {
+  node: "dev1",
   operations: ["/fs/readFile", "/fs/writeFile", "/bash/exec", "/search/query"]
 }}
 ```
 
-The hub adds these to its routing table with the spoke prefix. Other spokes
+The head adds these to its routing table with the node prefix. Other workers
 and browser clients can then call `/dev1/fs/readFile` without knowing how
-the hub routes it internally.
+the head routes it internally.
 
 ### Operation Registry
 
@@ -223,7 +223,7 @@ pub struct AccessControl {
 registry.register(OperationSpec { name: "/services/list", ... }, list_services_handler);
 registry.register(OperationSpec { name: "/services/schema", ... }, schema_handler);
 
-// A dev env spoke registers its tools
+// A dev env worker registers its tools
 registry.register(OperationSpec { name: "/fs/readFile", ... }, fs_read_handler);
 registry.register(OperationSpec { name: "/bash/exec", ... }, bash_exec_handler);
 
@@ -231,10 +231,10 @@ registry.register(OperationSpec { name: "/bash/exec", ... }, bash_exec_handler);
 registry.register(OperationSpec { name: "/notify/alert", ... }, notify_handler);
 ```
 
-Core-provided operations use short paths without a spoke prefix
+Core-provided operations use short paths without a node prefix
 (`/services/list`, `/services/schema`). They live on whatever node the
-caller is connected to. Spoke-prefixed operations (`/dev1/fs/readFile`)
-are routed by the hub.
+caller is connected to. Worker-prefixed operations (`/dev1/fs/readFile`)
+are routed by the head.
 
 ### ACL Per Operation Path
 
@@ -242,12 +242,12 @@ Access control maps to path prefixes using standard URL-like matching:
 
 | Pattern | Matches | Purpose |
 |---------|---------|---------|
-| `/dev1/*` | All operations on spoke `dev1` | Full access to a spoke |
-| `/*/fs/*` | `fs` service on any spoke | Read file access across dev envs |
-| `/*/bash/*` | `bash` service on any spoke | Shell access (higher risk) |
-| `/hub/agent/*` | Hub LLM agent | LLM calls |
-| `/hub/sessions/*` | Hub session management | Session history |
-| `/browser-1/notify/alert` | Specific operation on specific spoke | One UI notification |
+| `/dev1/*` | All operations on node `dev1` | Full access to a worker |
+| `/*/fs/*` | `fs` service on any node | Read file access across dev envs |
+| `/*/bash/*` | `bash` service on any node | Shell access (higher risk) |
+| `/head/agent/*` | Head LLM agent | LLM calls |
+| `/head/sessions/*` | Head session management | Session history |
+| `/browser-1/notify/alert` | Specific operation on specific node | One UI notification |
 
 Higher-risk operations (shell, filesystem write) can require tighter scopes
 than read-only operations. The ACL evaluates against the caller's
@@ -337,20 +337,20 @@ translation at the wire level.
 
 ### Agent Service Pattern
 
-The hub commonly runs an agent service that coordinates between LLM providers
+The head commonly runs an agent service that coordinates between LLM providers
 and tool calls. This service is just another set of registered operations —
 no special treatment:
 
-- `/hub/agent/chat` — send a message, get a completion. Routes to the
-  appropriate LLM provider based on available spokes and configuration.
-- `/hub/agent/complete` — streaming completion. Yields tokens as they arrive.
-- `/hub/sessions/list` — list session histories (backed by Honker or other
+- `/head/agent/chat` — send a message, get a completion. Routes to the
+  appropriate LLM provider based on available workers and configuration.
+- `/head/agent/complete` — streaming completion. Yields tokens as they arrive.
+- `/head/sessions/list` — list session histories (backed by Honker or other
   durable storage).
-- `/hub/sessions/history` — retrieve a specific session's message history.
+- `/head/sessions/history` — retrieve a specific session's message history.
 
-The agent service uses the same call protocol to invoke tools on spokes:
+The agent service uses the same call protocol to invoke tools on workers:
 `/dev1/fs/readFile` for file access, `/dev1/bash/exec` for shell commands. It
-stores session state via whatever mechanism the hub deployment provides — core
+stores session state via whatever mechanism the head deployment provides — core
 doesn't mandate Honker or any specific storage.
 
 ## Constraints
@@ -364,15 +364,15 @@ doesn't mandate Honker or any specific storage.
   admin operations are exposed through the call protocol itself.
 - Batch is not a protocol primitive. Multiple `call.requested` events with
   correlated `requestId`s provide equivalent semantics.
-- The spoke prefix in the operation path is a routing mechanism, not a security
+- The node prefix in the operation path is a routing mechanism, not a security
   boundary. ACL is enforced at the `AccessControl` level, not by path prefix
-  alone. A spoke that exposes `/dev1/bash/exec` can restrict access via
+  alone. A worker that exposes `/dev1/bash/exec` can restrict access via
   `required_scopes` — not every authenticated identity should have shell access.
 
 ## Open Questions
 
-- **OQ-20**: How does the hub track which spokes expose which operations when
-  spokes connect and disconnect? Registration on connect and cleanup on
+- **OQ-20**: How does the head track which workers expose which operations when
+  workers connect and disconnect? Registration on connect and cleanup on
   disconnect, or heartbeat-based discovery? See
   [open-questions.md](open-questions.md).
 

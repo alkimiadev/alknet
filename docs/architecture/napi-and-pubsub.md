@@ -14,7 +14,7 @@ Two integration layers that enable TypeScript/JavaScript consumers to use alknet
 
 ## Why
 
-The alknet Rust binary serves CLI users. But the broader ecosystem (pubsub, operations, agent spokes) is TypeScript-first. These integration layers let TypeScript code use alknet's transport without reimplementing SSH.
+The alknet Rust binary serves CLI users. But the broader ecosystem (pubsub, operations, agent workers) is TypeScript-first. These integration layers let TypeScript code use alknet's transport without reimplementing SSH.
 
 The NAPI surface is intentionally minimal — it exposes transport connections as duplex streams, not the full SSH protocol. The pubsub adapter wraps those streams with `EventEnvelope` serialization.
 
@@ -127,14 +127,11 @@ The alknet server uses a reserved `direct_tcpip` destination (`alknet-control:0`
 2. Instead of opening a TCP connection, it bridges the channel to its local pubsub event bus
 3. `EventEnvelope` JSON flows bidirectionally over the SSH channel
 
-Users who prefer not to use the control channel can alternatively run a pubsub hub on a specific port and use standard port forwarding: `alknet connect --forward 9736:hub:9736`. This is a deployment choice, not a separate implementation — alknet's port forwarding works normally for any TCP service.
+Users who prefer not to use the control channel can alternatively run a pubsub service on a specific port and use standard port forwarding: `alknet connect --forward 9736:head:9736`. This is a deployment choice, not a separate implementation — alknet's port forwarding works normally for any TCP service.
 
-### Direction Agnostic
+- **Worker connects to head**: `alknet connect --forward 9736:head:9736` then create WebSocket event target pointing at `ws://localhost:9736`
 
-Because alknet supports both local and remote port forwarding, the event target works in either direction:
-
-- **Worker connects to hub**: `alknet connect --forward 9736:hub:9736` then create WebSocket event target pointing at `ws://localhost:9736`
-- **Hub connects to worker**: `alknet connect --remote-forward 9736:worker:9736` — same result, opposite initiator
+- **Head connects to worker**: `alknet connect --remote-forward 9736:worker:9736` — same result, opposite initiator
 
 The pubsub adapter doesn't care which side initiated the SSH session. It just needs a byte stream.
 
