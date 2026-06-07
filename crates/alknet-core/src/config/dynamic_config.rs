@@ -1,13 +1,17 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use russh::keys::ssh_key::HashAlg;
 
+use crate::auth::identity::Identity;
 use crate::auth::ServerAuthConfig;
 
 pub struct AuthPolicy {
     pub authorized_keys: std::collections::HashSet<russh::keys::PublicKey>,
     pub cert_authorities: Vec<crate::auth::keys::CertAuthorityEntry>,
     encoded_keys: std::collections::HashSet<Vec<u8>>,
+    fingerprint_to_key: HashMap<String, russh::keys::PublicKey>,
 }
 
 fn encode_key_data(key: &russh::keys::PublicKey) -> Vec<u8> {
@@ -21,11 +25,16 @@ impl AuthPolicy {
         cert_authorities: Vec<crate::auth::keys::CertAuthorityEntry>,
     ) -> Self {
         let encoded_keys = authorized_keys.iter().map(encode_key_data).collect();
+        let fingerprint_to_key = authorized_keys
+            .iter()
+            .map(|k| (format!("{}", k.fingerprint(HashAlg::Sha256)), k.clone()))
+            .collect();
 
         Self {
             authorized_keys,
             cert_authorities,
             encoded_keys,
+            fingerprint_to_key,
         }
     }
 
@@ -35,6 +44,18 @@ impl AuthPolicy {
 
     pub fn empty() -> Self {
         Self::new(std::collections::HashSet::new(), Vec::new())
+    }
+
+    pub fn resolve_identity_from_fingerprint(&self, fingerprint: &str) -> Option<Identity> {
+        if self.fingerprint_to_key.contains_key(fingerprint) {
+            Some(Identity {
+                id: fingerprint.to_string(),
+                scopes: vec!["relay:connect".to_string()],
+                resources: HashMap::new(),
+            })
+        } else {
+            None
+        }
     }
 
     pub fn authenticate_publickey(
@@ -186,6 +207,7 @@ impl Clone for AuthPolicy {
             authorized_keys: self.authorized_keys.clone(),
             cert_authorities: self.cert_authorities.clone(),
             encoded_keys: self.encoded_keys.clone(),
+            fingerprint_to_key: self.fingerprint_to_key.clone(),
         }
     }
 }

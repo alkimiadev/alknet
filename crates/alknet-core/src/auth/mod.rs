@@ -4,9 +4,11 @@
 //! See ADR-012 for the design rationale.
 
 pub mod client_auth;
+pub mod identity;
 pub mod keys;
 pub mod server_auth;
 
 pub use client_auth::{ClientAuthConfig, ClientHandler};
+pub use identity::{AuthToken, ConfigIdentityProvider, Identity, IdentityProvider};
 pub use keys::{load_private_key, load_public_keys, CertAuthorityEntry, KeySource};
 pub use server_auth::ServerAuthConfig;

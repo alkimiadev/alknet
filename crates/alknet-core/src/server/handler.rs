@@ -9,6 +9,7 @@ use russh::server::{Auth, Handler, Msg, Session};
 use russh::Channel;
 use russh::ChannelId;
 
+use crate::auth::identity::{ConfigIdentityProvider, Identity, IdentityProvider};
 use crate::config::DynamicConfig;
 use crate::server::control_channel::{ControlChannelHandler, ControlChannelRouter, ALKNET_PREFIX};
 use crate::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
@@ -43,7 +44,7 @@ impl std::fmt::Display for TransportKind {
 }
 
 pub struct ServerHandler {
-    dynamic: Arc<ArcSwap<DynamicConfig>>,
+    identity_provider: Box<dyn IdentityProvider>,
     #[allow(dead_code)]
     outbound_proxy: Option<ProxyConfig>,
     remote_addr: Option<SocketAddr>,
@@ -54,6 +55,7 @@ pub struct ServerHandler {
     connection_allowed: bool,
     auth_limiter: AuthAttemptLimiter,
     connected_at: Instant,
+    authenticated_identity: Option<Identity>,
 }
 
 impl ServerHandler {
@@ -65,6 +67,9 @@ impl ServerHandler {
         connection_limiter: Arc<ConnectionRateLimiter>,
         max_auth_attempts: usize,
     ) -> Self {
+        let identity_provider: Box<dyn IdentityProvider> =
+            Box::new(ConfigIdentityProvider::new(Arc::clone(&dynamic)));
+
         let allowed = if let Some(addr) = remote_addr {
             let ip = addr.ip();
             if connection_limiter.check(ip) {
@@ -88,7 +93,7 @@ impl ServerHandler {
         };
 
         Self {
-            dynamic,
+            identity_provider,
             outbound_proxy,
             remote_addr,
             control_channel_router: ControlChannelRouter::without_handler(),
@@ -97,7 +102,17 @@ impl ServerHandler {
             connection_allowed: allowed,
             auth_limiter: AuthAttemptLimiter::new(max_auth_attempts),
             connected_at: Instant::now(),
+            authenticated_identity: None,
         }
+    }
+
+    pub fn with_identity_provider(mut self, provider: Box<dyn IdentityProvider>) -> Self {
+        self.identity_provider = provider;
+        self
+    }
+
+    pub fn authenticated_identity(&self) -> Option<&Identity> {
+        self.authenticated_identity.as_ref()
     }
 
     pub fn is_connection_allowed(&self) -> bool {
@@ -167,12 +182,13 @@ impl Handler for ServerHandler {
             .remote_addr
             .map_or("unknown".to_string(), |a| a.to_string());
 
-        let russh_pub = russh::keys::PublicKey::new(public_key.key_data().clone(), user);
-        let auth_config = self.dynamic.load();
-        let result = auth_config.auth.authenticate_publickey(&russh_pub);
+        let identity = self
+            .identity_provider
+            .resolve_from_fingerprint(&fingerprint);
 
-        match result {
-            Ok(()) => {
+        match identity {
+            Some(id) => {
+                self.authenticated_identity = Some(id);
                 tracing::info!(
                     remote_addr = %remote_addr_display,
                     user = user,
@@ -182,7 +198,7 @@ impl Handler for ServerHandler {
                 );
                 Ok(Auth::Accept)
             }
-            Err(_) => {
+            None => {
                 self.auth_limiter.on_failure();
                 tracing::info!(
                     remote_addr = %remote_addr_display,
