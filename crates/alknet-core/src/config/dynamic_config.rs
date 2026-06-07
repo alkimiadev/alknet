@@ -6,6 +6,7 @@ use russh::keys::ssh_key::HashAlg;
 
 use crate::auth::identity::Identity;
 use crate::auth::ServerAuthConfig;
+use crate::config::forwarding::ForwardingPolicy;
 
 pub struct AuthPolicy {
     pub authorized_keys: std::collections::HashSet<russh::keys::PublicKey>,
@@ -212,41 +213,6 @@ impl Clone for AuthPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ForwardingAction {
-    Allow,
-    Deny,
-}
-
-#[derive(Debug, Clone)]
-pub struct ForwardingRule {
-    pub action: ForwardingAction,
-    pub principals: Vec<String>,
-    pub transports: Vec<crate::server::handler::TransportKind>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ForwardingPolicy {
-    pub default: ForwardingAction,
-    pub rules: Vec<ForwardingRule>,
-}
-
-impl ForwardingPolicy {
-    pub fn allow_all() -> Self {
-        Self {
-            default: ForwardingAction::Allow,
-            rules: Vec::new(),
-        }
-    }
-
-    pub fn deny_all() -> Self {
-        Self {
-            default: ForwardingAction::Deny,
-            rules: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     pub max_connections_per_ip: usize,
@@ -330,6 +296,7 @@ pub fn new_dynamic_config() -> (Arc<ArcSwap<DynamicConfig>>, ConfigReloadHandle)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::forwarding::ForwardingAction;
 
     #[test]
     fn forwarding_policy_allow_all_default() {
