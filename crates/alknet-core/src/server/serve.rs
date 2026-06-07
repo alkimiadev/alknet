@@ -5,7 +5,6 @@
 //! `ServeOptions` provides a builder-pattern API for programmatic configuration.
 //! Supports multiple listeners via `ListenerConfig` for multi-transport operation.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,10 +14,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{error, info, warn};
 
 use crate::auth::keys::KeySource;
-use crate::auth::server_auth::ServerAuthConfig;
-use crate::config::{AuthPolicy, ConfigReloadHandle, DynamicConfig};
+use crate::config::{ConfigReloadHandle, DynamicConfig};
 use crate::error::ConfigError;
-use crate::server::handler::{ProxyConfig, ProxyMode, ServerHandler, TransportKind};
+use crate::server::handler::{ProxyConfig, ServerHandler, TransportKind};
 use crate::server::rate_limit::ConnectionRateLimiter;
 use crate::server::stealth::{self, ProtocolDetection};
 
@@ -387,65 +385,32 @@ pub struct Server {
 
 impl Server {
     pub fn new(opts: ServeOptions) -> Result<Self, ServeError> {
-        opts.validate().map_err(ServeError::Config)?;
+        let (static_config, dynamic_config) =
+            crate::config::StaticConfig::from_serve_options(opts).map_err(ServeError::Config)?;
 
-        let private_key = crate::auth::keys::load_private_key(opts.key.clone())
-            .map_err(ServeError::KeyLoadFailed)?;
-
-        let auth_config = ServerAuthConfig::from_keys_and_ca(
-            opts.authorized_keys.clone(),
-            opts.cert_authority.clone(),
-        )
-        .map_err(ServeError::KeyLoadFailed)?;
-
-        let auth_policy = AuthPolicy::from_server_auth_config(auth_config);
-        let dynamic_config = DynamicConfig::new(auth_policy);
-
-        let max_auth_attempts = opts.max_auth_attempts;
-        let max_connections_per_ip = opts.max_connections_per_ip;
+        let connection_limiter = Arc::new(ConnectionRateLimiter::new(
+            static_config.max_connections_per_ip,
+        ));
 
         let config = Arc::new(Config {
-            keys: vec![private_key],
-            max_auth_attempts,
+            keys: vec![static_config.host_key],
+            max_auth_attempts: static_config.max_auth_attempts,
             methods: russh::MethodSet::PUBLICKEY,
             preferred: russh::Preferred::DEFAULT,
             ..Default::default()
         });
 
-        let outbound_proxy = parse_proxy_config(opts.proxy.as_deref());
-
-        let connection_limiter = Arc::new(ConnectionRateLimiter::new(max_connections_per_ip));
-
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let dynamic = Arc::new(ArcSwap::new(Arc::new(dynamic_config)));
-
-        let listeners = if let Some(listeners) = opts.listeners {
-            listeners
-        } else {
-            let transport_kind = match opts.transport_mode {
-                ServeTransportMode::Tcp => TransportKind::Tcp,
-                ServeTransportMode::Tls => TransportKind::Tls,
-                ServeTransportMode::Iroh => TransportKind::Iroh,
-            };
-            vec![ListenerConfig {
-                transport_kind,
-                listen_addr: opts.listen_addr.clone(),
-                tls_cert: opts.tls_cert.clone(),
-                tls_key: opts.tls_key.clone(),
-                acme_domain: opts.acme_domain.clone(),
-                stealth: opts.stealth,
-                iroh_relay: opts.iroh_relay.clone(),
-            }]
-        };
 
         Ok(Self {
             config,
             dynamic,
             connection_limiter,
-            outbound_proxy,
-            listeners,
-            max_auth_attempts,
+            outbound_proxy: static_config.proxy_config,
+            listeners: static_config.listeners,
+            max_auth_attempts: static_config.max_auth_attempts,
             shutdown_tx,
             shutdown_rx,
             sessions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -656,32 +621,6 @@ where
     Ok(())
 }
 
-fn parse_proxy_config(proxy: Option<&str>) -> Option<ProxyConfig> {
-    proxy.map(|url| {
-        if url.starts_with("socks5://") {
-            let addr: SocketAddr = url
-                .strip_prefix("socks5://")
-                .unwrap()
-                .parse()
-                .expect("invalid socks5 proxy address");
-            ProxyConfig {
-                mode: ProxyMode::Socks5(addr),
-            }
-        } else if url.starts_with("http://") {
-            let addr: SocketAddr = url
-                .strip_prefix("http://")
-                .unwrap()
-                .parse()
-                .expect("invalid http connect proxy address");
-            ProxyConfig {
-                mode: ProxyMode::HttpConnect(addr),
-            }
-        } else {
-            panic!("unsupported proxy URL scheme: {url}");
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,35 +787,6 @@ mod tests {
         let debug_str = format!("{:?}", opts);
         assert!(debug_str.contains("<KeySource>"));
         assert!(!debug_str.contains("OPENSSH"));
-    }
-
-    #[test]
-    fn parse_proxy_config_socks5() {
-        let config = parse_proxy_config(Some("socks5://127.0.0.1:9050"));
-        assert!(config.is_some());
-        match config.unwrap().mode {
-            ProxyMode::Socks5(addr) => {
-                assert_eq!(addr, "127.0.0.1:9050".parse().unwrap());
-            }
-            _ => panic!("expected Socks5"),
-        }
-    }
-
-    #[test]
-    fn parse_proxy_config_http() {
-        let config = parse_proxy_config(Some("http://127.0.0.1:8080"));
-        assert!(config.is_some());
-        match config.unwrap().mode {
-            ProxyMode::HttpConnect(addr) => {
-                assert_eq!(addr, "127.0.0.1:8080".parse().unwrap());
-            }
-            _ => panic!("expected HttpConnect"),
-        }
-    }
-
-    #[test]
-    fn parse_proxy_config_none() {
-        assert!(parse_proxy_config(None).is_none());
     }
 
     #[test]

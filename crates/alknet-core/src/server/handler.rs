@@ -49,7 +49,7 @@ impl std::fmt::Display for TransportKind {
 
 pub struct ServerHandler {
     dynamic: Arc<ArcSwap<DynamicConfig>>,
-    identity_provider: Box<dyn IdentityProvider>,
+    identity_provider: Arc<dyn IdentityProvider>,
     #[allow(dead_code)]
     outbound_proxy: Option<ProxyConfig>,
     remote_addr: Option<SocketAddr>,
@@ -72,8 +72,8 @@ impl ServerHandler {
         connection_limiter: Arc<ConnectionRateLimiter>,
         max_auth_attempts: usize,
     ) -> Self {
-        let identity_provider: Box<dyn IdentityProvider> =
-            Box::new(ConfigIdentityProvider::new(Arc::clone(&dynamic)));
+        let identity_provider: Arc<dyn IdentityProvider> =
+            Arc::new(ConfigIdentityProvider::new(Arc::clone(&dynamic)));
 
         let allowed = if let Some(addr) = remote_addr {
             let ip = addr.ip();
@@ -112,7 +112,7 @@ impl ServerHandler {
         }
     }
 
-    pub fn with_identity_provider(mut self, provider: Box<dyn IdentityProvider>) -> Self {
+    pub fn with_identity_provider(mut self, provider: Arc<dyn IdentityProvider>) -> Self {
         self.identity_provider = provider;
         self
     }
@@ -817,5 +817,168 @@ mod tests {
             Arc::new(ConnectionRateLimiter::new(0)),
             10,
         );
+    }
+
+    #[tokio::test]
+    async fn config_reload_new_keys_take_effect() {
+        let auth_config = make_auth_config(ED25519_PUBLIC_KEY);
+        let mut handler = ServerHandler::new(
+            auth_config.clone(),
+            None,
+            None,
+            TransportKind::Tcp,
+            default_limiter(),
+            10,
+        );
+
+        let ssh_key = load_key().public_key().clone();
+        let result = handler.auth_publickey("testuser", &ssh_key).await.unwrap();
+        assert_eq!(result, Auth::Accept);
+        drop(handler);
+
+        let new_dynamic = DynamicConfig::default();
+        auth_config.store(Arc::new(new_dynamic));
+
+        let mut handler2 = ServerHandler::new(
+            auth_config.clone(),
+            None,
+            None,
+            TransportKind::Tcp,
+            default_limiter(),
+            10,
+        );
+
+        let result2 = handler2.auth_publickey("testuser", &ssh_key).await.unwrap();
+        assert_eq!(
+            result2,
+            Auth::Reject {
+                proceed_with_methods: None
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarding_policy_deny_blocks_channel_open() {
+        use crate::config::forwarding::{
+            ForwardingAction, ForwardingPolicy, ForwardingRule, TargetPattern,
+        };
+
+        let deny_policy = ForwardingPolicy {
+            default: ForwardingAction::Deny,
+            rules: vec![ForwardingRule {
+                target: TargetPattern::Host("blocked.example.com".to_string()),
+                action: ForwardingAction::Deny,
+                principals: vec![],
+                transports: vec![],
+            }],
+        };
+
+        let auth_config = make_auth_config(ED25519_PUBLIC_KEY);
+        {
+            let dynamic = auth_config.load();
+            let new_dynamic = DynamicConfig {
+                auth: dynamic.auth.clone(),
+                forwarding: deny_policy,
+                rate_limits: dynamic.rate_limits.clone(),
+            };
+            drop(dynamic);
+            auth_config.store(Arc::new(new_dynamic));
+        }
+
+        let mut handler = ServerHandler::new(
+            auth_config,
+            None,
+            Some("127.0.0.1:12345".parse().unwrap()),
+            TransportKind::Tcp,
+            default_limiter(),
+            10,
+        );
+
+        let ssh_key = load_key().public_key().clone();
+        let result = handler.auth_publickey("testuser", &ssh_key).await.unwrap();
+        assert_eq!(result, Auth::Accept);
+        assert!(handler.authenticated_identity().is_some());
+
+        let identity = handler.authenticated_identity().unwrap();
+        let dynamic = handler.dynamic.load();
+        assert!(!dynamic.forwarding.check(
+            "blocked.example.com",
+            443,
+            identity,
+            TransportKind::Tcp
+        ));
+    }
+
+    #[test]
+    fn forwarding_policy_deny_with_custom_identity() {
+        use crate::config::forwarding::{
+            ForwardingAction, ForwardingPolicy, ForwardingRule, TargetPattern,
+        };
+        use std::collections::HashMap;
+
+        let mut resources = HashMap::new();
+        resources.insert("service".to_string(), vec!["gitea".to_string()]);
+        let identity = Identity {
+            id: "SHA256:abc123".to_string(),
+            scopes: vec!["relay:connect".to_string()],
+            resources,
+        };
+
+        let policy = ForwardingPolicy {
+            default: ForwardingAction::Deny,
+            rules: vec![ForwardingRule {
+                target: TargetPattern::Host("allowed.example.com".to_string()),
+                action: ForwardingAction::Allow,
+                principals: vec!["SHA256:abc123".to_string()],
+                transports: vec![TransportKind::Tcp],
+            }],
+        };
+
+        assert!(policy.check("allowed.example.com", 443, &identity, TransportKind::Tcp));
+        assert!(!policy.check("denied.example.com", 443, &identity, TransportKind::Tcp));
+    }
+
+    #[test]
+    fn server_handler_with_custom_identity_provider() {
+        use std::collections::HashMap;
+
+        struct MockIdentityProvider {
+            identities: HashMap<String, Identity>,
+        }
+
+        impl IdentityProvider for MockIdentityProvider {
+            fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity> {
+                self.identities.get(fingerprint).cloned()
+            }
+
+            fn resolve_from_token(&self, _token: &crate::auth::AuthToken) -> Option<Identity> {
+                None
+            }
+        }
+
+        let mut identities = HashMap::new();
+        identities.insert(
+            "SHA256:testkey".to_string(),
+            Identity {
+                id: "SHA256:testkey".to_string(),
+                scopes: vec!["admin".to_string()],
+                resources: HashMap::new(),
+            },
+        );
+
+        let provider = Arc::new(MockIdentityProvider { identities }) as Arc<dyn IdentityProvider>;
+        let dynamic = make_empty_auth_config();
+
+        let handler = ServerHandler::new(
+            dynamic,
+            None,
+            Some("10.0.0.1:22".parse().unwrap()),
+            TransportKind::Tcp,
+            default_limiter(),
+            10,
+        )
+        .with_identity_provider(provider);
+
+        assert!(handler.authenticated_identity().is_none());
     }
 }
