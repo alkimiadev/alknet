@@ -120,3 +120,85 @@ fn parse_proxy_config(proxy: Option<&str>) -> Option<ProxyConfig> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::keys::KeySource;
+    use crate::server::handler::TransportKind;
+    use crate::server::serve::ServeOptions;
+
+    const ED25519_PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01QAAAJiQ+NvMkPjb\nzAAAAAtzc2gtZWQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01Q\nAAAECIWwJf7+7MOuZAOOWmoQbE9i/5GxjKsFrtJHjZ34E/fk58icPJFLfckR4M1PzF3XSp\nF3AU3zP9C6QI6AQiS/TVAAAAD3VidW50dUBuczUyODA5NgECAwQFBg==\n-----END OPENSSH PRIVATE KEY-----\n";
+
+    const ED25519_PUBLIC_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE58icPJFLfckR4M1PzF3XSpF3AU3zP9C6QI6AQiS/TV ubuntu@ns528096";
+
+    fn make_key_source() -> KeySource {
+        KeySource::Memory(ED25519_PRIVATE_KEY.as_bytes().to_vec())
+    }
+
+    fn make_authorized_keys_source() -> KeySource {
+        KeySource::Memory(ED25519_PUBLIC_KEY.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn parse_proxy_config_socks5() {
+        let config = parse_proxy_config(Some("socks5://127.0.0.1:9050"));
+        assert!(config.is_some());
+        match config.unwrap().mode {
+            ProxyMode::Socks5(addr) => {
+                assert_eq!(addr, "127.0.0.1:9050".parse().unwrap());
+            }
+            _ => panic!("expected Socks5"),
+        }
+    }
+
+    #[test]
+    fn parse_proxy_config_http() {
+        let config = parse_proxy_config(Some("http://127.0.0.1:8080"));
+        assert!(config.is_some());
+        match config.unwrap().mode {
+            ProxyMode::HttpConnect(addr) => {
+                assert_eq!(addr, "127.0.0.1:8080".parse().unwrap());
+            }
+            _ => panic!("expected HttpConnect"),
+        }
+    }
+
+    #[test]
+    fn parse_proxy_config_none() {
+        assert!(parse_proxy_config(None).is_none());
+    }
+
+    #[test]
+    fn static_config_from_serve_options_basic() {
+        let opts =
+            ServeOptions::new(make_key_source()).authorized_keys(make_authorized_keys_source());
+        let (static_config, dynamic) = StaticConfig::from_serve_options(opts).unwrap();
+        assert_eq!(static_config.listen_addr, "0.0.0.0:22");
+        assert_eq!(static_config.max_auth_attempts, 10);
+        assert!(dynamic.auth.authorized_keys.len() > 0);
+    }
+
+    #[test]
+    fn static_config_from_serve_options_with_proxy() {
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .proxy("socks5://127.0.0.1:9050");
+        let (static_config, _) = StaticConfig::from_serve_options(opts).unwrap();
+        assert!(static_config.proxy_config.is_some());
+    }
+
+    #[test]
+    fn static_config_from_serve_options_with_listeners() {
+        let listeners = vec![ListenerConfig::tcp("0.0.0.0:22")];
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .listeners(listeners);
+        let (static_config, _) = StaticConfig::from_serve_options(opts).unwrap();
+        assert_eq!(static_config.listeners.len(), 1);
+        assert_eq!(
+            static_config.listeners[0].transport_kind,
+            TransportKind::Tcp
+        );
+    }
+}
