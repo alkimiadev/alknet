@@ -2,10 +2,16 @@
 //!
 //! Starts an SSH server that emits new channel streams via a
 //! `ThreadsafeFunction` callback. Supports TCP, TLS, and iroh transports.
+//!
+//! Dynamic configuration reload is supported via `reloadAuth()`, `reloadForwarding()`,
+//! and `reloadAll()` methods on `AlknetServer`. All swaps are atomic via ArcSwap —
+//! existing connections continue with their current config, new connections get new config.
 
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
@@ -16,6 +22,11 @@ use tokio::sync::Mutex;
 
 use alknet_core::auth::keys::KeySource;
 use alknet_core::auth::server_auth::ServerAuthConfig;
+use alknet_core::config::dynamic_config::{AuthPolicy, DynamicConfig};
+use alknet_core::config::forwarding::{
+    ForwardingAction, ForwardingPolicy, ForwardingRule, TargetPattern,
+};
+use alknet_core::config::ConfigReloadHandle;
 use alknet_core::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 use alknet_core::server::serve::{ServeOptions, ServeTransportMode, Server};
 use alknet_core::transport::{TcpAcceptor, TransportAcceptor};
@@ -32,6 +43,25 @@ pub struct AlknetServeOptions {
     pub listen: Option<String>,
     pub iroh_relay: Option<String>,
     pub proxy: Option<String>,
+}
+
+#[napi(object)]
+pub struct AuthConfigNapi {
+    pub authorized_keys: Option<Buffer>,
+    pub cert_authority: Option<Buffer>,
+}
+
+#[napi(object)]
+pub struct ForwardingRuleConfig {
+    pub target: String,
+    pub action: String,
+    pub principals: Option<Vec<String>>,
+}
+
+#[napi(object)]
+pub struct ForwardingPolicyConfig {
+    pub default: String,
+    pub rules: Option<Vec<ForwardingRuleConfig>>,
 }
 
 fn resolve_key_source(
@@ -66,6 +96,98 @@ fn parse_addr(addr_str: &str) -> napi::Result<SocketAddr> {
             format!("invalid address '{}': {}", addr_str, e),
         )
     })
+}
+
+fn parse_forwarding_action(action: &str) -> napi::Result<ForwardingAction> {
+    match action.to_lowercase().as_str() {
+        "allow" => Ok(ForwardingAction::Allow),
+        "deny" => Ok(ForwardingAction::Deny),
+        other => Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            format!(
+                "invalid forwarding action '{}'; expected 'allow' or 'deny'",
+                other
+            ),
+        )),
+    }
+}
+
+fn parse_target_pattern(target: &str) -> napi::Result<TargetPattern> {
+    if target == "*" {
+        return Ok(TargetPattern::Any);
+    }
+    if target.starts_with("alknet-") {
+        return Ok(TargetPattern::AlknetPrefix);
+    }
+    if let Some(colon_pos) = target.rfind(':') {
+        let host_part = &target[..colon_pos];
+        let port_part = &target[colon_pos + 1..];
+        if port_part == "*" {
+            return Ok(TargetPattern::Host(host_part.to_string()));
+        }
+        if let Some(dash_pos) = port_part.find('-') {
+            let start_str = &port_part[..dash_pos];
+            let end_str = &port_part[dash_pos + 1..];
+            if let (Ok(start), Ok(end)) = (start_str.parse::<u16>(), end_str.parse::<u16>()) {
+                return Ok(TargetPattern::PortRange(host_part.to_string(), start..end));
+            }
+        }
+    }
+    if let Ok(network) = ipnetwork::IpNetwork::from_str(target) {
+        return Ok(TargetPattern::Cidr(network));
+    }
+    Ok(TargetPattern::Host(target.to_string()))
+}
+
+fn build_forwarding_policy(config: &ForwardingPolicyConfig) -> napi::Result<ForwardingPolicy> {
+    let default = parse_forwarding_action(&config.default)?;
+    let mut rules = Vec::new();
+    if let Some(ref rule_configs) = config.rules {
+        for rc in rule_configs {
+            let target = parse_target_pattern(&rc.target)?;
+            let action = parse_forwarding_action(&rc.action)?;
+            let principals = rc.principals.clone().unwrap_or_default();
+            if principals.is_empty() {
+                rules.push(ForwardingRule {
+                    target,
+                    action,
+                    principals: vec![],
+                    transports: vec![],
+                });
+            } else {
+                rules.push(ForwardingRule {
+                    target,
+                    action,
+                    principals,
+                    transports: vec![],
+                });
+            }
+        }
+    }
+    Ok(ForwardingPolicy { default, rules })
+}
+
+fn build_auth_policy_from_napi(auth: &AuthConfigNapi) -> napi::Result<AuthPolicy> {
+    let authorized_keys_source = auth
+        .authorized_keys
+        .as_ref()
+        .map(|buf| KeySource::Memory(buf.to_vec()));
+    let cert_authority_source = auth
+        .cert_authority
+        .as_ref()
+        .map(|buf| KeySource::Memory(buf.to_vec()));
+
+    let server_auth_config =
+        ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source).map_err(
+            |e| {
+                napi::Error::new(
+                    napi::Status::InvalidArg,
+                    format!("auth config error: {}", e),
+                )
+            },
+        )?;
+
+    Ok(AuthPolicy::from_server_auth_config(server_auth_config))
 }
 
 #[napi(object)]
@@ -115,7 +237,7 @@ impl AlknetServerStream {
 }
 
 struct NapiServerHandler {
-    auth_config: Arc<ServerAuthConfig>,
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
     remote_addr: Option<SocketAddr>,
     connection_limiter: Arc<ConnectionRateLimiter>,
     connection_allowed: bool,
@@ -125,7 +247,7 @@ struct NapiServerHandler {
 
 impl NapiServerHandler {
     fn new(
-        auth_config: Arc<ServerAuthConfig>,
+        dynamic: Arc<ArcSwap<DynamicConfig>>,
         remote_addr: Option<SocketAddr>,
         connection_limiter: Arc<ConnectionRateLimiter>,
         max_auth_attempts: usize,
@@ -146,7 +268,7 @@ impl NapiServerHandler {
         };
 
         Self {
-            auth_config,
+            dynamic,
             remote_addr,
             connection_limiter,
             connection_allowed: allowed,
@@ -176,7 +298,7 @@ impl russh::server::Handler for NapiServerHandler {
 
     async fn auth_publickey(
         &mut self,
-        user: &str,
+        _user: &str,
         public_key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<russh::server::Auth, Self::Error> {
         if !self.auth_limiter.check() {
@@ -185,8 +307,8 @@ impl russh::server::Handler for NapiServerHandler {
             });
         }
 
-        let russh_pub = russh::keys::PublicKey::new(public_key.key_data().clone(), user);
-        let result = self.auth_config.authenticate_publickey(&russh_pub);
+        let config = self.dynamic.load();
+        let result = config.auth.authenticate_publickey(public_key);
 
         match result {
             Ok(()) => Ok(russh::server::Auth::Accept),
@@ -402,6 +524,7 @@ pub struct AlknetServer {
     listen_addr: String,
     endpoint_id: Option<String>,
     on_connection_tsfn: Arc<Mutex<Option<ServerTsfn>>>,
+    reload_handle: ConfigReloadHandle,
 }
 
 struct ConnectionEventWrapper {
@@ -479,6 +602,50 @@ impl AlknetServer {
     pub fn endpoint_id(&self) -> napi::Result<Option<String>> {
         Ok(self.endpoint_id.clone())
     }
+
+    #[napi]
+    pub fn reload_auth(&self, auth: AuthConfigNapi) -> napi::Result<()> {
+        let new_auth_policy = build_auth_policy_from_napi(&auth)?;
+        let current = self.reload_handle.dynamic();
+        let new_config = DynamicConfig {
+            auth: new_auth_policy,
+            forwarding: current.forwarding.clone(),
+            rate_limits: current.rate_limits.clone(),
+        };
+        self.reload_handle.reload(new_config);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn reload_forwarding(&self, policy: ForwardingPolicyConfig) -> napi::Result<()> {
+        let new_forwarding = build_forwarding_policy(&policy)?;
+        let current = self.reload_handle.dynamic();
+        let new_config = DynamicConfig {
+            auth: current.auth.clone(),
+            forwarding: new_forwarding,
+            rate_limits: current.rate_limits.clone(),
+        };
+        self.reload_handle.reload(new_config);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn reload_all(
+        &self,
+        auth: AuthConfigNapi,
+        forwarding: ForwardingPolicyConfig,
+    ) -> napi::Result<()> {
+        let new_auth_policy = build_auth_policy_from_napi(&auth)?;
+        let new_forwarding = build_forwarding_policy(&forwarding)?;
+        let current = self.reload_handle.dynamic();
+        let new_config = DynamicConfig {
+            auth: new_auth_policy,
+            forwarding: new_forwarding,
+            rate_limits: current.rate_limits.clone(),
+        };
+        self.reload_handle.reload(new_config);
+        Ok(())
+    }
 }
 
 #[napi]
@@ -524,14 +691,40 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
         serve_opts = serve_opts.iroh_relay(relay);
     }
 
-    let _core_server = Server::new(serve_opts).map_err(|e| {
+    let core_server = Server::new(serve_opts).map_err(|e| {
         napi::Error::new(
             napi::Status::InvalidArg,
             format!("server config error: {}", e),
         )
     })?;
 
-    let shutdown_tx = _core_server.shutdown_sender();
+    let shutdown_tx = core_server.shutdown_sender();
+    let reload_handle = core_server.config_reload_handle();
+
+    let initial_auth_policy = {
+        let server_auth =
+            ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source)
+                .map_err(|e| {
+                    napi::Error::new(
+                        napi::Status::InvalidArg,
+                        format!("auth config error: {}", e),
+                    )
+                })?;
+        AuthPolicy::from_server_auth_config(server_auth)
+    };
+
+    {
+        let current = reload_handle.dynamic();
+        let initialized_config = DynamicConfig {
+            auth: initial_auth_policy,
+            forwarding: current.forwarding.clone(),
+            rate_limits: current.rate_limits.clone(),
+        };
+        drop(current);
+        reload_handle.reload(initialized_config);
+    }
+
+    let dynamic = reload_handle.dynamic_arc();
 
     match transport_mode {
         ServeTransportMode::Tcp => {
@@ -543,16 +736,6 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 )
             })?;
             let actual_listen = acceptor.listen_addr().to_string();
-
-            let auth_config = Arc::new(
-                ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source)
-                    .map_err(|e| {
-                    napi::Error::new(
-                        napi::Status::InvalidArg,
-                        format!("auth config error: {}", e),
-                    )
-                })?,
-            );
 
             let private_key = alknet_core::auth::keys::load_private_key(host_key_source.clone())
                 .map_err(|e| {
@@ -576,7 +759,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 run_accept_loop(
                     acceptor,
                     config,
-                    auth_config,
+                    dynamic,
                     connection_limiter,
                     shutdown_rx,
                     tsfn_for_loop,
@@ -590,6 +773,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 listen_addr: actual_listen,
                 endpoint_id: None,
                 on_connection_tsfn: tsfn_holder,
+                reload_handle,
             })
         }
         ServeTransportMode::Tls => {
@@ -657,16 +841,6 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 })?;
             let actual_listen = acceptor.listen_addr().to_string();
 
-            let auth_config = Arc::new(
-                ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source)
-                    .map_err(|e| {
-                    napi::Error::new(
-                        napi::Status::InvalidArg,
-                        format!("auth config error: {}", e),
-                    )
-                })?,
-            );
-
             let private_key = alknet_core::auth::keys::load_private_key(host_key_source.clone())
                 .map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
@@ -689,7 +863,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 run_accept_loop(
                     acceptor,
                     config,
-                    auth_config,
+                    dynamic,
                     connection_limiter,
                     shutdown_rx,
                     tsfn_for_loop,
@@ -703,6 +877,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 listen_addr: actual_listen,
                 endpoint_id: None,
                 on_connection_tsfn: tsfn_holder,
+                reload_handle,
             })
         }
         ServeTransportMode::Iroh => {
@@ -739,16 +914,6 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
 
             let iroh_endpoint_id = acceptor.endpoint_id();
 
-            let auth_config = Arc::new(
-                ServerAuthConfig::from_keys_and_ca(authorized_keys_source, cert_authority_source)
-                    .map_err(|e| {
-                    napi::Error::new(
-                        napi::Status::InvalidArg,
-                        format!("auth config error: {}", e),
-                    )
-                })?,
-            );
-
             let private_key =
                 alknet_core::auth::keys::load_private_key(host_key_source).map_err(|e| {
                     napi::Error::new(napi::Status::InvalidArg, format!("host key error: {}", e))
@@ -771,7 +936,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 run_accept_loop(
                     acceptor,
                     config,
-                    auth_config,
+                    dynamic,
                     connection_limiter,
                     shutdown_rx,
                     tsfn_for_loop,
@@ -785,6 +950,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                 listen_addr: String::new(),
                 endpoint_id: Some(iroh_endpoint_id),
                 on_connection_tsfn: tsfn_holder,
+                reload_handle,
             })
         }
     }
@@ -793,7 +959,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
 async fn run_accept_loop<A>(
     acceptor: A,
     config: Arc<server::Config>,
-    auth_config: Arc<ServerAuthConfig>,
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
     connection_limiter: Arc<ConnectionRateLimiter>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     tsfn_holder: Arc<Mutex<Option<ServerTsfn>>>,
@@ -822,7 +988,7 @@ async fn run_accept_loop<A>(
         let channel_sender = Arc::new(Mutex::new(Some(channel_tx)));
 
         let handler = NapiServerHandler::new(
-            Arc::clone(&auth_config),
+            Arc::clone(&dynamic),
             remote_addr,
             Arc::clone(&connection_limiter),
             10,
@@ -882,9 +1048,10 @@ async fn run_accept_loop<A>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alknet_core::config::dynamic_config::RateLimitConfig;
     use russh::server::Handler;
 
-    const ED25519_PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01QAAAJiQ+NvMkPjb\nzAAAAAtzc2gtZWQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01Q\nAAAECIWwJf7+7MOuZAOOWmoQbE9i/5GxjKsFrtJHjZ34E/fk58icPJFLfckR4M1PzF3XSp\nF3AU3zP9C6QI6AQiS/TVAAAAD3VidW50dUBuczUyODA5NgECAwQFBg==\n-----END OPENSSH PRIVATE KEY-----\n";
+    const ED25519_PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01QAAAJiQ+NvMkPjb\nzAAAAAtzc2gtZWQyNTUxOQAAACBOfInDyRS33JEeDNT8xd10qRdwFN8z/QukCOgEIkv01Q\nAAAECIWwJf7+7MOuZAOOWmoQbE9i/5GxjKsFrtJHjZ34E/fk58icPJFLfckR4M1PzF3XSp\nF3AU3P9C6QI6AQiS/TVAAAAD3VidW50dUBuczUyODA5NgECAwQFBg==\n-----END OPENSSH PRIVATE KEY-----\n";
 
     #[test]
     fn resolve_key_source_file_path() {
@@ -970,10 +1137,10 @@ mod tests {
 
     #[test]
     fn napi_server_handler_allows_connection() {
-        let auth_config = Arc::new(ServerAuthConfig::from_keys_and_ca(None, None).unwrap());
+        let dynamic = Arc::new(ArcSwap::new(Arc::new(DynamicConfig::default())));
         let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Channel<server::Msg>>();
         let handler = NapiServerHandler::new(
-            auth_config,
+            dynamic,
             None,
             Arc::new(ConnectionRateLimiter::new(0)),
             10,
@@ -984,10 +1151,10 @@ mod tests {
 
     #[tokio::test]
     async fn napi_server_handler_rejects_unknown_key() {
-        let auth_config = Arc::new(ServerAuthConfig::from_keys_and_ca(None, None).unwrap());
+        let dynamic = Arc::new(ArcSwap::new(Arc::new(DynamicConfig::default())));
         let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Channel<server::Msg>>();
         let mut handler = NapiServerHandler::new(
-            auth_config,
+            dynamic,
             None,
             Arc::new(ConnectionRateLimiter::new(0)),
             10,
@@ -1014,12 +1181,12 @@ mod tests {
     #[test]
     fn napi_server_handler_connection_limiter() {
         let limiter = Arc::new(ConnectionRateLimiter::new(1));
-        let auth_config = Arc::new(ServerAuthConfig::from_keys_and_ca(None, None).unwrap());
+        let dynamic = Arc::new(ArcSwap::new(Arc::new(DynamicConfig::default())));
         let (tx, _) = tokio::sync::mpsc::unbounded_channel::<Channel<server::Msg>>();
         let addr: SocketAddr = "10.0.0.1:22".parse().unwrap();
 
         let h1 = NapiServerHandler::new(
-            auth_config.clone(),
+            dynamic.clone(),
             Some(addr),
             limiter.clone(),
             10,
@@ -1028,23 +1195,133 @@ mod tests {
         assert!(h1.is_connection_allowed());
 
         let h2 = NapiServerHandler::new(
-            auth_config,
+            dynamic.clone(),
             Some(addr),
-            limiter,
+            limiter.clone(),
             10,
-            Arc::new(Mutex::new(Some(tx))),
+            Arc::new(Mutex::new(Some(tx.clone()))),
         );
         assert!(!h2.is_connection_allowed());
 
         drop(h1);
 
-        let h3 = NapiServerHandler::new(
-            Arc::new(ServerAuthConfig::from_keys_and_ca(None, None).unwrap()),
-            Some(addr),
-            Arc::new(ConnectionRateLimiter::new(1)),
-            10,
-            Arc::new(Mutex::new(None)),
-        );
+        let h3 =
+            NapiServerHandler::new(dynamic, Some(addr), limiter, 10, Arc::new(Mutex::new(None)));
         assert!(h3.is_connection_allowed());
+    }
+
+    #[test]
+    fn parse_forwarding_action_allow() {
+        assert_eq!(
+            parse_forwarding_action("allow").unwrap(),
+            ForwardingAction::Allow
+        );
+    }
+
+    #[test]
+    fn parse_forwarding_action_deny() {
+        assert_eq!(
+            parse_forwarding_action("deny").unwrap(),
+            ForwardingAction::Deny
+        );
+    }
+
+    #[test]
+    fn parse_forwarding_action_case_insensitive() {
+        assert_eq!(
+            parse_forwarding_action("Allow").unwrap(),
+            ForwardingAction::Allow
+        );
+        assert_eq!(
+            parse_forwarding_action("DENY").unwrap(),
+            ForwardingAction::Deny
+        );
+    }
+
+    #[test]
+    fn parse_forwarding_action_invalid() {
+        assert!(parse_forwarding_action("block").is_err());
+    }
+
+    #[test]
+    fn parse_target_pattern_wildcard() {
+        assert!(matches!(
+            parse_target_pattern("*").unwrap(),
+            TargetPattern::Any
+        ));
+    }
+
+    #[test]
+    fn parse_target_pattern_alknet_prefix() {
+        assert!(matches!(
+            parse_target_pattern("alknet-*").unwrap(),
+            TargetPattern::AlknetPrefix
+        ));
+    }
+
+    #[test]
+    fn parse_target_pattern_host() {
+        assert!(matches!(
+            parse_target_pattern("example.com").unwrap(),
+            TargetPattern::Host(_)
+        ));
+    }
+
+    #[test]
+    fn build_forwarding_policy_deny_all() {
+        let config = ForwardingPolicyConfig {
+            default: "deny".to_string(),
+            rules: None,
+        };
+        let policy = build_forwarding_policy(&config).unwrap();
+        assert_eq!(policy.default, ForwardingAction::Deny);
+        assert!(policy.rules.is_empty());
+    }
+
+    #[test]
+    fn build_forwarding_policy_with_rules() {
+        let config = ForwardingPolicyConfig {
+            default: "allow".to_string(),
+            rules: Some(vec![ForwardingRuleConfig {
+                target: "localhost:*".to_string(),
+                action: "deny".to_string(),
+                principals: None,
+            }]),
+        };
+        let policy = build_forwarding_policy(&config).unwrap();
+        assert_eq!(policy.default, ForwardingAction::Allow);
+        assert_eq!(policy.rules.len(), 1);
+        assert_eq!(policy.rules[0].action, ForwardingAction::Deny);
+    }
+
+    #[test]
+    fn build_forwarding_policy_with_principals() {
+        let config = ForwardingPolicyConfig {
+            default: "deny".to_string(),
+            rules: Some(vec![ForwardingRuleConfig {
+                target: "*".to_string(),
+                action: "allow".to_string(),
+                principals: Some(vec!["admin".to_string()]),
+            }]),
+        };
+        let policy = build_forwarding_policy(&config).unwrap();
+        assert_eq!(policy.rules[0].principals, vec!["admin".to_string()]);
+    }
+
+    #[test]
+    fn reload_handle_swaps_config() {
+        let (arc_swap, handle) = alknet_core::config::new_dynamic_config();
+        let initial = arc_swap.load();
+        assert_eq!(initial.forwarding.default, ForwardingAction::Allow);
+
+        let new_config = DynamicConfig {
+            auth: AuthPolicy::empty(),
+            forwarding: ForwardingPolicy::deny_all(),
+            rate_limits: RateLimitConfig::default(),
+        };
+        handle.reload(new_config);
+
+        let updated = arc_swap.load();
+        assert_eq!(updated.forwarding.default, ForwardingAction::Deny);
     }
 }
