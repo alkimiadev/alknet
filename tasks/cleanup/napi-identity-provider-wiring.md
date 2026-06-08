@@ -1,7 +1,7 @@
 ---
 id: cleanup/napi-identity-provider-wiring
 name: Fix NapiServerHandler to use IdentityProvider and ForwardingPolicy
-status: pending
+status: completed
 depends_on:
   - review/phase1-core-modifications
 scope: moderate
@@ -47,4 +47,4 @@ The core `ServerHandler` and `SshHandler` both correctly use `IdentityProvider` 
 
 ## Summary
 
-> To be filled on completion
+> NapiServerHandler now uses ConfigIdentityProvider for auth (resolving Identity via fingerprint) and evaluates ForwardingPolicy::check() in channel_open_direct_tcpip() with the authenticated identity and transport kind, consistent with ServerHandler and SshHandler. TransportKind is properly tracked per connection instead of using a string.

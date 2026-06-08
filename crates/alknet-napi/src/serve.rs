@@ -15,11 +15,13 @@ use arc_swap::ArcSwap;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
+use russh::keys::ssh_key::HashAlg;
 use russh::server;
 use russh::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
+use alknet_core::auth::identity::{ConfigIdentityProvider, Identity, IdentityProvider};
 use alknet_core::auth::keys::KeySource;
 use alknet_core::auth::server_auth::ServerAuthConfig;
 use alknet_core::config::dynamic_config::{AuthPolicy, DynamicConfig};
@@ -29,7 +31,7 @@ use alknet_core::config::forwarding::{
 use alknet_core::config::ConfigReloadHandle;
 use alknet_core::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 use alknet_core::server::serve::{ServeOptions, ServeTransportMode, Server};
-use alknet_core::transport::{TcpAcceptor, TransportAcceptor};
+use alknet_core::transport::{TcpAcceptor, TransportAcceptor, TransportKind};
 
 #[napi(object)]
 pub struct AlknetServeOptions {
@@ -238,10 +240,13 @@ impl AlknetServerStream {
 
 struct NapiServerHandler {
     dynamic: Arc<ArcSwap<DynamicConfig>>,
+    identity_provider: Arc<dyn IdentityProvider>,
+    transport: TransportKind,
     remote_addr: Option<SocketAddr>,
     connection_limiter: Arc<ConnectionRateLimiter>,
     connection_allowed: bool,
     auth_limiter: AuthAttemptLimiter,
+    authenticated_identity: Option<Identity>,
     channel_sender: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Channel<server::Msg>>>>>,
 }
 
@@ -249,12 +254,16 @@ impl NapiServerHandler {
     fn new(
         dynamic: Arc<ArcSwap<DynamicConfig>>,
         remote_addr: Option<SocketAddr>,
+        transport: TransportKind,
         connection_limiter: Arc<ConnectionRateLimiter>,
         max_auth_attempts: usize,
         channel_sender: Arc<
             Mutex<Option<tokio::sync::mpsc::UnboundedSender<Channel<server::Msg>>>>,
         >,
     ) -> Self {
+        let identity_provider: Arc<dyn IdentityProvider> =
+            Arc::new(ConfigIdentityProvider::new(Arc::clone(&dynamic)));
+
         let allowed = if let Some(addr) = remote_addr {
             let ip = addr.ip();
             if connection_limiter.check(ip) {
@@ -269,10 +278,13 @@ impl NapiServerHandler {
 
         Self {
             dynamic,
+            identity_provider,
+            transport,
             remote_addr,
             connection_limiter,
             connection_allowed: allowed,
             auth_limiter: AuthAttemptLimiter::new(max_auth_attempts),
+            authenticated_identity: None,
             channel_sender,
         }
     }
@@ -307,12 +319,15 @@ impl russh::server::Handler for NapiServerHandler {
             });
         }
 
-        let config = self.dynamic.load();
-        let result = config.auth.authenticate_publickey(public_key);
+        let fingerprint = format!("{}", public_key.fingerprint(HashAlg::Sha256));
+        let identity = self.identity_provider.resolve_from_fingerprint(&fingerprint);
 
-        match result {
-            Ok(()) => Ok(russh::server::Auth::Accept),
-            Err(_) => {
+        match identity {
+            Some(id) => {
+                self.authenticated_identity = Some(id);
+                Ok(russh::server::Auth::Accept)
+            }
+            None => {
                 self.auth_limiter.on_failure();
                 Ok(russh::server::Auth::Reject {
                     proceed_with_methods: None,
@@ -325,7 +340,7 @@ impl russh::server::Handler for NapiServerHandler {
         &mut self,
         channel: Channel<server::Msg>,
         host_to_connect: &str,
-        _port_to_connect: u32,
+        port_to_connect: u32,
         _originator_address: &str,
         _originator_port: u32,
         _session: &mut russh::server::Session,
@@ -338,8 +353,33 @@ impl russh::server::Handler for NapiServerHandler {
             return Ok(true);
         }
 
+        let identity = self.authenticated_identity.clone().unwrap_or_else(|| Identity {
+            id: String::new(),
+            scopes: vec![],
+            resources: std::collections::HashMap::new(),
+        });
+
+        let policy = self.dynamic.load();
+        let allowed = policy.forwarding.check(
+            host_to_connect,
+            port_to_connect as u16,
+            &identity,
+            self.transport.clone(),
+        );
+
+        if !allowed {
+            tracing::info!(
+                target = %format!("{host_to_connect}:{port_to_connect}"),
+                identity = %identity.id,
+                transport = %self.transport,
+                "forwarding denied by policy"
+            );
+            let _ = channel;
+            return Ok(false);
+        }
+
         let _ = channel;
-        Ok(false)
+        Ok(true)
     }
 
     async fn channel_open_session(
@@ -754,6 +794,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
             let tsfn_holder: Arc<Mutex<Option<ServerTsfn>>> = Arc::new(Mutex::new(None));
 
             let tsfn_for_loop = tsfn_holder.clone();
+            let transport_kind = TransportKind::Tcp;
 
             tokio::spawn(async move {
                 run_accept_loop(
@@ -763,7 +804,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                     connection_limiter,
                     shutdown_rx,
                     tsfn_for_loop,
-                    "tcp".to_string(),
+                    transport_kind,
                 )
                 .await;
             });
@@ -858,6 +899,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
             let tsfn_holder: Arc<Mutex<Option<ServerTsfn>>> = Arc::new(Mutex::new(None));
 
             let tsfn_for_loop = tsfn_holder.clone();
+            let transport_kind = TransportKind::Tls { server_name: None };
 
             tokio::spawn(async move {
                 run_accept_loop(
@@ -867,7 +909,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                     connection_limiter,
                     shutdown_rx,
                     tsfn_for_loop,
-                    "tls".to_string(),
+                    transport_kind,
                 )
                 .await;
             });
@@ -931,6 +973,9 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
             let tsfn_holder: Arc<Mutex<Option<ServerTsfn>>> = Arc::new(Mutex::new(None));
 
             let tsfn_for_loop = tsfn_holder.clone();
+            let transport_kind = TransportKind::Iroh {
+                endpoint_id: iroh_endpoint_id.clone(),
+            };
 
             tokio::spawn(async move {
                 run_accept_loop(
@@ -940,7 +985,7 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
                     connection_limiter,
                     shutdown_rx,
                     tsfn_for_loop,
-                    "iroh".to_string(),
+                    transport_kind,
                 )
                 .await;
             });
@@ -963,7 +1008,7 @@ async fn run_accept_loop<A>(
     connection_limiter: Arc<ConnectionRateLimiter>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     tsfn_holder: Arc<Mutex<Option<ServerTsfn>>>,
-    transport_kind_str: String,
+    transport_kind: TransportKind,
 ) where
     A: TransportAcceptor + Send + Sync + 'static,
 {
@@ -990,6 +1035,7 @@ async fn run_accept_loop<A>(
         let handler = NapiServerHandler::new(
             Arc::clone(&dynamic),
             remote_addr,
+            transport_kind.clone(),
             Arc::clone(&connection_limiter),
             10,
             channel_sender,
@@ -1002,7 +1048,7 @@ async fn run_accept_loop<A>(
         let config = Arc::clone(&config);
         let tsfn_holder = tsfn_holder.clone();
         let remote_addr_str = remote_addr.map(|a| a.to_string());
-        let transport_kind_str = transport_kind_str.clone();
+        let transport_kind_str = transport_kind.to_string();
 
         tokio::spawn(async move {
             let running = match server::run_stream(config, stream, handler).await {
@@ -1142,6 +1188,7 @@ mod tests {
         let handler = NapiServerHandler::new(
             dynamic,
             None,
+            TransportKind::Tcp,
             Arc::new(ConnectionRateLimiter::new(0)),
             10,
             Arc::new(Mutex::new(Some(tx))),
@@ -1156,6 +1203,7 @@ mod tests {
         let mut handler = NapiServerHandler::new(
             dynamic,
             None,
+            TransportKind::Tcp,
             Arc::new(ConnectionRateLimiter::new(0)),
             10,
             Arc::new(Mutex::new(Some(tx))),
@@ -1188,6 +1236,7 @@ mod tests {
         let h1 = NapiServerHandler::new(
             dynamic.clone(),
             Some(addr),
+            TransportKind::Tcp,
             limiter.clone(),
             10,
             Arc::new(Mutex::new(Some(tx.clone()))),
@@ -1197,6 +1246,7 @@ mod tests {
         let h2 = NapiServerHandler::new(
             dynamic.clone(),
             Some(addr),
+            TransportKind::Tcp,
             limiter.clone(),
             10,
             Arc::new(Mutex::new(Some(tx.clone()))),
@@ -1205,8 +1255,14 @@ mod tests {
 
         drop(h1);
 
-        let h3 =
-            NapiServerHandler::new(dynamic, Some(addr), limiter, 10, Arc::new(Mutex::new(None)));
+        let h3 = NapiServerHandler::new(
+            dynamic,
+            Some(addr),
+            TransportKind::Tcp,
+            limiter,
+            10,
+            Arc::new(Mutex::new(None)),
+        );
         assert!(h3.is_connection_allowed());
     }
 
