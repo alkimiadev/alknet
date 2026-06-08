@@ -8,12 +8,14 @@ use crate::auth::identity::Identity;
 use crate::transport::TransportKind;
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ForwardingAction {
     Allow,
     Deny,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum TargetPattern {
     Any,
     Host(String),
@@ -62,11 +64,28 @@ fn match_cidr(network: &IpNetwork, target: &str) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ForwardingRule {
     pub target: TargetPattern,
     pub action: ForwardingAction,
     pub principals: Vec<String>,
     pub transports: Vec<TransportKind>,
+}
+
+impl ForwardingRule {
+    pub fn new(
+        target: TargetPattern,
+        action: ForwardingAction,
+        principals: Vec<String>,
+        transports: Vec<TransportKind>,
+    ) -> Self {
+        Self {
+            target,
+            action,
+            principals,
+            transports,
+        }
+    }
 }
 
 impl ForwardingRule {

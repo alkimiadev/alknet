@@ -7,6 +7,7 @@ use crate::auth::IdentityProvider;
 use crate::config::DynamicConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InterfaceKind {
     Ssh,
     RawFraming,
@@ -21,6 +22,7 @@ impl std::fmt::Display for InterfaceKind {
     }
 }
 
+#[non_exhaustive]
 pub enum InterfaceConfig {
     Ssh(SshInterfaceConfig),
     RawFraming(RawFramingConfig),
@@ -28,9 +30,11 @@ pub enum InterfaceConfig {
 
 impl InterfaceConfig {
     pub fn kind(&self) -> InterfaceKind {
+        #[allow(unreachable_patterns)]
         match self {
             InterfaceConfig::Ssh(_) => InterfaceKind::Ssh,
             InterfaceConfig::RawFraming(_) => InterfaceKind::RawFraming,
+            _ => InterfaceKind::Ssh,
         }
     }
 }

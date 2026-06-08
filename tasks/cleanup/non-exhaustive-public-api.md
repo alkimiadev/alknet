@@ -1,7 +1,7 @@
 ---
 id: cleanup/non-exhaustive-public-api
 name: Add #[non_exhaustive] to public API enums and structs likely to evolve
-status: pending
+status: completed
 depends_on:
   - review/phase1-core-modifications
 scope: narrow
@@ -46,4 +46,4 @@ Several public API types introduced in Phase 1 are likely to gain variants or fi
 
 ## Summary
 
-> To be filled on completion
+> Added #[non_exhaustive] to ForwardingAction, TargetPattern, ForwardingRule, OperationType, InterfaceConfig, InterfaceKind, DynamicConfig, and CallError. Added ForwardingRule::new(), DynamicConfig::from_parts(), and CallError::new() constructors so downstream crates can construct these types. Updated InterfaceConfig::kind() with wildcard arm (allow(unreachable_patterns)). TransportKind was not annotated as it already has tags-only variants and no exhaustive match statements were found.

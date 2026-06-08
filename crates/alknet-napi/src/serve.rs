@@ -149,21 +149,7 @@ fn build_forwarding_policy(config: &ForwardingPolicyConfig) -> napi::Result<Forw
             let target = parse_target_pattern(&rc.target)?;
             let action = parse_forwarding_action(&rc.action)?;
             let principals = rc.principals.clone().unwrap_or_default();
-            if principals.is_empty() {
-                rules.push(ForwardingRule {
-                    target,
-                    action,
-                    principals: vec![],
-                    transports: vec![],
-                });
-            } else {
-                rules.push(ForwardingRule {
-                    target,
-                    action,
-                    principals,
-                    transports: vec![],
-                });
-            }
+            rules.push(ForwardingRule::new(target, action, principals, vec![]));
         }
     }
     Ok(ForwardingPolicy { default, rules })
@@ -647,11 +633,11 @@ impl AlknetServer {
     pub fn reload_auth(&self, auth: AuthConfigNapi) -> napi::Result<()> {
         let new_auth_policy = build_auth_policy_from_napi(&auth)?;
         let current = self.reload_handle.dynamic();
-        let new_config = DynamicConfig {
-            auth: new_auth_policy,
-            forwarding: current.forwarding.clone(),
-            rate_limits: current.rate_limits.clone(),
-        };
+        let new_config = DynamicConfig::from_parts(
+            new_auth_policy,
+            current.forwarding.clone(),
+            current.rate_limits.clone(),
+        );
         self.reload_handle.reload(new_config);
         Ok(())
     }
@@ -660,11 +646,11 @@ impl AlknetServer {
     pub fn reload_forwarding(&self, policy: ForwardingPolicyConfig) -> napi::Result<()> {
         let new_forwarding = build_forwarding_policy(&policy)?;
         let current = self.reload_handle.dynamic();
-        let new_config = DynamicConfig {
-            auth: current.auth.clone(),
-            forwarding: new_forwarding,
-            rate_limits: current.rate_limits.clone(),
-        };
+        let new_config = DynamicConfig::from_parts(
+            current.auth.clone(),
+            new_forwarding,
+            current.rate_limits.clone(),
+        );
         self.reload_handle.reload(new_config);
         Ok(())
     }
@@ -678,11 +664,11 @@ impl AlknetServer {
         let new_auth_policy = build_auth_policy_from_napi(&auth)?;
         let new_forwarding = build_forwarding_policy(&forwarding)?;
         let current = self.reload_handle.dynamic();
-        let new_config = DynamicConfig {
-            auth: new_auth_policy,
-            forwarding: new_forwarding,
-            rate_limits: current.rate_limits.clone(),
-        };
+        let new_config = DynamicConfig::from_parts(
+            new_auth_policy,
+            new_forwarding,
+            current.rate_limits.clone(),
+        );
         self.reload_handle.reload(new_config);
         Ok(())
     }
@@ -755,11 +741,11 @@ pub async fn serve(options: AlknetServeOptions) -> napi::Result<AlknetServer> {
 
     {
         let current = reload_handle.dynamic();
-        let initialized_config = DynamicConfig {
-            auth: initial_auth_policy,
-            forwarding: current.forwarding.clone(),
-            rate_limits: current.rate_limits.clone(),
-        };
+        let initialized_config = DynamicConfig::from_parts(
+            initial_auth_policy,
+            current.forwarding.clone(),
+            current.rate_limits.clone(),
+        );
         drop(current);
         reload_handle.reload(initialized_config);
     }
@@ -1370,11 +1356,11 @@ mod tests {
         let initial = arc_swap.load();
         assert_eq!(initial.forwarding.default, ForwardingAction::Allow);
 
-        let new_config = DynamicConfig {
-            auth: AuthPolicy::empty(),
-            forwarding: ForwardingPolicy::deny_all(),
-            rate_limits: RateLimitConfig::default(),
-        };
+        let new_config = DynamicConfig::from_parts(
+            AuthPolicy::empty(),
+            ForwardingPolicy::deny_all(),
+            RateLimitConfig::default(),
+        );
         handle.reload(new_config);
 
         let updated = arc_swap.load();

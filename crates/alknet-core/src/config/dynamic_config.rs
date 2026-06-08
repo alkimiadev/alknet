@@ -229,6 +229,7 @@ impl Default for RateLimitConfig {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DynamicConfig {
     pub auth: AuthPolicy,
     pub forwarding: ForwardingPolicy,
@@ -241,6 +242,18 @@ impl DynamicConfig {
             auth,
             forwarding: ForwardingPolicy::allow_all(),
             rate_limits: RateLimitConfig::default(),
+        }
+    }
+
+    pub fn from_parts(
+        auth: AuthPolicy,
+        forwarding: ForwardingPolicy,
+        rate_limits: RateLimitConfig,
+    ) -> Self {
+        Self {
+            auth,
+            forwarding,
+            rate_limits,
         }
     }
 

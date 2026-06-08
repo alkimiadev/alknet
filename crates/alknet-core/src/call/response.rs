@@ -2,10 +2,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CallError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+}
+
+impl CallError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            retryable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
