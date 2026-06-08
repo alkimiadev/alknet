@@ -1,3 +1,7 @@
+//! Static (immutable) server configuration resolved at startup.
+//!
+//! See [ADR-030](docs/architecture/decisions/030-dynamic-config.md).
+
 use crate::interface::InterfaceKind;
 use crate::server::handler::{ProxyConfig, ProxyMode};
 use crate::server::serve::{ListenerConfig, ServeTransportMode};

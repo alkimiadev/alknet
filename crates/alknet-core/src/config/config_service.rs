@@ -1,3 +1,7 @@
+//! Configuration service for runtime config reload.
+//!
+//! See [ADR-030](docs/architecture/decisions/030-dynamic-config.md).
+
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;

@@ -1,3 +1,7 @@
+//! Forwarding policy engine for per-identity and per-transport access control.
+//!
+//! See [ADR-031](docs/architecture/decisions/031-forwarding-policy.md).
+
 use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;

@@ -1,3 +1,8 @@
+//! Identity resolution and the `IdentityProvider` trait.
+//!
+//! See [ADR-029](docs/architecture/decisions/029-identity-provider.md) and
+//! [ADR-028](docs/architecture/decisions/028-identity-model.md).
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

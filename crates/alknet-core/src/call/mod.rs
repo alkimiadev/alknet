@@ -1,3 +1,8 @@
+//! Call protocol layer (Layer 3) of the three-layer model.
+//!
+//! See [ADR-024](docs/architecture/decisions/024-call-protocol.md) and
+//! [ADR-033](docs/architecture/decisions/033-call-protocol-extensions.md).
+
 pub mod context;
 pub mod env;
 pub mod envelope;

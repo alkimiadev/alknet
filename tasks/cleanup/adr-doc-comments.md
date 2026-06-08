@@ -1,7 +1,7 @@
 ---
 id: cleanup/adr-doc-comments
 name: Add ADR number references to doc comments in new modules
-status: pending
+status: completed
 depends_on:
   - review/phase1-core-modifications
 scope: narrow
@@ -39,4 +39,4 @@ The existing codebase has a pattern of referencing ADR numbers in doc comments (
 
 ## Summary
 
-> To be filled on completion
+> Added ADR number references to module-level doc comments in auth/identity.rs (ADR-029, ADR-028), config/forwarding.rs (ADR-031), config/static_config.rs (ADR-030), config/dynamic_config.rs (ADR-030), config/config_service.rs (ADR-030), call/mod.rs (ADR-024, ADR-033), call/spec.rs (ADR-025, ADR-033). Style matches existing pattern in transport/mod.rs.

@@ -1,3 +1,7 @@
+//! Runtime-reloadable dynamic configuration (auth policy, forwarding policy, rate limits).
+//!
+//! See [ADR-030](docs/architecture/decisions/030-dynamic-config.md).
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

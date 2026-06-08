@@ -1,3 +1,8 @@
+//! Operation specifications (type, access control) for the call protocol.
+//!
+//! See [ADR-025](docs/architecture/decisions/025-operation-spec.md) and
+//! [ADR-033](docs/architecture/decisions/033-call-protocol-extensions.md).
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
