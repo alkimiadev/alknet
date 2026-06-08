@@ -1,7 +1,7 @@
 ---
 id: cleanup/ssh-session-recv-stub-doc
 name: Document SshSession::recv() stub as planned future work
-status: pending
+status: completed
 depends_on:
   - review/phase1-core-modifications
 scope: single
@@ -38,4 +38,4 @@ This is acceptable for Phase 1 (tunnel functionality still works via the existin
 
 ## Summary
 
-> To be filled on completion
+> Added doc comments to SshSession::recv() and send() marking them as Phase 1 stubs, with TODO markers noting that alknet-control:0 channel event bridging to call protocol InterfaceEvent frames is planned for Phase 2/3.

@@ -586,10 +586,18 @@ impl SshSession {
 
 #[async_trait]
 impl InterfaceSession for SshSession {
+    /// Stub for Phase 1 — always returns `None`.
+    ///
+    /// TODO: Bridge `alknet-control:0` channel events to call protocol
+    /// `InterfaceEvent` frames. Planned for Phase 2/3.
     async fn recv(&mut self) -> Option<InterfaceEvent> {
         None
     }
 
+    /// Stub for Phase 1 — accepts silently and discards.
+    ///
+    /// TODO: Bridge outgoing `EventEnvelope` frames to the SSH channel
+    /// established by the call protocol. Planned for Phase 2/3.
     async fn send(&mut self, _envelope: EventEnvelope) -> Result<()> {
         Ok(())
     }
