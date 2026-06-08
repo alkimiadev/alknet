@@ -57,7 +57,7 @@ impl StaticConfig {
 
         let dynamic = crate::config::DynamicConfig::new(auth_policy);
 
-        let proxy_config = parse_proxy_config(opts.proxy.as_deref());
+        let proxy_config = parse_proxy_config(opts.proxy.as_deref())?;
 
         let listeners = if let Some(listeners) = opts.listeners {
             listeners
@@ -100,30 +100,40 @@ impl StaticConfig {
     }
 }
 
-fn parse_proxy_config(proxy: Option<&str>) -> Option<ProxyConfig> {
-    proxy.map(|url| {
-        if url.starts_with("socks5://") {
-            let addr: SocketAddr = url
-                .strip_prefix("socks5://")
-                .unwrap()
-                .parse()
-                .expect("invalid socks5 proxy address");
-            ProxyConfig {
-                mode: ProxyMode::Socks5(addr),
+fn parse_proxy_config(
+    proxy: Option<&str>,
+) -> Result<Option<ProxyConfig>, crate::error::ConfigError> {
+    match proxy {
+        None => Ok(None),
+        Some(url) => {
+            if let Some(rest) = url.strip_prefix("socks5://") {
+                let addr: SocketAddr = rest.parse().map_err(|e| {
+                    crate::error::ConfigError::ProxyConfigInvalid {
+                        message: format!("invalid socks5 proxy address '{}': {}", rest, e),
+                    }
+                })?;
+                Ok(Some(ProxyConfig {
+                    mode: ProxyMode::Socks5(addr),
+                }))
+            } else if let Some(rest) = url.strip_prefix("http://") {
+                let addr: SocketAddr = rest.parse().map_err(|e| {
+                    crate::error::ConfigError::ProxyConfigInvalid {
+                        message: format!(
+                            "invalid http connect proxy address '{}': {}",
+                            rest, e
+                        ),
+                    }
+                })?;
+                Ok(Some(ProxyConfig {
+                    mode: ProxyMode::HttpConnect(addr),
+                }))
+            } else {
+                Err(crate::error::ConfigError::ProxyConfigInvalid {
+                    message: format!("unsupported proxy URL scheme: {}", url),
+                })
             }
-        } else if url.starts_with("http://") {
-            let addr: SocketAddr = url
-                .strip_prefix("http://")
-                .unwrap()
-                .parse()
-                .expect("invalid http connect proxy address");
-            ProxyConfig {
-                mode: ProxyMode::HttpConnect(addr),
-            }
-        } else {
-            panic!("unsupported proxy URL scheme: {url}");
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +157,7 @@ mod tests {
 
     #[test]
     fn parse_proxy_config_socks5() {
-        let config = parse_proxy_config(Some("socks5://127.0.0.1:9050"));
+        let config = parse_proxy_config(Some("socks5://127.0.0.1:9050")).unwrap();
         assert!(config.is_some());
         match config.unwrap().mode {
             ProxyMode::Socks5(addr) => {
@@ -159,7 +169,7 @@ mod tests {
 
     #[test]
     fn parse_proxy_config_http() {
-        let config = parse_proxy_config(Some("http://127.0.0.1:8080"));
+        let config = parse_proxy_config(Some("http://127.0.0.1:8080")).unwrap();
         assert!(config.is_some());
         match config.unwrap().mode {
             ProxyMode::HttpConnect(addr) => {
@@ -171,7 +181,31 @@ mod tests {
 
     #[test]
     fn parse_proxy_config_none() {
-        assert!(parse_proxy_config(None).is_none());
+        assert!(parse_proxy_config(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_proxy_config_invalid_scheme() {
+        let result = parse_proxy_config(Some("ftp://127.0.0.1:9050"));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::ConfigError::ProxyConfigInvalid { message } => {
+                assert!(message.contains("unsupported proxy URL scheme"));
+            }
+            e => panic!("expected ProxyConfigInvalid, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn parse_proxy_config_invalid_address() {
+        let result = parse_proxy_config(Some("socks5://not-an-address"));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::ConfigError::ProxyConfigInvalid { message } => {
+                assert!(message.contains("invalid socks5 proxy address"));
+            }
+            e => panic!("expected ProxyConfigInvalid, got {:?}", e),
+        }
     }
 
     #[test]
@@ -205,5 +239,35 @@ mod tests {
             static_config.listeners[0].transport_kind,
             TransportKind::Tcp
         );
+    }
+
+    #[test]
+    fn static_config_from_serve_options_invalid_proxy_returns_err() {
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .proxy("ftp://bad-scheme");
+        let result = StaticConfig::from_serve_options(opts);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::ConfigError::ProxyConfigInvalid { message } => {
+                assert!(message.contains("unsupported proxy URL scheme"));
+            }
+            e => panic!("expected ProxyConfigInvalid, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn static_config_from_serve_options_malformed_proxy_address_returns_err() {
+        let opts = ServeOptions::new(make_key_source())
+            .authorized_keys(make_authorized_keys_source())
+            .proxy("socks5://not-a-valid-addr");
+        let result = StaticConfig::from_serve_options(opts);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::ConfigError::ProxyConfigInvalid { message } => {
+                assert!(message.contains("invalid socks5 proxy address"));
+            }
+            e => panic!("expected ProxyConfigInvalid, got {:?}", e),
+        }
     }
 }

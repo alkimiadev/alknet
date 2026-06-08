@@ -67,6 +67,8 @@ pub enum ConfigError {
     },
     #[error("incompatible options")]
     IncompatibleOptions,
+    #[error("invalid proxy config: {message}")]
+    ProxyConfigInvalid { message: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -172,6 +174,13 @@ mod tests {
         assert_eq!(
             ConfigError::IncompatibleOptions.to_string(),
             "incompatible options"
+        );
+        assert_eq!(
+            ConfigError::ProxyConfigInvalid {
+                message: "bad proxy".to_string()
+            }
+            .to_string(),
+            "invalid proxy config: bad proxy"
         );
     }
 

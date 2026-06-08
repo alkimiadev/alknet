@@ -1,7 +1,7 @@
 ---
 id: cleanup/panic-free-static-config
 name: Replace panic/expect/unwrap with Result-based error handling in StaticConfig
-status: pending
+status: completed
 depends_on:
   - review/phase1-core-modifications
 scope: narrow
@@ -40,4 +40,4 @@ Since `StaticConfig::from_serve_options()` already returns `Result<..., ConfigEr
 
 ## Summary
 
-> To be filled on completion
+> Replaced all panic!/expect()/unwrap() in parse_proxy_config with Result-based error handling. Added ConfigError::ProxyConfigInvalid variant. Invalid proxy scheme or malformed address now returns clear errors instead of panicking. Added 4 new tests covering invalid scheme, invalid address, and from_serve_options error propagation.
