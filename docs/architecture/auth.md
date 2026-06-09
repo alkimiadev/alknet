@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-07
+last_updated: 2026-06-09
 ---
 
 # Authentication
@@ -317,6 +317,13 @@ security consideration:
 | [029](decisions/029-identity-core-type.md) | Identity as core type | `Identity` and `IdentityProvider` in alknet-core |
 | [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface/MessageInterface | Credential presentation differs per (Transport, Interface) pair |
 | [037](decisions/037-api-keys-dynamic-config.md) | API keys in DynamicConfig | Hash-verified bearer tokens for service accounts |
+
+## Phase 2 Implementation Notes
+
+- `ConfigIdentityProvider::resolve_from_token()` now handles API keys (`alk_` prefix) via SHA-256 hash verification with expiry checking
+- `ApiKeyEntry` struct added to `AuthPolicy` with prefix, hash, scopes, description, expires_at fields
+- API keys produce `Identity { id: prefix, scopes: from_entry, resources: {} }`
+- Both AuthTokens (Ed25519 signed) and API keys (hash-verified bearer) go through `resolve_from_token()`, discriminated by format/prefix
 
 ## References
 

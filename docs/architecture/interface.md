@@ -365,6 +365,20 @@ for listener in listeners {
 | [029](decisions/029-identity-core-type.md) | Identity as core type | Auth resolution across interfaces |
 | [031](decisions/031-forwarding-policy.md) | Forwarding policy | Layer 3 policy applied to Layer 2 channel requests |
 
+## Phase 2 Implementation Notes
+
+- `Interface` trait renamed to `StreamInterface` throughout alknet-core (ADR-035 implemented)
+- `MessageInterface` trait added with `handle_request(InterfaceRequest) -> Result<InterfaceResponse>` (ADR-035 implemented)
+- `InterfaceRequest` and `InterfaceResponse` types implemented
+- `HttpInterface` and `DnsInterface` stub structs added (Phase 5 for full implementation)
+- `InterfaceConfig` split into `StreamInterfaceConfig` and `MessageInterfaceConfig`
+- `StreamInterfaceKind` and `MessageInterfaceKind` enums added
+- `ListenerConfig` restructured from flat struct to enum with `Stream`, `Http`, `Dns` variants
+- `TransportKind::Dns` removed from the enum (DNS is a MessageInterface, not a transport)
+- `TransportKind::WebTransport` updated from `{ host: String }` to `{ server_name: Option<String> }`
+- `RawFramingInterface` fully implemented with first-frame auth
+- `SshSession::recv()`/`send()` bridge to call protocol via `alknet-control:0` channel implemented, using `ControlChannelBridge` with mpsc channels
+
 ## References
 
 - [definitions.md](definitions.md) — Terminology disambiguation, credential presentation

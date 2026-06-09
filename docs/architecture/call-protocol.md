@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-07
+last_updated: 2026-06-09
 ---
 
 # Call Protocol
@@ -525,6 +525,14 @@ agent service itself is built on top, not into the core.
 | [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | irpc is one dispatch backend for OperationEnv |
 | [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv | Universal composition with three dispatch paths |
 | [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface/MessageInterface | Call protocol accepts events from both interface categories |
+
+## Phase 2 Implementation Notes
+
+- `SshSession::recv()` and `SshSession::send()` now functional — bridged to call protocol via `alknet-control:0` SSH channel using `ControlChannelBridge` with mpsc channels
+- `FrameFramedReader`/`FrameFramedWriter` added to `call::frame` for async length-prefixed EventEnvelope I/O
+- `RawFramingSession` implemented with first-frame auth: first frame's payload extracted as AuthToken, resolved via `IdentityProvider::resolve_from_token()`, session transitions to authenticated state on success
+- `OperationEnv.credentials(service)` method added for outbound credential resolution (ADR-036)
+- `CredentialProvider` trait and `CredentialSet` enum defined in `alknet_core::credentials`
 
 ## References
 

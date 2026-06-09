@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-07
+last_updated: 2026-06-09
 ---
 
 # Configuration
@@ -313,6 +313,14 @@ iroh_relay = "https://relay.alk.dev"
 | [031](decisions/031-forwarding-policy.md) | Forwarding policy | Rule-based allow/deny, TransportKind-aware |
 | [029](decisions/029-identity-core-type.md) | Identity as core type | DynamicConfig.auth consumed by IdentityProvider |
 | [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | ConfigService wraps DynamicConfig reloads |
+
+## Phase 2 Implementation Notes
+
+- `DynamicConfig.auth` now includes `api_keys: Vec<ApiKeyEntry>` (ADR-037)
+- `DynamicConfig.credentials: HashMap<String, CredentialSet>` added for static outbound credentials (ADR-036)
+- `ListenerConfig` restructured from flat struct to enum: `Stream { transport, interface }`, `Http { config: HttpListenerConfig }`, `Dns { config: DnsListenerConfig }` (ADR-035)
+- `HttpListenerConfig` and `DnsListenerConfig` builder-pattern structs added
+- `ListenerConfig::validate()` now validates all three variants
 
 ## References
 
