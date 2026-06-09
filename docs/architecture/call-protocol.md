@@ -311,8 +311,18 @@ periodically.
 
 ### Protocol Adapter Layer
 
-The call protocol is transport-agnostic by design. It maps to any transport
-that carries `EventEnvelope` frames:
+The call protocol is transport-agnostic and interface-agnostic by design. It
+receives input from two interface categories (ADR-035):
+
+**StreamInterface** produces `InterfaceEvent` frames from a continuous byte
+stream (SSH channel, raw framing). The call protocol handler calls `recv()`
+on the session to get events.
+
+**MessageInterface** handles individual `InterfaceRequest` → `InterfaceResponse`
+pairs (HTTP, DNS). The call protocol handler constructs an `OperationContext`
+from the request and invokes the registry directly.
+
+Both paths resolve to the same `OperationRegistry` and `OperationEnv`:
 
 | Transport | Channel mechanism | Direction |
 |-----------|-------------------|-----------|
@@ -494,9 +504,16 @@ agent service itself is built on top, not into the core.
   in gRPC terms)?~~ Resolved — deferred. Current model covers all identified use
   cases. See [open-questions.md](open-questions.md).
 
-- **OQ-IF-01**: How does the `Interface` session type relate to the call
-  protocol's `EventEnvelope` stream? This needs design during Phase 1.8
-  implementation. See [open-questions.md](open-questions.md).
+- **~~OQ-IF-01~~**: ~~How does the `Interface` session type relate to the call
+  protocol's `EventEnvelope` stream?~~ Resolved — `InterfaceSession::recv()` 
+  returns `Option<InterfaceEvent>` where `InterfaceEvent` carries 
+  `EventEnvelope` + `Identity`. `InterfaceSession::send()` accepts `EventEnvelope`.
+  The `SshSession` bridge implements this over the `alknet-control:0` channel.
+  For `MessageInterface`, `InterfaceRequest`/`InterfaceResponse` normalize
+  request/response pairs. See [interface.md](interface.md) and ADR-035.
+
+- **OQ-P2-01**: Should `MessageInterface` and `StreamInterface` share a common
+  trait? See [interface.md](interface.md) and [open-questions.md](open-questions.md).
 
 ## Design Decisions
 
@@ -507,6 +524,7 @@ agent service itself is built on top, not into the core.
 | [025](decisions/025-handler-spec-separation.md) | Handler/spec separation | Downstream registers operations without modifying core |
 | [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | irpc is one dispatch backend for OperationEnv |
 | [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv | Universal composition with three dispatch paths |
+| [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface/MessageInterface | Call protocol accepts events from both interface categories |
 
 ## References
 

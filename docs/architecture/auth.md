@@ -42,16 +42,30 @@ is the default implementation (reads from `DynamicConfig.auth`). `AuthProtocol`
 irpc service is one way to satisfy the trait, behind a feature flag. Both paths
 produce the same `Identity` result. See ADR-028 and ADR-029.
 
-### Auth Presentation Per Transport
+### Credential Presentation Per Interface
 
-| Transport | Auth presentation | Verification |
-|-----------|-------------------|-------------|
-| SSH (TCP, TLS, iroh) | SSH public key auth in the SSH handshake | `ServerAuthConfig::authenticate_publickey()` — key lookup in authorized set |
-| WebTransport (HTTP/3) | Signed timestamp token in CONNECT request | Token auth — same authorized set verifies the Ed25519 signature |
-| Future (WebSocket, etc.) | Signed timestamp token in headers/query | Same token verification |
+Each (Transport, Interface) pair presents credentials differently, but all
+resolve to the same `Identity` through `IdentityProvider`. See
+[definitions.md](definitions.md) for the full terminology rules.
 
-The **key material is shared**. The **presentation differs per transport**. The
-**verification result is the same**: an authenticated identity with scopes.
+| (Transport, Interface) | Credential presentation | Resolves via |
+|------------------------|------------------------|-------------|
+| (TLS, SshInterface) | SSH public key handshake | `resolve_from_fingerprint()` |
+| (TCP, SshInterface) | SSH public key handshake | `resolve_from_fingerprint()` |
+| (iroh, SshInterface) | SSH public key handshake | `resolve_from_fingerprint()` |
+| (TLS, RawFramingInterface) | AuthToken in frame header | `resolve_from_token()` |
+| (TCP, RawFramingInterface) | AuthToken in frame header | `resolve_from_token()` |
+| (WebTransport, RawFramingInterface) | AuthToken in CONNECT request | `resolve_from_token()` |
+| (—, HttpInterface) | `Authorization: Bearer` header | `resolve_from_token()` |
+| (—, DnsInterface) | AuthToken in query labels | `resolve_from_token()` |
+
+The **key material is shared**. The **credential presentation** differs per
+(Transport, Interface) pair. The **verification result is the same**: an
+authenticated `Identity` with scopes.
+
+`resolve_from_token()` handles both AuthTokens (Ed25519-signed) and API keys
+(hash-verified bearer tokens). The implementation discriminates by prefix or
+format — see ADR-037.
 
 ### Token Authentication
 
@@ -112,14 +126,46 @@ irpc path produce the same `Identity` result.
 The trait is the contract. The backing store is pluggable. Alknet-core never
 depends on Honker, SQLite, or any specific database.
 
+### API Keys
+
+For service accounts, automation, and HTTP interface auth, Ed25519 AuthTokens
+are inconvenient — they require client-side key generation and signing. API keys
+provide a simpler bearer token format (ADR-037):
+
+```
+API key: "alk_dGhlX3NlY3JldA" (~20 chars, configurable prefix)
+Storage: SHA-256 hash of the full key
+Lookup: prefix match → hash verification → Identity
+```
+
+API keys are configured in `DynamicConfig.auth.api_keys`:
+
+```toml
+[[auth.api_keys]]
+prefix = "alk_"
+hash = "sha256:abc..."
+scopes = ["relay:connect"]
+description = "dashboard service account"
+ttl = "30d"  # optional
+```
+
+Both AuthTokens and API keys go through `IdentityProvider::resolve_from_token()`.
+The implementation discriminates by prefix (default `alk_`): if the token starts
+with the API key prefix, it's verified by SHA-256 hash lookup; otherwise, it's
+verified as an Ed25519 AuthToken. Both paths produce the same `Identity`.
+
+See [configuration.md](configuration.md) for the full `DynamicConfig.auth`
+structure and ADR-037 for the decision context.
+
 ### AuthPolicy Structure
 
-`AuthPolicy` in `DynamicConfig` holds both auth paths, sharing key material:
+`AuthPolicy` in `DynamicConfig` holds all auth paths, sharing key material:
 
 ```rust
 pub struct AuthPolicy {
     pub ssh: SshAuthConfig,
     pub token: TokenAuthConfig,
+    pub api_keys: Vec<ApiKeyEntry>,
 }
 
 pub struct SshAuthConfig {
@@ -141,6 +187,14 @@ pub enum TokenKeySource {
     /// Separate key set for non-SSH transports.
     /// For deployments that want distinct access control per transport.
     Separate(HashSet<PublicKey>),
+}
+
+pub struct ApiKeyEntry {
+    pub prefix: String,                    // e.g., "alk_"
+    pub hash: String,                      // e.g., "sha256:abc..."
+    pub scopes: Vec<String>,               // e.g., ["relay:connect", "secrets:derive"]
+    pub description: Option<String>,        // e.g., "dashboard service account"
+    pub expires_at: Option<u64>,           // Unix timestamp, optional TTL
 }
 ```
 
@@ -220,6 +274,13 @@ dependencies needed.
 - Token auth is only available on transports that carry HTTP metadata (URL
   path, headers). SSH-over-TCP/TLS/iroh continues to use SSH native auth
   exclusively.
+- API keys are bearer tokens — anyone who obtains the key has the associated
+  permissions. The hash storage and optional TTL mitigate but do not eliminate
+  this risk. Ed25519 AuthTokens remain the preferred auth method for interactive
+  clients. See ADR-037.
+- API keys are verified by SHA-256 hash lookup in `DynamicConfig.auth.api_keys`
+  (or the `api_keys` database table in production). The full key is provided to
+  the client exactly once at creation time.
 
 ### Security Considerations
 
@@ -254,6 +315,8 @@ security consideration:
 | [023](decisions/023-unified-auth-shared-key-material.md) | Unified auth, shared key material | Same keys for SSH and token auth |
 | [028](decisions/028-auth-irpc-service.md) | Auth as irpc service | AuthProtocol behind feature flag; IdentityProvider is the contract |
 | [029](decisions/029-identity-core-type.md) | Identity as core type | `Identity` and `IdentityProvider` in alknet-core |
+| [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface/MessageInterface | Credential presentation differs per (Transport, Interface) pair |
+| [037](decisions/037-api-keys-dynamic-config.md) | API keys in DynamicConfig | Hash-verified bearer tokens for service accounts |
 
 ## References
 
@@ -261,6 +324,8 @@ security consideration:
 - [server.md](server.md) — Current SSH auth handler
 - [transport.md](transport.md) — Transport abstraction
 - [configuration.md](configuration.md) — DynamicConfig, AuthPolicy, ConfigReloadHandle
+- [interface.md](interface.md) — Credential presentation per (Transport, Interface) pair
+- [definitions.md](definitions.md) — Terminology disambiguation (IdentityProvider vs CredentialProvider, AuthToken vs API key)
 - [services.md](services.md) — AuthProtocol irpc service
 - [open-questions.md](open-questions.md) — OQ-17 (resolved), OQ-18 (resolved), OQ-19
 - [wtransport](https://github.com/BiagioFesta/wtransport) — Rust WebTransport library

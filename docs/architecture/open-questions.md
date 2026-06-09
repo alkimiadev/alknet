@@ -237,14 +237,95 @@ last_updated: 2026-06-07
 
 ### OQ-IF-01: How does the Interface session type relate to the call protocol's EventEnvelope stream?
 - **Origin**: [interface.md](interface.md)
-- **Status**: open
-- **Priority**: high
-- **Resolution**: (pending — needs design during Phase 1.8 implementation)
-- **Cross-references**: [interface.md](interface.md), [ADR-026](decisions/026-transport-interface-separation.md)
+- **Status**: ~~resolved~~
+- **Priority**: ~~high~~ —
+- **Resolution**: `InterfaceSession::recv()` returns `Option<InterfaceEvent>` where `InterfaceEvent` carries `EventEnvelope` + `Identity`. `InterfaceSession::send()` accepts `EventEnvelope`. The `SshSession` bridge implements this over the `alknet-control:0` channel. For `MessageInterface`, `InterfaceRequest`/`InterfaceResponse` normalize request/response pairs. See [interface.md](interface.md) and ADR-035.
+- **Cross-references**: [ADR-035](decisions/035-streaminterface-messageinterface-split.md), [interface.md](interface.md)
 
 ### OQ-IF-02: Should SshInterface own ForwardingPolicy checks or should they move to Layer 3?
 - **Origin**: [interface.md](interface.md)
-- **Status**: open
+- **Status**: ~~resolved~~
+- **Priority**: ~~medium~~ —
+- **Resolution**: ForwardingPolicy is Layer 3 (it's policy, not session mechanics). Channel open/close lifecycle is Layer 2. The Interface reports channel open requests to Layer 3; Layer 3 applies ForwardingPolicy. The current `SshHandler` implementation checks policy in `channel_open_direct_tcpip`, which already delegates to `Identity.scopes` from the authenticated identity — this is consistent with the resolution.
+- **Cross-references**: [ADR-031](decisions/031-forwarding-policy.md), [interface.md](interface.md)
+
+### OQ-P2-01: Should MessageInterface and StreamInterface share a common trait?
+- **Origin**: [research/phase2/interface-model.md](../research/phase2/interface-model.md)
+- **Status**: resolved
 - **Priority**: medium
-- **Resolution**: (pending — current thinking: forwarding check is Layer 3 policy, but channel open/close lifecycle is Layer 2. The Interface reports channel open requests to Layer 3; Layer 3 applies ForwardingPolicy.)
-- **Cross-references**: [interface.md](interface.md), [ADR-031](decisions/031-forwarding-policy.md)
+- **Resolution**: Independent traits. Different signatures (`handle_request` vs `accept` + session lifecycle), different transport ownership (self-managed vs provided), different lifecycles (stateless per-request vs long-lived session). A common super-trait adds complexity without benefit. See ADR-035.
+- **Cross-references**: [ADR-035](decisions/035-streaminterface-messageinterface-split.md), [interface.md](interface.md)
+
+### OQ-P2-02: Should the HTTP interface share a port with the SSH listener?
+- **Origin**: [research/phase2/interface-model.md](../research/phase2/interface-model.md)
+- **Status**: resolved
+- **Priority**: low
+- **Resolution**: Start with separate ports. Stealth mode byte-peek on a shared port is already implemented for SSH vs HTTP detection. `ListenerConfig::Http { stealth: true }` enables the existing peek pattern. ALPN multiplexing on port 443 is a future optimization that doesn't change the interface abstraction.
+- **Cross-references**: [interface.md](interface.md), [research/phase2/tls-transport.md](../research/phase2/tls-transport.md)
+
+### OQ-P2-03: Should the HTTP interface auto-generate OpenAPI specs from OperationRegistry?
+- **Origin**: [research/phase2/interface-model.md](../research/phase2/interface-model.md)
+- **Status**: resolved
+- **Priority**: low
+- **Resolution**: Yes, but Phase 5+. The HTTP interface needs to exist first (Phase 5.3 in the integration plan). `GET /v1/schema` producing an OpenAPI spec from registered `OperationSpec`s is the natural end state. This creates symmetry with `FromOpenAPI` (inbound spec consumption).
+- **Cross-references**: [call-protocol.md](call-protocol.md), [interface.md](interface.md)
+
+### OQ-P2-04: How do self-hosted services authenticate via alknet?
+- **Origin**: [research/phase2/credential-provider.md](../research/phase2/credential-provider.md), [research/phase2/definitions.md](../research/phase2/definitions.md)
+- **Status**: resolved
+- **Priority**: medium
+- **Resolution**: Three-phase approach. Phase A: shared secret (`CredentialSet::Bearer` or `S3AccessKey`). Phase C: identity-bound credentials via `ManagedCredentialProvider`. Phase D: alknet as OIDC provider. The `CredentialProvider` trait in core enables Phase A immediately; Phases C and D are additive.
+- **Cross-references**: [ADR-036](decisions/036-credentialprovider-core-type.md), [credentials.md](credentials.md)
+
+## Credentials
+
+### OQ-CP-01: Should CredentialProvider support per-identity credentials?
+- **Origin**: [credentials.md](credentials.md)
+- **Status**: open
+- **Priority**: low
+- **Resolution**: Start with service-level credentials (`get_credentials(service)`). Add identity-level resolution (`get_credentials_for(service, identity_id)`) when the need is concrete. `Identity.id` already serves as the account UUID in database-backed mode.
+- **Cross-references**: [credentials.md](credentials.md), [ADR-036](decisions/036-credentialprovider-core-type.md)
+
+### OQ-CP-02: Where should OIDC provider operations live?
+- **Origin**: [credentials.md](credentials.md)
+- **Status**: open
+- **Priority**: low
+- **Resolution**: Application service (Phase D). OIDC is an application concern, not a core concern. The call protocol and OperationRegistry provide the transport; OIDC is just another set of operations.
+- **Cross-references**: [credentials.md](credentials.md)
+
+### OQ-CP-03: How do credential rotations propagate across a cluster?
+- **Origin**: [credentials.md](credentials.md)
+- **Status**: open
+- **Priority**: low
+- **Resolution**: TBD. Likely TTL-based caching with a refresh threshold. Workers call `CredentialProvider::get_credentials()` which checks `is_expired()` and calls `refresh_credentials()` if needed.
+- **Cross-references**: [credentials.md](credentials.md)
+
+### OQ-CP-04: Should CredentialSet include request-signing capability?
+- **Origin**: [credentials.md](credentials.md)
+- **Status**: resolved
+- **Priority**: low
+- **Resolution**: No. `CredentialSet` is pure data. Request signing (e.g., AWS Signature V4) is a separate utility function in the service wrapper or a shared `alknet-s3` crate. Credentials are data; signing is protocol behavior.
+- **Cross-references**: [credentials.md](credentials.md)
+
+## Definitions
+
+### OQ-DEF-01: Should alknet adopt a "Service Catalog" concept like Keystone?
+- **Origin**: [research/phase2/definitions.md](../research/phase2/definitions.md)
+- **Status**: resolved
+- **Priority**: low
+- **Resolution**: Keep `OperationRegistry` global, check scope at invocation time. Add scope-filtered discovery (`GET /v1/schema?scope=...`) when multi-tenant deployment requires it. The unfiltered registry is sufficient for current needs.
+- **Cross-references**: [call-protocol.md](call-protocol.md)
+
+### OQ-DEF-03: Should Identity.scopes be hierarchical or stay flat?
+- **Origin**: [research/phase2/definitions.md](../research/phase2/definitions.md)
+- **Status**: resolved
+- **Priority**: low
+- **Resolution**: Stay flat. Add implied scope resolution in alknet-storage when multi-tenant deployment requires it. A full policy language (like Rustfs IAM JSON policies) is Phase D territory.
+- **Cross-references**: [identity.md](identity.md)
+
+### OQ-DEF-08: Should "credential presentation" replace "auth interface" in terminology?
+- **Origin**: [research/phase2/definitions.md](../research/phase2/definitions.md)
+- **Status**: resolved
+- **Priority**: medium
+- **Resolution**: Yes. Adopted in [definitions.md](definitions.md). Use "credential presentation" for the mechanism of presenting credentials on a (Transport, Interface) pair. Never use "auth interface" (overloads "Interface").
+- **Cross-references**: [definitions.md](definitions.md), [auth.md](auth.md)

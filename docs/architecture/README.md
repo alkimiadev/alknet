@@ -1,18 +1,21 @@
 ---
 status: draft
-last_updated: 2026-06-07
+last_updated: 2026-06-09
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-Architecture specification in active development. Phase 0 foundation complete:
-ADRs 001–034 accepted, new spec documents created for all components, existing
-specs updated for the three-layer model, crate decomposition, unified identity,
-OperationEnv, and forwarding policy. Remaining open questions: OQ-15 (QUIC
-coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
-(Interface session/EventEnvelope), OQ-IF-02 (ForwardingPolicy placement). See
+Architecture spec sync in progress. Phase 0 foundation complete (ADRs 001–037).
+Phase 1 core modifications partially implemented (interface trait, config split,
+identity provider, forwarding policy). Phase 2 core bridge research complete;
+spec documents updated to reflect StreamInterface/MessageInterface split,
+CredentialProvider as core type, and API keys in DynamicConfig.
+
+Remaining open questions: OQ-15 (QUIC coexistence), OQ-19 (WebTransport TLS),
+OQ-20 (worker registration), OQ-CP-01 (per-identity credentials), OQ-CP-02
+(OIDC provider location), OQ-CP-03 (credential rotation). See
 [open-questions.md](open-questions.md).
 
 ## Architecture Documents
@@ -21,7 +24,7 @@ coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
 |----------|--------|-------------|
 | [overview.md](overview.md) | reviewed | Package purpose, crate structure, three-layer model, exports, dependencies |
 | [transport.md](transport.md) | reviewed | Transport abstraction: TCP, TLS, iroh |
-| [auth.md](auth.md) | draft | Unified auth: SSH + token, IdentityProvider trait |
+| [auth.md](auth.md) | draft | Unified auth: SSH + token + API keys, credential presentation per interface |
 | [call-protocol.md](call-protocol.md) | draft | Bidirectional call/event protocol, OperationEnv, three dispatch paths |
 | [client.md](client.md) | reviewed | Client connection, SOCKS5, port forwarding |
 | [server.md](server.md) | reviewed | Server acceptance, IdentityProvider, ForwardingPolicy, channel handling |
@@ -29,11 +32,13 @@ coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
 | [napi-and-pubsub.md](napi-and-pubsub.md) | reviewed | NAPI wrapper, reload API, pubsub event target adapter |
 | [identity.md](identity.md) | draft | Identity type, IdentityProvider trait, auth flows |
 | [services.md](services.md) | draft | irpc service layer, OperationEnv, three dispatch paths |
-| [interface.md](interface.md) | draft | Layer 2: Interface trait, SshInterface, RawFramingInterface |
-| [configuration.md](configuration.md) | draft | StaticConfig, DynamicConfig, forwarding policy, reload |
+| [interface.md](interface.md) | draft | StreamInterface, MessageInterface, credential presentation, ListenerConfig |
+| [configuration.md](configuration.md) | draft | StaticConfig, DynamicConfig, API keys, forwarding policy, reload |
 | [storage.md](storage.md) | draft | alknet-storage: metagraph, identity, ACL, honker |
 | [flowgraph.md](flowgraph.md) | draft | alknet-flowgraph: call graph, operation graph, petgraph |
 | [secret-service.md](secret-service.md) | draft | alknet-secret: BIP39, SLIP-0010, AES-GCM, SecretProtocol |
+| [credentials.md](credentials.md) | draft | CredentialProvider, CredentialSet (outbound auth) |
+| [definitions.md](definitions.md) | draft | Terminology disambiguation and concept mapping |
 
 ## Research Documents
 
@@ -48,6 +53,10 @@ coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
 | [feasibility/](../research/feasibility/) | — | SSH tunnel feasibility assessment and related analyses |
 | [event-sourcing/](../research/event-sourcing/) | — | Event sourcing patterns and event-driven architecture reference |
 | [ops/](../research/ops/) | — | Production ops reference: certbot, fail2ban |
+| [phase2/definitions.md](../research/phase2/definitions.md) | draft | Terminology disambiguation (promoted to architecture/definitions.md) |
+| [phase2/interface-model.md](../research/phase2/interface-model.md) | draft | StreamInterface/MessageInterface analysis (promoted to interface.md) |
+| [phase2/credential-provider.md](../research/phase2/credential-provider.md) | draft | CredentialProvider research (promoted to credentials.md) |
+| [phase2/tls-transport.md](../research/phase2/tls-transport.md) | draft | HTTP interface, stealth handoff, ListenerConfig (promoted to interface.md, auth.md) |
 
 ## ADR Table
 
@@ -84,6 +93,9 @@ coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
 | [032](decisions/032-event-boundary-discipline.md) | Event boundary discipline (domain, irpc, call protocol) | Accepted |
 | [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv as universal composition mechanism | Accepted |
 | [034](decisions/034-head-worker-terminology.md) | Head/worker terminology replacing hub/spoke | Accepted |
+| [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface / MessageInterface split | Accepted |
+| [036](decisions/036-credentialprovider-core-type.md) | CredentialProvider as core type (outbound auth) | Accepted |
+| [037](decisions/037-api-keys-dynamic-config.md) | API keys as DynamicConfig auth | Accepted |
 
 > ADR numbers 020–022 were allocated to proposals that were withdrawn before
 > acceptance and are not listed.
@@ -93,15 +105,16 @@ coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker registration), OQ-IF-01
 See [open-questions.md](open-questions.md) for all open and resolved questions.
 Key resolved questions from Phase 0: OQ-12, OQ-16, OQ-18 (forwarding policy
 and identity scopes), OQ-17 (transport-aware auth), OQ-23 (irpc feature flag),
-OQ-24 (DNS control channel scope), OQ-25 (crate irpc dependencies). Key open
-questions: OQ-15 (QUIC coexistence), OQ-19 (WebTransport TLS), OQ-20 (worker
-registration).
+OQ-24 (DNS control channel scope), OQ-25 (crate irpc dependencies), OQ-IF-01
+(Interface session / EventEnvelope relationship), OQ-IF-02 (ForwardingPolicy
+placement). Key open questions: OQ-15 (QUIC coexistence), OQ-19 (WebTransport
+TLS), OQ-20 (worker registration).
 
 ## Lifecycle Definitions
 
 | Status | Meaning | Transitions |
 |--------|---------|-------------|
 | `draft` | Under active development. May change significantly. | → `reviewed` when open questions resolved |
-| `reviewed` | Architecture final. Implementation may begin. Changes require review. | → `stable` when implementation verified |
+| `reviewed` | Architecture final. Implementation may begin. Changes require review. | → `stable` when implementation is complete and verified |
 | `stable` | Locked. Changes require review and may warrant an ADR. | → `deprecated` when superseded |
 | `deprecated` | Superseded. Kept for reference. | Removed when no longer referenced |

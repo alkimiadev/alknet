@@ -35,17 +35,22 @@ irpc is behind a feature flag in alknet-core. Nodes that only do SSH tunneling d
 
 ## Three-Layer Model
 
-Alknet uses a three-layer model (ADR-026):
+Alknet uses a three-layer model (ADR-026, ADR-035):
 
 | Layer | Responsibility | Examples |
 |-------|---------------|----------|
-| **Layer 1: Transport** | Produces byte streams (`AsyncRead + AsyncWrite + Unpin + Send`) | TCP, TLS, iroh, DNS (future), WebTransport (future) |
-| **Layer 2: Interface** | Consumes a transport stream and produces call protocol sessions | SSH (handshake + auth + channel multiplexing), raw framing (length-prefix + JSON) |
+| **Layer 1: Transport** | Produces byte streams (`AsyncRead + AsyncWrite + Unpin + Send`) | TCP, TLS, iroh, WebTransport (future) |
+| **Layer 2: Interface** | Two categories: StreamInterface (consumes transport stream, produces session) and MessageInterface (handles discrete requests, manages own transport) | Stream: SSH, raw framing. Message: HTTP, DNS |
 | **Layer 3: Protocol** | Carries semantics — operation registry, service calls, events | Call protocol, OperationEnv, operation dispatch |
 
-SSH is an interface, not a transport. The three-layer model enables DNS control channels (DNS transport + raw framing), local service mesh (TCP + raw framing), and browser direct call protocol (WebTransport + raw framing) without wrapping SSH inside those transports.
+SSH is an interface, not a transport. DNS is a message interface, not a transport.
+The three-layer model enables HTTP interfaces (stealth mode byte-peek),
+DNS control channels, and local service mesh (raw framing) without wrapping SSH
+inside those transports.
 
-A connection is always a (Transport, Interface) pair. The protocol layer is agnostic to both.
+A stream-based connection is always a (Transport, StreamInterface) pair.
+Message-based interfaces manage their own transport. The protocol layer is
+agnostic to both.
 
 ## Service Layer
 
@@ -93,15 +98,21 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 - `TcpTransport` — direct TCP connection
 - `TlsTransport` — TCP + tokio-rustls TLS
 - `IrohTransport` — iroh QUIC P2P connection
-- `Interface` trait — consumes transport stream, produces call protocol session
+- `Interface` trait → `StreamInterface` trait and `MessageInterface` trait (ADR-035)
+- `InterfaceSession` trait — `recv()`/`send()` producing/consuming `InterfaceEvent` frames
+- `InterfaceRequest` / `InterfaceResponse` — normalized request/response for message interfaces
 - `Socks5Server` — local SOCKS5 proxy that forwards through SSH channels
 - `PortForwarder` — manages local/remote port forwards
-- `ServerHandler` — russh server handler with configurable auth and channel policies
+- `ServerHandler` → `SshInterface` — russh server handler with configurable auth and channel policies
 - `Identity` / `IdentityProvider` — core identity types (ADR-029)
+- `CredentialProvider` / `CredentialSet` — outbound credential types (ADR-036)
 - `OperationSpec` — operation registration for call protocol (ADR-025)
+- `OperationEnv` / `OperationContext` — universal composition and operation context
 - `ConnectOptions` / `ServeOptions` — programmatic configuration structs
-- `StaticConfig` / `DynamicConfig` — static/immutable vs. hot-reloadable config (ADR-030)
+- `StaticConfig` / `DynamicConfig` — static/immutable vs, hot-reloadable config (ADR-030)
 - `ConfigReloadHandle` — programmatic reload of dynamic config
+- `ForwardingPolicy` — rule-based allow/deny for channel targets (ADR-031)
+- `ListenerConfig` — stream and message listener configuration
 
 ## Dependencies
 
@@ -134,7 +145,7 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 
 1. **SSH runs over transport, not alongside** — The transport layer produces a single `AsyncRead+AsyncWrite+Unpin+Send` stream. SSH runs over that stream via `russh::client::connect_stream()` / `russh::server::run_stream()`. The SSH layer never knows what transport it's on. (ADR-001, ADR-004)
 
-2. **Three-layer model: Transport, Interface, Protocol** — SSH is an interface (Layer 2), not a transport (Layer 1). A connection is always a (Transport, Interface) pair. The call protocol (Layer 3) is agnostic to both. This enables DNS control channels, raw framing, and WebTransport direct call protocol without wrapping SSH inside those transports. (ADR-026)
+2. **Three-layer model: Transport, Interface, Protocol** — SSH is a StreamInterface (Layer 2), not a transport (Layer 1). HTTP and DNS are MessageInterfaces (Layer 2). A connection is always a (Transport, StreamInterface) pair for stream-based interfaces, or a standalone MessageInterface for message-based ones. The call protocol (Layer 3) is agnostic to both. This enables HTTP interfaces, DNS control channels, and local service mesh without wrapping SSH. (ADR-026, ADR-035)
 
 3. **SOCKS5 is the primary client interface** — Port forwarding is built on top of SOCKS5-like channel management. For VPN-like "route all traffic" behavior, users run `tun2proxy` alongside alknet's SOCKS5 proxy. TUN is not in the project scope. (ADR-005, ADR-014)
 
@@ -193,6 +204,9 @@ The `alknet-core` crate exports the pluggable components for embedding or progra
 | [032](decisions/032-event-boundary-discipline.md) | Event boundary | Domain events never cross service boundaries |
 | [033](decisions/033-operationenv-irpc-call-protocol.md) | OperationEnv | Universal composition, three dispatch paths |
 | [034](decisions/034-head-worker-terminology.md) | Head/worker | Replaces hub/spoke terminology |
+| [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface/MessageInterface | Two Layer 2 trait categories for stream vs message |
+| [036](decisions/036-credentialprovider-core-type.md) | CredentialProvider as core type | Outbound credentials in `alknet_core::credentials` |
+| [037](decisions/037-api-keys-dynamic-config.md) | API keys in DynamicConfig | Hash-verified bearer tokens for service accounts |
 
 ## Open Questions
 
@@ -204,10 +218,12 @@ relationship).
 ## References
 
 - [transport.md](transport.md) — Transport abstraction (Layer 1)
-- [interface.md](interface.md) — Interface layer (Layer 2)
+- [interface.md](interface.md) — StreamInterface and MessageInterface (Layer 2)
 - [call-protocol.md](call-protocol.md) — Call protocol (Layer 3)
-- [auth.md](auth.md) — Unified authentication
+- [auth.md](auth.md) — Unified authentication, API keys, credential presentation
 - [identity.md](identity.md) — Identity and IdentityProvider
+- [credentials.md](credentials.md) — CredentialProvider and CredentialSet (outbound auth)
+- [definitions.md](definitions.md) — Terminology disambiguation
 - [configuration.md](configuration.md) — StaticConfig, DynamicConfig, ForwardingPolicy
 - [services.md](services.md) — irpc service layer, OperationEnv
 - [server.md](server.md) — Server acceptance, channel handling

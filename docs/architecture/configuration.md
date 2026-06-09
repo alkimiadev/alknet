@@ -55,6 +55,25 @@ Hot-reloadable at runtime via `ArcSwap<DynamicConfig>`. Contains:
 compared to the current approach. Writes are atomic: `store()` swaps the
 pointer.
 
+### API Keys
+
+`DynamicConfig.auth` also includes API keys for service accounts and HTTP
+interface auth (ADR-037):
+
+```toml
+[[auth.api_keys]]
+prefix = "alk_"
+hash = "sha256:abc..."
+scopes = ["relay:connect"]
+description = "dashboard service account"
+ttl = "30d"  # optional
+```
+
+API keys are verified by `ConfigIdentityProvider::resolve_from_token()` — if
+the token starts with the configured prefix, it's treated as an API key and
+verified by SHA-256 hash lookup. Otherwise, it's treated as an Ed25519 AuthToken.
+Both paths produce the same `Identity` result.
+
 ### ConfigReloadHandle
 
 ```rust
@@ -137,11 +156,66 @@ programmatic API). Covers static config plus initial auth/forwarding paths.
 
 ```toml
 [server]
+# Stream-based listener: TLS + SSH on port 443
+[[listeners]]
+type = "stream"
 transport = "tls"
+interface = "ssh"
 listen = "0.0.0.0:443"
+
+[server.tls]
+cert = "/etc/alknet/tls/cert.pem"
+key = "/etc/alknet/tls/key.pem"
+
+# Stream-based listener: TCP + SSH on port 22
+[[listeners]]
+type = "stream"
+transport = "tcp"
+interface = "ssh"
+listen = "0.0.0.0:22"
+
+# Stream-based listener: iroh P2P
+[[listeners]]
+type = "stream"
+transport = "iroh"
+iroh_relay = "https://relay.alk.dev"
+
+# Message-based listener: HTTP on port 443 (with stealth)
+[[listeners]]
+type = "http"
+listen = "0.0.0.0:443"
+tls = true
+stealth = true
+
+# Message-based listener: HTTP on port 8080 (separate, no stealth)
+# [[listeners]]
+# type = "http"
+# listen = "0.0.0.0:8080"
+# tls = false
+# stealth = false
+
+# Message-based listener: DNS on port 53
+# [[listeners]]
+# type = "dns"
+# listen = "0.0.0.0:53"
+# tls = false
 
 [auth]
 host_key = "/etc/alknet/ssh/host_key"
+
+[auth.ssh]
+authorized_keys = [...]
+
+[auth.token]
+enabled = true
+max_token_age = "5m"
+
+[[auth.api_keys]]
+prefix = "alk_"
+hash = "sha256:abc..."
+scopes = ["relay:connect"]
+description = "dashboard service account"
+ttl = "30d"
 
 [forwarding]
 default = "deny"
@@ -163,10 +237,32 @@ interface AlknetServer {
 
 ### Multi-Transport Listeners
 
-A head node may accept connections on multiple transports simultaneously. The
-architecture supports `Vec<ListenerConfig>` instead of a single
-`ServeTransportMode`. `Server::run()` spawns one accept loop per listener,
-sharing `DynamicConfig`, `ConnectionRateLimiter`, sessions, and shutdown signal.
+A head node may accept connections on multiple transports and interfaces simultaneously.
+Listeners come in two categories: stream-based (Transport + StreamInterface pairs) and
+message-based (self-contained HTTP or DNS servers).
+
+```rust
+pub enum ListenerConfig {
+    Stream {
+        transport: TransportKind,
+        interface: StreamInterfaceKind,
+    },
+    Http {
+        bind_addr: SocketAddr,
+        tls: bool,
+        stealth: bool,    // byte-peek protocol detection on shared port
+    },
+    Dns {
+        bind_addr: SocketAddr,
+        tls: bool,
+    },
+}
+```
+
+For stream-based listeners, `Server::run()` spawns one accept loop per listener.
+For HTTP listeners, it spawns an axum server. For DNS listeners, it spawns a DNS
+server. All share `DynamicConfig`, `ConnectionRateLimiter`, sessions, and
+shutdown signal.
 
 ```toml
 [[listeners]]
