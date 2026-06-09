@@ -62,6 +62,12 @@ pub mod server;
 pub mod socks5;
 pub mod transport;
 
+#[cfg(feature = "http")]
+pub mod http;
+
+#[cfg(feature = "http")]
+pub use http::IdentityExt;
+
 #[cfg(feature = "testutil")]
 pub mod testutil;
 

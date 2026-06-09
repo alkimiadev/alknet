@@ -2,11 +2,16 @@
 //!
 //! When stealth mode is enabled with TLS transport, the server peeks at the first
 //! bytes after the TLS handshake to determine whether the client is speaking SSH
-//! or HTTP. Non-SSH connections receive a fake nginx 404 response, making the
-//! server appear as an ordinary web server to port scanners and DPI systems.
-//! See ADR-017.
+//! or HTTP. When the `http` feature is enabled, detected HTTP traffic is routed to
+//! the axum router. When `http` is disabled, non-SSH connections receive a fake
+//! nginx 404 response, making the server appear as an ordinary web server to port
+//! scanners and DPI systems. See ADR-017.
+
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+
+use crate::auth::IdentityProvider;
 
 const SSH_BANNER_PREFIX: &[u8] = b"SSH-2.0-";
 const FAKE_NGINX_404: &[u8] = b"HTTP/1.1 404 Not Found\r\nServer: nginx\r\n\r\n";
@@ -50,6 +55,26 @@ where
 {
     let _ = reader.get_mut().write_all(FAKE_NGINX_404).await;
     let _ = reader.get_mut().shutdown().await;
+}
+
+#[cfg(feature = "http")]
+pub async fn handle_http_stealth<S>(
+    reader: BufReader<S>,
+    identity_provider: Arc<dyn IdentityProvider>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    crate::http::router::serve_connection_from_reader(reader, identity_provider).await
+}
+
+#[cfg(not(feature = "http"))]
+pub async fn handle_http_stealth<S>(
+    mut reader: BufReader<S>,
+    _identity_provider: Arc<dyn IdentityProvider>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    send_fake_nginx_404(&mut reader).await
 }
 
 pub fn validate_stealth_config(stealth: bool, transport_is_tls: bool) -> Result<(), &'static str> {
@@ -231,5 +256,61 @@ mod tests {
         let mut extra = [0u8; 16];
         let result = client.read(&mut extra).await;
         assert!(result.is_err() || result.unwrap() == 0);
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn stealth_handoff_routes_http_to_axum() {
+        use crate::auth::{AuthToken, IdentityProvider};
+        use std::sync::Arc;
+        use tokio::io::AsyncWriteExt;
+
+        struct NullProvider;
+
+        impl IdentityProvider for NullProvider {
+            fn resolve_from_fingerprint(
+                &self,
+                _fingerprint: &str,
+            ) -> Option<crate::auth::Identity> {
+                None
+            }
+
+            fn resolve_from_token(&self, _token: &AuthToken) -> Option<crate::auth::Identity> {
+                None
+            }
+        }
+
+        let (client, server) = duplex(4096);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        client_write
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        drop(client_write);
+
+        let (detection, reader) = detect_protocol(server).await;
+        assert_eq!(detection, ProtocolDetection::Http);
+
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NullProvider);
+        let handle = tokio::spawn(async move {
+            handle_http_stealth(reader, provider).await;
+        });
+
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut client_read, &mut buf)
+            .await
+            .unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(
+            response.contains("401"),
+            "expected 401 from axum auth middleware, got: {response}"
+        );
+        assert!(
+            !response.contains("nginx"),
+            "should not contain fake nginx response when http feature is enabled"
+        );
+
+        let _ = handle.await;
     }
 }

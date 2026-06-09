@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{error, info, warn};
 
+use crate::auth::identity::ConfigIdentityProvider;
 use crate::auth::keys::KeySource;
+use crate::auth::IdentityProvider;
 use crate::config::{ConfigReloadHandle, DynamicConfig};
 use crate::error::ConfigError;
 use crate::interface::pairs::is_valid_pair;
@@ -522,6 +524,7 @@ struct ActiveSession {
 pub struct Server {
     config: Arc<server::Config>,
     dynamic: Arc<ArcSwap<DynamicConfig>>,
+    identity_provider: Arc<dyn IdentityProvider>,
     connection_limiter: Arc<ConnectionRateLimiter>,
     outbound_proxy: Option<ProxyConfig>,
     listeners: Vec<ListenerConfig>,
@@ -551,10 +554,13 @@ impl Server {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let dynamic = Arc::new(ArcSwap::new(Arc::new(dynamic_config)));
+        let identity_provider: Arc<dyn IdentityProvider> =
+            Arc::new(ConfigIdentityProvider::new(Arc::clone(&dynamic)));
 
         Ok(Self {
             config,
             dynamic,
+            identity_provider,
             connection_limiter,
             outbound_proxy: static_config.proxy_config,
             listeners: static_config.listeners,
@@ -734,12 +740,20 @@ impl Server {
 
             let config = Arc::clone(&server.config);
             let sessions = Arc::clone(&server.sessions);
+            let identity_provider = Arc::clone(&server.identity_provider);
             let transport_is_tls = matches!(transport_kind, TransportKind::Tls { .. });
 
             tokio::spawn(async move {
-                let result =
-                    handle_connection(stream, config, handler, sessions, stealth, transport_is_tls)
-                        .await;
+                let result = handle_connection(
+                    stream,
+                    config,
+                    handler,
+                    sessions,
+                    identity_provider,
+                    stealth,
+                    transport_is_tls,
+                )
+                .await;
 
                 if let Err(e) = result {
                     warn!("connection error: {e}");
@@ -765,6 +779,7 @@ async fn handle_connection<S>(
     config: Arc<Config>,
     handler: ServerHandler,
     sessions: Arc<tokio::sync::Mutex<Vec<ActiveSession>>>,
+    identity_provider: Arc<dyn IdentityProvider>,
     stealth: bool,
     transport_is_tls: bool,
 ) -> Result<(), anyhow::Error>
@@ -772,10 +787,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     if stealth && transport_is_tls {
-        let (protocol, mut reader) = stealth::detect_protocol(stream).await;
+        let (protocol, reader) = stealth::detect_protocol(stream).await;
         match protocol {
             ProtocolDetection::Http => {
-                stealth::send_fake_nginx_404(&mut reader).await;
+                stealth::handle_http_stealth(reader, identity_provider).await;
                 return Ok(());
             }
             ProtocolDetection::Ssh => {

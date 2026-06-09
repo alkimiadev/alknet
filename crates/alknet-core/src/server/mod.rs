@@ -28,5 +28,6 @@ pub use serve::{
 
 pub use crate::transport::TransportKind;
 pub use stealth::{
-    detect_protocol, send_fake_nginx_404, validate_stealth_config, ProtocolDetection,
+    detect_protocol, handle_http_stealth, send_fake_nginx_404, validate_stealth_config,
+    ProtocolDetection,
 };

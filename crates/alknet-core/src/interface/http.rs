@@ -27,6 +27,13 @@ impl MessageInterface for HttpInterface {
     }
 }
 
+#[cfg(feature = "http")]
+impl HttpInterface {
+    pub fn build_router(&self) -> axum::Router {
+        crate::http::router::build_router(Arc::clone(&self.identity_provider))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +48,19 @@ mod tests {
             env: OperationEnv::local(crate::call::OperationRegistry::new()),
             registry,
         };
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_interface_builds_router() {
+        let registry = Arc::new(crate::call::OperationRegistry::new());
+        let iface = HttpInterface {
+            identity_provider: Arc::new(crate::auth::ConfigIdentityProvider::new(Arc::new(
+                arc_swap::ArcSwap::new(Arc::new(crate::config::DynamicConfig::default())),
+            ))),
+            env: OperationEnv::local(crate::call::OperationRegistry::new()),
+            registry,
+        };
+        let _router = iface.build_router();
     }
 }
