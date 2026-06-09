@@ -35,7 +35,7 @@ pub use http::HttpInterface;
 pub use pairs::{is_valid_pair, TransportKindBase, VALID_TRANSPORT_INTERFACE_PAIRS};
 pub use raw_framing::{RawFramingInterface, RawFramingSession};
 pub use session::{InterfaceEvent, InterfaceSession};
-pub use ssh::{SshInterface, SshSession};
+pub use ssh::{ControlChannelBridge, SshInterface, SshSession};
 
 pub trait TransportStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 

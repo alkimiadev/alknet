@@ -1,3 +1,7 @@
+use std::io;
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 use crate::call::envelope::EventEnvelope;
 
 pub fn encode(envelope: &EventEnvelope) -> Vec<u8> {
@@ -56,6 +60,73 @@ pub enum FrameDecodeError {
     Incomplete { expected: usize, actual: usize },
     #[error("JSON deserialization error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+pub struct FrameFramedReader<S> {
+    stream: S,
+    buf: Vec<u8>,
+}
+
+impl<S> FrameFramedReader<S>
+where
+    S: AsyncRead + Unpin,
+{
+    pub fn new(stream: S) -> Self {
+        Self {
+            stream,
+            buf: Vec::with_capacity(4096),
+        }
+    }
+
+    pub async fn read_frame(&mut self) -> io::Result<Option<EventEnvelope>> {
+        loop {
+            if self.buf.len() >= 4 {
+                let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]])
+                    as usize;
+                let total = 4 + len;
+                if self.buf.len() >= total {
+                    let body = &self.buf[4..total];
+                    match serde_json::from_slice(body) {
+                        Ok(envelope) => {
+                            self.buf.drain(..total);
+                            return Ok(Some(envelope));
+                        }
+                        Err(e) => {
+                            self.buf.drain(..total);
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, e));
+                        }
+                    }
+                }
+            }
+
+            let mut tmp = [0u8; 4096];
+            match self.stream.read(&mut tmp).await {
+                Ok(0) => return Ok(None),
+                Ok(n) => self.buf.extend_from_slice(&tmp[..n]),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+pub struct FrameFramedWriter<S> {
+    stream: S,
+}
+
+impl<S> FrameFramedWriter<S>
+where
+    S: AsyncWrite + Unpin,
+{
+    pub fn new(stream: S) -> Self {
+        Self { stream }
+    }
+
+    pub async fn write_frame(&mut self, envelope: &EventEnvelope) -> io::Result<()> {
+        let frame = encode(envelope);
+        self.stream.write_all(&frame).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

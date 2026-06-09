@@ -60,6 +60,10 @@ impl ControlChannelRouter {
             )),
         }
     }
+
+    pub fn take_handler(&mut self) -> Option<Box<dyn ControlChannelHandler>> {
+        self.handler.take()
+    }
 }
 
 #[cfg(test)]

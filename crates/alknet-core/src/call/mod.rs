@@ -18,7 +18,9 @@ pub use context::OperationContext;
 pub use env::OperationEnv;
 pub use envelope::EventEnvelope;
 pub use events::{CALL_ABORTED, CALL_COMPLETED, CALL_ERROR, CALL_REQUESTED, CALL_RESPONDED};
-pub use frame::{decode, decode_with_remainder, encode, FrameDecodeError};
+pub use frame::{
+    decode, decode_with_remainder, encode, FrameDecodeError, FrameFramedReader, FrameFramedWriter,
+};
 pub use pending::PendingRequestMap;
 pub use registry::{Handler, OperationRegistry, OperationRegistryBuilder};
 pub use response::{CallError, ResponseEnvelope};
