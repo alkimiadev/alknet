@@ -306,7 +306,9 @@ impl russh::server::Handler for NapiServerHandler {
         }
 
         let fingerprint = format!("{}", public_key.fingerprint(HashAlg::Sha256));
-        let identity = self.identity_provider.resolve_from_fingerprint(&fingerprint);
+        let identity = self
+            .identity_provider
+            .resolve_from_fingerprint(&fingerprint);
 
         match identity {
             Some(id) => {
@@ -339,11 +341,14 @@ impl russh::server::Handler for NapiServerHandler {
             return Ok(true);
         }
 
-        let identity = self.authenticated_identity.clone().unwrap_or_else(|| Identity {
-            id: String::new(),
-            scopes: vec![],
-            resources: std::collections::HashMap::new(),
-        });
+        let identity = self
+            .authenticated_identity
+            .clone()
+            .unwrap_or_else(|| Identity {
+                id: String::new(),
+                scopes: vec![],
+                resources: std::collections::HashMap::new(),
+            });
 
         let policy = self.dynamic.load();
         let allowed = policy.forwarding.check(
@@ -664,11 +669,8 @@ impl AlknetServer {
         let new_auth_policy = build_auth_policy_from_napi(&auth)?;
         let new_forwarding = build_forwarding_policy(&forwarding)?;
         let current = self.reload_handle.dynamic();
-        let new_config = DynamicConfig::from_parts(
-            new_auth_policy,
-            new_forwarding,
-            current.rate_limits.clone(),
-        );
+        let new_config =
+            DynamicConfig::from_parts(new_auth_policy, new_forwarding, current.rate_limits.clone());
         self.reload_handle.reload(new_config);
         Ok(())
     }

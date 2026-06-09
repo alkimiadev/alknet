@@ -774,17 +774,7 @@ mod tests {
             "iroh"
         );
         assert_eq!(
-            TransportKind::Dns {
-                domain: String::new()
-            }
-            .to_string(),
-            "dns"
-        );
-        assert_eq!(
-            TransportKind::WebTransport {
-                host: String::new()
-            }
-            .to_string(),
+            TransportKind::WebTransport { server_name: None }.to_string(),
             "webtransport"
         );
     }

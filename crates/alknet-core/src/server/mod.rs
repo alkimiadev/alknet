@@ -21,7 +21,10 @@ pub use control_channel::{
 };
 pub use handler::{ProxyConfig, ProxyMode, ServerHandler};
 pub use rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
-pub use serve::{ListenerConfig, ServeError, ServeOptions, ServeTransportMode, Server};
+pub use serve::{
+    DnsListenerConfig, HttpListenerConfig, ListenerConfig, ServeError, ServeOptions,
+    ServeTransportMode, Server, StreamListenerConfig,
+};
 
 pub use crate::transport::TransportKind;
 pub use stealth::{

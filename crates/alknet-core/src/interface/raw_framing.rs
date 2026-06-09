@@ -2,20 +2,20 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::interface::session::{InterfaceEvent, InterfaceSession};
-use crate::interface::{Interface, InterfaceConfig, TransportStream};
+use crate::interface::{StreamInterface, StreamInterfaceConfig, TransportStream};
 
 pub struct RawFramingInterface;
 
 pub struct RawFramingSession;
 
 #[async_trait]
-impl Interface for RawFramingInterface {
+impl StreamInterface for RawFramingInterface {
     type Session = RawFramingSession;
 
     async fn accept(
         &self,
         _stream: Box<dyn TransportStream>,
-        _config: &InterfaceConfig,
+        _config: &StreamInterfaceConfig,
     ) -> Result<Self::Session> {
         Err(anyhow::anyhow!(
             "RawFramingInterface is not yet implemented (Phase 4+)"
@@ -55,7 +55,7 @@ mod tests {
         let iface = RawFramingInterface;
         let (_client, server) = tokio::io::duplex(1024);
         let stream: Box<dyn TransportStream> = Box::new(server);
-        let config = InterfaceConfig::RawFraming(crate::interface::RawFramingConfig {});
+        let config = StreamInterfaceConfig::RawFraming(crate::interface::RawFramingConfig {});
         let result = iface.accept(stream, &config).await;
         assert!(result.is_err());
     }

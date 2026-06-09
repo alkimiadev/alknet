@@ -91,8 +91,7 @@ pub enum TransportKind {
     Tcp,
     Tls { server_name: Option<String> },
     Iroh { endpoint_id: String },
-    Dns { domain: String },
-    WebTransport { host: String },
+    WebTransport { server_name: Option<String> },
 }
 
 impl std::fmt::Display for TransportKind {
@@ -101,7 +100,7 @@ impl std::fmt::Display for TransportKind {
             TransportKind::Tcp => write!(f, "tcp"),
             TransportKind::Tls { .. } => write!(f, "tls"),
             TransportKind::Iroh { .. } => write!(f, "iroh"),
-            TransportKind::Dns { .. } => write!(f, "dns"),
+
             TransportKind::WebTransport { .. } => write!(f, "webtransport"),
         }
     }
@@ -183,11 +182,8 @@ mod tests {
         let iroh = TransportKind::Iroh {
             endpoint_id: "abc123".to_string(),
         };
-        let dns = TransportKind::Dns {
-            domain: "example.com".to_string(),
-        };
         let wt = TransportKind::WebTransport {
-            host: "example.com".to_string(),
+            server_name: Some("example.com".to_string()),
         };
 
         if let TransportKind::Tcp = tcp {}
@@ -200,11 +196,8 @@ mod tests {
         if let TransportKind::Iroh { endpoint_id } = iroh {
             assert_eq!(endpoint_id, "abc123");
         }
-        if let TransportKind::Dns { domain } = dns {
-            assert_eq!(domain, "example.com");
-        }
-        if let TransportKind::WebTransport { host } = wt {
-            assert_eq!(host, "example.com");
+        if let TransportKind::WebTransport { server_name } = wt {
+            assert_eq!(server_name, Some("example.com".to_string()));
         }
     }
 }

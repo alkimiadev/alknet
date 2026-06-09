@@ -499,17 +499,13 @@ mod tests {
                     target: TargetPattern::AlknetPrefix,
                     action: ForwardingAction::Allow,
                     principals: vec![],
-                    transports: vec![TransportKind::WebTransport {
-                        host: String::new(),
-                    }],
+                    transports: vec![TransportKind::WebTransport { server_name: None }],
                 },
                 ForwardingRule {
                     target: TargetPattern::Any,
                     action: ForwardingAction::Deny,
                     principals: vec![],
-                    transports: vec![TransportKind::WebTransport {
-                        host: String::new(),
-                    }],
+                    transports: vec![TransportKind::WebTransport { server_name: None }],
                 },
             ],
         };
@@ -518,17 +514,13 @@ mod tests {
             "alknet-control",
             0,
             &identity,
-            TransportKind::WebTransport {
-                host: String::new()
-            }
+            TransportKind::WebTransport { server_name: None }
         ));
         assert!(!policy.check(
             "example.com",
             443,
             &identity,
-            TransportKind::WebTransport {
-                host: String::new()
-            }
+            TransportKind::WebTransport { server_name: None }
         ));
         assert!(policy.check("example.com", 443, &identity, TransportKind::Tcp));
     }

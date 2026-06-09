@@ -5,18 +5,20 @@
 //! `ServeOptions` provides a builder-pattern API for programmatic configuration.
 //! Supports multiple listeners via `ListenerConfig` for multi-transport operation.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use russh::server::{self, Config};
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{error, info, warn};
 
 use crate::auth::keys::KeySource;
 use crate::config::{ConfigReloadHandle, DynamicConfig};
 use crate::error::ConfigError;
-use crate::interface::InterfaceKind;
+use crate::interface::StreamInterfaceKind;
 use crate::server::handler::{ProxyConfig, ServerHandler};
 use crate::server::rate_limit::ConnectionRateLimiter;
 use crate::server::stealth::{self, ProtocolDetection};
@@ -42,10 +44,10 @@ impl std::fmt::Display for ServeTransportMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ListenerConfig {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamListenerConfig {
     pub transport_kind: TransportKind,
-    pub interface_kind: InterfaceKind,
+    pub interface: StreamInterfaceKind,
     pub listen_addr: String,
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
@@ -54,103 +56,7 @@ pub struct ListenerConfig {
     pub iroh_relay: Option<String>,
 }
 
-impl ListenerConfig {
-    pub fn tcp(addr: impl Into<String>) -> Self {
-        Self {
-            transport_kind: TransportKind::Tcp,
-            interface_kind: InterfaceKind::Ssh,
-            listen_addr: addr.into(),
-            tls_cert: None,
-            tls_key: None,
-            acme_domain: None,
-            stealth: false,
-            iroh_relay: None,
-        }
-    }
-
-    pub fn tls(addr: impl Into<String>) -> Self {
-        Self {
-            transport_kind: TransportKind::Tls { server_name: None },
-            interface_kind: InterfaceKind::Ssh,
-            listen_addr: addr.into(),
-            tls_cert: None,
-            tls_key: None,
-            acme_domain: None,
-            stealth: false,
-            iroh_relay: None,
-        }
-    }
-
-    pub fn iroh(addr: impl Into<String>) -> Self {
-        Self {
-            transport_kind: TransportKind::Iroh {
-                endpoint_id: String::new(),
-            },
-            interface_kind: InterfaceKind::Ssh,
-            listen_addr: addr.into(),
-            tls_cert: None,
-            tls_key: None,
-            acme_domain: None,
-            stealth: false,
-            iroh_relay: None,
-        }
-    }
-
-    pub fn dns(domain: impl Into<String>) -> Self {
-        Self {
-            transport_kind: TransportKind::Dns {
-                domain: String::new(),
-            },
-            interface_kind: InterfaceKind::RawFraming,
-            listen_addr: domain.into(),
-            tls_cert: None,
-            tls_key: None,
-            acme_domain: None,
-            stealth: false,
-            iroh_relay: None,
-        }
-    }
-
-    pub fn webtransport(host: impl Into<String>) -> Self {
-        Self {
-            transport_kind: TransportKind::WebTransport {
-                host: String::new(),
-            },
-            interface_kind: InterfaceKind::Ssh,
-            listen_addr: host.into(),
-            tls_cert: None,
-            tls_key: None,
-            acme_domain: None,
-            stealth: false,
-            iroh_relay: None,
-        }
-    }
-
-    pub fn tls_cert(mut self, path: impl Into<String>) -> Self {
-        self.tls_cert = Some(path.into());
-        self
-    }
-
-    pub fn tls_key(mut self, path: impl Into<String>) -> Self {
-        self.tls_key = Some(path.into());
-        self
-    }
-
-    pub fn acme_domain(mut self, domain: impl Into<String>) -> Self {
-        self.acme_domain = Some(domain.into());
-        self
-    }
-
-    pub fn stealth(mut self, enabled: bool) -> Self {
-        self.stealth = enabled;
-        self
-    }
-
-    pub fn iroh_relay(mut self, url: impl Into<String>) -> Self {
-        self.iroh_relay = Some(url.into());
-        self
-    }
-
+impl StreamListenerConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.stealth && !matches!(self.transport_kind, TransportKind::Tls { .. }) {
             return Err(ConfigError::InvalidFlag {
@@ -178,7 +84,6 @@ impl ListenerConfig {
             }
             TransportKind::Tcp
             | TransportKind::Iroh { .. }
-            | TransportKind::Dns { .. }
             | TransportKind::WebTransport { .. } => {
                 if self.tls_cert.is_some() || self.tls_key.is_some() || self.acme_domain.is_some() {
                     return Err(ConfigError::IncompatibleOptions);
@@ -190,13 +95,190 @@ impl ListenerConfig {
     }
 }
 
-impl std::fmt::Display for ListenerConfig {
+impl std::fmt::Display for StreamListenerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.transport_kind {
-            TransportKind::Iroh { .. } => write!(f, "{} (iroh)", self.listen_addr),
-            TransportKind::Dns { .. } => write!(f, "{} (dns)", self.listen_addr),
-            TransportKind::WebTransport { .. } => write!(f, "{} (webtransport)", self.listen_addr),
-            _ => write!(f, "{} ({})", self.listen_addr, self.transport_kind),
+            TransportKind::Iroh { .. } => {
+                write!(f, "{} (iroh/{})", self.listen_addr, self.interface)
+            }
+            TransportKind::WebTransport { .. } => {
+                write!(f, "{} (webtransport/{})", self.listen_addr, self.interface)
+            }
+            _ => write!(
+                f,
+                "{} ({}/{})",
+                self.listen_addr, self.transport_kind, self.interface
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpListenerConfig {
+    pub bind_addr: SocketAddr,
+    pub tls: bool,
+    pub stealth: bool,
+}
+
+impl std::fmt::Display for HttpListenerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (http)", self.bind_addr)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DnsListenerConfig {
+    pub bind_addr: SocketAddr,
+    pub tls: bool,
+}
+
+impl std::fmt::Display for DnsListenerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (dns)", self.bind_addr)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ListenerConfig {
+    Stream { config: StreamListenerConfig },
+    Http { config: HttpListenerConfig },
+    Dns { config: DnsListenerConfig },
+}
+
+impl ListenerConfig {
+    pub fn tcp(addr: impl Into<String>) -> Self {
+        Self::Stream {
+            config: StreamListenerConfig {
+                transport_kind: TransportKind::Tcp,
+                interface: StreamInterfaceKind::Ssh,
+                listen_addr: addr.into(),
+                tls_cert: None,
+                tls_key: None,
+                acme_domain: None,
+                stealth: false,
+                iroh_relay: None,
+            },
+        }
+    }
+
+    pub fn tls(addr: impl Into<String>) -> Self {
+        Self::Stream {
+            config: StreamListenerConfig {
+                transport_kind: TransportKind::Tls { server_name: None },
+                interface: StreamInterfaceKind::Ssh,
+                listen_addr: addr.into(),
+                tls_cert: None,
+                tls_key: None,
+                acme_domain: None,
+                stealth: false,
+                iroh_relay: None,
+            },
+        }
+    }
+
+    pub fn iroh(addr: impl Into<String>) -> Self {
+        Self::Stream {
+            config: StreamListenerConfig {
+                transport_kind: TransportKind::Iroh {
+                    endpoint_id: String::new(),
+                },
+                interface: StreamInterfaceKind::Ssh,
+                listen_addr: addr.into(),
+                tls_cert: None,
+                tls_key: None,
+                acme_domain: None,
+                stealth: false,
+                iroh_relay: None,
+            },
+        }
+    }
+
+    pub fn webtransport(addr: impl Into<String>) -> Self {
+        Self::Stream {
+            config: StreamListenerConfig {
+                transport_kind: TransportKind::WebTransport { server_name: None },
+                interface: StreamInterfaceKind::Ssh,
+                listen_addr: addr.into(),
+                tls_cert: None,
+                tls_key: None,
+                acme_domain: None,
+                stealth: false,
+                iroh_relay: None,
+            },
+        }
+    }
+
+    pub fn http(bind_addr: SocketAddr) -> Self {
+        Self::Http {
+            config: HttpListenerConfig {
+                bind_addr,
+                tls: false,
+                stealth: false,
+            },
+        }
+    }
+
+    pub fn dns(bind_addr: SocketAddr) -> Self {
+        Self::Dns {
+            config: DnsListenerConfig {
+                bind_addr,
+                tls: false,
+            },
+        }
+    }
+
+    pub fn tls_cert(mut self, path: impl Into<String>) -> Self {
+        if let ListenerConfig::Stream { ref mut config } = self {
+            config.tls_cert = Some(path.into());
+        }
+        self
+    }
+
+    pub fn tls_key(mut self, path: impl Into<String>) -> Self {
+        if let ListenerConfig::Stream { ref mut config } = self {
+            config.tls_key = Some(path.into());
+        }
+        self
+    }
+
+    pub fn acme_domain(mut self, domain: impl Into<String>) -> Self {
+        if let ListenerConfig::Stream { ref mut config } = self {
+            config.acme_domain = Some(domain.into());
+        }
+        self
+    }
+
+    pub fn stealth(mut self, enabled: bool) -> Self {
+        match &mut self {
+            ListenerConfig::Stream { ref mut config } => config.stealth = enabled,
+            ListenerConfig::Http { ref mut config } => config.stealth = enabled,
+            ListenerConfig::Dns { .. } => {}
+        }
+        self
+    }
+
+    pub fn iroh_relay(mut self, url: impl Into<String>) -> Self {
+        if let ListenerConfig::Stream { ref mut config } = self {
+            config.iroh_relay = Some(url.into());
+        }
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        match self {
+            ListenerConfig::Stream { config } => config.validate(),
+            ListenerConfig::Http { .. } | ListenerConfig::Dns { .. } => Ok(()),
+        }
+    }
+}
+
+impl std::fmt::Display for ListenerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ListenerConfig::Stream { config } => write!(f, "{}", config),
+            ListenerConfig::Http { config } => write!(f, "{}", config),
+            ListenerConfig::Dns { config } => write!(f, "{}", config),
         }
     }
 }
@@ -488,9 +570,21 @@ impl Server {
             .first()
             .expect("at least one listener required");
 
-        let transport_kind = listener.transport_kind.clone();
-        let stealth = listener.stealth;
-        let listen_addr = listener.listen_addr.clone();
+        let (transport_kind, stealth, listen_addr) = match listener {
+            ListenerConfig::Stream { config } => (
+                config.transport_kind.clone(),
+                config.stealth,
+                config.listen_addr.clone(),
+            ),
+            ListenerConfig::Http { config } => (
+                TransportKind::Tcp,
+                config.stealth,
+                config.bind_addr.to_string(),
+            ),
+            ListenerConfig::Dns { config } => {
+                (TransportKind::Tcp, false, config.bind_addr.to_string())
+            }
+        };
 
         if matches!(transport_kind, TransportKind::Iroh { .. }) {
             if let Some(id) = endpoint_info {
@@ -832,10 +926,15 @@ mod tests {
     #[test]
     fn listener_config_tcp_constructor() {
         let lc = ListenerConfig::tcp("0.0.0.0:22");
-        assert_eq!(lc.transport_kind, TransportKind::Tcp);
-        assert_eq!(lc.listen_addr, "0.0.0.0:22");
-        assert!(!lc.stealth);
-        assert!(lc.tls_cert.is_none());
+        match &lc {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(config.transport_kind, TransportKind::Tcp);
+                assert_eq!(config.listen_addr, "0.0.0.0:22");
+                assert!(!config.stealth);
+                assert!(config.tls_cert.is_none());
+            }
+            _ => panic!("expected Stream variant"),
+        }
     }
 
     #[test]
@@ -844,47 +943,85 @@ mod tests {
             .tls_cert("/cert.pem")
             .tls_key("/key.pem")
             .stealth(true);
-        assert_eq!(lc.transport_kind, TransportKind::Tls { server_name: None });
-        assert_eq!(lc.listen_addr, "0.0.0.0:443");
-        assert!(lc.stealth);
-        assert_eq!(lc.tls_cert.as_deref(), Some("/cert.pem"));
-        assert_eq!(lc.tls_key.as_deref(), Some("/key.pem"));
+        match &lc {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(
+                    config.transport_kind,
+                    TransportKind::Tls { server_name: None }
+                );
+                assert_eq!(config.listen_addr, "0.0.0.0:443");
+                assert!(config.stealth);
+                assert_eq!(config.tls_cert.as_deref(), Some("/cert.pem"));
+                assert_eq!(config.tls_key.as_deref(), Some("/key.pem"));
+            }
+            _ => panic!("expected Stream variant"),
+        }
     }
 
     #[test]
     fn listener_config_iroh_constructor() {
         let lc = ListenerConfig::iroh("0.0.0.0:0").iroh_relay("https://relay.example.com");
-        assert_eq!(
-            lc.transport_kind,
-            TransportKind::Iroh {
-                endpoint_id: String::new()
+        match &lc {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(
+                    config.transport_kind,
+                    TransportKind::Iroh {
+                        endpoint_id: String::new()
+                    }
+                );
+                assert_eq!(
+                    config.iroh_relay.as_deref(),
+                    Some("https://relay.example.com")
+                );
             }
-        );
-        assert_eq!(lc.iroh_relay.as_deref(), Some("https://relay.example.com"));
+            _ => panic!("expected Stream variant"),
+        }
+    }
+
+    #[test]
+    fn listener_config_http_constructor() {
+        let lc = ListenerConfig::http("127.0.0.1:8080".parse().unwrap());
+        match &lc {
+            ListenerConfig::Http { config } => {
+                assert_eq!(
+                    config.bind_addr,
+                    "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+                );
+                assert!(!config.tls);
+                assert!(!config.stealth);
+            }
+            _ => panic!("expected Http variant"),
+        }
     }
 
     #[test]
     fn listener_config_dns_constructor() {
-        let lc = ListenerConfig::dns("example.com");
-        assert_eq!(
-            lc.transport_kind,
-            TransportKind::Dns {
-                domain: String::new()
+        let lc = ListenerConfig::dns("127.0.0.1:53".parse().unwrap());
+        match &lc {
+            ListenerConfig::Dns { config } => {
+                assert_eq!(
+                    config.bind_addr,
+                    "127.0.0.1:53".parse::<SocketAddr>().unwrap()
+                );
+                assert!(!config.tls);
             }
-        );
-        assert_eq!(lc.listen_addr, "example.com");
+            _ => panic!("expected Dns variant"),
+        }
     }
 
     #[test]
     fn listener_config_webtransport_constructor() {
         let lc = ListenerConfig::webtransport("example.com");
-        assert_eq!(
-            lc.transport_kind,
-            TransportKind::WebTransport {
-                host: String::new()
+        match &lc {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(
+                    config.transport_kind,
+                    TransportKind::WebTransport { server_name: None }
+                );
+                assert_eq!(config.listen_addr, "example.com");
             }
-        );
-        assert_eq!(lc.listen_addr, "example.com");
+            _ => panic!("expected Stream variant"),
+        }
     }
 
     #[test]
@@ -922,19 +1059,19 @@ mod tests {
     #[test]
     fn listener_config_display() {
         let tcp = ListenerConfig::tcp("0.0.0.0:22");
-        assert_eq!(format!("{}", tcp), "0.0.0.0:22 (tcp)");
+        assert_eq!(format!("{}", tcp), "0.0.0.0:22 (tcp/ssh)");
 
         let tls = ListenerConfig::tls("0.0.0.0:443");
-        assert_eq!(format!("{}", tls), "0.0.0.0:443 (tls)");
+        assert_eq!(format!("{}", tls), "0.0.0.0:443 (tls/ssh)");
 
         let iroh = ListenerConfig::iroh("0.0.0.0:0");
-        assert_eq!(format!("{}", iroh), "0.0.0.0:0 (iroh)");
+        assert_eq!(format!("{}", iroh), "0.0.0.0:0 (iroh/ssh)");
 
-        let dns = ListenerConfig::dns("example.com");
-        assert_eq!(format!("{}", dns), "example.com (dns)");
+        let http = ListenerConfig::http("0.0.0.0:8080".parse().unwrap());
+        assert_eq!(format!("{}", http), "0.0.0.0:8080 (http)");
 
-        let wt = ListenerConfig::webtransport("example.com");
-        assert_eq!(format!("{}", wt), "example.com (webtransport)");
+        let dns = ListenerConfig::dns("0.0.0.0:53".parse().unwrap());
+        assert_eq!(format!("{}", dns), "0.0.0.0:53 (dns)");
     }
 
     #[test]
@@ -1011,7 +1148,6 @@ mod tests {
             .listeners(listeners);
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listeners.len(), 1);
-        assert_eq!(server.listeners[0].transport_kind, TransportKind::Tcp);
     }
 
     #[test]
@@ -1020,8 +1156,13 @@ mod tests {
             ServeOptions::new(make_key_source()).authorized_keys(make_authorized_keys_source());
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listeners.len(), 1);
-        assert_eq!(server.listeners[0].transport_kind, TransportKind::Tcp);
-        assert_eq!(server.listeners[0].listen_addr, "0.0.0.0:22");
+        match &server.listeners[0] {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(config.transport_kind, TransportKind::Tcp);
+                assert_eq!(config.listen_addr, "0.0.0.0:22");
+            }
+            _ => panic!("expected Stream variant"),
+        }
     }
 
     #[test]
@@ -1035,12 +1176,17 @@ mod tests {
             .stealth(true);
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listeners.len(), 1);
-        assert_eq!(
-            server.listeners[0].transport_kind,
-            TransportKind::Tls { server_name: None }
-        );
-        assert!(server.listeners[0].stealth);
-        assert_eq!(server.listeners[0].tls_cert.as_deref(), Some("/cert.pem"));
+        match &server.listeners[0] {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(
+                    config.transport_kind,
+                    TransportKind::Tls { server_name: None }
+                );
+                assert!(config.stealth);
+                assert_eq!(config.tls_cert.as_deref(), Some("/cert.pem"));
+            }
+            _ => panic!("expected Stream variant"),
+        }
     }
 
     #[test]
@@ -1056,11 +1202,6 @@ mod tests {
             .listeners(listeners);
         let server = Server::new(opts).unwrap();
         assert_eq!(server.listeners().len(), 2);
-        assert_eq!(server.listeners()[0].transport_kind, TransportKind::Tcp);
-        assert_eq!(
-            server.listeners()[1].transport_kind,
-            TransportKind::Tls { server_name: None }
-        );
     }
 
     #[test]
@@ -1112,5 +1253,49 @@ mod tests {
             result.is_ok(),
             "server should have shut down within timeout"
         );
+    }
+
+    #[test]
+    fn http_listener_config_display() {
+        let config = HttpListenerConfig {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            tls: true,
+            stealth: false,
+        };
+        assert_eq!(config.to_string(), "127.0.0.1:8080 (http)");
+    }
+
+    #[test]
+    fn dns_listener_config_display() {
+        let config = DnsListenerConfig {
+            bind_addr: "0.0.0.0:53".parse().unwrap(),
+            tls: true,
+        };
+        assert_eq!(config.to_string(), "0.0.0.0:53 (dns)");
+    }
+
+    #[test]
+    fn http_listener_config_serialization() {
+        let config = HttpListenerConfig {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            tls: true,
+            stealth: false,
+        };
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: HttpListenerConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.bind_addr, config.bind_addr);
+        assert_eq!(deserialized.tls, config.tls);
+    }
+
+    #[test]
+    fn dns_listener_config_serialization() {
+        let config = DnsListenerConfig {
+            bind_addr: "0.0.0.0:53".parse().unwrap(),
+            tls: true,
+        };
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: DnsListenerConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.bind_addr, config.bind_addr);
+        assert_eq!(deserialized.tls, config.tls);
     }
 }

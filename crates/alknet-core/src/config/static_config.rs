@@ -2,9 +2,9 @@
 //!
 //! See [ADR-030](docs/architecture/decisions/030-dynamic-config.md).
 
-use crate::interface::InterfaceKind;
+use crate::interface::StreamInterfaceKind;
 use crate::server::handler::{ProxyConfig, ProxyMode};
-use crate::server::serve::{ListenerConfig, ServeTransportMode};
+use crate::server::serve::{ListenerConfig, ServeTransportMode, StreamListenerConfig};
 use crate::transport::TransportKind;
 use std::net::SocketAddr;
 
@@ -66,21 +66,23 @@ impl StaticConfig {
         let listeners = if let Some(listeners) = opts.listeners {
             listeners
         } else {
-            vec![ListenerConfig {
-                transport_kind: match opts.transport_mode {
-                    ServeTransportMode::Tcp => TransportKind::Tcp,
-                    ServeTransportMode::Tls => TransportKind::Tls { server_name: None },
-                    ServeTransportMode::Iroh => TransportKind::Iroh {
-                        endpoint_id: String::new(),
+            vec![ListenerConfig::Stream {
+                config: StreamListenerConfig {
+                    transport_kind: match opts.transport_mode {
+                        ServeTransportMode::Tcp => TransportKind::Tcp,
+                        ServeTransportMode::Tls => TransportKind::Tls { server_name: None },
+                        ServeTransportMode::Iroh => TransportKind::Iroh {
+                            endpoint_id: String::new(),
+                        },
                     },
+                    interface: StreamInterfaceKind::Ssh,
+                    listen_addr: opts.listen_addr.clone(),
+                    tls_cert: opts.tls_cert.clone(),
+                    tls_key: opts.tls_key.clone(),
+                    acme_domain: opts.acme_domain.clone(),
+                    stealth: opts.stealth,
+                    iroh_relay: opts.iroh_relay.clone(),
                 },
-                interface_kind: InterfaceKind::Ssh,
-                listen_addr: opts.listen_addr.clone(),
-                tls_cert: opts.tls_cert.clone(),
-                tls_key: opts.tls_key.clone(),
-                acme_domain: opts.acme_domain.clone(),
-                stealth: opts.stealth,
-                iroh_relay: opts.iroh_relay.clone(),
             }]
         };
 
@@ -111,23 +113,23 @@ fn parse_proxy_config(
         None => Ok(None),
         Some(url) => {
             if let Some(rest) = url.strip_prefix("socks5://") {
-                let addr: SocketAddr = rest.parse().map_err(|e| {
-                    crate::error::ConfigError::ProxyConfigInvalid {
-                        message: format!("invalid socks5 proxy address '{}': {}", rest, e),
-                    }
-                })?;
+                let addr: SocketAddr =
+                    rest.parse()
+                        .map_err(|e| crate::error::ConfigError::ProxyConfigInvalid {
+                            message: format!("invalid socks5 proxy address '{}': {}", rest, e),
+                        })?;
                 Ok(Some(ProxyConfig {
                     mode: ProxyMode::Socks5(addr),
                 }))
             } else if let Some(rest) = url.strip_prefix("http://") {
-                let addr: SocketAddr = rest.parse().map_err(|e| {
-                    crate::error::ConfigError::ProxyConfigInvalid {
-                        message: format!(
-                            "invalid http connect proxy address '{}': {}",
-                            rest, e
-                        ),
-                    }
-                })?;
+                let addr: SocketAddr =
+                    rest.parse()
+                        .map_err(|e| crate::error::ConfigError::ProxyConfigInvalid {
+                            message: format!(
+                                "invalid http connect proxy address '{}': {}",
+                                rest, e
+                            ),
+                        })?;
                 Ok(Some(ProxyConfig {
                     mode: ProxyMode::HttpConnect(addr),
                 }))
@@ -239,10 +241,12 @@ mod tests {
             .listeners(listeners);
         let (static_config, _) = StaticConfig::from_serve_options(opts).unwrap();
         assert_eq!(static_config.listeners.len(), 1);
-        assert_eq!(
-            static_config.listeners[0].transport_kind,
-            TransportKind::Tcp
-        );
+        match &static_config.listeners[0] {
+            ListenerConfig::Stream { config } => {
+                assert_eq!(config.transport_kind, TransportKind::Tcp);
+            }
+            _ => panic!("expected Stream variant"),
+        }
     }
 
     #[test]

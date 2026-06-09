@@ -14,7 +14,7 @@ use crate::auth::identity::{Identity, IdentityProvider};
 use crate::call::EventEnvelope;
 use crate::config::DynamicConfig;
 use crate::interface::session::{InterfaceEvent, InterfaceSession};
-use crate::interface::{Interface, InterfaceConfig, TransportStream};
+use crate::interface::{StreamInterface, StreamInterfaceConfig, TransportStream};
 use crate::server::control_channel::{ControlChannelRouter, ALKNET_PREFIX};
 use crate::server::rate_limit::{AuthAttemptLimiter, ConnectionRateLimiter};
 use crate::transport::TransportKind;
@@ -553,17 +553,17 @@ impl SshInterface {
 }
 
 #[async_trait]
-impl Interface for SshInterface {
+impl StreamInterface for SshInterface {
     type Session = SshSession;
 
     async fn accept(
         &self,
         stream: Box<dyn TransportStream>,
-        config: &InterfaceConfig,
+        config: &StreamInterfaceConfig,
     ) -> Result<Self::Session> {
         let ssh_config = match config {
-            InterfaceConfig::Ssh(c) => c,
-            InterfaceConfig::RawFraming(_) => {
+            StreamInterfaceConfig::Ssh(c) => c,
+            StreamInterfaceConfig::RawFraming(_) => {
                 return Err(anyhow::anyhow!("SshInterface received RawFramingConfig"));
             }
         };
@@ -734,7 +734,7 @@ mod tests {
         let (_client, server) = tokio::io::duplex(1024);
         let stream: Box<dyn TransportStream> = Box::new(server);
 
-        let raw_config = InterfaceConfig::RawFraming(crate::interface::RawFramingConfig {});
+        let raw_config = StreamInterfaceConfig::RawFraming(crate::interface::RawFramingConfig {});
         let result = iface.accept(stream, &raw_config).await;
         assert!(result.is_err());
     }

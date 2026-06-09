@@ -1,37 +1,37 @@
-//! Interface layer (Layer 2) of the three-layer model (ADR-026).
+//! Interface layer (Layer 2) of the three-layer model (ADR-026, ADR-035).
 //!
 //! The Interface layer sits between Transport (Layer 1) and Protocol (Layer 3).
-//! An Interface consumes a `TransportStream` and produces call protocol sessions
-//! that yield `EventEnvelope` frames. This enables the call protocol handler to be
-//! interface-agnostic — it receives `InterfaceEvent` frames from any interface.
+//! It has two distinct patterns:
 //!
-//! SSH is an interface, not a transport. It wraps a byte stream in session
-//! semantics (handshake, auth, channel multiplexing). Raw framing (4-byte length
-//! prefix + JSON `EventEnvelope`) is another interface, one without SSH overhead.
+//! - **StreamInterface** — consumes a `TransportStream`, produces a long-lived
+//!   `Session` that yields `InterfaceEvent` frames. SSH and raw framing are
+//!   `StreamInterface` implementations.
 //!
-//! # OQ-IF-01 Resolution
-//!
-//! Every Interface session implements the `InterfaceSession` trait, which provides
-//! `recv()` and `send()` methods producing and consuming `InterfaceEvent` frames.
-//! Each `InterfaceEvent` carries an `EventEnvelope` and an optional `Identity`
-//! (authenticated by the interface layer, e.g., via SSH public key auth or
-//! transport-level token auth).
-//!
-//! This means the call protocol handler (Layer 3) is completely interface-agnostic:
-//! it receives `InterfaceEvent` frames and processes them uniformly, regardless
-//! of whether they arrived over SSH or raw framing.
+//! - **MessageInterface** — handles individual `InterfaceRequest` →
+//!   `InterfaceResponse` pairs. Manages its own transport (HTTP server, DNS
+//!   server). HTTP and DNS are `MessageInterface` implementations.
 
 pub mod config;
+pub mod dns;
+pub mod http;
 pub mod pairs;
 pub mod raw_framing;
 pub mod session;
 pub mod ssh;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-pub use config::{InterfaceConfig, InterfaceKind, RawFramingConfig, SshInterfaceConfig};
+pub use config::{
+    DnsInterfaceConfig, HttpInterfaceConfig, InterfaceConfig, MessageInterfaceConfig,
+    MessageInterfaceKind, RawFramingConfig, SshInterfaceConfig, StreamInterfaceConfig,
+    StreamInterfaceKind,
+};
+pub use dns::DnsInterface;
+pub use http::HttpInterface;
 pub use pairs::{is_valid_pair, TransportKindBase, VALID_TRANSPORT_INTERFACE_PAIRS};
 pub use raw_framing::{RawFramingInterface, RawFramingSession};
 pub use session::{InterfaceEvent, InterfaceSession};
@@ -42,14 +42,34 @@ pub trait TransportStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> TransportStream for T {}
 
 #[async_trait]
-pub trait Interface: Send + Sync + 'static {
+pub trait StreamInterface: Send + Sync + 'static {
     type Session: InterfaceSession;
 
     async fn accept(
         &self,
         stream: Box<dyn TransportStream>,
-        config: &InterfaceConfig,
+        config: &StreamInterfaceConfig,
     ) -> Result<Self::Session>;
+}
+
+#[async_trait]
+pub trait MessageInterface: Send + Sync + 'static {
+    async fn handle_request(&self, request: InterfaceRequest) -> Result<InterfaceResponse>;
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceRequest {
+    pub operation_path: String,
+    pub input: serde_json::Value,
+    pub auth_token: Option<crate::auth::AuthToken>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceResponse {
+    pub result: Result<serde_json::Value, crate::call::CallError>,
+    pub status: u16,
+    pub headers: HashMap<String, String>,
 }
 
 #[cfg(test)]
@@ -68,5 +88,53 @@ mod tests {
         let (client, server) = duplex(1024);
         let _boxed: Box<dyn TransportStream> = Box::new(server);
         let _: Box<dyn TransportStream> = Box::new(client);
+    }
+
+    #[test]
+    fn interface_request_fields() {
+        let req = InterfaceRequest {
+            operation_path: "/v1/head/auth/verify".to_string(),
+            input: serde_json::json!({"key": "value"}),
+            auth_token: None,
+            metadata: HashMap::new(),
+        };
+        assert_eq!(req.operation_path, "/v1/head/auth/verify");
+        assert!(req.auth_token.is_none());
+    }
+
+    #[test]
+    fn interface_response_fields() {
+        let resp = InterfaceResponse {
+            result: Ok(serde_json::json!({"status": "ok"})),
+            status: 200,
+            headers: HashMap::new(),
+        };
+        assert_eq!(resp.status, 200);
+    }
+
+    struct MockMessageInterface;
+
+    #[async_trait]
+    impl MessageInterface for MockMessageInterface {
+        async fn handle_request(&self, _request: InterfaceRequest) -> Result<InterfaceResponse> {
+            Ok(InterfaceResponse {
+                result: Ok(serde_json::json!({})),
+                status: 200,
+                headers: HashMap::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn message_interface_trait_compiles() {
+        let iface = MockMessageInterface;
+        let req = InterfaceRequest {
+            operation_path: "/test".to_string(),
+            input: serde_json::json!({}),
+            auth_token: None,
+            metadata: HashMap::new(),
+        };
+        let resp = iface.handle_request(req).await.unwrap();
+        assert_eq!(resp.status, 200);
     }
 }
