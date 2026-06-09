@@ -353,7 +353,7 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 ### 2.1 SshSession Call Protocol Bridge
 
-**Source**: interface.md (OQ-IF-01), ssh-interface-extraction task, control_channel.rs
+**Source**: interface.md (OQ-IF-01, resolved), ssh-interface-extraction task, control_channel.rs
 
 **Current state**: `SshSession::recv()` always returns `None` and `SshSession::send()` silently discards. The `ControlChannelRouter` exists but has no handler wired. The `alknet-control:0` SSH channel is detected in `channel_open_direct_tcpip` but not bridged to `InterfaceEvent` frames.
 
@@ -362,6 +362,8 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 - Implement `SshSession::send()` — write `EventEnvelope` frames to the `alknet-control:0` channel stream
 - Wire `ControlChannelRouter` to bridge SSH channel data to the call protocol handler
 - The session's `Identity` (from SSH auth) is attached to every `InterfaceEvent`
+
+**Prerequisites**: Verify that `call::frame::{encode, decode}` exists and produces/consumes frames compatible with the SSH channel data stream. The `ControlChannelRouter` in `control_channel.rs` needs a handler wired — check its current API for how to register a call protocol handler.
 
 **Why this is Phase 2 not Phase 4**: This is the duct work that connects Layer 2 (interface) to Layer 3 (protocol). Without it, SSH sessions can only forward ports — they cannot invoke call protocol operations. This is core functionality, not an advanced feature.
 
@@ -379,13 +381,15 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 - Implement `RawFramingInterface::accept()` — read the 4-byte length prefix + JSON `EventEnvelope` frame from the transport stream, return a `RawFramingSession` that wraps the stream
 - Implement `RawFramingSession::recv()` — read length-prefixed `EventEnvelope` frames from the stream, produce `InterfaceEvent`
 - Implement `RawFramingSession::send()` — write length-prefixed `EventEnvelope` frames to the stream
-- Auth for raw framing: token in frame header, resolved via `IdentityProvider::resolve_from_token()`
+- Auth for raw framing: first frame on the session is an auth event carrying token data, resolved via `IdentityProvider::resolve_from_token()`. After auth succeeds, subsequent frames are call protocol `EventEnvelope` data. The `RawFramingSession` is not considered authenticated until the auth frame is processed.
+
+**Auth design decision**: Raw framing sessions use a first-frame auth pattern. The first `InterfaceEvent` on a `RawFramingSession` carries an auth token (in the `InterfaceEvent.identity` field or a dedicated auth event type). After authentication, all subsequent frames are call protocol events. This is simpler and more secure than per-frame auth — the session has a clear auth state transition, and the token is only transmitted once. For sessions that fail auth, the session is terminated immediately.
 
 **Why this is Phase 2**: Raw framing is the simplest interface and the foundation for all non-SSH paths (TCP mesh, WebTransport, DNS). Without it, no `MessageInterface` or `StreamInterface` other than SSH can carry call protocol traffic. HTTP interfaces (Phase 4) build on the framing logic established here.
 
 **New crate**: None. This is alknet-core.
 
-**Risk**: Low — straightforward length-prefixed frame reader/writer. The frame format already exists in `call::frame::{encode, decode}`.
+**Risk**: Low — straightforward length-prefixed frame reader/writer. The frame format already exists in `call::frame::{encode, decode}`. The auth design (first-frame auth) is simple and matches the `InterfaceEvent` model where `identity: Option<Identity>` is set on auth and carried forward.
 
 ### 2.3 StreamInterface / MessageInterface Split
 
@@ -395,20 +399,25 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 **Changes to alknet-core**:
 - Rename `Interface` → `StreamInterface` (the current trait becomes the stream-specific variant)
+- Rename `InterfaceSession` → `StreamInterfaceSession` (or keep as `InterfaceSession` — it's already specific to stream sessions)
 - Add `MessageInterface` trait: `handle_request(&self, request: InterfaceRequest) -> Result<InterfaceResponse>`
 - Add `InterfaceRequest` and `InterfaceResponse` types
 - Add `HttpInterface` stub (struct and impl signature, axum not wired yet)
 - Add `DnsInterface` stub (struct definition only)
-- Update `ListenerConfig` to include `Stream` and `Message` variants alongside existing pairs
-- Remove `TransportKind::Dns` from the transport enum (DNS is a `MessageInterface`, not a transport)
+- Restructure `InterfaceConfig` enum: current `InterfaceConfig::Ssh(SshInterfaceConfig)` and `InterfaceConfig::RawFraming(RawFramingConfig)` become `StreamInterfaceConfig::Ssh` and `StreamInterfaceConfig::RawFraming`. Add `MessageInterfaceConfig` variants for HTTP and DNS.
+- Update `ListenerConfig` to include `Stream`, `Http`, and `Dns` variants (per ADR-035 and updated interface.md)
+- Add `TransportKind::WebTransport` as a tag-only variant (no acceptor implementation) — this was planned for Phase 1 but never added. It's a trivial addition that prevents a breaking change later.
+- Note: `TransportKind::Dns` was never added to the code, so no removal is needed. The updated specs correctly show DNS as a `MessageInterface` with its own `ListenerConfig::Dns` variant, not a transport.
 
 **Why this is Phase 2**: This is a type-system change that affects how all future interfaces are implemented. If we build HTTP on top of `Interface` (singular) and then need to split later, we'd refactor HTTP, DNS, WebSocket, and any other interface added in Phases 4+. Doing the split now is cheap — it's a rename + new trait + two stubs — and prevents a larger refactor later.
 
 **New crate**: None. This is alknet-core.
 
-**ADR**: 026 (updated — StreamInterface/MessageInterface as two Layer 2 categories)
+**ADR**: 035 (StreamInterface/MessageInterface split — supersedes the Layer 2 aspects of ADR-026)
 
-**Risk**: Low — rename and new trait. Existing `SshInterface` and `RawFramingInterface` become `StreamInterface` implementations. No behavior change for stream-based interfaces.
+**Risk**: Low — rename and new trait. Existing `SshInterface` and `RawFramingInterface` become `StreamInterface` implementations. No behavior change for stream-based interfaces. The `InterfaceConfig` enum restructuring and `TransportKind::WebTransport` addition are mechanical changes.
+
+**Scheduling note**: This task should be done early in Phase 2 because all subsequent tasks (2.1, 2.2, 2.4, 2.5, 2.6, 2.7) reference the new trait names. It can be done in parallel with 2.1 and 2.2 since they're mostly additive.
 
 ### 2.4 CredentialProvider Trait and CredentialSet
 
@@ -419,14 +428,19 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 **Changes to alknet-core**:
 - Define `CredentialProvider` trait in `alknet_core::credentials`
 - Define `CredentialSet` enum: `ApiKey`, `Basic`, `Bearer`, `S3AccessKey`, `OidcToken`, `Custom`
-- Implement `SecretStoreCredentialProvider` (reads from `SecretProtocol::Decrypt`, holds in RAM)
-- Wire into `OperationEnv` so handlers can access credentials through `context.env`
+- Implement `ConfigCredentialProvider` — a config-backed stub that reads API keys and static credentials from `DynamicConfig`. This is the Phase 2 default: simple, no secret service dependency, sufficient for testing and single-node deployments.
+- Wire into `OperationEnv` so handlers can access credentials through `context.env` (or a separate `CredentialProvider` field on `OperationContext` — implementation detail)
+- Define the `SecretStoreCredentialProvider` type and its interface (reads from `SecretProtocol::Decrypt`, holds in RAM) but **do not implement the body** — leave it as a stub that returns `None`. Full implementation requires alknet-secret (Phase 3).
 
 **Why this is Phase 2**: The secret crate (Phase 3) needs `CredentialProvider` as a consumer of `SecretProtocol::Decrypt`. The trait and enum must exist in core before the secret crate can wire against them. This is the same pattern as `IdentityProvider` — trait in core, default impl uses simple storage, production impl uses the secret service.
 
 **New crate**: None. Trait and enum in alknet-core.
 
-**Risk**: Low — new trait and enum, no existing code changes. `SecretStoreCredentialProvider` depends on Phase 3 (alknet-secret) for actual encryption — a stub impl that reads from config is sufficient for Phase 2.
+**Risk**: Low — new trait and enum, no existing code changes. `ConfigCredentialProvider` is a simple config-backed lookup. `SecretStoreCredentialProvider` stub returns `None` until Phase 3 provides the secret service dependency.
+
+**Split note**: This task is naturally split into:
+- **2.4a** (this phase): Define `CredentialProvider` trait, `CredentialSet` enum, `ConfigCredentialProvider` impl, wire into `OperationEnv`/`OperationContext`. This is self-contained and testable.
+- **2.4b** (Phase 3, after alknet-secret exists): Implement `SecretStoreCredentialProvider` backed by `SecretProtocol::Decrypt`. This requires alknet-secret as a dependency.
 
 ### 2.5 ListenerConfig Update and HTTP Listener Stub
 
@@ -435,7 +449,7 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 **Current state**: Phase 1 added `ListenerConfig` with `Stream` variant (transport + interface pair). Phase 2 research adds `Http` and `Dns` listener variants for message-based interfaces. The Phase 1 implementation also added `TransportKind::Dns` which should be removed (DNS is a `MessageInterface`, not a transport).
 
 **Changes to alknet-core**:
-- Remove `TransportKind::Dns` from the transport enum (it was a Phase 1 tag that Phase 2 research correctly identifies as misplaced)
+- `TransportKind::Dns` removal: **No-op** — `TransportKind` in the current code has `Tcp`, `Tls`, and `Iroh` only. `Dns` was never added to the enum. The updated specs correctly show DNS as a `MessageInterface` with its own `ListenerConfig::Dns` variant (per ADR-035), not as a transport variant.
 - Add `ListenerConfig::Http` variant: `{ bind_addr, tls, stealth }`
 - Add `ListenerConfig::Dns` variant: `{ bind_addr, tls }` (DNS as a MessageInterface with its own listener)
 - Extend the server accept loop to handle `ListenerConfig::Http` by spawning an axum router when `stealth` mode detects HTTP traffic (replacing `send_fake_nginx_404`)
@@ -656,14 +670,16 @@ The irpc service layer is thus **one dispatch backend** for OperationEnv — the
 
 ### 4.5 Architecture Doc Sync
 
-After Phase 2 core bridge changes are implemented and before Phase 3 crate development begins:
+After Phase 2 core bridge changes are implemented and before Phase 3 crate development begins, the architecture docs should be updated to reflect the implementation state. The first round of doc sync has already been completed (commit `cfc4400`) based on Phase 2 research findings — this covered:
 
-- Update `interface.md` for StreamInterface/MessageInterface split, ListenerConfig::Http/Message variants, HttpInterface stub
-- Update `auth.md` for API keys in DynamicConfig, HTTP credential presentation
-- Update `call-protocol.md` for SshSession recv/send bridge (the `InterfaceEvent`/`EventEnvelope` flow is now functional)
-- Update `services.md` for CredentialProvider trait
-- Update `overview.md` for revised phase structure
-- Ensure all specs accurately reflect the codebase state after Phase 2
+- StreamInterface/MessageInterface split in interface.md
+- CredentialProvider/CredentialSet in credentials.md
+- API keys in auth.md and configuration.md
+- ListenerConfig variants for HTTP and DNS
+- Resolved open questions (OQ-IF-01, OQ-IF-02, etc.)
+- New ADRs (035, 036, 037)
+
+A **second doc sync** will be needed after Phase 2 implementation is complete to capture any deviations between the spec and the actual implementation (e.g., if `InterfaceConfig` was restructured differently, or if the raw framing auth design differs from the first-frame approach specified here). This second sync should be done before Phase 3 crate development begins.
 
 ---
 
@@ -755,7 +771,7 @@ Wire call protocol events (call.requested, call.responded, etc.) to `FlowGraph::
 |---|---|---|---|---|
 | 0 | Architecture: ADRs, specs, review | No | No | Write all |
 | 1 | Core: config split, identity, forwarding, auth service, OperationEnv, interface abstraction | Yes | No | 026-034 |
-| 2 | Core bridge: SshSession recv/send, RawFramingInterface, StreamInterface/MessageInterface split, CredentialProvider, HTTP listener stub, API keys | Yes | No | 026, 029, phase2 research |
+| 2 | Core bridge: SshSession recv/send, RawFramingInterface, StreamInterface/MessageInterface split, CredentialProvider (trait+stub), HTTP listener stub, API keys | Yes | No | 035, 036, 037, phase2 research |
 | 3 | External crates: secret, storage, flowgraph | No | Yes (3) | 027 |
 | 4 | Integration: CLI assembly, NAPI, service wiring, doc sync | Minor (exports) | No | 027 |
 | 5 | Advanced: DNS, WebTransport, full HTTP, application services | Minimal (feature flags) | Maybe | 026 |
@@ -795,15 +811,15 @@ These must have answers before Phase 2 implementation begins. Phase 0/1 question
 | ~~OQ-16~~ | Transport-specific forwarding policy | **Resolved**: Add `TransportKind` match in ForwardingRule. | 1 | 031 |
 | ~~OQ-18~~ | Source of Identity.scopes | **Resolved**: IdentityProvider owns scopes. ForwardingPolicy uses scopes from Identity. | 1 | 029 |
 | ~~OQ-22~~ | Client streaming in call protocol | **Resolved**: Defer. Single request + optional streaming response covers all identified use cases. | — | — |
-| OQ-IF-01 | How does InterfaceSession relate to EventEnvelope? | **Resolved in Phase 2**: `InterfaceSession::recv()` returns `Option<InterfaceEvent>` where `InterfaceEvent` carries `EventEnvelope` + `Identity`. `send()` accepts `EventEnvelope`. The SshSession bridge implements this over the `alknet-control:0` channel. | 2 | — |
-| OQ-IF-02 | Should SshInterface own ForwardingPolicy or Layer 3? | **Resolved**: ForwardingPolicy is Layer 3, but channel open/close lifecycle is Layer 2. SshInterface reports channel requests to Layer 3; Layer 3 applies policy. | 2 | — |
+| ~~OQ-IF-01~~ | How does InterfaceSession relate to EventEnvelope? | **Resolved**: `InterfaceSession::recv()` returns `Option<InterfaceEvent>` where `InterfaceEvent` carries `EventEnvelope` + `Identity`. `send()` accepts `EventEnvelope`. The SshSession bridge implements this over `alknet-control:0`. For `MessageInterface`, `InterfaceRequest`/`InterfaceResponse` normalize request/response pairs. See interface.md, ADR-035. | 2 | 035 |
+| ~~OQ-IF-02~~ | Should SshInterface own ForwardingPolicy checks? | **Resolved**: ForwardingPolicy is Layer 3 (policy), channel open/close lifecycle is Layer 2. SshInterface reports channel requests to Layer 3; Layer 3 applies policy. Current implementation already does this. | 2 | 031 |
 | OQ-15 | TLS + WebTransport + iroh QUIC coexistence | Defer WebTransport to Phase 5. TLS and iroh already coexist (TCP vs UDP). | 5 | — |
 | OQ-19 | Separate TLS identity for WebTransport vs shared | Share certificates. QUIC is UDP, TLS is TCP, same port works. Different subject alt names possible but not required. | 5 | — |
 | OQ-20 | Worker registration and discovery on connect/disconnect | Register on connect, cleanup on disconnect. Heartbeat for liveness. Spec in call-protocol.md. | 2+ | — |
-| OQ-P2-01 | Should MessageInterface and StreamInterface share a common trait? | **Recommendation**: Independent traits. Different signatures (`handle_request` vs `accept` + session lifecycle), different transport ownership (self-managed vs provided). A common super-trait adds complexity without benefit. | 2 | — |
-| OQ-P2-02 | Should HTTP share a port with the SSH listener? | **Recommendation**: Start simple — separate ports. ALPN multiplexing on port 443 is a future optimization that doesn't change the interface abstraction. | 5 | — |
-| OQ-P2-03 | Should the HTTP interface auto-generate OpenAPI specs from OperationRegistry? | **Recommendation**: Yes, but Phase 5+. The HTTP interface needs to exist first (Phase 5.3). | 5 | — |
-| OQ-P2-04 | How do self-hosted services authenticate via alknet? | See research/phase2/credential-provider.md OQ-CP-07. Start with shared secret (Phase 3), identity-bound credentials (Phase 3), alknet as OIDC provider (Phase 5+). | 3-5 | — |
+| OQ-P2-01 | Should MessageInterface and StreamInterface share a common trait? | **Resolved**: Independent traits. Different signatures (`handle_request` vs `accept` + session lifecycle), different transport ownership (self-managed vs provided). A common super-trait adds complexity without benefit. ADR-035 accepted. | 2 | 035 |
+| OQ-P2-02 | Should HTTP share a port with the SSH listener? | **Resolved**: Start with separate ports. Stealth mode byte-peek on shared port 443 already detects SSH vs HTTP. ALPN multiplexing is a future optimization that doesn't change the interface abstraction. | 2 | — |
+| OQ-P2-03 | Should the HTTP interface auto-generate OpenAPI specs from OperationRegistry? | **Resolved**: Yes, but Phase 5+. The HTTP interface needs to exist first (Phase 5.3). | 5 | — |
+| OQ-P2-04 | How do self-hosted services authenticate via alknet? | **Resolved**: Three-phase approach. Phase A: shared secret (`CredentialSet::Bearer` or `S3AccessKey`). Phase C: identity-bound credentials via `ManagedCredentialProvider`. Phase D: alknet as OIDC provider. `CredentialProvider` trait in core enables Phase A immediately. ADR-036 accepted. | 2-5 | 036 |
 
 ---
 
