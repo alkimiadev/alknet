@@ -3,6 +3,7 @@ members = [
     "crates/alknet-core",
     "crates/alknet",
     "crates/alknet-napi",
+    "crates/alknet-secret",
 ]
 resolver = "2"
 

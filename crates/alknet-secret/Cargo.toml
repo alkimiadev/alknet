@@ -1,0 +1,26 @@
+[package]
+name = "alknet-secret"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BIP39 mnemonic generation, SLIP-0010 Ed25519 HD key derivation, AES-256-GCM encryption, and SecretProtocol irpc service for alknet"
+repository.workspace = true
+
+[lib]
+name = "alknet_secret"
+
+[dependencies]
+bip39 = { version = "2", features = ["rand"] }
+ed25519-bip32 = "0.4"
+aes-gcm = "0.10"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+hmac = "0.12"
+rand = "0.8"
+base64 = "0.22"
+
+[dev-dependencies]
+hex = "0.4"

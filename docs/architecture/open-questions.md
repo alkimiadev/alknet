@@ -329,3 +329,12 @@ last_updated: 2026-06-07
 - **Priority**: medium
 - **Resolution**: Yes. Adopted in [definitions.md](definitions.md). Use "credential presentation" for the mechanism of presenting credentials on a (Transport, Interface) pair. Never use "auth interface" (overloads "Interface").
 - **Cross-references**: [definitions.md](definitions.md), [auth.md](auth.md)
+
+## Secret Service
+
+### OQ-SEC-01: Should alknet-secret use mlock/VirtualLock to prevent seed RAM from being paged to disk?
+- **Origin**: [secret-service.md](secret-service.md)
+- **Status**: open
+- **Priority**: low
+- **Resolution**: (deferred to Phase B — zeroize is sufficient for v1; mlock requires root/CAP_IPC_LOCK on Linux and SeLockMemory on Windows, adding platform complexity that should be audited together)
+- **Cross-references**: [ADR-038](decisions/038-seed-lifecycle-memory-security.md), [secret-service.md](secret-service.md)

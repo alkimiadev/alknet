@@ -36,7 +36,7 @@ OQ-20 (worker registration), OQ-CP-01 (per-identity credentials), OQ-CP-02
 | [configuration.md](configuration.md) | draft | StaticConfig, DynamicConfig, API keys, forwarding policy, reload |
 | [storage.md](storage.md) | draft | alknet-storage: metagraph, identity, ACL, honker |
 | [flowgraph.md](flowgraph.md) | draft | alknet-flowgraph: call graph, operation graph, petgraph |
-| [secret-service.md](secret-service.md) | draft | alknet-secret: BIP39, SLIP-0010, AES-GCM, SecretProtocol |
+| [secret-service.md](secret-service.md) | reviewed | alknet-secret: BIP39, SLIP-0010, AES-GCM, SecretProtocol |
 | [credentials.md](credentials.md) | draft | CredentialProvider, CredentialSet (outbound auth) |
 | [definitions.md](definitions.md) | draft | Terminology disambiguation and concept mapping |
 
@@ -96,6 +96,8 @@ OQ-20 (worker registration), OQ-CP-01 (per-identity credentials), OQ-CP-02
 | [035](decisions/035-streaminterface-messageinterface-split.md) | StreamInterface / MessageInterface split | Accepted |
 | [036](decisions/036-credentialprovider-core-type.md) | CredentialProvider as core type (outbound auth) | Accepted |
 | [037](decisions/037-api-keys-dynamic-config.md) | API keys as DynamicConfig auth | Accepted |
+
+| [038](decisions/038-seed-lifecycle-memory-security.md) | Seed lifecycle and memory security (zeroize for v1) | Accepted |
 
 > ADR numbers 020–022 were allocated to proposals that were withdrawn before
 > acceptance and are not listed.
