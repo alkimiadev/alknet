@@ -1,7 +1,7 @@
 ---
 id: axum-http-router-scaffold
 name: Axum HTTP router scaffold with auth middleware and stealth handoff
-status: pending
+status: completed
 depends_on: [api-keys-dynamic-config, listenconfig-http-dns-stubs]
 scope: moderate
 risk: low
@@ -66,4 +66,4 @@ This task creates the structural scaffold for HTTP — auth middleware and steal
 
 ## Summary
 
-> To be filled on completion
+> Added http feature flag with axum/hyper/hyper-util/tower dependencies. Created http module: auth middleware extracts Bearer token, calls resolve_from_token, attaches Identity to extensions; router scaffold with default 404 fallback, no operational routes. Stealth handoff routes ProtocolDetection::Http to axum when http feature enabled; fake nginx 404 preserved when disabled. HttpInterface gains build_router() method.
