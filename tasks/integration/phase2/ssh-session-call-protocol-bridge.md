@@ -1,7 +1,7 @@
 ---
 id: ssh-session-call-protocol-bridge
 name: Bridge SshSession recv/send to call protocol via alknet-control:0 channel
-status: pending
+status: completed
 depends_on: [stream-interface-message-interface-split]
 scope: moderate
 risk: medium
@@ -69,4 +69,4 @@ The bridge works as follows:
 
 ## Summary
 
-> To be filled on completion
+> Implemented SshSession recv/send bridge to call protocol via alknet-control:0 channel. Added FrameFramedReader/FrameFramedWriter for async length-prefixed EventEnvelope I/O. SshSession::recv() reads InterfaceEvents from mpsc channel bridged from SSH channel. SshSession::send() writes EventEnvelopes to mpsc channel bridged to SSH channel. ControlChannelBridge implements ControlChannelHandler. SshHandler routes alknet-control:0 channels to bridge task using tokio::select!. Session Identity attached to every InterfaceEvent.
