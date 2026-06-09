@@ -45,7 +45,13 @@ impl IdentityProvider for ConfigIdentityProvider {
         auth.resolve_identity_from_fingerprint(fingerprint)
     }
 
-    fn resolve_from_token(&self, _token: &AuthToken) -> Option<Identity> {
+    fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity> {
+        let config = self.dynamic.load();
+        let auth = &config.auth;
+        let token_str = String::from_utf8_lossy(&token.raw);
+        if token_str.starts_with(crate::config::API_KEY_PREFIX) {
+            return auth.resolve_api_key(&token_str);
+        }
         None
     }
 }
@@ -175,6 +181,148 @@ mod tests {
             raw: b"test-token".to_vec(),
         };
         assert!(provider.resolve_from_token(&token).is_none());
+    }
+
+    fn compute_api_key_hash(token: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let result = hasher.finalize();
+        format!("sha256:{}", hex::encode(result))
+    }
+
+    #[test]
+    fn config_identity_provider_resolves_valid_api_key() {
+        let token = "alk_testsecret123";
+        let hash = compute_api_key_hash(token);
+        let entry = crate::config::ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "test key".to_string(),
+            expires_at: None,
+        };
+        let auth_policy = crate::config::AuthPolicy::with_api_keys(
+            std::collections::HashSet::new(),
+            Vec::new(),
+            vec![entry],
+        );
+        let dynamic = DynamicConfig::new(auth_policy);
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(dynamic)));
+        let provider = ConfigIdentityProvider::new(arc_swap);
+
+        let auth_token = AuthToken {
+            raw: token.as_bytes().to_vec(),
+        };
+        let identity = provider.resolve_from_token(&auth_token);
+        assert!(identity.is_some());
+        let identity = identity.unwrap();
+        assert_eq!(identity.id, "alk_test");
+        assert_eq!(identity.scopes, vec!["relay:connect"]);
+    }
+
+    #[test]
+    fn config_identity_provider_rejects_expired_api_key() {
+        let token = "alk_expiredkey1";
+        let hash = compute_api_key_hash(token);
+        let entry = crate::config::ApiKeyEntry {
+            prefix: "alk_expi".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "expired key".to_string(),
+            expires_at: Some(1),
+        };
+        let auth_policy = crate::config::AuthPolicy::with_api_keys(
+            std::collections::HashSet::new(),
+            Vec::new(),
+            vec![entry],
+        );
+        let dynamic = DynamicConfig::new(auth_policy);
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(dynamic)));
+        let provider = ConfigIdentityProvider::new(arc_swap);
+
+        let auth_token = AuthToken {
+            raw: token.as_bytes().to_vec(),
+        };
+        assert!(provider.resolve_from_token(&auth_token).is_none());
+    }
+
+    #[test]
+    fn config_identity_provider_rejects_wrong_hash_api_key() {
+        let entry = crate::config::ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            scopes: vec!["relay:connect".to_string()],
+            description: "bad hash".to_string(),
+            expires_at: None,
+        };
+        let auth_policy = crate::config::AuthPolicy::with_api_keys(
+            std::collections::HashSet::new(),
+            Vec::new(),
+            vec![entry],
+        );
+        let dynamic = DynamicConfig::new(auth_policy);
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(dynamic)));
+        let provider = ConfigIdentityProvider::new(arc_swap);
+
+        let auth_token = AuthToken {
+            raw: b"alk_testsecret123".to_vec(),
+        };
+        assert!(provider.resolve_from_token(&auth_token).is_none());
+    }
+
+    #[test]
+    fn config_identity_provider_api_key_unknown_prefix_falls_through() {
+        let token = "alk_testsecret123";
+        let hash = compute_api_key_hash(token);
+        let entry = crate::config::ApiKeyEntry {
+            prefix: "alk_other".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "other key".to_string(),
+            expires_at: None,
+        };
+        let auth_policy = crate::config::AuthPolicy::with_api_keys(
+            std::collections::HashSet::new(),
+            Vec::new(),
+            vec![entry],
+        );
+        let dynamic = DynamicConfig::new(auth_policy);
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(dynamic)));
+        let provider = ConfigIdentityProvider::new(arc_swap);
+
+        let auth_token = AuthToken {
+            raw: token.as_bytes().to_vec(),
+        };
+        assert!(provider.resolve_from_token(&auth_token).is_none());
+    }
+
+    #[test]
+    fn config_identity_provider_api_key_scopes_in_identity() {
+        let token = "alk_scopedkey12";
+        let hash = compute_api_key_hash(token);
+        let entry = crate::config::ApiKeyEntry {
+            prefix: "alk_sco".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string(), "secrets:derive".to_string()],
+            description: "scoped key".to_string(),
+            expires_at: None,
+        };
+        let auth_policy = crate::config::AuthPolicy::with_api_keys(
+            std::collections::HashSet::new(),
+            Vec::new(),
+            vec![entry],
+        );
+        let dynamic = DynamicConfig::new(auth_policy);
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(dynamic)));
+        let provider = ConfigIdentityProvider::new(arc_swap);
+
+        let auth_token = AuthToken {
+            raw: token.as_bytes().to_vec(),
+        };
+        let identity = provider.resolve_from_token(&auth_token).unwrap();
+        assert_eq!(identity.scopes, vec!["relay:connect", "secrets:derive"]);
     }
 
     #[test]
