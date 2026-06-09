@@ -1,7 +1,7 @@
 ---
 id: credential-provider-trait
 name: Define CredentialProvider trait, CredentialSet enum, and ConfigCredentialProvider implementation
-status: pending
+status: completed
 depends_on: [stream-interface-message-interface-split]
 scope: narrow
 risk: low
@@ -58,4 +58,4 @@ Per ADR-036 and research/phase2/credential-provider.md:
 
 ## Summary
 
-> To be filled on completion
+> Added CredentialProvider trait, CredentialSet enum (ApiKey/Basic/Bearer/S3AccessKey/OidcToken/Custom), ConfigCredentialProvider (reads from DynamicConfig.credentials), SecretStoreCredentialProvider stub (returns None, deferred to Phase 3), wired into OperationEnv via env.credentials(service) method, and added credentials HashMap to DynamicConfig.
