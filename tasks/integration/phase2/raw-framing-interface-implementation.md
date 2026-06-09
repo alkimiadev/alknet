@@ -1,7 +1,7 @@
 ---
 id: raw-framing-interface-implementation
 name: Implement RawFramingInterface accept/recv/send with first-frame auth
-status: pending
+status: completed
 depends_on: [stream-interface-message-interface-split]
 scope: narrow
 risk: low
@@ -72,4 +72,4 @@ The `RawFramingSession` needs:
 
 ## Summary
 
-> To be filled on completion
+> Implemented RawFramingInterface::accept() and RawFramingSession with first-frame auth. RawFramingConfig now has auth: Arc<dyn IdentityProvider>. RawFramingSession splits stream via tokio::io::split, recv() implements first-frame auth with AuthToken resolution via IdentityProvider::resolve_from_token(), send() encodes via call::frame::encode with buffered writes, read_frame() uses decode_with_remainder for partial reassembly. 7 new tests.
