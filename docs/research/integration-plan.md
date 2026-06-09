@@ -1,7 +1,7 @@
 # Integration Plan: Services, PubSub, and Operations
 
 > Status: Research / Draft
-> Last updated: 2026-06-07
+> Last updated: 2026-06-09
 
 ## Purpose
 
@@ -345,13 +345,155 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 ---
 
-## Phase 2: External Crates
+## Phase 2: Core Bridge
+
+**Goal**: Complete the interface-to-protocol bridge and add the core types that external crates and HTTP interfaces depend on. Phase 1 established the interface trait and SSH extraction but left the call protocol bridge (SshSession recv/send) as stubs and deferred key interface model refinements. Phase 2 closes those gaps so that Phase 3 crates can reference a stable, functional core.
+
+**Why before external crates**: The external crates (alknet-secret, alknet-storage) depend on a core where the Layer 2→3 bridge actually works. Without `SshSession::recv()`/`send()` producing and consuming `InterfaceEvent` frames, the call protocol is inert for SSH sessions. Without `RawFramingInterface` implemented, there's no non-SSH path either. And without `StreamInterface`/`MessageInterface` split and `CredentialProvider`, the phase 2 research docs (interface-model, credential-provider, tls-transport) describe a target architecture that doesn't exist in code yet. These must exist before crates can wire against them.
+
+### 2.1 SshSession Call Protocol Bridge
+
+**Source**: interface.md (OQ-IF-01), ssh-interface-extraction task, control_channel.rs
+
+**Current state**: `SshSession::recv()` always returns `None` and `SshSession::send()` silently discards. The `ControlChannelRouter` exists but has no handler wired. The `alknet-control:0` SSH channel is detected in `channel_open_direct_tcpip` but not bridged to `InterfaceEvent` frames.
+
+**Changes to alknet-core**:
+- Implement `SshSession::recv()` — read `EventEnvelope` frames from the `alknet-control:0` channel stream, wrap in `InterfaceEvent` with the session's `Identity`
+- Implement `SshSession::send()` — write `EventEnvelope` frames to the `alknet-control:0` channel stream
+- Wire `ControlChannelRouter` to bridge SSH channel data to the call protocol handler
+- The session's `Identity` (from SSH auth) is attached to every `InterfaceEvent`
+
+**Why this is Phase 2 not Phase 4**: This is the duct work that connects Layer 2 (interface) to Layer 3 (protocol). Without it, SSH sessions can only forward ports — they cannot invoke call protocol operations. This is core functionality, not an advanced feature.
+
+**New crate**: None. This is alknet-core.
+
+**Risk**: Medium — the SSH channel → call protocol bridge needs careful framing (4-byte length prefix over the SSH channel data stream, matching `RawFramingInterface`'s wire format). The `SshHandler` already detects `alknet-*` destinations; the bridge is connecting that detection to the channel stream.
+
+### 2.2 RawFramingInterface Implementation
+
+**Source**: interface.md, integration-plan Phase 1.8
+
+**Current state**: `RawFramingInterface` and `RawFramingSession` are stub types. `accept()` returns an error, `recv()` returns `None`, `send()` returns an error.
+
+**Changes to alknet-core**:
+- Implement `RawFramingInterface::accept()` — read the 4-byte length prefix + JSON `EventEnvelope` frame from the transport stream, return a `RawFramingSession` that wraps the stream
+- Implement `RawFramingSession::recv()` — read length-prefixed `EventEnvelope` frames from the stream, produce `InterfaceEvent`
+- Implement `RawFramingSession::send()` — write length-prefixed `EventEnvelope` frames to the stream
+- Auth for raw framing: token in frame header, resolved via `IdentityProvider::resolve_from_token()`
+
+**Why this is Phase 2**: Raw framing is the simplest interface and the foundation for all non-SSH paths (TCP mesh, WebTransport, DNS). Without it, no `MessageInterface` or `StreamInterface` other than SSH can carry call protocol traffic. HTTP interfaces (Phase 4) build on the framing logic established here.
+
+**New crate**: None. This is alknet-core.
+
+**Risk**: Low — straightforward length-prefixed frame reader/writer. The frame format already exists in `call::frame::{encode, decode}`.
+
+### 2.3 StreamInterface / MessageInterface Split
+
+**Source**: research/phase2/interface-model.md
+
+**Current state**: The `Interface` trait has one form (`accept(stream) → Session`). Phase 2 research identifies that HTTP and DNS are not stream-based — they're message-based (individual request/response pairs, no persistent session). The research proposes splitting into `StreamInterface` and `MessageInterface`.
+
+**Changes to alknet-core**:
+- Rename `Interface` → `StreamInterface` (the current trait becomes the stream-specific variant)
+- Add `MessageInterface` trait: `handle_request(&self, request: InterfaceRequest) -> Result<InterfaceResponse>`
+- Add `InterfaceRequest` and `InterfaceResponse` types
+- Add `HttpInterface` stub (struct and impl signature, axum not wired yet)
+- Add `DnsInterface` stub (struct definition only)
+- Update `ListenerConfig` to include `Stream` and `Message` variants alongside existing pairs
+- Remove `TransportKind::Dns` from the transport enum (DNS is a `MessageInterface`, not a transport)
+
+**Why this is Phase 2**: This is a type-system change that affects how all future interfaces are implemented. If we build HTTP on top of `Interface` (singular) and then need to split later, we'd refactor HTTP, DNS, WebSocket, and any other interface added in Phases 4+. Doing the split now is cheap — it's a rename + new trait + two stubs — and prevents a larger refactor later.
+
+**New crate**: None. This is alknet-core.
+
+**ADR**: 026 (updated — StreamInterface/MessageInterface as two Layer 2 categories)
+
+**Risk**: Low — rename and new trait. Existing `SshInterface` and `RawFramingInterface` become `StreamInterface` implementations. No behavior change for stream-based interfaces.
+
+### 2.4 CredentialProvider Trait and CredentialSet
+
+**Source**: research/phase2/credential-provider.md
+
+**Current state**: No outbound credential resolution exists. Each service wrapper would need to independently retrieve and manage credentials.
+
+**Changes to alknet-core**:
+- Define `CredentialProvider` trait in `alknet_core::credentials`
+- Define `CredentialSet` enum: `ApiKey`, `Basic`, `Bearer`, `S3AccessKey`, `OidcToken`, `Custom`
+- Implement `SecretStoreCredentialProvider` (reads from `SecretProtocol::Decrypt`, holds in RAM)
+- Wire into `OperationEnv` so handlers can access credentials through `context.env`
+
+**Why this is Phase 2**: The secret crate (Phase 3) needs `CredentialProvider` as a consumer of `SecretProtocol::Decrypt`. The trait and enum must exist in core before the secret crate can wire against them. This is the same pattern as `IdentityProvider` — trait in core, default impl uses simple storage, production impl uses the secret service.
+
+**New crate**: None. Trait and enum in alknet-core.
+
+**Risk**: Low — new trait and enum, no existing code changes. `SecretStoreCredentialProvider` depends on Phase 3 (alknet-secret) for actual encryption — a stub impl that reads from config is sufficient for Phase 2.
+
+### 2.5 ListenerConfig Update and HTTP Listener Stub
+
+**Source**: research/phase2/tls-transport.md
+
+**Current state**: Phase 1 added `ListenerConfig` with `Stream` variant (transport + interface pair). Phase 2 research adds `Http` and `Dns` listener variants for message-based interfaces. The Phase 1 implementation also added `TransportKind::Dns` which should be removed (DNS is a `MessageInterface`, not a transport).
+
+**Changes to alknet-core**:
+- Remove `TransportKind::Dns` from the transport enum (it was a Phase 1 tag that Phase 2 research correctly identifies as misplaced)
+- Add `ListenerConfig::Http` variant: `{ bind_addr, tls, stealth }`
+- Add `ListenerConfig::Dns` variant: `{ bind_addr, tls }` (DNS as a MessageInterface with its own listener)
+- Extend the server accept loop to handle `ListenerConfig::Http` by spawning an axum router when `stealth` mode detects HTTP traffic (replacing `send_fake_nginx_404`)
+- `HttpInterface` stub defined in 2.3 gets its structural types but no route implementations yet
+
+**Why this is Phase 2**: The `ListenerConfig` is the server's primary configuration type. Adding HTTP and DNS listener variants now means Phase 3+ crates and Phase 4 HTTP implementation can reference the right type from the start. Removing `TransportKind::Dns` before any code depends on it prevents a breaking change later.
+
+**New crate**: None. This is alknet-core. New dependency: `axum` (behind `http` feature flag).
+
+**Risk**: Low — type changes and a stub axum router. The `send_fake_nginx_404` → axum handoff is a small change to the existing stealth detection code. Full HTTP route implementations are Phase 4.
+
+### 2.6 API Keys in DynamicConfig
+
+**Source**: research/phase2/interface-model.md (Config section), research/phase2/credential-provider.md
+
+**Current state**: `DynamicConfig.auth` has `authorized_keys` for SSH auth and `token` settings but no simple bearer API keys for service accounts or automation.
+
+**Changes to alknet-core**:
+- Add `[[auth.api_keys]]` section to `DynamicConfig`: prefix, hash (SHA-256), scopes, description, optional TTL
+- Extend `ConfigIdentityProvider::resolve_from_token()` to verify API keys in addition to AuthTokens
+- API keys are shorter and simpler than AuthTokens — no Ed25519 key pair needed, just a hash-verified bearer string
+- `SecretStoreCredentialProvider` can also resolve API keys when database-backed storage is available
+
+**Why this is Phase 2**: The HTTP interface (Phase 4) needs bearer token auth, and the simplest path is API keys that already work with `IdentityProvider::resolve_from_token()`. Without this, Phase 4 HTTP auth has no config-based auth mechanism.
+
+**New crate**: None. This is alknet-core.
+
+**Risk**: Low — additive config section and an additional lookup path in an existing trait method.
+
+### 2.7 Axum HTTP Router Scaffold
+
+**Source**: research/phase2/tls-transport.md
+
+**Changes to alknet-core** (behind `http` feature flag):
+- Add `axum` dependency with `ws` and `sse` features (behind feature flag)
+- Create `alknet_core::http` module with an axum `Router` scaffold:
+  - `POST /v1/{namespace}/{op}` → stub handler (returns 501 Not Implemented)
+  - `GET /v1/{namespace}/{op}` → stub handler
+  - `GET /v1/schema` → stub handler
+  - Auth middleware that extracts `Authorization: Bearer <token>` and calls `IdentityProvider::resolve_from_token()`
+- The axum router receives `BufReader<TlsStream>` from the stealth detection code (replacing `send_fake_nginx_404`)
+- No actual operation dispatch yet — that requires the full call protocol bridge (Phase 2.1)
+
+**Why this is Phase 2**: The HTTP scaffold needs to exist so that the stealth mode code can hand HTTP traffic to axum instead of sending a fake 404. The scaffold is small (route definitions + auth middleware + stealth handoff) but it establishes the structural pattern that Phase 4 fills in with actual operation dispatch.
+
+**New crate**: None. In alknet-core behind `http` feature flag.
+
+**Risk**: Low — structural scaffold. No operational routes. The auth middleware pattern is straightforward (axum extractor that calls `IdentityProvider`).
+
+---
+
+## Phase 3: External Crates
 
 **Goal**: Create the new crates that core depends on by type but not by implementation.
 
-**Why after Phase 1**: The crate boundaries are defined in Phase 0. The core types (Identity, EventEnvelope, OperationSpec, etc.) must be stable before building crates that reference them. Also, the interface abstraction from Phase 1 determines how these crates interact with the server.
+**Why after Phase 2**: The core types and bridges must be stable before building crates that reference them. Phase 2 ensures that the `InterfaceSession` bridge works, `CredentialProvider` exists, and `ListenerConfig` has its final shape. The external crates can then wire against a functional core.
 
-### 2.1 alknet-secret
+### 3.1 alknet-secret
 
 **Source**: research/services.md (SecretProtocol), research/storage.md (secrets section, key derivation)
 
@@ -373,7 +515,7 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 **Risk**: Low — new crate, no existing code to refactor. Crypto dependencies are well-understood.
 
-### 2.2 alknet-storage
+### 3.2 alknet-storage
 
 **Source**: research/storage.md (entire document)
 
@@ -398,7 +540,7 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 **Risk**: Medium — honker integration is new. SQLite schema needs to match the TypeScript version for compatibility.
 
-### 2.3 alknet-flowgraph
+### 3.3 alknet-flowgraph
 
 **Source**: research/flow.md (entire document)
 
@@ -423,13 +565,13 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 ---
 
-## Phase 3: Integration and Wiring
+## Phase 4: Integration and Wiring
 
 **Goal**: Wire the crates together. The CLI binary and NAPI layer assemble everything.
 
-**Why after Phase 2**: Integration requires all pieces to exist. Phase 1 defines the interfaces; Phase 2 builds the implementations; Phase 3 connects them.
+**Why after Phase 3**: Integration requires all pieces to exist. Phase 1 defines the interfaces; Phase 2 completes the core bridge; Phase 3 builds the crate implementations; Phase 4 connects them.
 
-### 3.1 CLI Binary (alknet crate)
+### 4.1 CLI Binary (alknet crate)
 
 **Source**: research/configuration.md (CLI config, --config flag)
 
@@ -441,7 +583,7 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 
 **New dependency**: `toml` crate (for config file parsing)
 
-### 3.2 Service Assembly
+### 4.2 Service Assembly
 
 The CLI or NAPI layer is responsible for wiring services together:
 
@@ -459,7 +601,7 @@ let secret = SecretServiceImpl::new(storage_db); // Holds seed in memory
 
 Core doesn't know about this assembly — it receives `IdentityProvider` and `DynamicConfig` through its public API.
 
-### 3.3 OperationEnv Wiring — Three Dispatch Paths
+### 4.3 OperationEnv Wiring — Three Dispatch Paths
 
 The OperationEnv is the universal composition mechanism. When a handler calls `context.env.secrets.derive(input)`, the runtime resolves which dispatch path to take:
 
@@ -504,61 +646,97 @@ let env = OperationEnv::new()
 
 The irpc service layer is thus **one dispatch backend** for OperationEnv — the path chosen when an operation is registered as backed by an in-cluster service. It is not a replacement for OperationEnv or for the call protocol.
 
-### 3.4 NAPI Layer Updates
+### 4.4 NAPI Layer Updates
 
 **Changes to alknet-napi**:
 - Expose `reloadAuth()`, `reloadForwarding()`, `reloadAll()` on the AlknetServer object
 - Call protocol integration: expose operation registry for NAPI consumers to register handlers
 - Service layer: expose irpc service creation for NAPI consumers
 
+### 4.5 Architecture Doc Sync
+
+After Phase 2 core bridge changes are implemented and before Phase 3 crate development begins:
+
+- Update `interface.md` for StreamInterface/MessageInterface split, ListenerConfig::Http/Message variants, HttpInterface stub
+- Update `auth.md` for API keys in DynamicConfig, HTTP credential presentation
+- Update `call-protocol.md` for SshSession recv/send bridge (the `InterfaceEvent`/`EventEnvelope` flow is now functional)
+- Update `services.md` for CredentialProvider trait
+- Update `overview.md` for revised phase structure
+- Ensure all specs accurately reflect the codebase state after Phase 2
+
 ---
 
-## Phase 4: Application Services and Advanced Features
+## Phase 5: Application Services and Advanced Features
 
 **Goal**: Build services that register with the operation registry but don't change core.
 
-**Why last**: These are pluggable. They depend on the core being stable (Phases 1-3) but don't affect core's architecture.
+**Why last**: These are pluggable. They depend on the core being stable (Phases 1-4) but don't affect core's architecture.
 
-### 4.1 DNS Transport + Control Channel Interface
+### 5.1 DNS Transport + Control Channel Interface
 
 **Source**: research/core.md (DNS transport section)
 
 **Scope**:
-- `DnsTransport` implements `Transport` trait (Phase 1)
-- `DnsAcceptor` implements `TransportAcceptor` trait
-- Raw framing Interface over DNS query/response pairs
+- `DnsInterface` (already defined as a `MessageInterface` stub in Phase 2) gets full implementation
+- DNS server that encodes/decodes `EventEnvelope` frames as DNS TXT query/response pairs
 - Call protocol over DNS (not SSH over DNS — that's a separate, future goal)
+- AuthToken embedded in DNS query labels
 
-**Crate**: `alknet-core` (transport module, behind `dns` feature flag)
+**Crate**: `alknet-core` (behind `dns` feature flag)
 
-**ADR**: 026 (transport-interface separation) — DNS is a (DNS transport, raw framing interface) pair
+**ADR**: 026 (transport-interface separation) — DNS is a `MessageInterface`, not a (DNS transport, raw framing) pair
 
 **Risk**: Medium — DNS protocol implementation is non-trivial. Framing, chunking, and retransmission need R&D.
 
-### 4.2 WebTransport Transport
+### 5.2 WebTransport Transport
 
-**Source**: architecture/auth.md (WebTransport section)
+**Source**: architecture/auth.md (WebTransport section), research/phase2/tls-transport.md
 
 **Scope**:
 - `WebTransportAcceptor` implements `TransportAcceptor` trait
-- Token auth for WebTransport sessions (already designed in auth.md)
+- Token auth for WebTransport sessions (AuthToken in CONNECT URL, `IdentityProvider::resolve_from_token()`)
 - `TransportKind::WebTransport` variant
+- QUIC listener coexistence with iroh on UDP 443
 
 **Crate**: `alknet-core` (behind `webtransport` feature flag)
 
 **Risk**: Medium — requires wtransport crate dependency, QUIC listener coexistence questions (OQ-15).
 
-### 4.3 Docker Service, Node Service, etc.
+### 5.3 Full HTTP Interface Implementation
 
-**Source**: research/services.md (application services section)
+**Source**: research/phase2/tls-transport.md
+
+**Scope**:
+- Replace stub handlers in the Phase 2 axum scaffold with actual operation dispatch
+- `POST /v1/{namespace}/{op}` → `registry.invoke(namespace, op, input)` (mutation)
+- `GET /v1/{namespace}/{op}` → `registry.invoke(namespace, op, input)` (query, params as input)
+- `GET /v1/{namespace}/{op}` SSE → `registry.subscribe(namespace, op, input)` (subscription)
+- `GET /v1/schema` → `registry.list_operations()`
+- OpenAPI spec generation from `OperationRegistry`
+- WebSocket upgrade handler for persistent browser connections
+
+**Crate**: `alknet-core` (behind `http` feature flag)
+
+**Risk**: Medium — full HTTP routing, SSE streaming, auth middleware integration with OperationEnv.
+
+### 5.4 Docker Service, Node Service, Git Service, etc.
+
+**Source**: research/services.md (application services section), research/references/gitserver/
 
 These are all pluggable services that register operations with the core's `OperationRegistry`. They don't require core changes. They're candidates for a `alknet-services` crate or individual crates.
+
+**Git Service** path (see research/references/gitserver/ and research/references/gitlfs/):
+- Use `gitserver-core` as the git protocol engine (transport-agnostic, library-first design)
+- `gitserver-http` nested in alknet's axum router for HTTPS git
+- `rudolfs` (or a fork) as the LFS layer, backed by rustfs S3 storage
+- Auth via `IdentityProvider` → gitserver's `AuthConfig`
+- Operations: `git.clone`, `git.push`, `git.pull` registered in OperationRegistry
 
 **Crate**: New crate(s) per service, or a consolidated `alknet-services` crate
 
 **Risk**: Low — purely additive, no core changes needed.
 
-### 4.4 Flow Graph Real-time Construction
+### 5.5 Flow Graph Real-time Construction
 
 **Source**: research/flow.md
 
@@ -576,9 +754,10 @@ Wire call protocol events (call.requested, call.responded, etc.) to `FlowGraph::
 |---|---|---|---|---|
 | 0 | Architecture: ADRs, specs, review | No | No | Write all |
 | 1 | Core: config split, identity, forwarding, auth service, OperationEnv, interface abstraction | Yes | No | 026-034 |
-| 2 | External crates: secret, storage, flowgraph | No | Yes (3) | 027 |
-| 3 | Integration: CLI assembly, NAPI, service wiring | Minor (exports) | No | 027 |
-| 4 | Advanced: DNS, WebTransport, app services | Minimal (feature flags) | Maybe | 026 |
+| 2 | Core bridge: SshSession recv/send, RawFramingInterface, StreamInterface/MessageInterface split, CredentialProvider, HTTP listener stub, API keys | Yes | No | 026, 029, phase2 research |
+| 3 | External crates: secret, storage, flowgraph | No | Yes (3) | 027 |
+| 4 | Integration: CLI assembly, NAPI, service wiring, doc sync | Minor (exports) | No | 027 |
+| 5 | Advanced: DNS, WebTransport, full HTTP, application services | Minimal (feature flags) | Maybe | 026 |
 
 ## Dependency Graph
 
@@ -594,8 +773,8 @@ alknet-napi
 alknet (CLI binary — assembles everything)
 ```
 
-alknet-core depends on: russh, tokio, irpc (feature flag), serde
-alknet-secret depends on: bip39, ed25519-bip32, aes-gcm, irpc
+alknet-core depends on: russh, tokio, irpc (feature flag), serde, axum (feature flag)
+alknet-secret depends on: bip39, ed25519-bip32, aes-gcm, sha2, irpc
 alknet-storage depends on: honker, rusqlite, petgraph, jsonschema, irpc
 alknet-flowgraph depends on: petgraph, serde, jsonschema
 alknet-napi depends on: alknet-core
@@ -605,22 +784,25 @@ No crate depends on alknet-core's internal types through a circular path. The `I
 
 ---
 
-## Open Questions to Resolve Before Phase 1
+## Open Questions to Resolve Before Phase 2
 
-These must have answers before implementation begins:
+These must have answers before Phase 2 implementation begins. Phase 0/1 questions are resolved.
 
-| OQ | Question | Proposed Resolution | ADR |
-|---|---|---|---|
-| OQ-12 | Per-user forwarding scope vs global rules | Start with global rules + principal matching. Per-user scope from peer_credentials.metadata.scopes via IdentityProvider. | 031 |
-| OQ-15 | TLS + WebTransport + iroh QUIC coexistence | Defer WebTransport to Phase 4. TLS and iroh already coexist (TCP vs UDP). | — (Phase 4) |
-| OQ-16 | Transport-specific forwarding policy | Add `TransportKind` match in ForwardingRule. WebTransport clients can be restricted to alknet-* channels. | 031 |
-| OQ-18 | Source of Identity.scopes — IdentityProvider, ForwardingPolicy, or both? | IdentityProvider owns scopes. ForwardingPolicy uses scopes from Identity. Both contribute. | 029 |
-| OQ-19 | Separate TLS identity for WebTransport vs shared | Share certificates. QUIC is UDP, TLS is TCP, so same port works. Different subject alt names possible but not required. | — (Phase 4) |
-| OQ-20 | Spoke registration and discovery on connect/disconnect | Register on connect, cleanup on disconnect. Heartbeat for liveness. Spec in call-protocol.md. | — (Phase 1) |
-| OQ-22 | Client streaming in call protocol | Defer. Current model (single request, optional streaming response) covers all identified use cases. | — (defer) |
-| NEW | irpc dependency: always or behind feature flag? | Feature flag. Nodes that only do SSH tunneling don't need the service layer. | 027 |
-| NEW | DNS control channel scope for initial implementation? | Call protocol frames only (no SSH tunneling over DNS). That's Phase 4+ for SSH-over-DNS. | 026 |
-| NEW | Should alknet-storage and alknet-secret share an irpc dependency, or each depend on it independently? | Independently. They're separate crates. irpc is a shared library they both use. | 027 |
+| OQ | Question | Proposed Resolution | Phase | ADR |
+|---|---|---|---|---|
+| ~~OQ-12~~ | Per-user forwarding scope vs global rules | **Resolved**: Start with global rules + principal matching. Per-user scope from peer_credentials.metadata.scopes via IdentityProvider. | 1 | 031 |
+| ~~OQ-16~~ | Transport-specific forwarding policy | **Resolved**: Add `TransportKind` match in ForwardingRule. | 1 | 031 |
+| ~~OQ-18~~ | Source of Identity.scopes | **Resolved**: IdentityProvider owns scopes. ForwardingPolicy uses scopes from Identity. | 1 | 029 |
+| ~~OQ-22~~ | Client streaming in call protocol | **Resolved**: Defer. Single request + optional streaming response covers all identified use cases. | — | — |
+| OQ-IF-01 | How does InterfaceSession relate to EventEnvelope? | **Resolved in Phase 2**: `InterfaceSession::recv()` returns `Option<InterfaceEvent>` where `InterfaceEvent` carries `EventEnvelope` + `Identity`. `send()` accepts `EventEnvelope`. The SshSession bridge implements this over the `alknet-control:0` channel. | 2 | — |
+| OQ-IF-02 | Should SshInterface own ForwardingPolicy or Layer 3? | **Resolved**: ForwardingPolicy is Layer 3, but channel open/close lifecycle is Layer 2. SshInterface reports channel requests to Layer 3; Layer 3 applies policy. | 2 | — |
+| OQ-15 | TLS + WebTransport + iroh QUIC coexistence | Defer WebTransport to Phase 5. TLS and iroh already coexist (TCP vs UDP). | 5 | — |
+| OQ-19 | Separate TLS identity for WebTransport vs shared | Share certificates. QUIC is UDP, TLS is TCP, same port works. Different subject alt names possible but not required. | 5 | — |
+| OQ-20 | Worker registration and discovery on connect/disconnect | Register on connect, cleanup on disconnect. Heartbeat for liveness. Spec in call-protocol.md. | 2+ | — |
+| OQ-P2-01 | Should MessageInterface and StreamInterface share a common trait? | **Recommendation**: Independent traits. Different signatures (`handle_request` vs `accept` + session lifecycle), different transport ownership (self-managed vs provided). A common super-trait adds complexity without benefit. | 2 | — |
+| OQ-P2-02 | Should HTTP share a port with the SSH listener? | **Recommendation**: Start simple — separate ports. ALPN multiplexing on port 443 is a future optimization that doesn't change the interface abstraction. | 5 | — |
+| OQ-P2-03 | Should the HTTP interface auto-generate OpenAPI specs from OperationRegistry? | **Recommendation**: Yes, but Phase 5+. The HTTP interface needs to exist first (Phase 5.3). | 5 | — |
+| OQ-P2-04 | How do self-hosted services authenticate via alknet? | See research/phase2/credential-provider.md OQ-CP-07. Start with shared secret (Phase 3), identity-bound credentials (Phase 3), alknet as OIDC provider (Phase 5+). | 3-5 | — |
 
 ---
 
@@ -630,19 +812,22 @@ The research documents have a few areas that need reconciliation:
 
 1. **Hub/spoke vs head/worker**~~: core.md and services.md use head/worker. call-protocol.md still uses hub/spoke in several places. All docs need to be updated consistently. ADR-034 formalizes this.~~ **Fixed**: call-protocol.md, auth.md, open-questions.md, and napi-and-pubsub.md updated to head/worker terminology. ADRs are historical records and retain original terminology. ADR-034 still needed to formalize the decision.
 
-2. **DNS as transport vs interface**: core.md conflates "DNS as transport" (encoding bytes as DNS queries) with "DNS as naming/discovery" (TXT records). The three-layer model cleanly separates these: DNS transport is Layer 1, DNS naming is a separate concern (similar to DNS-SD or iroh-dns).
+2. **DNS as transport vs interface**: core.md conflates "DNS as transport" (encoding bytes as DNS queries) with "DNS as naming/discovery" (TXT records). The three-layer model cleanly separates these: DNS is a `MessageInterface`, not a transport. **Phase 2 removes `TransportKind::Dns`** and adds `ListenerConfig::Dns`.
 
-3. **Service naming collision — irpc service vs call protocol operation vs external service**: The research uses "service" for both irpc protocol enums (AuthProtocol, SecretProtocol) and call protocol path-based handlers (`/head/auth/verify`, `/head/secrets/derive`). These are different concepts that compose through OperationEnv. The architecture should consistently use:
-   - **irpc service** for in-cluster, Rust-to-Rust protocol enums dispatched by variant (AuthProtocol::VerifyPubkey)
-   - **operation** for path-based call protocol handlers dispatched by namespace + name (`/head/auth/verify`)
-   - **external service** for any endpoint reachable via the call protocol from another node or over an interface — an HTTP endpoint, a vast.ai instance, another head node. These are "services" in the broadest sense but sit outside the cluster. They're reachable through OperationEnv's remote dispatch path.
-   - An irpc service can back an operation — the OperationEnv routes to the right dispatch path automatically
-   - Both are "services" in the broad sense, but the dispatch mechanism differs. OperationEnv unifies them.
+3. **Service naming collision — irpc service vs call protocol operation vs external service**: The research uses "service" for both irpc protocol enums and call protocol path-based handlers. See research/phase2/definitions.md for full disambiguation. The architecture should consistently use: **irpc service** (in-cluster, Rust-to-Rust), **operation** (path-based call protocol handler), **external service** (third-party endpoint), and **application service** (handler registered in OperationRegistry).
 
-4. **Identity model divergence**~~: auth.md defines `Identity` with `{id, scopes, resources}`. services.md defines `Identity` with `{node_id, fingerprint, scopes}`. These need to be unified. Proposed: `{id, scopes, resources}` where `id` is a fingerprint (for key-based auth) or account UUID (for database-backed auth).~~ **Fixed**: auth.md already has the correct unified definition `{id, scopes, resources}`. Added a note in auth.md calling out the unification. services.md (research) still uses the old form — will be corrected when the services spec is formally written.
+4. **Identity model divergence**~~: auth.md defines `Identity` with `{id, scopes, resources}`. services.md defines `Identity` with `{node_id, fingerprint, scopes}`.~~ **Fixed**: auth.md has the correct unified definition `{id, scopes, resources}`.
 
-5. **OperationEnv is a universal composition mechanism, not an implementation detail**: services.md defines `OperationEnv` as `HashMap<String, HashMap<String, fn(Value, OperationContext) -> ResponseEnvelope>>`. This is not a TypeScript pattern to be "translated" to Rust as an irpc Client<S>. The OperationEnv composition model is what makes operations universally addressable across HTTP, MCP, DNS, call protocol, and irpc. The Rust implementation can use typed method dispatch or a registry behind the scenes, but the behavioral contract — namespace + operation name → invoke with input, return output — must match. Adapters (MCP, HTTP, DNS) map to this interface. Handlers compose through this interface. irpc is one dispatch backend for OperationEnv, not a replacement for it.
+5. **OperationEnv is a universal composition mechanism, not an implementation detail**~~: services.md defines `OperationEnv` as `HashMap<String, HashMap<String, fn(...)>>`.~~ **Acknowledged**: The behavioral contract (namespace + operation name → invoke) must match. The Rust implementation can use typed dispatch behind the scenes.
 
-6. **Event boundary discipline needs to be a hard constraint, not a suggestion**: storage.md and services.md both call this out, but it's presented as a pattern rather than a rule. The ADR (032) should make it a hard architectural constraint: domain events never cross service boundaries without projection. This prevents the "leaky event store" anti-pattern.
+6. **Event boundary discipline needs to be a hard constraint, not a suggestion**~~: storage.md and services.md both call this out, but it's presented as a pattern rather than a rule.~~ **Formalized**: ADR-032 makes it a hard architectural constraint. See also research/phase2/definitions.md (Domain Events vs Integration Events).
 
-7. **Config file vs programmatic API**: configuration.md proposes TOML config files. ADR-011 says "no config file, programmatic-first." These need reconciliation. Proposed: TOML is an optional convenience layer that builds `StaticConfig`/`DynamicConfig`. `ServeOptions` builder pattern remains the primary API. ADR-011 is amended, not superseded — the config file is an alternative input format, not a replacement for the programmatic API.
+7. **Config file vs programmatic API**: configuration.md proposes TOML config files. ADR-011 says "no config file, programmatic-first." **Proposed**: TOML is an optional convenience layer that builds `StaticConfig`/`DynamicConfig`. `ServeOptions` builder pattern remains the primary API. ADR-011 is amended, not superseded.
+
+8. **Interface model needs StreamInterface/MessageInterface split**: The current `Interface` trait assumes persistent byte streams. HTTP and DNS don't fit (they handle individual requests, not sessions). **Phase 2 addresses this** — rename `Interface` → `StreamInterface`, add `MessageInterface`, add `HttpInterface` stub. See research/phase2/interface-model.md.
+
+9. **SshSession recv/send stubs are core, not "Phase 4"**: The Phase 1 implementation left `SshSession::recv()` and `SshSession::send()` as stubs returning `None` / silently discarding. This makes the interface model inert for call protocol operations. The bridge between SSH channels and `InterfaceEvent`/`EventEnvelope` frames is a **Phase 2** concern, not a future feature. See Phase 2.1.
+
+10. **CredentialProvider is missing from core**: Outbound auth (how alknet authenticates to external services) has no trait or implementation. This is needed before any HTTP API integration work. **Phase 2.4** adds the trait and enum to core; Phase 3 (alknet-secret) provides the storage-backed implementation. See research/phase2/credential-provider.md.
+
+11. **Architecture docs need sync after Phase 2**: The current architecture docs (interface.md, auth.md, services.md, call-protocol.md) reflect the pre-Phase-0/1 state. After Phase 2 core bridge changes land, these must be updated to reflect StreamInterface/MessageInterface, CredentialProvider, HTTP listener, and the functional call protocol bridge. **Phase 4.5** is the doc sync point.
