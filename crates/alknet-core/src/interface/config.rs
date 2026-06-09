@@ -111,7 +111,9 @@ pub struct SshInterfaceConfig {
     pub host_key: Arc<PrivateKey>,
 }
 
-pub struct RawFramingConfig {}
+pub struct RawFramingConfig {
+    pub auth: Arc<dyn IdentityProvider>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpInterfaceConfig {
@@ -141,6 +143,7 @@ impl std::fmt::Display for DnsInterfaceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::ConfigIdentityProvider;
 
     #[test]
     fn stream_interface_kind_display() {
@@ -172,7 +175,11 @@ mod tests {
         });
         assert_eq!(ssh_config.kind(), StreamInterfaceKind::Ssh);
 
-        let raw_config = StreamInterfaceConfig::RawFraming(RawFramingConfig {});
+        let raw_config = StreamInterfaceConfig::RawFraming(RawFramingConfig {
+            auth: Arc::new(ConfigIdentityProvider::new(Arc::new(ArcSwap::new(
+                Arc::new(DynamicConfig::default()),
+            )))),
+        });
         assert_eq!(raw_config.kind(), StreamInterfaceKind::RawFraming);
     }
 
@@ -211,7 +218,10 @@ mod tests {
 
     #[test]
     fn raw_framing_config_minimal() {
-        let _config = RawFramingConfig {};
+        let auth: Arc<dyn IdentityProvider> = Arc::new(ConfigIdentityProvider::new(Arc::new(
+            ArcSwap::new(Arc::new(DynamicConfig::default())),
+        )));
+        let _config = RawFramingConfig { auth };
     }
 
     #[test]
