@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 use crate::auth::keys::KeySource;
 use crate::config::{ConfigReloadHandle, DynamicConfig};
 use crate::error::ConfigError;
+use crate::interface::pairs::is_valid_pair;
 use crate::interface::StreamInterfaceKind;
 use crate::server::handler::{ProxyConfig, ServerHandler};
 use crate::server::rate_limit::ConnectionRateLimiter;
@@ -58,6 +59,15 @@ pub struct StreamListenerConfig {
 
 impl StreamListenerConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !is_valid_pair(&self.transport_kind, self.interface) {
+            return Err(ConfigError::InvalidFlag {
+                name: format!(
+                    "invalid transport/interface pair: {}/{}",
+                    self.transport_kind, self.interface
+                ),
+            });
+        }
+
         if self.stealth && !matches!(self.transport_kind, TransportKind::Tls { .. }) {
             return Err(ConfigError::InvalidFlag {
                 name: "stealth mode requires TLS transport".to_string(),
@@ -120,6 +130,26 @@ pub struct HttpListenerConfig {
     pub stealth: bool,
 }
 
+impl HttpListenerConfig {
+    pub fn new(bind_addr: SocketAddr) -> Self {
+        Self {
+            bind_addr,
+            tls: false,
+            stealth: false,
+        }
+    }
+
+    pub fn tls(mut self, enabled: bool) -> Self {
+        self.tls = enabled;
+        self
+    }
+
+    pub fn stealth(mut self, enabled: bool) -> Self {
+        self.stealth = enabled;
+        self
+    }
+}
+
 impl std::fmt::Display for HttpListenerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} (http)", self.bind_addr)
@@ -130,6 +160,20 @@ impl std::fmt::Display for HttpListenerConfig {
 pub struct DnsListenerConfig {
     pub bind_addr: SocketAddr,
     pub tls: bool,
+}
+
+impl DnsListenerConfig {
+    pub fn new(bind_addr: SocketAddr) -> Self {
+        Self {
+            bind_addr,
+            tls: false,
+        }
+    }
+
+    pub fn tls(mut self, enabled: bool) -> Self {
+        self.tls = enabled;
+        self
+    }
 }
 
 impl std::fmt::Display for DnsListenerConfig {
@@ -268,7 +312,15 @@ impl ListenerConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         match self {
             ListenerConfig::Stream { config } => config.validate(),
-            ListenerConfig::Http { .. } | ListenerConfig::Dns { .. } => Ok(()),
+            ListenerConfig::Http { config } => {
+                if config.stealth && !config.tls {
+                    return Err(ConfigError::InvalidFlag {
+                        name: "stealth mode requires TLS on HTTP listener".to_string(),
+                    });
+                }
+                Ok(())
+            }
+            ListenerConfig::Dns { .. } => Ok(()),
         }
     }
 }
@@ -568,23 +620,42 @@ impl Server {
         let listener = self
             .listeners
             .first()
-            .expect("at least one listener required");
+            .expect("at least one listener required")
+            .clone();
 
-        let (transport_kind, stealth, listen_addr) = match listener {
-            ListenerConfig::Stream { config } => (
-                config.transport_kind.clone(),
-                config.stealth,
-                config.listen_addr.clone(),
-            ),
-            ListenerConfig::Http { config } => (
-                TransportKind::Tcp,
-                config.stealth,
-                config.bind_addr.to_string(),
-            ),
-            ListenerConfig::Dns { config } => {
-                (TransportKind::Tcp, false, config.bind_addr.to_string())
+        match listener {
+            ListenerConfig::Stream { config } => {
+                self.run_stream(acceptor, endpoint_info, config).await
             }
-        };
+            ListenerConfig::Http { config } => {
+                warn!(
+                    "HTTP listener on {} not yet implemented (tls={}, stealth={})",
+                    config.bind_addr, config.tls, config.stealth
+                );
+                Ok(())
+            }
+            ListenerConfig::Dns { config } => {
+                warn!(
+                    "DNS listener on {} not yet implemented (tls={})",
+                    config.bind_addr, config.tls
+                );
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_stream<A>(
+        self,
+        acceptor: A,
+        endpoint_info: Option<&str>,
+        stream_config: StreamListenerConfig,
+    ) -> Result<(), ServeError>
+    where
+        A: crate::transport::TransportAcceptor,
+    {
+        let transport_kind = stream_config.transport_kind.clone();
+        let stealth = stream_config.stealth;
+        let listen_addr = stream_config.listen_addr.clone();
 
         if matches!(transport_kind, TransportKind::Iroh { .. }) {
             if let Some(id) = endpoint_info {
@@ -1297,5 +1368,144 @@ mod tests {
         let deserialized: DnsListenerConfig = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized.bind_addr, config.bind_addr);
         assert_eq!(deserialized.tls, config.tls);
+    }
+
+    #[test]
+    fn http_listener_config_builder_new() {
+        let config = HttpListenerConfig::new("127.0.0.1:8080".parse().unwrap());
+        assert_eq!(
+            config.bind_addr,
+            "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+        );
+        assert!(!config.tls);
+        assert!(!config.stealth);
+    }
+
+    #[test]
+    fn http_listener_config_builder_tls() {
+        let config = HttpListenerConfig::new("127.0.0.1:8443".parse().unwrap()).tls(true);
+        assert!(config.tls);
+    }
+
+    #[test]
+    fn http_listener_config_builder_stealth() {
+        let config = HttpListenerConfig::new("127.0.0.1:443".parse().unwrap())
+            .tls(true)
+            .stealth(true);
+        assert!(config.tls);
+        assert!(config.stealth);
+    }
+
+    #[test]
+    fn dns_listener_config_builder_new() {
+        let config = DnsListenerConfig::new("0.0.0.0:53".parse().unwrap());
+        assert_eq!(
+            config.bind_addr,
+            "0.0.0.0:53".parse::<SocketAddr>().unwrap()
+        );
+        assert!(!config.tls);
+    }
+
+    #[test]
+    fn dns_listener_config_builder_tls() {
+        let config = DnsListenerConfig::new("0.0.0.0:853".parse().unwrap()).tls(true);
+        assert!(config.tls);
+    }
+
+    #[test]
+    fn listener_config_http_with_builder() {
+        let lc = ListenerConfig::Http {
+            config: HttpListenerConfig::new("127.0.0.1:8080".parse().unwrap())
+                .tls(true)
+                .stealth(true),
+        };
+        match &lc {
+            ListenerConfig::Http { config } => {
+                assert_eq!(
+                    config.bind_addr,
+                    "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+                );
+                assert!(config.tls);
+                assert!(config.stealth);
+            }
+            _ => panic!("expected Http variant"),
+        }
+    }
+
+    #[test]
+    fn listener_config_dns_with_builder() {
+        let lc = ListenerConfig::Dns {
+            config: DnsListenerConfig::new("0.0.0.0:53".parse().unwrap()).tls(true),
+        };
+        match &lc {
+            ListenerConfig::Dns { config } => {
+                assert_eq!(
+                    config.bind_addr,
+                    "0.0.0.0:53".parse::<SocketAddr>().unwrap()
+                );
+                assert!(config.tls);
+            }
+            _ => panic!("expected Dns variant"),
+        }
+    }
+
+    #[test]
+    fn listener_config_validate_stream_tls_cert_key_required() {
+        let lc = ListenerConfig::tls("0.0.0.0:443");
+        assert!(lc.validate().is_err());
+    }
+
+    #[test]
+    fn listener_config_validate_http_stealth_without_tls_rejected() {
+        let lc = ListenerConfig::Http {
+            config: HttpListenerConfig {
+                bind_addr: "0.0.0.0:8080".parse().unwrap(),
+                tls: false,
+                stealth: true,
+            },
+        };
+        assert!(lc.validate().is_err());
+    }
+
+    #[test]
+    fn listener_config_validate_http_stealth_with_tls_ok() {
+        let lc = ListenerConfig::Http {
+            config: HttpListenerConfig {
+                bind_addr: "0.0.0.0:443".parse().unwrap(),
+                tls: true,
+                stealth: true,
+            },
+        };
+        assert!(lc.validate().is_ok());
+    }
+
+    #[test]
+    fn listener_config_validate_dns_minimal_ok() {
+        let lc = ListenerConfig::Dns {
+            config: DnsListenerConfig {
+                bind_addr: "0.0.0.0:53".parse().unwrap(),
+                tls: false,
+            },
+        };
+        assert!(lc.validate().is_ok());
+    }
+
+    #[test]
+    fn listener_config_validate_stream_invalid_pair() {
+        let lc = ListenerConfig::Stream {
+            config: StreamListenerConfig {
+                transport_kind: TransportKind::Iroh {
+                    endpoint_id: String::new(),
+                },
+                interface: StreamInterfaceKind::RawFraming,
+                listen_addr: "0.0.0.0:0".to_string(),
+                tls_cert: None,
+                tls_key: None,
+                acme_domain: None,
+                stealth: false,
+                iroh_relay: None,
+            },
+        };
+        assert!(lc.validate().is_err());
     }
 }
