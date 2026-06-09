@@ -1,7 +1,7 @@
 ---
 id: api-keys-dynamic-config
 name: Add API keys to DynamicConfig.auth and extend IdentityProvider token resolution
-status: pending
+status: completed
 depends_on: [credential-provider-trait]
 scope: narrow
 risk: low
@@ -70,4 +70,4 @@ description = "dashboard service account"
 
 ## Summary
 
-> To be filled on completion
+> Added ApiKeyEntry struct (prefix/hash/scopes/description/expires_at) to AuthPolicy. Extended ConfigIdentityProvider::resolve_from_token() to route alk_-prefixed tokens through SHA-256 hash verification with expiry checks. 14 new API key tests pass.
