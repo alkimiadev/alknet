@@ -1,7 +1,7 @@
 ---
 id: listenconfig-http-dns-stubs
 name: Add HttpListenerConfig/DnsListenerConfig wiring, StreamInterfaceKind/MessageInterfaceKind, and ListenerConfig enum helper methods
-status: pending
+status: completed
 depends_on: [stream-interface-message-interface-split]
 scope: narrow
 risk: low
@@ -75,4 +75,4 @@ Per the integration plan section 2.5 and research/phase2/interface-model.md and 
 
 ## Summary
 
-> To be filled on completion
+> Added HttpListenerConfig::new().tls().stealth() and DnsListenerConfig::new().tls() builder APIs. Integrated is_valid_pair() into StreamListenerConfig::validate(). Added ListenerConfig::validate() for Http (stealth-requires-TLS) and Dns variants. Refactored Server::run() to dispatch on ListenerConfig variants (Stream→existing accept loop, Http/Dns→warn stubs). 12 new unit tests.
