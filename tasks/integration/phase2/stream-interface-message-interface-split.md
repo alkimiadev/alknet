@@ -1,7 +1,7 @@
 ---
 id: stream-interface-message-interface-split
 name: Rename Interface → StreamInterface, add MessageInterface trait, remove TransportKind::Dns, restructure ListenerConfig
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: medium
@@ -97,4 +97,4 @@ Per ADR-035 and research/phase2/interface-model.md:
 
 ## Summary
 
-> To be filled on completion
+> Renamed Interface → StreamInterface throughout alknet-core. Added MessageInterface trait with InterfaceRequest/InterfaceResponse types. Added HttpInterface and DnsInterface stubs. Restructured InterfaceConfig into StreamInterfaceConfig + MessageInterfaceConfig. Added StreamInterfaceKind and MessageInterfaceKind enums. Restructured ListenerConfig from flat struct to enum with Stream/Http/Dns variants per ADR-035. Removed TransportKind::Dns (DNS is a MessageInterface). Changed TransportKind::WebTransport from { host: String } to { server_name: Option<String> }. Updated all import sites, pairs.rs, serve.rs, server/handler.rs, napi/serve.rs, lib.rs, and all tests. 415 tests pass, clippy clean, fmt clean.
