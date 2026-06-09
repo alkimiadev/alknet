@@ -734,7 +734,11 @@ mod tests {
         let (_client, server) = tokio::io::duplex(1024);
         let stream: Box<dyn TransportStream> = Box::new(server);
 
-        let raw_config = StreamInterfaceConfig::RawFraming(crate::interface::RawFramingConfig {});
+        let raw_config = StreamInterfaceConfig::RawFraming(crate::interface::RawFramingConfig {
+            auth: Arc::new(crate::auth::ConfigIdentityProvider::new(Arc::new(
+                ArcSwap::new(Arc::new(DynamicConfig::default())),
+            ))),
+        });
         let result = iface.accept(stream, &raw_config).await;
         assert!(result.is_err());
     }
