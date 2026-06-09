@@ -13,9 +13,22 @@ use crate::auth::ServerAuthConfig;
 use crate::config::forwarding::ForwardingPolicy;
 use crate::credentials::CredentialSet;
 
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ApiKeyEntry {
+    pub prefix: String,
+    pub hash: String,
+    pub scopes: Vec<String>,
+    pub description: String,
+    pub expires_at: Option<u64>,
+}
+
+pub const API_KEY_PREFIX: &str = "alk_";
+
 pub struct AuthPolicy {
     pub authorized_keys: std::collections::HashSet<russh::keys::PublicKey>,
     pub cert_authorities: Vec<crate::auth::keys::CertAuthorityEntry>,
+    pub api_keys: Vec<ApiKeyEntry>,
     encoded_keys: std::collections::HashSet<Vec<u8>>,
     fingerprint_to_key: HashMap<String, russh::keys::PublicKey>,
 }
@@ -30,6 +43,14 @@ impl AuthPolicy {
         authorized_keys: std::collections::HashSet<russh::keys::PublicKey>,
         cert_authorities: Vec<crate::auth::keys::CertAuthorityEntry>,
     ) -> Self {
+        Self::with_api_keys(authorized_keys, cert_authorities, Vec::new())
+    }
+
+    pub fn with_api_keys(
+        authorized_keys: std::collections::HashSet<russh::keys::PublicKey>,
+        cert_authorities: Vec<crate::auth::keys::CertAuthorityEntry>,
+        api_keys: Vec<ApiKeyEntry>,
+    ) -> Self {
         let encoded_keys = authorized_keys.iter().map(encode_key_data).collect();
         let fingerprint_to_key = authorized_keys
             .iter()
@@ -39,6 +60,7 @@ impl AuthPolicy {
         Self {
             authorized_keys,
             cert_authorities,
+            api_keys,
             encoded_keys,
             fingerprint_to_key,
         }
@@ -62,6 +84,45 @@ impl AuthPolicy {
         } else {
             None
         }
+    }
+
+    pub fn resolve_api_key(&self, token: &str) -> Option<Identity> {
+        if !token.starts_with(API_KEY_PREFIX) {
+            return None;
+        }
+
+        let prefix_part = &token[..token.len().min(8)];
+
+        let entry = self
+            .api_keys
+            .iter()
+            .find(|e| prefix_part.starts_with(&e.prefix))?;
+
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let result = hasher.finalize();
+        let expected_hash = format!("sha256:{}", hex::encode(result));
+
+        if entry.hash != expected_hash {
+            return None;
+        }
+
+        if let Some(expires_at) = entry.expires_at {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if now_secs >= expires_at {
+                return None;
+            }
+        }
+
+        Some(Identity {
+            id: entry.prefix.clone(),
+            scopes: entry.scopes.clone(),
+            resources: HashMap::new(),
+        })
     }
 
     pub fn authenticate_publickey(
@@ -203,6 +264,7 @@ impl std::fmt::Debug for AuthPolicy {
         f.debug_struct("AuthPolicy")
             .field("authorized_keys_count", &self.authorized_keys.len())
             .field("cert_authorities_count", &self.cert_authorities.len())
+            .field("api_keys_count", &self.api_keys.len())
             .finish()
     }
 }
@@ -212,6 +274,7 @@ impl Clone for AuthPolicy {
         Self {
             authorized_keys: self.authorized_keys.clone(),
             cert_authorities: self.cert_authorities.clone(),
+            api_keys: self.api_keys.clone(),
             encoded_keys: self.encoded_keys.clone(),
             fingerprint_to_key: self.fingerprint_to_key.clone(),
         }
@@ -412,5 +475,129 @@ mod tests {
         let debug_str = format!("{:?}", policy);
         assert!(debug_str.contains("authorized_keys_count"));
         assert!(debug_str.contains("cert_authorities_count"));
+        assert!(debug_str.contains("api_keys_count"));
+    }
+
+    fn compute_api_key_hash(token: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let result = hasher.finalize();
+        format!("sha256:{}", hex::encode(result))
+    }
+
+    #[test]
+    fn api_key_valid_authenticates() {
+        let token = "alk_testsecret123";
+        let hash = compute_api_key_hash(token);
+        let entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "test key".to_string(),
+            expires_at: None,
+        };
+        let policy =
+            AuthPolicy::with_api_keys(std::collections::HashSet::new(), Vec::new(), vec![entry]);
+        let identity = policy.resolve_api_key(token);
+        assert!(identity.is_some());
+        let identity = identity.unwrap();
+        assert_eq!(identity.id, "alk_test");
+        assert_eq!(identity.scopes, vec!["relay:connect"]);
+    }
+
+    #[test]
+    fn api_key_expired_rejected() {
+        let token = "alk_expiredkey1";
+        let hash = compute_api_key_hash(token);
+        let entry = ApiKeyEntry {
+            prefix: "alk_expi".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "expired key".to_string(),
+            expires_at: Some(1),
+        };
+        let policy =
+            AuthPolicy::with_api_keys(std::collections::HashSet::new(), Vec::new(), vec![entry]);
+        assert!(policy.resolve_api_key(token).is_none());
+    }
+
+    #[test]
+    fn api_key_wrong_hash_rejected() {
+        let entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            scopes: vec!["relay:connect".to_string()],
+            description: "bad hash".to_string(),
+            expires_at: None,
+        };
+        let policy =
+            AuthPolicy::with_api_keys(std::collections::HashSet::new(), Vec::new(), vec![entry]);
+        assert!(policy.resolve_api_key("alk_testsecret123").is_none());
+    }
+
+    #[test]
+    fn api_key_unknown_prefix_falls_through() {
+        let token = "alk_testsecret123";
+        let hash = compute_api_key_hash(token);
+        let entry = ApiKeyEntry {
+            prefix: "alk_other".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "other key".to_string(),
+            expires_at: None,
+        };
+        let policy =
+            AuthPolicy::with_api_keys(std::collections::HashSet::new(), Vec::new(), vec![entry]);
+        assert!(policy.resolve_api_key(token).is_none());
+    }
+
+    #[test]
+    fn api_key_scopes_propagate() {
+        let token = "alk_scopesecret";
+        let hash = compute_api_key_hash(token);
+        let entry = ApiKeyEntry {
+            prefix: "alk_sco".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string(), "secrets:derive".to_string()],
+            description: "scoped key".to_string(),
+            expires_at: None,
+        };
+        let policy =
+            AuthPolicy::with_api_keys(std::collections::HashSet::new(), Vec::new(), vec![entry]);
+        let identity = policy.resolve_api_key(token).unwrap();
+        assert_eq!(identity.scopes, vec!["relay:connect", "secrets:derive"]);
+    }
+
+    #[test]
+    fn non_api_key_prefix_returns_none() {
+        let policy = AuthPolicy::empty();
+        assert!(policy.resolve_api_key("bearer-some-token").is_none());
+        assert!(policy.resolve_api_key("regular-token").is_none());
+    }
+
+    #[test]
+    fn api_key_entry_default_empty() {
+        let config = DynamicConfig::default();
+        assert!(config.auth.api_keys.is_empty());
+    }
+
+    #[test]
+    fn auth_policy_with_api_keys_preserves_entries() {
+        let entry = ApiKeyEntry {
+            prefix: "alk_abc".to_string(),
+            hash: "sha256:abcdef".to_string(),
+            scopes: vec!["relay:connect".to_string()],
+            description: "test".to_string(),
+            expires_at: None,
+        };
+        let policy = AuthPolicy::with_api_keys(
+            std::collections::HashSet::new(),
+            Vec::new(),
+            vec![entry.clone()],
+        );
+        assert_eq!(policy.api_keys.len(), 1);
+        assert_eq!(policy.api_keys[0], entry);
     }
 }
