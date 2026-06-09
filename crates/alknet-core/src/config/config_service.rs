@@ -79,6 +79,7 @@ mod tests {
             auth: AuthPolicy::empty(),
             forwarding: ForwardingPolicy::deny_all(),
             rate_limits: RateLimitConfig::default(),
+            credentials: std::collections::HashMap::new(),
         };
         service.reload(new_config);
 

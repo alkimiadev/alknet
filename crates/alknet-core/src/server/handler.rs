@@ -869,6 +869,7 @@ mod tests {
                 auth: dynamic.auth.clone(),
                 forwarding: deny_policy,
                 rate_limits: dynamic.rate_limits.clone(),
+                credentials: dynamic.credentials.clone(),
             };
             drop(dynamic);
             auth_config.store(Arc::new(new_dynamic));

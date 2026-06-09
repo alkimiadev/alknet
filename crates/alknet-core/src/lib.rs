@@ -55,6 +55,7 @@ pub mod auth;
 pub mod call;
 pub mod client;
 pub mod config;
+pub mod credentials;
 pub mod error;
 pub mod interface;
 pub mod server;
@@ -83,6 +84,9 @@ pub use client::connect::{ClientSession, ConnectError, ConnectOptions, Transport
 pub use config::{
     AuthPolicy, ConfigReloadHandle, ConfigServiceImpl, DynamicConfig, ForwardingAction,
     ForwardingPolicy, ForwardingRule, RateLimitConfig, StaticConfig, TargetPattern,
+};
+pub use credentials::{
+    ConfigCredentialProvider, CredentialProvider, CredentialSet, SecretStoreCredentialProvider,
 };
 pub use error::{AuthError, ChannelError, ConfigError, ForwardError, TransportError};
 pub use interface::{

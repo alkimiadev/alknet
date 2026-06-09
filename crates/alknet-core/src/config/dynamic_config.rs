@@ -11,6 +11,7 @@ use russh::keys::ssh_key::HashAlg;
 use crate::auth::identity::Identity;
 use crate::auth::ServerAuthConfig;
 use crate::config::forwarding::ForwardingPolicy;
+use crate::credentials::CredentialSet;
 
 pub struct AuthPolicy {
     pub authorized_keys: std::collections::HashSet<russh::keys::PublicKey>,
@@ -238,6 +239,7 @@ pub struct DynamicConfig {
     pub auth: AuthPolicy,
     pub forwarding: ForwardingPolicy,
     pub rate_limits: RateLimitConfig,
+    pub credentials: HashMap<String, CredentialSet>,
 }
 
 impl DynamicConfig {
@@ -246,6 +248,7 @@ impl DynamicConfig {
             auth,
             forwarding: ForwardingPolicy::allow_all(),
             rate_limits: RateLimitConfig::default(),
+            credentials: HashMap::new(),
         }
     }
 
@@ -258,6 +261,7 @@ impl DynamicConfig {
             auth,
             forwarding,
             rate_limits,
+            credentials: HashMap::new(),
         }
     }
 
@@ -270,6 +274,11 @@ impl DynamicConfig {
         self.rate_limits = limits;
         self
     }
+
+    pub fn with_credentials(mut self, credentials: HashMap<String, CredentialSet>) -> Self {
+        self.credentials = credentials;
+        self
+    }
 }
 
 impl Default for DynamicConfig {
@@ -278,6 +287,7 @@ impl Default for DynamicConfig {
             auth: AuthPolicy::empty(),
             forwarding: ForwardingPolicy::allow_all(),
             rate_limits: RateLimitConfig::default(),
+            credentials: HashMap::new(),
         }
     }
 }
@@ -351,6 +361,7 @@ mod tests {
             auth: AuthPolicy::empty(),
             forwarding: ForwardingPolicy::deny_all(),
             rate_limits: RateLimitConfig::default(),
+            credentials: HashMap::new(),
         };
         handle.reload(new_config);
 
