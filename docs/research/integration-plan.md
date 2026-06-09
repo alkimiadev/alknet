@@ -470,20 +470,21 @@ The existing `ServerHandler` logic (auth, channel open, proxy) becomes `SshInter
 **Source**: research/phase2/tls-transport.md
 
 **Changes to alknet-core** (behind `http` feature flag):
-- Add `axum` dependency with `ws` and `sse` features (behind feature flag)
+- Add `axum` dependency (behind feature flag)
 - Create `alknet_core::http` module with an axum `Router` scaffold:
-  - `POST /v1/{namespace}/{op}` → stub handler (returns 501 Not Implemented)
-  - `GET /v1/{namespace}/{op}` → stub handler
-  - `GET /v1/schema` → stub handler
-  - Auth middleware that extracts `Authorization: Bearer <token>` and calls `IdentityProvider::resolve_from_token()`
-- The axum router receives `BufReader<TlsStream>` from the stealth detection code (replacing `send_fake_nginx_404`)
-- No actual operation dispatch yet — that requires the full call protocol bridge (Phase 2.1)
+  - Auth middleware that extracts `Authorization: Bearer <token>` and calls `IdentityProvider::resolve_from_token()`, attaching the resolved `Identity` to the request extensions
+  - Stealth handoff: replace `send_fake_nginx_404` with axum router serving the `BufReader<TlsStream>`
+  - A default 404 handler for any unmatched routes (no hardcoded operation paths)
+- No operational routes yet — the question of how HTTP paths map to operation invocations depends on the from_openapi / spec-generation work and is deferred to Phase 5. Custom routes (git, S3, OpenAI proxy) will register directly with the axum router at their own paths, sharing the auth middleware but with their own routing logic.
+- The `ListenerConfig::Http` variant and stealth mode handoff are established here so that HTTP traffic reaches axum with auth context. Routing *inside* axum is a later concern.
 
-**Why this is Phase 2**: The HTTP scaffold needs to exist so that the stealth mode code can hand HTTP traffic to axum instead of sending a fake 404. The scaffold is small (route definitions + auth middleware + stealth handoff) but it establishes the structural pattern that Phase 4 fills in with actual operation dispatch.
+**Why this is Phase 2**: The auth middleware and stealth handoff are prerequisites for any HTTP endpoint. Without this, the only way to reach call protocol operations is via SSH. The scaffold gets HTTP traffic to axum with identity — the specific routes and path conventions are intentionally not specified here.
 
 **New crate**: None. In alknet-core behind `http` feature flag.
 
-**Risk**: Low — structural scaffold. No operational routes. The auth middleware pattern is straightforward (axum extractor that calls `IdentityProvider`).
+**Risk**: Low — structural scaffold with auth middleware and stealth handoff only. No operational routes or path conventions.
+
+**Open question**: How should external HTTP paths map to alknet operations? The internal path convention (`/{namespace}/{op}` over call protocol channels) is one design; external HTTP paths are determined by the API being exposed (OpenAI `/v1/chat/completions`, S3 `/{bucket}/{key}`, git `/{repo}.git/info/refs`). The inverse of `from_openapi` — generating an OpenAPI spec from registered operations and mapping those to HTTP routes — will determine the answer. This is deferred to Phase 5.
 
 ---
 
