@@ -1,7 +1,7 @@
 ---
 id: secp256k1-ethereum-derivation
 name: Add BIP-0032 secp256k1 derivation for Ethereum keys behind feature flag
-status: pending
+status: completed
 depends_on: [spec-update-secret-service, derivedkey-zeroize-security]
 scope: narrow
 risk: low
