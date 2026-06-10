@@ -537,8 +537,11 @@ impl SecretServiceActor {
             }
             SecretMessage::Unlock(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
-                let Unlock { passphrase } = inner;
-                let result = self.handle.unlock(&passphrase, None);
+                let Unlock {
+                    mnemonic,
+                    passphrase,
+                } = inner;
+                let result = self.handle.unlock(&mnemonic, passphrase.as_deref());
                 tokio::spawn(async move {
                     let _ = tx.send(result).await;
                 });
@@ -854,7 +857,8 @@ mod tests {
         let (resp_tx, resp_rx) = oneshot::channel();
         let msg = SecretMessage::Unlock(WithChannels::from((
             Unlock {
-                passphrase: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+                mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+                passphrase: None,
             },
             resp_tx,
         )));
@@ -907,5 +911,62 @@ mod tests {
         let result = resp_rx.await.unwrap();
         assert!(result.is_ok(), "Lock via actor must succeed");
         assert!(!handle.is_unlocked(), "Handle must be locked after Lock");
+    }
+
+    #[test]
+    fn test_unlock_with_passphrase_produces_different_seed() {
+        let service_a = SecretServiceHandle::new();
+        let service_b = SecretServiceHandle::new();
+
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+        service_a.unlock(phrase, None).unwrap();
+        let key_a = service_a.derive_ed25519(PATHS::IDENTITY).unwrap();
+
+        service_a.lock();
+
+        service_a.unlock(phrase, Some("TREZOR")).unwrap();
+        let key_b = service_a.derive_ed25519(PATHS::IDENTITY).unwrap();
+
+        assert_ne!(
+            key_a.private_key, key_b.private_key,
+            "Unlock with passphrase must produce different seed than without"
+        );
+
+        service_a.lock();
+
+        service_b.unlock(phrase, None).unwrap();
+        let key_c = service_b.derive_ed25519(PATHS::IDENTITY).unwrap();
+
+        assert_eq!(
+            key_a.private_key, key_c.private_key,
+            "Unlock with None passphrase must produce same seed as another None passphrase unlock"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_actor_unlock_with_passphrase() {
+        let handle = SecretServiceHandle::new();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let actor = SecretServiceActor::new(handle);
+        tokio::task::spawn(actor.run(rx));
+
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let msg = SecretMessage::Unlock(WithChannels::from((
+            Unlock {
+                mnemonic: mnemonic.to_string(),
+                passphrase: Some("TREZOR".to_string()),
+            },
+            resp_tx,
+        )));
+        tx.send(msg).await.unwrap();
+
+        let result = resp_rx.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "Unlock with passphrase via actor must succeed"
+        );
     }
 }

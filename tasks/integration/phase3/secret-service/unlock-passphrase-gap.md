@@ -1,7 +1,7 @@
 ---
 id: unlock-passphrase-gap
 name: Fix Unlock protocol variant to carry both mnemonic and BIP39 passphrase
-status: pending
+status: complete
 depends_on: [irpc-secret-protocol-integration]
 scope: narrow
 risk: low

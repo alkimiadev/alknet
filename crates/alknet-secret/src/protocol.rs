@@ -192,15 +192,18 @@ pub enum SecretProtocol {
     #[wrap(Lock)]
     Lock,
 
-    /// Unlock the service with a BIP39 passphrase.
+    /// Unlock the service with a BIP39 mnemonic and optional passphrase.
     ///
-    /// The passphrase is used to derive the master seed from the mnemonic.
-    /// After unlocking, derive and encrypt/decrypt operations are available.
+    /// The mnemonic is the space-separated BIP39 word list. The passphrase is
+    /// the optional BIP39 password extension (the "25th word"). After unlocking,
+    /// derive and encrypt/decrypt operations are available.
     #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::SecretServiceError>>)]
     #[wrap(Unlock)]
     Unlock {
-        /// The BIP39 passphrase (may be empty for no passphrase).
-        passphrase: String,
+        /// The BIP39 mnemonic phrase (space-separated word list).
+        mnemonic: String,
+        /// Optional BIP39 passphrase (the "25th word" password extension).
+        passphrase: Option<String>,
     },
 }
 
