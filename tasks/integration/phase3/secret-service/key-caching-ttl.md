@@ -1,7 +1,7 @@
 ---
 id: key-caching-ttl
 name: Implement TTL-based key cache with LRU eviction for SecretService
-status: pending
+status: completed
 depends_on: [spec-update-secret-service, derivedkey-zeroize-security]
 scope: moderate
 risk: medium
