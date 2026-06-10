@@ -1,7 +1,7 @@
 ---
 id: derive-password-implementation
 name: Implement deterministic password derivation for DerivePassword
-status: pending
+status: completed
 depends_on: [spec-update-secret-service, derivedkey-zeroize-security]
 scope: narrow
 risk: low
