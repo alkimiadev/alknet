@@ -1,7 +1,7 @@
 ---
 id: encryption-salt-kdf
 name: Document EncryptedData salt as reserved for future KDF-based key derivation
-status: pending
+status: completed
 depends_on: [spec-update-secret-service]
 scope: narrow
 risk: low
