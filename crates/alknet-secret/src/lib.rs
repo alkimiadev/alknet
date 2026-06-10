@@ -27,6 +27,7 @@
 //! - [`protocol`] — `SecretProtocol` irpc service enum, `DerivedKey`, `KeyType`
 //! - [`service`] — `SecretService` implementation with Unlock/Lock lifecycle
 
+pub mod cache;
 pub mod derivation;
 pub mod encryption;
 pub mod mnemonic;
@@ -34,6 +35,7 @@ pub mod protocol;
 pub mod service;
 
 // Re-export primary public API
+pub use cache::CacheConfig;
 pub use derivation::{ExtendedPrivKey, PATHS};
 pub use encryption::{EncryptedData, EncryptionError};
 pub use mnemonic::{Language, Mnemonic, Seed};
