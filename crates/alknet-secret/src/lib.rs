@@ -44,7 +44,4 @@ pub use derivation::{DerivationError, ExtendedPrivKey, PATHS};
 pub use encryption::{EncryptedData, EncryptionError};
 pub use mnemonic::{Language, Mnemonic, Seed};
 pub use protocol::{DerivedKey, KeyType, SecretMessage, SecretProtocol};
-pub use service::{SecretService, SecretServiceError, SecretServiceHandle};
-
-#[cfg(feature = "secp256k1")]
-pub use ethereum::Secp256k1ExtendedPrivKey;
+pub use service::{SecretService, SecretServiceActor, SecretServiceError, SecretServiceHandle};

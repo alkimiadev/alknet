@@ -25,6 +25,15 @@
 //!   → service returns to locked state
 //! ```
 //!
+//! # Dispatch Paths
+//!
+//! There are two ways to interact with the secret service:
+//!
+//! 1. **Local (in-process)**: `SecretServiceHandle` wraps `SecretServiceInner`
+//!    behind `Arc<RwLock<>>` and provides direct method calls without serialization.
+//! 2. **Remote (in-cluster)**: `SecretServiceActor` processes `SecretMessage`
+//!    variants from an mpsc channel and dispatches to the handle methods.
+//!
 //! # Assembly
 //!
 //! The `SecretService` is assembled by the CLI binary or NAPI layer. Per ADR-027,
@@ -36,11 +45,17 @@ use std::sync::{Arc, RwLock};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use irpc::WithChannels;
+use serde::{Deserialize, Serialize};
 
 use crate::cache::{CacheConfig, CachedKey, KeyCache};
 use crate::derivation::{self, DerivationError, PATHS};
 use crate::encryption::{self, EncryptedData, EncryptionKey};
 use crate::mnemonic::{Language, Mnemonic, Seed};
+use crate::protocol::{
+    Decrypt, DeriveEd25519, DeriveEncryptionKey, DeriveEthereumKey, DerivePassword, Encrypt,
+    SecretMessage, SecretProtocol, Unlock,
+};
 use crate::protocol::{DerivedKey, KeyType};
 
 /// Handle to a running SecretService for local (in-process) use.
@@ -65,7 +80,7 @@ struct SecretServiceInner {
 }
 
 /// Errors that can occur during secret service operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
 pub enum SecretServiceError {
     #[error("service is locked; call Unlock first")]
     ServiceLocked,
@@ -166,8 +181,8 @@ impl SecretServiceHandle {
     pub fn lock(&self) {
         let mut inner = self.inner.write().unwrap();
         inner.cache.clear();
-        inner.seed = None; // Seed's Zeroize drop handles the zeroization
-        inner.mnemonic = None; // Mnemonic's Zeroize drop handles the zeroization
+        inner.seed = None;
+        inner.mnemonic = None;
         inner.unlocked = false;
     }
 
@@ -267,7 +282,8 @@ impl SecretServiceHandle {
             let key = crate::ethereum::derive_secp256k1_path(seed.as_bytes(), path)?;
             let private_key = key.private_key().to_vec();
             let public_key = key.public_key().to_vec();
-            let cached = CachedKey::new(KeyType::Secp256k1, private_key.clone(), public_key.clone());
+            let cached =
+                CachedKey::new(KeyType::Secp256k1, private_key.clone(), public_key.clone());
             inner.cache.insert(path, cached);
             Ok(DerivedKey {
                 key_type: KeyType::Secp256k1,
@@ -409,9 +425,134 @@ impl Default for SecretService {
     }
 }
 
+/// Actor that processes `SecretMessage` variants and dispatches to `SecretServiceHandle`.
+///
+/// The actor runs as a `tokio::task`, receives messages from an mpsc channel,
+/// dispatches to the handle methods, and sends responses through oneshot channels.
+///
+/// # Usage
+///
+/// ```ignore
+/// let handle = SecretServiceHandle::new();
+/// let (client, actor) = SecretServiceActor::spawn(handle);
+/// tokio::task::spawn(actor.run(rx));
+/// // Use client to send messages
+/// ```
+pub struct SecretServiceActor {
+    handle: SecretServiceHandle,
+}
+
+impl SecretServiceActor {
+    /// Create a new actor wrapping the given handle.
+    pub fn new(handle: SecretServiceHandle) -> Self {
+        Self { handle }
+    }
+
+    /// Run the actor message loop, processing `SecretMessage` variants.
+    ///
+    /// This method runs until the receiver channel is closed. Each message
+    /// variant is dispatched to the corresponding `SecretServiceHandle` method
+    /// and the response is sent through the oneshot channel embedded in the message.
+    pub async fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<SecretMessage>) {
+        while let Some(msg) = rx.recv().await {
+            self.handle_message(msg);
+        }
+    }
+
+    /// Spawn the actor as a `tokio::task` and return a `Client<SecretProtocol>` for sending messages.
+    ///
+    /// The actor runs on a tokio task and processes messages from the mpsc channel.
+    /// The returned `Client<SecretProtocol>` can be used to send `SecretMessage` variants
+    /// to the actor.
+    pub fn spawn(
+        handle: SecretServiceHandle,
+    ) -> (irpc::Client<SecretProtocol>, SecretServiceActor) {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let client = irpc::Client::local(tx);
+        let actor = Self::new(handle.clone());
+        tokio::task::spawn(actor.run(rx));
+        (client, Self::new(handle))
+    }
+
+    /// Handle a single `SecretMessage` by dispatching to the appropriate handle method.
+    fn handle_message(&mut self, msg: SecretMessage) {
+        match msg {
+            SecretMessage::DeriveEd25519(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let DeriveEd25519 { path } = inner;
+                let result = self.handle.derive_ed25519(&path);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+            SecretMessage::DeriveEncryptionKey(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let DeriveEncryptionKey { path } = inner;
+                let result = self.handle.derive_encryption_key(&path);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+            SecretMessage::DeriveEthereumKey(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let DeriveEthereumKey { path } = inner;
+                let result = self.handle.derive_ethereum_key(&path);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+            SecretMessage::DerivePassword(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let DerivePassword { path, length } = inner;
+                let result = self.handle.derive_password(&path, length);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+            SecretMessage::Encrypt(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let Encrypt {
+                    plaintext,
+                    key_version,
+                } = inner;
+                let result = self.handle.encrypt(&plaintext, key_version);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+            SecretMessage::Decrypt(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let Decrypt { encrypted } = inner;
+                let result = self.handle.decrypt(&encrypted);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+            SecretMessage::Lock(msg) => {
+                let WithChannels { inner: _, tx, .. } = msg;
+                self.handle.lock();
+                tokio::spawn(async move {
+                    let _ = tx.send(Ok(())).await;
+                });
+            }
+            SecretMessage::Unlock(msg) => {
+                let WithChannels { inner, tx, .. } = msg;
+                let Unlock { passphrase } = inner;
+                let result = self.handle.unlock(&passphrase, None);
+                tokio::spawn(async move {
+                    let _ = tx.send(result).await;
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Lock;
+    use irpc::channel::oneshot;
+    use irpc::WithChannels;
 
     #[test]
     fn test_service_starts_locked() {
@@ -455,25 +596,19 @@ mod tests {
     fn test_full_lifecycle() {
         let service = SecretServiceHandle::new();
 
-        // Starts locked
         assert!(!service.is_unlocked());
 
-        // Can't derive while locked
         assert!(service.derive_ed25519(PATHS::IDENTITY).is_err());
 
-        // Unlock
         let _phrase = service.unlock_new(24).unwrap();
         assert!(service.is_unlocked());
 
-        // Can derive while unlocked
         let key = service.derive_ed25519(PATHS::IDENTITY).unwrap();
         assert!(!key.private_key.is_empty());
 
-        // Lock
         service.lock();
         assert!(!service.is_unlocked());
 
-        // Can't derive again
         assert!(service.derive_ed25519(PATHS::IDENTITY).is_err());
     }
 
@@ -481,11 +616,9 @@ mod tests {
     fn test_unlock_with_known_phrase() {
         let service = SecretServiceHandle::new();
 
-        // Generate a phrase
         let phrase = service.unlock_new(24).unwrap();
         service.lock();
 
-        // Re-unlock with the same phrase
         service.unlock(&phrase, None).unwrap();
         assert!(service.is_unlocked());
     }
@@ -509,7 +642,6 @@ mod tests {
         let decrypted = service.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
 
-        // After lock, can't decrypt
         service.lock();
         assert!(service.decrypt(&encrypted).is_err());
     }
@@ -571,7 +703,6 @@ mod tests {
         let path = "m/74'/1'/0'/42'";
         let encoded = service.derive_password_string(path, 16).unwrap();
 
-        // Base64url no-pad: only [A-Za-z0-9-_], no '=' padding
         assert!(!encoded.contains('='), "Base64url must not contain padding");
         assert!(
             encoded
@@ -580,7 +711,6 @@ mod tests {
             "Base64url must only contain URL-safe characters"
         );
 
-        // Verify round-trip: decode the string and compare with raw bytes
         let raw_bytes = service.derive_password(path, 16).unwrap();
         let decoded = URL_SAFE_NO_PAD.decode(&encoded).unwrap();
         assert_eq!(raw_bytes, decoded);
@@ -712,5 +842,70 @@ mod tests {
         assert_eq!(decrypted, plaintext);
 
         assert_eq!(service.inner.read().unwrap().cache.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_actor_unlock_responds_successfully() {
+        let handle = SecretServiceHandle::new();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let actor = SecretServiceActor::new(handle);
+        tokio::task::spawn(actor.run(rx));
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let msg = SecretMessage::Unlock(WithChannels::from((
+            Unlock {
+                passphrase: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+            },
+            resp_tx,
+        )));
+        tx.send(msg).await.unwrap();
+
+        let result = resp_rx.await.unwrap();
+        assert!(result.is_ok(), "Unlock via actor must succeed");
+    }
+
+    #[tokio::test]
+    async fn test_actor_derive_ed25519_returns_key() {
+        let handle = SecretServiceHandle::new();
+        handle.unlock_new(24).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let actor = SecretServiceActor::new(handle);
+        tokio::task::spawn(actor.run(rx));
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let msg = SecretMessage::DeriveEd25519(WithChannels::from((
+            DeriveEd25519 {
+                path: PATHS::IDENTITY.to_string(),
+            },
+            resp_tx,
+        )));
+        tx.send(msg).await.unwrap();
+
+        let result = resp_rx.await.unwrap();
+        assert!(result.is_ok(), "DeriveEd25519 via actor must succeed");
+        let key = result.unwrap();
+        assert!(
+            !key.private_key.is_empty(),
+            "DerivedKey must have private_key"
+        );
+        assert_eq!(key.key_type, KeyType::Ed25519);
+    }
+
+    #[tokio::test]
+    async fn test_actor_lock_clears_state() {
+        let handle = SecretServiceHandle::new();
+        handle.unlock_new(24).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let actor = SecretServiceActor::new(handle.clone());
+        tokio::task::spawn(actor.run(rx));
+
+        let (resp_tx, resp_rx): (oneshot::Sender<Result<(), SecretServiceError>>, _) =
+            oneshot::channel();
+        let msg = SecretMessage::Lock(WithChannels::from((Lock, resp_tx)));
+        tx.send(msg).await.unwrap();
+
+        let result = resp_rx.await.unwrap();
+        assert!(result.is_ok(), "Lock via actor must succeed");
+        assert!(!handle.is_unlocked(), "Handle must be locked after Lock");
     }
 }

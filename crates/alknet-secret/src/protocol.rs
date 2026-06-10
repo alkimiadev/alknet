@@ -21,6 +21,7 @@
 
 use std::fmt;
 
+use irpc::rpc_requests;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroize;
 
@@ -44,9 +45,11 @@ pub enum KeyType {
 /// `DerivedKey` by value and must zeroize it when done (handled automatically
 /// by `#[zeroize(drop)]`).
 ///
-/// Serialization redacts the `private_key` field for safety: JSON/debug output
-/// shows `"[REDACTED]"` instead of the key bytes. Deserialization still reads
-/// the full bytes for protocol use (postcard/irpc).
+/// Serialization redacts the `private_key` field for human-readable formats
+/// (JSON) for safety, showing `"[REDACTED]"` instead of the key bytes. For
+/// binary formats (postcard, used by irpc), the actual bytes are serialized
+/// so that remote communication works correctly. Deserialization always reads
+/// the full bytes.
 #[derive(Zeroize, Deserialize)]
 #[zeroize(drop)]
 pub struct DerivedKey {
@@ -79,31 +82,44 @@ impl fmt::Debug for DerivedKey {
 impl Serialize for DerivedKey {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = s.serialize_struct("DerivedKey", 3)?;
-        state.serialize_field("key_type", &self.key_type)?;
-        state.serialize_field("private_key", "[REDACTED]")?;
-        state.serialize_field("public_key", &self.public_key)?;
-        state.end()
+        if s.is_human_readable() {
+            let mut state = s.serialize_struct("DerivedKey", 3)?;
+            state.serialize_field("key_type", &self.key_type)?;
+            state.serialize_field("private_key", "[REDACTED]")?;
+            state.serialize_field("public_key", &self.public_key)?;
+            state.end()
+        } else {
+            let mut state = s.serialize_struct("DerivedKey", 3)?;
+            state.serialize_field("key_type", &self.key_type)?;
+            state.serialize_field("private_key", &self.private_key)?;
+            state.serialize_field("public_key", &self.public_key)?;
+            state.end()
+        }
     }
 }
 
 /// SecretProtocol service definition.
 ///
 /// This is the irpc protocol enum that defines all secret service operations.
-/// The `#[rpc_requests]` macro generates two versions:
-/// - **Serializable** (`SecretMessage::Request`): for remote communication (postcard)
-/// - **With channels** (`SecretMessage::RequestWithChannels`): for local communication (tokio)
+/// The `#[rpc_requests]` macro generates:
+/// - **`SecretMessage`**: message enum with `WithChannels` wrappers for each variant
+/// - **`Channels<SecretProtocol>`** impls for each wrapper type
+/// - **`From`** impls for protocol enum and message enum conversions
+/// - **`Service`** and **`RemoteService`** trait impls for remote dispatch
 ///
 /// # State Requirements
 ///
 /// All operations except `Unlock` require the service to be in an **unlocked**
 /// state. Calling derive/encrypt/decrypt on a locked service returns an error.
+#[rpc_requests(message = SecretMessage, no_spans)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SecretProtocol {
     /// Derive an Ed25519 keypair at the given path.
     ///
     /// Path format: `m/74'/0'/0'/0'` (SLIP-0010 hardened-only notation).
     /// Returns a `DerivedKey` with `KeyType::Ed25519`.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::SecretServiceError>>)]
+    #[wrap(DeriveEd25519)]
     DeriveEd25519 {
         /// SLIP-0010 derivation path (e.g., "m/74'/0'/0'/0'").
         path: String,
@@ -113,6 +129,8 @@ pub enum SecretProtocol {
     ///
     /// The default encryption path is `m/74'/2'/0'/0'`.
     /// Returns a `DerivedKey` with `KeyType::Aes256Gcm`.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::SecretServiceError>>)]
+    #[wrap(DeriveEncryptionKey)]
     DeriveEncryptionKey {
         /// SLIP-0010 derivation path for the encryption key.
         path: String,
@@ -122,6 +140,8 @@ pub enum SecretProtocol {
     ///
     /// The default Ethereum path is `m/44'/60'/0'/0/0`.
     /// Returns a `DerivedKey` with `KeyType::Secp256k1`.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::SecretServiceError>>)]
+    #[wrap(DeriveEthereumKey)]
     DeriveEthereumKey {
         /// BIP-0032 derivation path (e.g., "m/44'/60'/0'/0/0").
         path: String,
@@ -131,6 +151,8 @@ pub enum SecretProtocol {
     ///
     /// Path format: `m/74'/1'/0'/{hash}'` (SLIP-0010 hardened notation).
     /// The `length` parameter controls the output length.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<Vec<u8>, crate::service::SecretServiceError>>)]
+    #[wrap(DerivePassword)]
     DerivePassword {
         /// SLIP-0010 derivation path for the password.
         path: String,
@@ -142,6 +164,8 @@ pub enum SecretProtocol {
     ///
     /// The key is derived at the path `m/74'/2'/0'/0'` with the given version.
     /// Returns an `EncryptedData` blob suitable for storage.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<EncryptedData, crate::service::SecretServiceError>>)]
+    #[wrap(Encrypt)]
     Encrypt {
         /// The plaintext string to encrypt.
         plaintext: String,
@@ -152,6 +176,8 @@ pub enum SecretProtocol {
     /// Decrypt an `EncryptedData` blob back to plaintext.
     ///
     /// The key is derived from the seed at the path indicated by the key version.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<String, crate::service::SecretServiceError>>)]
+    #[wrap(Decrypt)]
     Decrypt {
         /// The encrypted data blob to decrypt.
         encrypted: EncryptedData,
@@ -162,23 +188,21 @@ pub enum SecretProtocol {
     /// After locking, no derive/encrypt/decrypt operations are possible
     /// until `Unlock` is called again. Calls `zeroize()` on all sensitive
     /// material (ADR-038).
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::SecretServiceError>>)]
+    #[wrap(Lock)]
     Lock,
 
     /// Unlock the service with a BIP39 passphrase.
     ///
     /// The passphrase is used to derive the master seed from the mnemonic.
     /// After unlocking, derive and encrypt/decrypt operations are available.
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::SecretServiceError>>)]
+    #[wrap(Unlock)]
     Unlock {
         /// The BIP39 passphrase (may be empty for no passphrase).
         passphrase: String,
     },
 }
-
-/// Message type for SecretProtocol irpc communication.
-///
-/// TODO: Replace with irpc `#[rpc_requests]` macro-generated type once
-/// the irpc crate is integrated. For now, this is a placeholder type alias.
-pub type SecretMessage = SecretProtocol;
 
 #[cfg(test)]
 mod tests {
@@ -208,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn test_derived_key_serialize_redacts_private_key() {
+    fn test_derived_key_serialize_redacts_private_key_json() {
         let key = make_test_key();
         let json = serde_json::to_string(&key).unwrap();
         assert!(
@@ -220,6 +244,23 @@ mod tests {
             "JSON must show [REDACTED] for private_key"
         );
         assert!(json.contains("Ed25519"), "JSON must contain key_type");
+    }
+
+    #[test]
+    fn test_derived_key_serialize_preserves_bytes_postcard() {
+        let key = make_test_key();
+        let bytes = postcard::to_allocvec(&key).unwrap();
+        let restored: DerivedKey = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            restored.private_key,
+            vec![0xABu8; 32],
+            "postcard must preserve private_key bytes"
+        );
+        assert_eq!(
+            restored.public_key,
+            vec![0xCDu8; 32],
+            "postcard must preserve public_key bytes"
+        );
     }
 
     #[test]
@@ -242,19 +283,12 @@ mod tests {
             public_key: vec![0x00u8; 32],
         };
         drop(key);
-        // Verifies that DerivedKey can be dropped without panic.
-        // The #[zeroize(drop)] attribute ensures private_key is zeroized
-        // before the Vec is deallocated.
     }
 
     #[test]
     fn test_derived_key_not_clone() {
-        // This test verifies at compile time that DerivedKey does not implement Clone.
-        // If DerivedKey derived Clone, the following line would compile.
-        // Since it doesn't, we just verify the type exists and is move-only.
         let key = make_test_key();
-        let _moved = key; // Moves ownership
-                          // key is now moved — trying to use it would be a compile error
+        let _moved = key;
     }
 
     #[test]
@@ -265,7 +299,6 @@ mod tests {
 
         key.zeroize();
 
-        // After zeroize, private_key Vec is cleared (length 0, buffer zeroed)
         assert!(
             key.private_key.is_empty(),
             "zeroize() must clear the private_key Vec"
