@@ -1,7 +1,7 @@
 ---
 id: spec-update-secret-service
 name: Update secret-service.md spec to close implementation-identified gaps
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
