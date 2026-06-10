@@ -24,15 +24,17 @@ The Ethereum path `m/44'/60'/0'/0/0` has **unhardened** indices at positions 4 a
 
 **Implementation:**
 
-1. Add `libsecp256k1` as an optional dependency behind a `secp256k1` feature flag:
+1. Add the `secp256k1` crate (Rust bindings to libsecp256k1) as an optional dependency behind a `secp256k1` feature flag:
 
    ```toml
    [features]
-   secp256k1 = ["dep:libsecp256k1"]
+   secp256k1 = ["dep:secp256k1"]
 
    [dependencies]
-   libsecp256k1 = { version = "0.7", optional = true }
+   secp256k1 = { version = "0.29", optional = true }
    ```
+
+   **Note**: The Rust crate is named `secp256k1` on crates.io (it wraps the C library `libsecp256k1`). Do not use `libsecp256k1` — that is the C library name, not the Rust crate name.
 
 2. Add a `ethereum.rs` module (behind `secp256k1` feature flag) that implements BIP-0032 secp256k1 derivation:
    - `derive_secp256k1_master_key(seed: &[u8]) -> Result<Secp256k1ExtendedKey, DerivationError>`
@@ -53,7 +55,7 @@ The Ethereum path `m/44'/60'/0'/0/0` has **unhardened** indices at positions 4 a
 
 ## Acceptance Criteria
 
-- [ ] `libsecp256k1` dependency added behind `secp256k1` feature flag in `Cargo.toml`
+- [ ] `secp256k1` crate (Rust bindings to libsecp256k1) added behind `secp256k1` feature flag in `Cargo.toml`
 - [ ] `ethereum.rs` module added (behind `secp256k1` feature flag) with BIP-0032 secp256k1 derivation
 - [ ] `derive_secp256k1_master_key()` uses HMAC-SHA512 with "Bitcoin seed" key
 - [ ] `derive_secp256k1_path()` supports both hardened and unhardened indices
@@ -82,7 +84,7 @@ The Ethereum path `m/44'/60'/0'/0/0` has **unhardened** indices at positions 4 a
 
 > This task should be done after `derivedkey-zeroize-security` since `derive_ethereum_key` returns `DerivedKey` which will have the zeroize changes applied.
 
-> The `secp256k1` crate in Rust is `libsecp256k1` (crate name `secp256k1`). The `ed25519-bip32` crate handles SLIP-0010 Ed25519. These are different algorithms and must not be mixed.
+> The `secp256k1` crate on crates.io (version 0.29+) provides Rust bindings to the C library `libsecp256k1`. The `ed25519-bip32` crate handles SLIP-0010 Ed25519. These are different algorithms and must not be mixed.
 
 > For the Ethereum public key: BIP-0032 secp256k1 produces 33-byte compressed public keys. The `public_key` field in `DerivedKey` is `Vec<u8>`, so 33 bytes is fine. Document this size difference from Ed25519 (32-byte public keys).
 

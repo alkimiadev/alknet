@@ -9,6 +9,10 @@ repository.workspace = true
 [lib]
 name = "alknet_secret"
 
+[features]
+default = []
+secp256k1 = ["dep:secp256k1"]
+
 [dependencies]
 bip39 = { version = "2", features = ["rand"] }
 ed25519-bip32 = "0.4"
@@ -21,6 +25,9 @@ zeroize = { version = "1", features = ["derive"] }
 hmac = "0.12"
 rand = "0.8"
 base64 = "0.22"
+irpc = { workspace = true }
+irpc-derive = { workspace = true }
+secp256k1 = { version = "0.29", optional = true }
 
 [dev-dependencies]
 hex = "0.4"
