@@ -1,7 +1,7 @@
 ---
 id: review-alknet-secret-spec-conformance
 name: Review alknet-secret crate for spec conformance and prepare for Phase A integration
-status: pending
+status: completed
 depends_on: [spec-update-secret-service, derivedkey-zeroize-security, key-caching-ttl, irpc-secret-protocol-integration, derive-password-implementation, secp256k1-ethereum-derivation, encryption-salt-kdf, crypto-test-vectors]
 scope: moderate
 risk: low
