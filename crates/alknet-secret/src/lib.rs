@@ -28,6 +28,7 @@
 //! - [`service`] — `SecretService` implementation with Unlock/Lock lifecycle
 //! - [`ethereum`] — BIP-0032 secp256k1 HD key derivation (behind `secp256k1` feature)
 
+pub mod cache;
 pub mod derivation;
 pub mod encryption;
 pub mod mnemonic;
@@ -38,6 +39,7 @@ pub mod service;
 pub mod ethereum;
 
 // Re-export primary public API
+pub use cache::CacheConfig;
 pub use derivation::{DerivationError, ExtendedPrivKey, PATHS};
 pub use encryption::{EncryptedData, EncryptionError};
 pub use mnemonic::{Language, Mnemonic, Seed};

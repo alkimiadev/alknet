@@ -37,6 +37,7 @@ use std::sync::{Arc, RwLock};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 
+use crate::cache::{CacheConfig, CachedKey, KeyCache};
 use crate::derivation::{self, DerivationError, PATHS};
 use crate::encryption::{self, EncryptedData, EncryptionKey};
 use crate::mnemonic::{Language, Mnemonic, Seed};
@@ -59,6 +60,8 @@ struct SecretServiceInner {
     seed: Option<Seed>,
     /// Whether the service is unlocked.
     unlocked: bool,
+    /// TTL-based key cache with LRU eviction.
+    cache: KeyCache,
 }
 
 /// Errors that can occur during secret service operations.
@@ -99,13 +102,19 @@ impl From<encryption::EncryptionError> for SecretServiceError {
 }
 
 impl SecretServiceHandle {
-    /// Create a new SecretServiceHandle in the locked state.
+    /// Create a new SecretServiceHandle in the locked state with default cache config.
     pub fn new() -> Self {
+        Self::with_cache_config(CacheConfig::default())
+    }
+
+    /// Create a new SecretServiceHandle with the given cache configuration.
+    pub fn with_cache_config(config: CacheConfig) -> Self {
         Self {
             inner: Arc::new(RwLock::new(SecretServiceInner {
                 mnemonic: None,
                 seed: None,
                 unlocked: false,
+                cache: KeyCache::new(config),
             })),
         }
     }
@@ -156,6 +165,7 @@ impl SecretServiceHandle {
     /// material per ADR-038.
     pub fn lock(&self) {
         let mut inner = self.inner.write().unwrap();
+        inner.cache.clear();
         inner.seed = None; // Seed's Zeroize drop handles the zeroization
         inner.mnemonic = None; // Mnemonic's Zeroize drop handles the zeroization
         inner.unlocked = false;
@@ -168,39 +178,63 @@ impl SecretServiceHandle {
 
     /// Derive an Ed25519 keypair at the given path.
     pub fn derive_ed25519(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
-        let inner = self.inner.read().unwrap();
+        let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
+
+        if let Some(cached) = inner.cache.get(path) {
+            return Ok(DerivedKey {
+                key_type: cached.key_type.clone(),
+                private_key: cached.private_key.clone(),
+                public_key: cached.public_key.clone(),
+            });
+        }
+
         let seed = inner
             .seed
             .as_ref()
             .ok_or(SecretServiceError::ServiceLocked)?;
-
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
+        let private_key = key.private_key().to_vec();
+        let public_key = key.public_key().to_vec();
+        let cached = CachedKey::new(KeyType::Ed25519, private_key.clone(), public_key.clone());
+        inner.cache.insert(path, cached);
         Ok(DerivedKey {
             key_type: KeyType::Ed25519,
-            private_key: key.private_key().to_vec(),
-            public_key: key.public_key().to_vec(),
+            private_key,
+            public_key,
         })
     }
 
     /// Derive an AES-256-GCM encryption key at the given path.
     pub fn derive_encryption_key(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
-        let inner = self.inner.read().unwrap();
+        let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
+
+        if let Some(cached) = inner.cache.get(path) {
+            return Ok(DerivedKey {
+                key_type: cached.key_type.clone(),
+                private_key: cached.private_key.clone(),
+                public_key: cached.public_key.clone(),
+            });
+        }
+
         let seed = inner
             .seed
             .as_ref()
             .ok_or(SecretServiceError::ServiceLocked)?;
-
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
+        let private_key = key.private_key().to_vec();
+        let public_key = key.public_key().to_vec();
+        let cached = CachedKey::new(KeyType::Aes256Gcm, private_key.clone(), public_key.clone());
+        inner.cache.insert(path, cached);
         Ok(DerivedKey {
             key_type: KeyType::Aes256Gcm,
-            private_key: key.private_key().to_vec(),
-            public_key: key.public_key().to_vec(),
+            private_key,
+            public_key,
         })
     }
 
@@ -212,20 +246,33 @@ impl SecretServiceHandle {
     pub fn derive_ethereum_key(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
         #[cfg(feature = "secp256k1")]
         {
-            let inner = self.inner.read().unwrap();
+            let mut inner = self.inner.write().unwrap();
             if !inner.unlocked {
                 return Err(SecretServiceError::ServiceLocked);
             }
+
+            if let Some(cached) = inner.cache.get(path) {
+                return Ok(DerivedKey {
+                    key_type: cached.key_type.clone(),
+                    private_key: cached.private_key.clone(),
+                    public_key: cached.public_key.clone(),
+                });
+            }
+
             let seed = inner
                 .seed
                 .as_ref()
                 .ok_or(SecretServiceError::ServiceLocked)?;
 
             let key = crate::ethereum::derive_secp256k1_path(seed.as_bytes(), path)?;
+            let private_key = key.private_key().to_vec();
+            let public_key = key.public_key().to_vec();
+            let cached = CachedKey::new(KeyType::Secp256k1, private_key.clone(), public_key.clone());
+            inner.cache.insert(path, cached);
             Ok(DerivedKey {
                 key_type: KeyType::Secp256k1,
-                private_key: key.private_key().to_vec(),
-                public_key: key.public_key().to_vec(),
+                private_key,
+                public_key,
             })
         }
 
@@ -274,35 +321,54 @@ impl SecretServiceHandle {
         plaintext: &str,
         key_version: u32,
     ) -> Result<EncryptedData, SecretServiceError> {
-        let inner = self.inner.read().unwrap();
+        let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner
-            .seed
-            .as_ref()
-            .ok_or(SecretServiceError::ServiceLocked)?;
 
-        let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
-        let enc_key = EncryptionKey::from_derived_bytes(derived.private_key(), key_version);
+        let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
+            cached.private_key.clone()
+        } else {
+            let seed = inner
+                .seed
+                .as_ref()
+                .ok_or(SecretServiceError::ServiceLocked)?;
+            let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
+            let pk = derived.private_key().to_vec();
+            let pubk = derived.public_key().to_vec();
+            let cached = CachedKey::new(KeyType::Aes256Gcm, pk.clone(), pubk);
+            inner.cache.insert(PATHS::ENCRYPTION, cached);
+            pk
+        };
+
+        let enc_key = EncryptionKey::from_derived_bytes(&private_key, key_version);
 
         encryption::encrypt(plaintext, &enc_key).map_err(|e| e.into())
     }
 
     /// Decrypt an EncryptedData blob using the derived encryption key.
     pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, SecretServiceError> {
-        let inner = self.inner.read().unwrap();
+        let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner
-            .seed
-            .as_ref()
-            .ok_or(SecretServiceError::ServiceLocked)?;
 
-        let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
-        let enc_key =
-            EncryptionKey::from_derived_bytes(derived.private_key(), encrypted.key_version);
+        let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
+            cached.private_key.clone()
+        } else {
+            let seed = inner
+                .seed
+                .as_ref()
+                .ok_or(SecretServiceError::ServiceLocked)?;
+            let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
+            let pk = derived.private_key().to_vec();
+            let pubk = derived.public_key().to_vec();
+            let cached = CachedKey::new(KeyType::Aes256Gcm, pk.clone(), pubk);
+            inner.cache.insert(PATHS::ENCRYPTION, cached);
+            pk
+        };
+
+        let enc_key = EncryptionKey::from_derived_bytes(&private_key, encrypted.key_version);
 
         encryption::decrypt(encrypted, &enc_key).map_err(|e| e.into())
     }
@@ -396,7 +462,7 @@ mod tests {
         assert!(service.derive_ed25519(PATHS::IDENTITY).is_err());
 
         // Unlock
-        let phrase = service.unlock_new(24).unwrap();
+        let _phrase = service.unlock_new(24).unwrap();
         assert!(service.is_unlocked());
 
         // Can derive while unlocked
@@ -555,5 +621,96 @@ mod tests {
             result,
             Err(SecretServiceError::UnsupportedKeyType)
         ));
+    }
+
+    #[test]
+    fn test_cache_hit_avoids_re_derivation() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let key1 = service.derive_ed25519(PATHS::IDENTITY).unwrap();
+        let key2 = service.derive_ed25519(PATHS::IDENTITY).unwrap();
+
+        assert_eq!(key1.private_key, key2.private_key);
+        assert_eq!(key1.public_key, key2.public_key);
+
+        let cache_len = service.inner.read().unwrap().cache.len();
+        assert_eq!(cache_len, 1);
+    }
+
+    #[test]
+    fn test_cache_miss_derives_and_caches() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        assert_eq!(service.inner.read().unwrap().cache.len(), 0);
+
+        service.derive_ed25519(PATHS::IDENTITY).unwrap();
+
+        assert_eq!(service.inner.read().unwrap().cache.len(), 1);
+    }
+
+    #[test]
+    fn test_expired_entry_evicted_on_access() {
+        let config = crate::cache::CacheConfig::new(std::time::Duration::from_millis(5), 64);
+        let service = SecretServiceHandle::with_cache_config(config);
+        service.unlock_new(24).unwrap();
+
+        let key1 = service.derive_ed25519(PATHS::IDENTITY).unwrap();
+        assert_eq!(service.inner.read().unwrap().cache.len(), 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let key2 = service.derive_ed25519(PATHS::IDENTITY).unwrap();
+        assert_eq!(key1.private_key, key2.private_key);
+        assert_eq!(service.inner.read().unwrap().cache.len(), 1);
+    }
+
+    #[test]
+    fn test_lru_eviction_when_over_max_entries() {
+        let config = crate::cache::CacheConfig::new(std::time::Duration::from_secs(3600), 2);
+        let service = SecretServiceHandle::with_cache_config(config);
+        service.unlock_new(24).unwrap();
+
+        service.derive_ed25519(PATHS::IDENTITY).unwrap();
+        service.derive_ed25519(PATHS::SSH_HOST).unwrap();
+        assert_eq!(service.inner.read().unwrap().cache.len(), 2);
+
+        service.derive_ed25519(PATHS::ENCRYPTION).unwrap();
+        assert_eq!(service.inner.read().unwrap().cache.len(), 2);
+
+        let mut inner = service.inner.write().unwrap();
+        assert!(inner.cache.get(PATHS::IDENTITY).is_none());
+        assert!(inner.cache.get(PATHS::SSH_HOST).is_some());
+        assert!(inner.cache.get(PATHS::ENCRYPTION).is_some());
+    }
+
+    #[test]
+    fn test_lock_clears_all_cache_entries() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        service.derive_ed25519(PATHS::IDENTITY).unwrap();
+        service.derive_ed25519(PATHS::SSH_HOST).unwrap();
+        assert_eq!(service.inner.read().unwrap().cache.len(), 2);
+
+        service.lock();
+
+        assert_eq!(service.inner.read().unwrap().cache.len(), 0);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_uses_cached_encryption_key() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let plaintext = "cached-encryption-test";
+        let encrypted = service.encrypt(plaintext, 1).unwrap();
+        assert_eq!(service.inner.read().unwrap().cache.len(), 1);
+
+        let decrypted = service.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+
+        assert_eq!(service.inner.read().unwrap().cache.len(), 1);
     }
 }
