@@ -156,12 +156,12 @@ fn derive_master_key(seed: &[u8]) -> Result<XPrv, DerivationError> {
     Ok(XPrv::from_nonextended_force(&priv_bytes, &cc_bytes))
 }
 
-/// Parse a derivation path string into hardened child indices.
+/// Parse a derivation path string into child indices.
 ///
 /// Path format: `m/74'/0'/0'/0'`
-/// Each component must be a hardened index (with `'` or `h` suffix).
-/// Unhardened indices are allowed for BIP-0032 paths (e.g., Ethereum `m/44'/60'/0'/0/0`).
-fn parse_derivation_path(path: &str) -> Result<Vec<u32>, DerivationError> {
+/// Hardened indices have `'` or `h` suffix. Unhardened indices are allowed
+/// for BIP-0032 paths (e.g., Ethereum `m/44'/60'/0'/0/0`).
+pub fn parse_derivation_path(path: &str) -> Result<Vec<u32>, DerivationError> {
     if !path.starts_with('m') {
         return Err(DerivationError::InvalidPath(
             "path must start with 'm'".to_string(),
@@ -199,6 +199,10 @@ pub enum DerivationError {
     KeyDerivation(String),
     #[error("seed is not unlocked")]
     Locked,
+    #[error("secp256k1 error: {0}")]
+    Secp256k1(String),
+    #[error("unsupported key type")]
+    UnsupportedKeyType,
 }
 
 #[cfg(test)]

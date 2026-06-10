@@ -26,6 +26,7 @@
 //! - [`encryption`] — AES-256-GCM encrypt/decrypt and `EncryptedData` type
 //! - [`protocol`] — `SecretProtocol` irpc service enum, `DerivedKey`, `KeyType`
 //! - [`service`] — `SecretService` implementation with Unlock/Lock lifecycle
+//! - [`ethereum`] — BIP-0032 secp256k1 HD key derivation (behind `secp256k1` feature)
 
 pub mod derivation;
 pub mod encryption;
@@ -33,9 +34,15 @@ pub mod mnemonic;
 pub mod protocol;
 pub mod service;
 
+#[cfg(feature = "secp256k1")]
+pub mod ethereum;
+
 // Re-export primary public API
-pub use derivation::{ExtendedPrivKey, PATHS};
+pub use derivation::{DerivationError, ExtendedPrivKey, PATHS};
 pub use encryption::{EncryptedData, EncryptionError};
 pub use mnemonic::{Language, Mnemonic, Seed};
 pub use protocol::{DerivedKey, KeyType, SecretMessage, SecretProtocol};
 pub use service::{SecretService, SecretServiceError, SecretServiceHandle};
+
+#[cfg(feature = "secp256k1")]
+pub use ethereum::Secp256k1ExtendedPrivKey;
