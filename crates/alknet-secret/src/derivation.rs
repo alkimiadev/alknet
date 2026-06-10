@@ -133,8 +133,8 @@ pub fn derive_path_from_seed(seed: &[u8], path: &str) -> Result<ExtendedPrivKey,
 /// Uses HMAC-SHA512 with key "ed25519 seed" over the seed bytes,
 /// following SLIP-0010 specification.
 fn derive_master_key(seed: &[u8]) -> Result<XPrv, DerivationError> {
-    let mut mac =
-        HmacSha512::new_from_slice(b"ed25519 seed").map_err(|e| DerivationError::Hmac(e.to_string()))?;
+    let mut mac = HmacSha512::new_from_slice(b"ed25519 seed")
+        .map_err(|e| DerivationError::Hmac(e.to_string()))?;
     mac.update(seed);
     let result = mac.finalize().into_bytes();
 

@@ -3,8 +3,8 @@
 //! These tests verify the unlock/lock lifecycle, error conditions,
 //! and that the service correctly manages state transitions.
 
-use alknet_secret::service::{SecretServiceError, SecretServiceHandle};
 use alknet_secret::derivation::PATHS;
+use alknet_secret::service::{SecretServiceError, SecretServiceHandle};
 
 #[test]
 fn test_full_lifecycle() {
@@ -94,7 +94,5 @@ fn test_multiple_derive_paths_succeed() {
     // All standard paths should work
     let _identity = service.derive_ed25519(PATHS::IDENTITY).unwrap();
     let _ssh = service.derive_ed25519(PATHS::SSH_HOST).unwrap();
-    let _enc = service
-        .derive_encryption_key(PATHS::ENCRYPTION)
-        .unwrap();
+    let _enc = service.derive_encryption_key(PATHS::ENCRYPTION).unwrap();
 }
