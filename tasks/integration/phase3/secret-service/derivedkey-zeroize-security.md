@@ -1,7 +1,7 @@
 ---
 id: derivedkey-zeroize-security
 name: Make DerivedKey private_key Zeroize-derived and fix clone semantics for ADR-038 compliance
-status: pending
+status: completed
 depends_on: [spec-update-secret-service]
 scope: narrow
 risk: low
