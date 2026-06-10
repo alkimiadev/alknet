@@ -73,6 +73,8 @@ pub enum SecretServiceError {
     Encryption(String),
     #[error("invalid path: {0}")]
     InvalidPath(String),
+    #[error("unsupported key type")]
+    UnsupportedKeyType,
 }
 
 impl From<crate::mnemonic::MnemonicError> for SecretServiceError {
@@ -200,22 +202,35 @@ impl SecretServiceHandle {
     }
 
     /// Derive a secp256k1 (Ethereum) keypair at the given path.
+    ///
+    /// Uses BIP-0032 derivation (HMAC-SHA512 with "Bitcoin seed") when the
+    /// `secp256k1` feature is enabled. Returns `UnsupportedKeyType` when the
+    /// feature is disabled.
     pub fn derive_ethereum_key(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
-        let inner = self.inner.read().unwrap();
-        if !inner.unlocked {
-            return Err(SecretServiceError::ServiceLocked);
-        }
-        let seed = inner
-            .seed
-            .as_ref()
-            .ok_or(SecretServiceError::ServiceLocked)?;
+        #[cfg(feature = "secp256k1")]
+        {
+            let inner = self.inner.read().unwrap();
+            if !inner.unlocked {
+                return Err(SecretServiceError::ServiceLocked);
+            }
+            let seed = inner
+                .seed
+                .as_ref()
+                .ok_or(SecretServiceError::ServiceLocked)?;
 
-        let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
-        Ok(DerivedKey {
-            key_type: KeyType::Secp256k1,
-            private_key: key.private_key().to_vec(),
-            public_key: key.public_key().to_vec(),
-        })
+            let key = crate::ethereum::derive_secp256k1_path(seed.as_bytes(), path)?;
+            Ok(DerivedKey {
+                key_type: KeyType::Secp256k1,
+                private_key: key.private_key().to_vec(),
+                public_key: key.public_key().to_vec(),
+            })
+        }
+
+        #[cfg(not(feature = "secp256k1"))]
+        {
+            let _ = path;
+            Err(SecretServiceError::UnsupportedKeyType)
+        }
     }
 
     /// Encrypt plaintext using the derived encryption key.
@@ -398,5 +413,42 @@ mod tests {
         // After lock, can't decrypt
         service.lock();
         assert!(service.decrypt(&encrypted).is_err());
+    }
+
+    #[cfg(feature = "secp256k1")]
+    #[test]
+    fn test_derive_ethereum_key_bip32() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let key = service.derive_ethereum_key(PATHS::ETHEREUM).unwrap();
+        assert_eq!(key.key_type, KeyType::Secp256k1);
+        assert_eq!(key.private_key.len(), 32);
+        assert_eq!(key.public_key.len(), 33);
+    }
+
+    #[cfg(feature = "secp256k1")]
+    #[test]
+    fn test_ethereum_key_differs_from_ed25519() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let eth_key = service.derive_ethereum_key(PATHS::ETHEREUM).unwrap();
+        let ed_key = service.derive_ed25519(PATHS::IDENTITY).unwrap();
+
+        assert_ne!(eth_key.private_key, ed_key.private_key);
+    }
+
+    #[cfg(not(feature = "secp256k1"))]
+    #[test]
+    fn test_derive_ethereum_key_unsupported_without_feature() {
+        let service = SecretServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let result = service.derive_ethereum_key(PATHS::ETHEREUM);
+        assert!(matches!(
+            result,
+            Err(SecretServiceError::UnsupportedKeyType)
+        ));
     }
 }
