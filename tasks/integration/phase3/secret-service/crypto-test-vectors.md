@@ -1,7 +1,7 @@
 ---
 id: crypto-test-vectors
 name: Add BIP39 and SLIP-0010 known-answer test vectors for derivation correctness
-status: pending
+status: completed
 depends_on: [spec-update-secret-service]
 scope: moderate
 risk: low
