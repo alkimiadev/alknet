@@ -142,8 +142,8 @@ pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, En
 
     Ok(EncryptedData {
         key_version: key.key_version,
-        salt: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &salt_bytes),
-        iv: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &iv_bytes),
+        salt: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, salt_bytes),
+        iv: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, iv_bytes),
         data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &ciphertext),
     })
 }
@@ -162,8 +162,9 @@ pub fn decrypt(encrypted: &EncryptedData, key: &EncryptionKey) -> Result<String,
     let cipher = Aes256Gcm::new_from_slice(&key.key_bytes)
         .map_err(|e| EncryptionError::Decryption(format!("invalid key length: {e}")))?;
 
-    let iv_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encrypted.iv)
-        .map_err(|e| EncryptionError::Decoding(e.to_string()))?;
+    let iv_bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encrypted.iv)
+            .map_err(|e| EncryptionError::Decoding(e.to_string()))?;
     let nonce = Nonce::from_slice(&iv_bytes);
 
     let ciphertext =

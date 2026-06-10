@@ -167,7 +167,10 @@ impl SecretServiceHandle {
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner.seed.as_ref().ok_or(SecretServiceError::ServiceLocked)?;
+        let seed = inner
+            .seed
+            .as_ref()
+            .ok_or(SecretServiceError::ServiceLocked)?;
 
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         Ok(DerivedKey {
@@ -183,7 +186,10 @@ impl SecretServiceHandle {
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner.seed.as_ref().ok_or(SecretServiceError::ServiceLocked)?;
+        let seed = inner
+            .seed
+            .as_ref()
+            .ok_or(SecretServiceError::ServiceLocked)?;
 
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         Ok(DerivedKey {
@@ -199,7 +205,10 @@ impl SecretServiceHandle {
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner.seed.as_ref().ok_or(SecretServiceError::ServiceLocked)?;
+        let seed = inner
+            .seed
+            .as_ref()
+            .ok_or(SecretServiceError::ServiceLocked)?;
 
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         Ok(DerivedKey {
@@ -212,12 +221,19 @@ impl SecretServiceHandle {
     /// Encrypt plaintext using the derived encryption key.
     ///
     /// Uses the key at path `m/74'/2'/0'/0'` (PATHS::ENCRYPTION) by default.
-    pub fn encrypt(&self, plaintext: &str, key_version: u32) -> Result<EncryptedData, SecretServiceError> {
+    pub fn encrypt(
+        &self,
+        plaintext: &str,
+        key_version: u32,
+    ) -> Result<EncryptedData, SecretServiceError> {
         let inner = self.inner.read().unwrap();
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner.seed.as_ref().ok_or(SecretServiceError::ServiceLocked)?;
+        let seed = inner
+            .seed
+            .as_ref()
+            .ok_or(SecretServiceError::ServiceLocked)?;
 
         let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
         let enc_key = EncryptionKey::from_derived_bytes(derived.private_key(), key_version);
@@ -231,10 +247,14 @@ impl SecretServiceHandle {
         if !inner.unlocked {
             return Err(SecretServiceError::ServiceLocked);
         }
-        let seed = inner.seed.as_ref().ok_or(SecretServiceError::ServiceLocked)?;
+        let seed = inner
+            .seed
+            .as_ref()
+            .ok_or(SecretServiceError::ServiceLocked)?;
 
         let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
-        let enc_key = EncryptionKey::from_derived_bytes(derived.private_key(), encrypted.key_version);
+        let enc_key =
+            EncryptionKey::from_derived_bytes(derived.private_key(), encrypted.key_version);
 
         encryption::decrypt(encrypted, &enc_key).map_err(|e| e.into())
     }

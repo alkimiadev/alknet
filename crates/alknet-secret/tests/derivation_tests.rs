@@ -22,13 +22,8 @@ fn test_encryption_key_derivation() {
     let service = SecretServiceHandle::new();
     service.unlock_new(24).unwrap();
 
-    let key = service
-        .derive_encryption_key(PATHS::ENCRYPTION)
-        .unwrap();
-    assert_eq!(
-        key.key_type,
-        alknet_secret::protocol::KeyType::Aes256Gcm
-    );
+    let key = service.derive_encryption_key(PATHS::ENCRYPTION).unwrap();
+    assert_eq!(key.key_type, alknet_secret::protocol::KeyType::Aes256Gcm);
 }
 
 #[test]
