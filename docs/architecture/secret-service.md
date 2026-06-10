@@ -39,37 +39,42 @@ alknet-secret/
 │   ├── derivation.rs     # SLIP-0010: HD key derivation, path constants
 │   ├── encryption.rs     # AES-256-GCM: encrypt/decrypt, EncryptedData type
 │   ├── protocol.rs       # SecretProtocol irpc service enum, DerivedKey, KeyType
-│   ├── service.rs        # SecretServiceImpl: in-memory seed, Unlock/Lock lifecycle
-│   └── cache.rs          # Key caching: LRU cache with TTL, derivation path as key
+│   ├── service.rs        # SecretService, SecretServiceHandle, SecretServiceActor
+│   ├── cache.rs          # Key caching: LRU cache with TTL, derivation path as key
+│   └── ethereum.rs       # BIP-0032 secp256k1 HD key derivation (behind feature flag)
 └── tests/
     ├── derivation_tests.rs  # Path derivation, coin type 74' consistency
     ├── encryption_tests.rs  # Round-trip encrypt/decrypt, key version
     ├── service_tests.rs     # Unlock/Lock lifecycle, derive on locked = error
-    └── vectors_tests.rs     # Known-answer tests: BIP39, SLIP-0010, AES-256-GCM
+    └── test_vectors.rs      # Known-answer tests: BIP39, SLIP-0010, AES-256-GCM
 ```
 
 ### Dependencies
 
 ```toml
 [dependencies]
-bip39 = "2"
-ed25519-bip32 = "0.x"       # IOHK SLIP-0010 Ed25519 HD derivation
-aes-gcm = "0.10"             # AES-256-GCM
+bip39 = { version = "2", features = ["rand"] }
+ed25519-bip32 = "0.4"        # IOHK SLIP-0010 Ed25519 HD derivation
+aes-gcm = "0.10"              # AES-256-GCM
 sha2 = "0.10"                 # SHA-256 (also used for HMAC-SHA512 in password derivation)
+hmac = "0.12"                 # HMAC-SHA512 for key derivation
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-irpc = "0.x"                  # Always-on, not feature-gated (ADR-027)
+irpc = { workspace = true }   # Always-on, not feature-gated (ADR-027)
+irpc-derive = { workspace = true }  # Proc-macro for #[rpc_requests]
+tokio = { version = "1", features = ["sync", "rt", "macros"] }  # Async runtime for SecretServiceActor
 zeroize = { version = "1", features = ["derive"] }  # Secure memory wiping (ADR-038)
 base64 = "0.22"               # Base64url encoding for derived passwords
+rand = "0.8"                  # Random IV/salt generation for AES-256-GCM
 
-[dependencies.libsecp256k1]
-version = "0.7"
+[dependencies.secp256k1]
+version = "0.29"
 optional = true               # BIP-0032 secp256k1 derivation (behind feature flag)
 
 [features]
 default = []
-secp256k1 = ["libsecp256k1"]  # Enable Ethereum/secp256k1 key derivation
+secp256k1 = ["dep:secp256k1"]  # Enable Ethereum/secp256k1 key derivation
 
 # Future (Phase B): key rotation via KDF
 # hkdf = "0.12"               # HKDF for salt-based key stretching (deferred)
@@ -79,10 +84,15 @@ secp256k1 = ["libsecp256k1"]  # Enable Ethereum/secp256k1 key derivation
 irpc is always a dependency (not behind a feature flag). Per ADR-027, irpc
 in alknet-secret and alknet-storage is not feature-gated because these crates
 are used in production deployments where the service layer is always active.
+`irpc-derive` provides the `#[rpc_requests]` proc-macro that generates
+`SecretMessage` and channel plumbing. `tokio` is needed for the
+`SecretServiceActor` message loop (async channel receivers and task spawning).
 
-The `libsecp256k1` crate is feature-gated behind `secp256k1` because
+The `secp256k1` crate is feature-gated behind the `secp256k1` feature because
 Ethereum/BIP-0032 derivation is not needed in minimal deployments. Only
-deployments that require `DeriveEthereumKey` should enable this feature.
+deployments that require `DeriveEthereumKey` should enable this feature. Note
+that the crate name is `secp256k1` (the Rust library), not `libsecp256k1`
+(the C library that the Rust crate wraps).
 
 The `hkdf` and `pbkdf2` crates are deferred to Phase B. They will be needed for
 salt-based key stretching when key rotation is implemented (see
@@ -95,14 +105,15 @@ The crate exposes these types as its stable public interface:
 ```rust
 // Core types (always available)
 pub use mnemonic::{Mnemonic, Language, Seed};
-pub use derivation::{ExtendedPrivKey, DerivationPath, PATHS};
+pub use derivation::{ExtendedPrivKey, DerivationError, PATHS};
 pub use encryption::{EncryptedData, EncryptionError};
 pub use protocol::{SecretProtocol, DerivedKey, KeyType, SecretMessage};
-pub use service::{SecretService, SecretServiceHandle, SecretServiceError};
+pub use service::{SecretService, SecretServiceHandle, SecretServiceActor, SecretServiceError};
+pub use cache::CacheConfig;
 
 // secp256k1 types (behind feature flag)
 #[cfg(feature = "secp256k1")]
-pub use derivation::Secp256k1ExtendedPrivKey;
+pub use ethereum::Secp256k1ExtendedPrivKey;
 ```
 
 Other crates consume this interface:
@@ -154,8 +165,8 @@ encryption) while ensuring that `Lock` purges all sensitive material.
 
 ```rust
 let mnemonic = Mnemonic::from_phrase(&phrase, Language::English)?;
-let seed = mnemonic.to_seed(Some(&passphrase));
-let master_key = ExtendedPrivKey::new_master(Network::Alknet, &seed)?;
+let seed = mnemonic.to_seed(None); // or Some("passphrase")
+let key = derive_path_from_seed(seed.as_bytes(), PATHS::IDENTITY)?;
 ```
 
 #### SLIP-0010 Ed25519 HD Key Derivation
@@ -193,6 +204,13 @@ does not impose a special character set — the Base64url alphabet (`A-Z`,
 set is required in the future, a versioned path can be introduced
 (e.g., `m/74'/1'/1'/{hash}'`).
 
+The `SecretServiceHandle` provides two methods for password derivation:
+- `derive_password(path, length)` → `Vec<u8>` (raw truncated bytes)
+- `derive_password_string(path, length)` → `String` (Base64url-encoded)
+
+The irpc `DerivePassword` variant returns raw bytes (`Vec<u8>`). Consumers
+who need a string representation can Base64url-encode the result.
+
 #### secp256k1 Derivation (Ethereum)
 
 `DeriveEthereumKey` uses **BIP-0032** (not SLIP-0010) at path
@@ -217,20 +235,30 @@ use `#[zeroize(drop)]` to ensure sensitive key material is overwritten before
 deallocation:
 
 ```rust
-#[derive(Zeroize)]
+#[derive(Zeroize, Deserialize)]
 #[zeroize(drop)]
 pub struct DerivedKey {
+    #[zeroize(skip)]
     pub key_type: KeyType,
     #[zeroize]
+    #[serde(deserialize_with = "deserialize_private_key")]
     pub private_key: Vec<u8>,
+    #[zeroize(skip)]
     pub public_key: Vec<u8>,
 }
 ```
 
-Because `private_key` is zeroized on drop, `DerivedKey` cannot derive `Clone`
-directly on the `private_key` field. Instead, `Clone` is implemented manually
-with a custom `clone()` that zeroizes the source's `private_key` after copying
-it, ensuring no two `DerivedKey` instances share the same `Vec<u8>` allocation.
+`DerivedKey` is **move-only** — it does not implement `Clone`. This is a
+stronger security property than manual `Clone` with zeroization of the source:
+a move-only type cannot be accidentally duplicated, and the `#[zeroize(drop)]`
+annotation ensures the `private_key` is zeroized when the key goes out of scope.
+There is no risk of use-after-zeroize from a manual `clone()` that destroys
+the source.
+
+Serialization redacts `private_key` in human-readable formats (JSON shows
+`"[REDACTED]"`) but preserves the actual bytes in binary formats (postcard) so
+that irpc remote communication works correctly. Deserialization always reads
+the full bytes.
 
 ### AES-256-GCM Encryption for External Credentials
 
@@ -299,31 +327,19 @@ enum SecretProtocol {
 
     #[rpc(tx=oneshot::Sender<()>)]
     #[wrap(Unlock)]
-    Unlock { passphrase: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DerivedKey {
-    key_type: KeyType,
-    private_key: Vec<u8>,
-    public_key: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum KeyType {
-    Ed25519,
-    Aes256Gcm,
-    Secp256k1,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EncryptedData {
-    key_version: u32,
-    salt: String,   // Base64-encoded (reserved for future KDF, not used in v1)
-    iv: String,     // Base64-encoded
-    data: String,   // Base64-encoded
-}
+    Unlock { mnemonic: String, passphrase: Option<String> },
 ```
+
+**Note**: The `Unlock` variant carries both the mnemonic phrase and an optional
+BIP39 passphrase. The `mnemonic` field is the space-separated BIP39 word list.
+The `passphrase` field is the optional BIP39 password extension (sometimes
+called the "25th word"). Most deployments use `passphrase: None`, but the field
+is available for users who need additional security beyond the mnemonic alone.
+
+> **Implementation gap**: The current code has `Unlock { passphrase: String }`
+> with only a single field (the mnemonic), and the actor handler passes `None`
+> for the BIP39 passphrase. This needs to be updated to match the spec above.
+> See the `unlock-passphrase-gap` task.
 
 #### irpc Integration Model
 
@@ -350,6 +366,12 @@ There are two dispatch paths for consuming the secret service:
    messages (postcard-serialized) and receives responses. Workers on remote
    nodes use this path. The seed never leaves the secret service node — only
    derived keys are transmitted.
+
+The `SecretServiceActor` processes incoming `SecretMessage` variants by
+dispatching to the corresponding `SecretServiceHandle` methods. It provides
+a `spawn(handle)` convenience method that creates an mpsc channel, spawns the
+actor on a tokio task, and returns a `(Client<SecretProtocol>, SecretServiceActor)`
+tuple for immediate use.
 
 The `SecretService` type owns the irpc service handler and a
 `SecretServiceHandle`. It dispatches incoming `SecretMessage` variants to the
@@ -419,7 +441,7 @@ test vectors:
 
 These tests ensure that the implementation is correct and compatible with
 other BIP39/SLIP-0010/AES-256-GCM implementations. They are placed in
-`tests/vectors_tests.rs`.
+`tests/test_vectors.rs`.
 
 ## Constraints
 
@@ -439,11 +461,12 @@ other BIP39/SLIP-0010/AES-256-GCM implementations. They are placed in
   (postcard serialization). For call protocol exposure (e.g.,
   `/head/secrets/derive`), the service is wrapped in an operation that
   serializes to JSON.
-- `DerivedKey.private_key` must derive `Zeroize` per ADR-038. Clone is
-  implemented manually to zeroize the source on clone.
+- `DerivedKey.private_key` must derive `Zeroize` per ADR-038. `DerivedKey`
+  is move-only (not `Clone`) — this is stronger than manual Clone with
+  zeroization of the source, as it prevents accidental duplication.
 - secp256k1 (Ethereum) derivation is gated behind the `secp256k1` feature flag
   because it requires a different derivation algorithm (BIP-0032) and an
-  additional dependency (`libsecp256k1`).
+  additional dependency (`secp256k1`).
 
 ## Phase Progression
 
