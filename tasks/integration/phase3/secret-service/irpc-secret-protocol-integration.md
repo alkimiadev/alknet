@@ -1,7 +1,7 @@
 ---
 id: irpc-secret-protocol-integration
 name: Wire SecretProtocol to irpc with local SecretServiceHandle and remote dispatch
-status: pending
+status: completed
 depends_on: [spec-update-secret-service, key-caching-ttl]
 scope: moderate
 risk: medium
