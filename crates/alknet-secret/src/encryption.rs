@@ -4,6 +4,20 @@
 //! seed are encrypted using a key derived from the seed at path `m/74'/2'/0'/0'`.
 //! The `EncryptedData` type stores the key version, salt, IV, and ciphertext.
 //!
+//! # Salt Field (Reserved for Future KDF-Based Key Derivation)
+//!
+//! The `salt` field in `EncryptedData` is **reserved for future KDF-based key
+//! derivation** (Phase B). In v1, the encryption key is derived directly from the
+//! seed at path `m/74'/2'/0'/0'` without using the salt. The salt is generated
+//! randomly (32 bytes) and stored in `EncryptedData.salt` for forward
+//! compatibility, but it plays no role in the v1 key derivation process.
+//!
+//! When key rotation is implemented in Phase B, the salt will be used as input to
+//! HKDF or PBKDF2 for stretch-based key derivation, allowing the same seed to
+//! produce different encryption keys without changing the derivation path. This
+//! design ensures that the wire format does not need to change — the `salt` field
+//! is already present and populated.
+//!
 //! # Wire Format
 //!
 //! The `EncryptedData` struct is the stable wire format shared with alknet-storage.
@@ -45,7 +59,12 @@ pub const CURRENT_KEY_VERSION: u32 = 1;
 pub struct EncryptedData {
     /// Key version for rotation support.
     pub key_version: u32,
-    /// Base64-encoded random salt used for key derivation.
+    /// Base64-encoded random salt.
+    ///
+    /// **Reserved for future KDF-based key derivation (Phase B).** In v1, the
+    /// encryption key is derived directly from the seed at path `m/74'/2'/0'/0'`
+    /// without using the salt. The salt is generated and stored for forward
+    /// compatibility but does not participate in key derivation.
     pub salt: String,
     /// Base64-encoded initialization vector (12 bytes for AES-GCM).
     pub iv: String,
@@ -114,7 +133,7 @@ pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, En
     let iv_bytes: [u8; 12] = rand::random();
     let nonce = Nonce::from_slice(&iv_bytes);
 
-    // Generate random salt (32 bytes)
+    // TODO(Phase B): Use salt in HKDF-based key derivation
     let salt_bytes: [u8; 32] = rand::random();
 
     let ciphertext = cipher
