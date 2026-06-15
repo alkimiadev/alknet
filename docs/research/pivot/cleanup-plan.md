@@ -10,6 +10,7 @@
 2. **Reference docs are a library, not a plan.** The `references/` directory (iroh, ssh, nats, etc.) is neutral research about external projects. Those stay. But gitserver is MPL — see below.
 3. **ADRs that codify discarded abstractions become landmines.** An agent reading ADR-026 ("Transport/interface separation") will try to implement the three-layer model. These need to be marked superseded or archived.
 4. **Code that stays should compile cleanly.** We're not rewriting yet — we're making the existing code a clean reference implementation to port from.
+5. **Follow the SDD process.** This cleanup is preparation for Phase 0→1. After cleanup, the architect role will produce proper architecture specs following the format in `docs/sdd_process.md` — modular docs, ADRs, open questions, README index. No ad-hoc spec stubs.
 
 ---
 
@@ -29,6 +30,7 @@ These documents describe concepts that the ALPN pivot **replaces entirely**. The
 | `docs/architecture/credentials.md` | `CredentialProvider` phases A–D — simplifying per pivot |
 | `docs/architecture/napi-and-pubsub.md` | Describes pubsub event target adapter through SSH control channel — old model |
 | `docs/architecture/open-questions.md` | Most open questions are about the old model; will regenerate after pivot |
+| `docs/architecture/tun-shim.md` | Already deprecated |
 
 ### ADRs to mark superseded
 
@@ -95,10 +97,11 @@ These capture decisions that carry forward regardless of the refactor:
 - `docs/research/references/ssh/russh-sftp/` — SFTP protocol reference for `alknet-sftp`
 - `docs/research/references/ssh/sftp-rs/` — SFTP comparison reference
 - `docs/research/references/nats.rs/` — Service/pattern reference (not directly used but neutral)
-- `docs/research/references/honker/` — May be relevant for messaging/mixnet later
+- `docs/research/references/honker/` — SQLite pub/sub, queues, streams — may be relevant for in-node event system
 - `docs/research/references/polyglot/` — FFI patterns for NAPI/WASM
 - `docs/research/references/openstack-keystone/` — Auth patterns reference
-- `docs/research/references/rustfs/` — May be relevant for distributed storage later
+- `docs/research/references/rustfs/` — S3-compatible object storage reference
+- `docs/research/references/gitlfs/rudolfs-reference.md` — Git LFS server reference (MIT/Apache-2.0, fork candidate)
 - `docs/research/ops/` — fail2ban, certbot — production reference, still useful
 - `docs/research/feasibility/` — Historical context, keep
 
@@ -107,8 +110,6 @@ These capture decisions that carry forward regardless of the refactor:
 **`docs/research/references/gitserver/gitserver-reference.md`** — This references an MPL-2.0 project. The reference doc itself is our analysis, not derived work. However, since the git adapter will use `gix` (Apache-2.0/MIT) directly — not gitserver — keeping this doc around creates risk of an agent copying structure or logic from the MPL codebase.
 
 **Action:** Archive it. Replace with a `gix`-focused reference when we spec the git adapter. The research value is the git protocol knowledge, not the gitserver code structure.
-
-**`docs/research/references/gitlfs/rudolfs-reference.md`** — Unlike gitserver, rudolfs is MIT/Apache-2.0 licensed and is a legitimate candidate for forking. It's only missing a lock implementation and already has S3 storage support. The git ALPN adapter will need custom storage (likely iroh blobs for deduplication), but rudolfs's wire protocol handling and server structure are useful references. Keep this one.
 
 ### Archive (biased toward old model)
 
@@ -130,7 +131,7 @@ These capture decisions that carry forward regardless of the refactor:
 
 | Document | Reason |
 |----------|--------|
-| `docs/research/pivot/alpn-service-architecture.md` | **The plan.** This is current. |
+| `docs/research/pivot/alpn-service-architecture.md` | **The pivot proposal.** Current. |
 | `docs/research/pivot/cleanup-plan.md` | **This doc.** Current. |
 
 ---
@@ -150,7 +151,6 @@ These docs describe concepts that carry forward but need updating to reflect the
 | `docs/architecture/configuration.md` | ListenerConfig → ALPN advertisement config |
 | `docs/architecture/secret-service.md` | Unchanged — `alknet-secret` is standalone |
 | `docs/architecture/definitions.md` | Terminology needs update (interface, listener, handler → ALPN, handler) |
-| `docs/architecture/tun-shim.md` | Already deprecated — archive |
 
 ---
 
@@ -203,28 +203,41 @@ The current workspace only has `alknet-core`, `alknet-secret`, `alknet-napi`, an
 
 ---
 
-## Phase 5: Create Pivot Spec Stub
+## Phase 5: Architecture Specs (Follow SDD Process)
 
-After cleanup, create placeholder spec files for the new model. These are empty shells — just enough structure to guide the first implementation tasks:
+After cleanup, the architect role will produce proper architecture specs following the SDD process defined in `docs/sdd_process.md`. This means:
 
-```
-docs/research/pivot/
-├── alpn-service-architecture.md   (exists — the pivot proposal)
-├── cleanup-plan.md                (this file)
-├── specs/
-│   ├── 01-alknet-core-v2.md       (ProtocolHandler trait, ALPN router, BiStream, AuthContext)
-│   ├── 02-alknet-ssh.md           (SSH handler extraction)
-│   ├── 03-alknet-call.md          (Call protocol extraction)
-│   ├── 04-alknet-git.md           (Git adapter on gix)
-│   ├── 05-alknet-sftp.md          (SFTP adapter on russh-sftp)
-│   ├── 06-alknet-http.md          (HTTP adapter on axum)
-│   ├── 07-alknet-dns.md           (DNS adapter on hickory)
-│   ├── 08-alknet-msg.md           (Messaging adapter — E2E + mixnet)
-│   ├── 09-alknet-napi.md          (NAPI rewrite as call protocol client)
-│   └── 10-cli-binary.md           (CLI registers handlers)
-```
+- **Modular docs** in `docs/architecture/` — one focused doc per component/area
+- **ADRs** in `docs/architecture/decisions/` — new ADRs for pivot decisions (ALPN dispatch, ProtocolHandler trait, crate decomposition, etc.)
+- **Open questions** centralized in `docs/architecture/open-questions.md`
+- **README index** in `docs/architecture/README.md` with doc table, ADR table, lifecycle definitions
+- **YAML frontmatter** with `status`, `last_updated` on every doc
 
-These get filled in as we spec each component. They don't need content yet — just the file creation so the directory structure exists and the naming is established.
+The pivot proposal (`docs/research/pivot/alpn-service-architecture.md`) serves as Phase 0 research output. The architect will use it as input to produce Phase 1 architecture docs. No ad-hoc spec stubs — proper SDD specs from the start.
+
+Key new ADRs the architect will need to produce:
+
+| ADR | Title |
+|-----|-------|
+| 039 | ALPN-based protocol dispatch (replaces ADR-026, ADR-035) |
+| 040 | ProtocolHandler trait (replaces StreamInterface/MessageInterface) |
+| 041 | New crate decomposition (replaces ADR-027) |
+| 042 | Auth as shared core (replaces ADR-028) |
+| 043 | Event model per-handler (replaces ADR-032, ADR-018) |
+| 044 | ALPN negotiation replaces stealth mode (replaces ADR-017) |
+
+Key architecture docs the architect will need to produce or rewrite:
+
+| Document | Scope |
+|----------|-------|
+| `overview.md` | Rewrite — crate structure, ALPN dispatch model, exports |
+| `server.md` | Rewrite — ALPN router, handler registry, endpoint lifecycle |
+| `client.md` | Rewrite — connect to endpoint, open stream on ALPN |
+| `auth.md` | Update — IdentityProvider, per-handler credential table |
+| `call-protocol.md` | Rewrite — alknet-call as one ALPN, EventEnvelope framing |
+| `configuration.md` | Update — ALPN advertisement, handler config |
+| `identity.md` | Update — IdentityProvider simplification |
+| `definitions.md` | Update — new terminology |
 
 ---
 
@@ -233,13 +246,14 @@ These get filled in as we spec each component. They don't need content yet — j
 1. **Create `docs/_archived/` directory** and move files there (preserves git history)
 2. **Mark superseded ADRs** with `Superseded` status and pivot reference
 3. **Move obsolete research docs** to `docs/_archived/research/`
-4. **Annotate stale-but-keeping architecture docs** with `status: needs-update` header
+4. **Annotate stale-but-keeping architecture docs** with `status: needs-update` frontmatter and pivot reference note
 5. **Delete replaced code modules** from `alknet-core` (interface layer, stealth, control channel)
-6. **Create pivot spec stub directory** with empty spec files
-7. **Fix compilation** — removing modules will break imports. Fix them minimally (comment out, stub, or remove call sites) so the project compiles. This is temporary scaffolding, not the refactor.
+6. **Fix compilation** — removing modules will break imports. Fix them minimally (comment out, stub, or remove call sites) so the project compiles. This is temporary scaffolding, not the refactor.
+7. **Architect produces proper SDD architecture specs** per Phase 1 of the SDD process
 
 After this cleanup, the repo should:
 - Compile (possibly with reduced functionality)
 - Have no references to `StreamInterface`, `MessageInterface`, `ListenerConfig`, or stealth mode in active docs
-- Have clear spec stubs for the new model
+- Have superseded ADRs clearly marked so agents don't implement the old model
 - Have all obsolete material in `docs/_archived/` where it won't bias agents
+- Be ready for the architect role to produce proper Phase 1 architecture specs following the SDD process
