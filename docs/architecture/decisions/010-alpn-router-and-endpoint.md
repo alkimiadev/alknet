@@ -132,6 +132,24 @@ This is the same model as the reference implementation's TLS mode: the cert make
 
 For the iroh endpoint, the `NodeId` serves as network identity. No TLS cert is needed — iroh's QUIC uses the NodeId for connection verification.
 
+### RFC 7250: Raw Public Keys in TLS
+
+iroh uses RFC 7250 raw public keys instead of X.509 certificates for TLS. The implementation is strikingly simple (see `iroh/iroh/src/tls/resolver.rs`): take an Ed25519 key, wrap its SPKI public key as a `CertificateDer`, and tell rustls `only_raw_public_keys() -> true`. No X.509, no CAs, no domain names, no cert renewal.
+
+rustls already supports RFC 7250. This means the quinn endpoint can also use raw Ed25519 public keys instead of X.509 certs. The implications:
+
+1. **No domain required.** A node without a domain name can use raw public keys for the quinn path — the same key-based identity model as iroh, but with direct QUIC over UDP instead of relay-assisted connections.
+2. **Key = identity.** The Ed25519 public key IS the node's identity. No CA trust chain, no cert expiry, no renewal. The key is derived from alknet-vault or generated at startup.
+3. **X.509 is optional.** Domain-facing identity (for replicators, public services) uses X.509 certs. Key-based identity (for personal nodes, P2P) uses raw public keys. Both work with the same quinn endpoint.
+4. **Browser compatibility.** Browsers don't support RFC 7250 — they require X.509. For browser/WebTransport clients, X.509 certs are needed. For alknet-native clients, raw public keys work fine.
+
+This reframes the connectivity model. The quinn and iroh paths are not distinguished by their identity model (both can use Ed25519 keys). They're distinguished by how the connection is established:
+
+| Path | Connection establishment | Identity model (v1) | Identity model (future) |
+|------|------------------------|--------------------|-------------------------|
+| quinn | Direct UDP, public IP | X.509 (domain) | X.509 or RFC 7250 raw key |
+| iroh | Relay-assisted P2P | RFC 7250 raw key (NodeId) | Same |
+
 ### Error taxonomy
 
 ```rust

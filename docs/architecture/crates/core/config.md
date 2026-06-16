@@ -13,21 +13,45 @@ Immutable configuration resolved at startup. Cannot be changed without restartin
 
 ```rust
 pub struct StaticConfig {
-    /// Bind address for the QUIC endpoint (e.g., "0.0.0.0:4433").
-    pub listen_addr: SocketAddr,
+    /// Bind address for the quinn endpoint (e.g., "0.0.0.0:4433").
+    /// None if the quinn endpoint is not configured (iroh-only node).
+    pub listen_addr: Option<SocketAddr>,
 
-    /// Path to TLS certificate file (PEM).
-    /// Required for QUIC+TLS. The endpoint will not start without TLS configuration.
-    pub tls_cert: Option<PathBuf>,
+    /// TLS identity mode for the quinn endpoint.
+    /// Required if listen_addr is Some.
+    pub tls_identity: Option<TlsIdentity>,
 
-    /// Path to TLS private key file (PEM).
-    /// Required alongside tls_cert.
-    pub tls_key: Option<PathBuf>,
+    /// iroh relay URL (e.g., "https://relay.iroh.network/").
+    /// None if the iroh endpoint is not configured.
+    pub iroh_relay: Option<RelayUrl>,
 
     /// Drain timeout for graceful shutdown (default: 2 seconds).
     pub drain_timeout: Duration,
 }
+
+/// TLS identity configuration for the quinn endpoint.
+pub enum TlsIdentity {
+    /// X.509 certificate for domain-facing identity.
+    /// Required for browser/WebTransport clients.
+    X509 {
+        cert: PathBuf,
+        key: PathBuf,
+    },
+
+    /// RFC 7250 raw Ed25519 public key.
+    /// No domain, no CA, no cert renewal. Key = identity.
+    /// Same model as iroh's NodeId, but for direct QUIC connections.
+    RawKey(SecretKey),
+
+    /// Self-signed X.509 cert for development.
+    /// Generated on startup, not validated by external clients.
+    SelfSigned,
+}
 ```
+
+### Why `TlsIdentity` instead of `tls_cert`/`tls_key` options
+
+The original `tls_cert: Option<PathBuf>` / `tls_key: Option<PathBuf>` assumed X.509 was the only TLS identity model. RFC 7250 raw public keys (used by iroh, supported by rustls) provide an alternative: Ed25519 key as identity, no X.509, no CA, no domain. This is a separate mode, not just "no cert."
 
 ### Key differences from reference implementation
 
@@ -36,8 +60,7 @@ The reference `StaticConfig` (in `alknet-main/crates/alknet-core/src/config/stat
 - **No `host_key`/`host_key_algorithm`**: SSH host keys are managed by the SSH handler, not by core config. The endpoint uses TLS certs, not SSH host keys.
 - **No `proxy_config`**: Outbound proxy is an SSH-specific concern (SOCKS5/HTTP CONNECT forwarding). Not in core config.
 - **No `stealth`**: ALPN eliminates the need for stealth/byte-peeking. See [ADR-001](../../decisions/001-alpn-protocol-dispatch.md).
-- **No `transport_mode`/`listeners`**: The old `ServeTransportMode` and `ListenerConfig` enum are replaced by a single `listen_addr`. QUIC+TLS+ALPN replaces multiple listener types. See [ADR-010](../../decisions/010-alpn-router-and-endpoint.md).
-- **No `iroh_relay`**: iroh transport is deferred (OQ-05). The v1 endpoint uses quinn directly.
+- **No `transport_mode`/`listeners`**: The old `ServeTransportMode` and `ListenerConfig` enum are replaced by `listen_addr` (quinn) and `iroh_relay` (iroh). Both are optional — a node can use either or both. See [ADR-010](../../decisions/010-alpn-router-and-endpoint.md).
 
 ### Construction
 

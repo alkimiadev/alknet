@@ -161,12 +161,30 @@ A key distinction that the ALPN model makes explicit:
 
 | Layer | Purpose | Mechanism |
 |-------|---------|-----------|
-| **Network identity** | How a client finds and verifies the node | TLS cert (quinn), NodeId (iroh) |
+| **Network identity** | How a client finds and verifies the node | X.509 cert (domain) or RFC 7250 raw key (Ed25519) or iroh NodeId |
 | **Auth identity** | Who the peer is and what they can do | SSH key, API token, certificate (handlers) |
 
-The TLS cert is the node's network-facing identity — it's what `alknet.example.com` resolves to. It's NOT the node's authentication identity. Auth happens inside the handler via `IdentityProvider`.
+The TLS cert (or raw public key, or NodeId) is the node's network-facing identity. It's NOT the node's authentication identity. Auth happens inside the handler via `IdentityProvider`.
 
 This matches the reference implementation: the TLS cert encrypts and camouflages, but SSH key exchange handles the actual authentication.
+
+## RFC 7250: Raw Public Keys in TLS
+
+iroh uses RFC 7250 raw public keys instead of X.509 certificates for TLS. The implementation is ~100 lines (see `iroh/iroh/src/tls/resolver.rs`): take an Ed25519 key, wrap its SPKI public key as a `CertificateDer`, tell rustls `only_raw_public_keys() -> true`. No X.509, no CAs, no domain names, no cert renewal.
+
+rustls already supports RFC 7250. This means the quinn endpoint can also use raw Ed25519 public keys instead of X.509 certs:
+
+- **No domain required**: A node without a domain name can use raw public keys for the quinn path — key-based identity, but with direct QUIC over UDP instead of relay-assisted connections.
+- **Key = identity**: The Ed25519 public key IS the node's identity. No CA trust chain, no cert expiry. The key can be derived from alknet-vault.
+- **X.509 is optional**: Domain-facing identity (replicators, public services) uses X.509 certs. Key-based identity (personal nodes, P2P) uses raw public keys. Both work with the same quinn endpoint.
+- **Browser limitation**: Browsers don't support RFC 7250. For browser/WebTransport clients, X.509 certs are needed. For alknet-native clients, raw public keys work fine.
+
+This reframes the connectivity model. The quinn and iroh paths share the same key-based identity model via RFC 7250. They're distinguished by **connection establishment** (direct UDP vs relay-assisted), not by identity:
+
+| Path | Connection establishment | Identity (domain-facing) | Identity (key-facing) |
+|------|------------------------|------------------------|---------------------|
+| quinn | Direct UDP, public IP | X.509 cert (domain name) | RFC 7250 raw key |
+| iroh | Relay-assisted P2P | N/A | RFC 7250 raw key (NodeId) |
 
 ## TLS Certificate Provisioning
 
