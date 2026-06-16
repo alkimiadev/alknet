@@ -34,11 +34,18 @@ The reference implementation's "stealth mode" is **SSH-over-TLS on port 443**. T
 
 In the new ALPN model, this concept maps to: the endpoint speaks QUIC+TLS with ALPN, and the `alknet/http` handler can serve a decoy website on `h2`/`http/1.1` while real services use `alknet/ssh`, `alknet/call`, etc. The ALPN router does the "stealth" job — unknown ALPNs get the HTTP handler, which can serve whatever fronting content is desired. No byte-peeking needed.
 
-### iroh produces QUIC connections
+### iroh produces QUIC connections with ALPN
 
-iroh's `Endpoint::accept()` produces incoming QUIC connections. These connections have ALPNs. They can feed directly into the same `HandlerRegistry` dispatch. The iroh endpoint and the quinn endpoint both produce QUIC connections — the difference is how they're established (relay-assisted vs direct), not how handlers consume them.
+iroh's `Endpoint::accept()` produces incoming QUIC connections with ALPN negotiation (step 4 of iroh's connection establishment). The `iroh::Endpoint` supports `set_alpns()` to configure which ALPNs the endpoint advertises — the same mechanism iroh's own `Router` uses internally.
 
-This means: **the ALPN router is transport-agnostic**. It dispatches by ALPN string. It doesn't care whether the connection came from a quinn endpoint or an iroh endpoint. Both produce connections that handlers can use via the same `Connection` type.
+This means the iroh integration is not a separate dispatch path. It uses the **same ALPN dispatch** as the quinn path. The `iroh::Endpoint` accepts connections, negotiates ALPN, and our `HandlerRegistry` dispatches to the right handler — exactly like iroh's own `Router` does with its `ProtocolMap`.
+
+We do NOT wrap iroh's `Router`. We use `iroh::Endpoint` directly and run our own accept loop, because:
+- Our `HandlerRegistry` is shared between quinn and iroh connection sources
+- Our `AuthContext` construction differs per connection source
+- Our shutdown and error handling patterns are our own
+
+The relationship is: **iroh's Router is a reference implementation of the pattern we're building.** Our `AlknetEndpoint` generalizes it to support multiple connection sources with the same dispatch.
 
 ### Key design questions
 

@@ -93,20 +93,28 @@ loop {
 
 ### iroh accept loop (P2P relay-assisted)
 
+iroh's `Endpoint` natively supports ALPN negotiation (step 4 of its connection establishment). The `iroh::Endpoint::set_alpns()` method configures which ALPNs the endpoint advertises — the same mechanism iroh's own `Router` uses internally with its `ProtocolMap`.
+
+We use `iroh::Endpoint` directly (not iroh's `Router`) because our `HandlerRegistry` is shared between quinn and iroh connection sources, and our `AuthContext` construction differs per source. Our accept loop replaces iroh's `Router` accept loop with our own dispatch:
+
 ```
 loop {
     tokio::select! {
         incoming = iroh_endpoint.accept() => {
-            let connection = incoming.await;  // iroh QUIC connection + ALPN
-            match connection {
-                Ok(conn) => dispatch(conn),
-                Err(e) => { /* log connection error, continue */ }
+            // incoming is an iroh::endpoint::Incoming
+            let accepting = incoming.accept();  // Accepting state
+            let alpn = accepting.alpn().await;  // ALPN from TLS handshake
+            match alpn {
+                Ok(alpn) => dispatch(alpn, accepting),
+                Err(e) => { /* log handshake failure, continue */ }
             }
         }
         _ = shutdown.changed() => break,
     }
 }
 ```
+
+See iroh's `protocol.rs` (`/workspace/iroh/iroh/src/protocol.rs`) for the reference implementation of this pattern — `handle_connection()` reads the ALPN, looks up the handler in `ProtocolMap`, and calls `handler.accept(connection)`. Our dispatch is the same pattern with our `HandlerRegistry`.
 
 ### Dispatch function (shared)
 
