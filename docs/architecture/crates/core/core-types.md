@@ -90,11 +90,11 @@ See [ADR-007](../../decisions/007-bistream-type-definition.md) for why BiStream 
 
 ## SendStream and RecvStream
 
-Concrete types wrapping QUIC stream halves.
+Concrete types wrapping QUIC stream halves. Both quinn and iroh produce QUIC connections — `SendStream` and `RecvStream` need to wrap either source.
 
 ```rust
-pub struct SendStream { /* wraps quinn::SendStream or test mock */ }
-pub struct RecvStream { /* wraps quinn::RecvStream or test mock */ }
+pub struct SendStream { /* wraps quinn::SendStream or iroh::SendStream or test mock */ }
+pub struct RecvStream { /* wraps quinn::RecvStream or iroh::RecvStream or test mock */ }
 
 impl AsyncWrite for SendStream { ... }
 impl AsyncRead for RecvStream { ... }
@@ -102,9 +102,9 @@ impl AsyncRead for RecvStream { ... }
 
 - `SendStream` implements `AsyncWrite`. Write bytes to the peer.
 - `RecvStream` implements `AsyncRead`. Read bytes from the peer.
-- These are not trait objects — they are concrete wrapper types that delegate to `quinn::SendStream` / `quinn::RecvStream` in production and to test mocks in tests.
+- These are concrete wrapper types that use internal enum dispatch to delegate to the appropriate QUIC stream type (quinn or iroh) in production, and to test mocks in tests.
 
-This is a two-way door decision. If future transports need different stream types, `SendStream` and `RecvStream` can become wrappers with enum dispatch. For v1, concrete wrappers over quinn types are simpler and zero-cost.
+Since the endpoint supports both quinn and iroh connection sources (ADR-010), streams may come from either. `Connection::new()` wraps the appropriate stream source based on where the connection came from.
 
 ## StreamError
 
@@ -117,7 +117,7 @@ pub enum StreamError {
 }
 ```
 
-Returned by `accept_bi()`, `open_bi()`, and stream read/write operations. Maps from `quinn::ConnectionError` and `quinn::StreamError`.
+Returned by `accept_bi()`, `open_bi()`, and stream read/write operations. Maps from `quinn::ConnectionError` / `quinn::StreamError` and their iroh equivalents.
 
 ## Design Decisions
 
@@ -126,8 +126,8 @@ Returned by `accept_bi()`, `open_bi()`, and stream read/write operations. Maps f
 | ProtocolHandler receives Connection, not BiStream | [ADR-007](../../decisions/007-bistream-type-definition.md) | Handlers that need multiple streams (SSH, call) have direct access to the Connection |
 | BiStream is a trait | [ADR-007](../../decisions/007-bistream-type-definition.md) | WASM door preserved, test mocks possible |
 | HandlerError is non-fatal | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Handler errors close the connection, not the endpoint |
-| SendStream/RecvStream are concrete wrappers | Two-way door | Can become enum dispatch later if multi-transport is needed |
+| SendStream/RecvStream wrap quinn + iroh | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Internal enum dispatch for both QUIC sources |
 
 ## Open Questions
 
-- **OQ-05**: See [open-questions.md](../../open-questions.md) — multi-transport. If quinn is the only transport in v1, SendStream/RecvStream can be concrete wrappers.
+None active for this document.

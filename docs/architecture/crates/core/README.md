@@ -35,7 +35,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
 | OQ-04 | Dynamic handler registration | resolved (start static) | HandlerRegistry is immutable at startup |
-| OQ-05 | Multi-transport endpoint | open (start with quinn) | AlknetEndpoint uses quinn directly |
+| OQ-05 | Multi-connectivity endpoint | resolved (quinn + iroh) | AlknetEndpoint supports both, both feature-gated |
 | OQ-11 | AuthContext resolution completeness | open | How handlers signal auth completion |
 
 ## Key Design Principles

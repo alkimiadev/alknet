@@ -49,6 +49,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-01**: BiStream type — trait with Connection parameter (ADR-007)
 - **OQ-02**: AuthContext timing — hybrid model (ADR-004)
 - **OQ-03**: ALPN naming — `alknet/` prefix, no version (ADR-006)
+- **OQ-05**: Multi-connectivity endpoint — quinn + iroh, both feature-gated (ADR-010)
 - **OQ-06**: ALPN per connection, not per stream (ADR-006)
 - **OQ-08**: Vault integration — CLI-embedded via call protocol (ADR-008)
 
@@ -57,8 +58,6 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-12**: TLS certificate provisioning — file paths in StaticConfig, ACME later
 
 **Two-way doors (resolved or deferred to implementation):**
-- **OQ-04**: Dynamic handler registration — resolved: static at startup (ADR-010)
-- **OQ-05**: Multi-transport endpoint — start with quinn, add transport trait later
 - **OQ-07**: Call protocol scope — start with one stream per operation
 - **OQ-11**: Handler-level auth resolution observability — decide during implementation
 
