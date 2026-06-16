@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-15
+last_updated: 2026-06-16
 ---
 
 # Alknet Overview
@@ -64,15 +64,18 @@ The central abstraction. Every handler implements one trait:
 #[async_trait]
 pub trait ProtocolHandler: Send + Sync + 'static {
     fn alpn(&self) -> &'static [u8];
-    async fn handle(&self, stream: BiStream, auth: &AuthContext) -> Result<(), HandlerError>;
+    async fn handle(&self, connection: Connection, auth: &AuthContext) -> Result<(), HandlerError>;
 }
 ```
 
 - `alpn()` returns the handler's ALPN identifier (e.g., `b"alknet/ssh"`, `b"alknet/call"`)
-- `handle()` receives a bidirectional stream and an `AuthContext` (which may be partial — see authentication section), returning `HandlerError` on failure
+- `handle()` receives a `Connection` (not a single stream) and an `AuthContext` (which may be partial — see authentication section), returning `HandlerError` on failure
+- Handlers that need a single stream call `connection.accept_bi()` once; handlers that multiplex (SSH, call) open/accept streams as needed
 - Each handler manages its own wire format
 
-See [ADR-002](decisions/002-protocol-handler-trait.md) for the full rationale.
+This differs from the original ADR-002 signature which passed `BiStream`. See ADR-007 for the rationale: handlers like SSH and call need connection-level ownership to manage multiple streams.
+
+See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/007-bistream-type-definition.md) for the full rationale.
 
 ## ALPN Registry
 
@@ -88,7 +91,7 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) for the full rationale.
 | `h3` | HttpAdapter (WebTransport upgrade) | Browser-compatible WebTransport, then ALPN upgrade |
 | `h2` / `http/1.1` | HttpAdapter | Standard HTTP for browsers, curl |
 
-> **Note**: `alknet/secret` is not in the ALPN registry because alknet-secret is a standalone crate with no alknet-core dependency. Its integration point is an open question (see OQ-08).
+> **Note**: `alknet/secret` is not in the ALPN registry. alknet-secret is a standalone crate with no alknet-core dependency. The CLI binary embeds it and exposes its operations through `alknet/call`. See ADR-008 for the integration rationale.
 
 ## Authentication
 
@@ -115,13 +118,20 @@ See [ADR-005](decisions/005-irpc-as-call-protocol-foundation.md) for the full ra
 
 ## WASM Compatibility
 
-Handlers that operate on byte streams with pure data transformation compile to WASM:
+WASM is not an immediate implementation target, but it is a **design constraint on one-way doors** (see ADR-009). Decisions that would permanently prevent WASM targets from participating as peers require explicit justification.
+
+This means:
+- Core types (BiStream, Connection, ProtocolHandler, AuthContext) must not assume tokio or quinn
+- Protocol parsers that are pure data transformations remain transport-agnostic
+- The cost of keeping the WASM door open is low (trait vs concrete type, abstracted I/O) and the cost of closing it is high
+
+Handlers with transport-agnostic cores are particularly WASM-friendly:
 - russh-sftp's protocol core is already transport-agnostic
 - hickory-proto is `#![no_std]` with `wasm-bindgen` feature
 - The call protocol's JSON framing is inherently cross-language
 - Git's pkt-line is simple enough to implement anywhere
 
-A browser gets a WebTransport stream and speaks SFTP, Git, or call protocol directly.
+A browser gets a WebTransport stream and speaks SFTP, Git, or call protocol directly — but only if we haven't closed that door with concrete type choices.
 
 ## Shared Types
 
@@ -130,14 +140,33 @@ The following types live in alknet-core and are used across handler crates:
 | Type | Purpose |
 |------|---------|
 | `ProtocolHandler` | The trait every handler implements |
-| `BiStream` | Bidirectional QUIC stream (`AsyncRead + AsyncWrite`) |
-| `AuthContext` | Resolved identity for a connection |
+| `Connection` | QUIC connection (or mock) — handlers open/accept streams on it |
+| `BiStream` | Trait: `AsyncRead + AsyncWrite + Send + Unpin` — bidirectional byte stream |
+| `AuthContext` | Resolved identity for a connection (may be partial) |
 | `Identity` | Authenticated peer identity |
 | `IdentityProvider` | Trait for resolving credentials to identity |
 | `AuthToken` | Opaque authentication token |
 | `StaticConfig` | Immutable configuration loaded at startup |
 | `DynamicConfig` | Hot-reloadable configuration (`ArcSwap`) |
 | `ConfigReloadHandle` | Handle for triggering config reloads |
+
+## Design Principles
+
+### One-Way and Two-Way Doors
+
+Not all decisions carry the same reversal cost. One-way door decisions (BiStream type, crate independence) require ADRs and possibly POCs before commitment. Two-way door decisions (static vs dynamic registration, single vs multi-transport) can be decided during implementation — start simple, add complexity when needed. See [ADR-009](decisions/009-one-way-door-decision-framework.md).
+
+### WASM Door Preservation
+
+WASM compatibility is not an active deliverable, but it is a design constraint. Decisions that would permanently close the WASM door (e.g., concrete quinn types in public APIs) require explicit justification. The cost of keeping the door open is low; the cost of closing it is irreversibly high.
+
+### One ALPN, One Connection, One Handler
+
+Each ALPN gets its own QUIC connection. The handler owns the entire connection lifecycle. Handlers that need multiple streams (SSH, call) call `connection.accept_bi()` or `connection.open_bi()` as needed. There is no multiplexing layer between connections.
+
+### Handler Independence
+
+No handler crate depends on another handler crate. Cross-handler communication goes through the call protocol (`alknet/call`) or through alknet-core's endpoint. The only crate that depends on all handlers is the CLI binary.
 
 ## Design Decisions
 
@@ -151,15 +180,19 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [004](decisions/004-auth-as-shared-core.md) | Auth as Shared Core | IdentityProvider in core, handlers extract credentials |
 | [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Call protocol uses irpc for registry, framing, dispatch |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | `alknet/` prefix, one ALPN per connection |
+| [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | BiStream is a trait, handlers receive Connection not BiStream |
+| [008](decisions/008-secret-service-integration.md) | Secret Service Integration Point | CLI-embedded, exposed via call protocol, no ALPN for secrets |
+| [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Classify decisions by reversal cost; one-way doors need ADRs |
 
 ## Open Questions
 
 Open questions are tracked in [open-questions.md](open-questions.md). Key questions affecting this document:
 
-- **OQ-01**: BiStream type definition (open)
+- **OQ-01**: BiStream type definition (resolved: trait, Connection parameter — see ADR-007)
 - **OQ-02**: AuthContext resolution timing (resolved: hybrid — see ADR-004)
 - **OQ-03**: ALPN string naming convention (resolved: see ADR-006)
-- **OQ-04**: Dynamic handler registration at runtime vs static at startup (open)
+- **OQ-04**: Dynamic handler registration at runtime vs static at startup (two-way door, defer to implementation)
+- **OQ-08**: Secret service integration point (resolved: CLI-embedded via call protocol — see ADR-008)
 
 ## Failure Modes
 

@@ -53,5 +53,6 @@ pub trait ProtocolHandler: Send + Sync + 'static {
 - Pivot proposal: `docs/research/pivot/alpn-service-architecture.md`
 - ADR-001: ALPN-based protocol dispatch
 - ADR-004: Auth as shared core (IdentityProvider)
+- ADR-007: BiStream type definition (revised this ADR's signature from BiStream to Connection)
 - iroh ProtocolHandler pattern: `docs/research/references/iroh/`
 - Replaces StreamInterface, MessageInterface, and ListenerConfig

@@ -1,31 +1,24 @@
 ---
 status: draft
-last_updated: 2026-06-15
+last_updated: 2026-06-16
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model (StreamInterface/MessageInterface, ListenerConfig, OperationEnv) to an ALPN-as-service model. The greenfield workspace contains only `alknet-secret` (stable) and research/reference material. Architecture specs are being produced following the SDD process (Phase 1).
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-secret` (stable) and research/reference material. Foundational ADRs (001–009) are in place, including the BiStream type definition (ADR-007), secret service integration (ADR-008), and the one-way door decision framework (ADR-009). Architecture specs are ready for Phase 1 implementation planning.
+
+**Next step**: Resolve remaining two-way-door questions during implementation. Start with alknet-core (ProtocolHandler trait, Connection, endpoint, router, auth types, config).
 
 ## Architecture Documents
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types |
-| [open-questions.md](open-questions.md) | draft | Centralized OQ tracker across all crates |
-| [crates/alknet-core/spec.md](crates/alknet-core/spec.md) | planned | Core crate: ProtocolHandler, endpoint, router, auth, config |
-| [crates/alknet-ssh/spec.md](crates/alknet-ssh/spec.md) | planned | SSH handler: russh, SOCKS5, port forwarding |
-| [crates/alknet-call/spec.md](crates/alknet-call/spec.md) | planned | Call protocol: irpc, operation registry, access control |
-| [crates/alknet-secret/spec.md](crates/alknet-secret/spec.md) | planned | Key derivation and encryption (already implemented) |
-| [crates/alknet-sftp/spec.md](crates/alknet-sftp/spec.md) | planned | SFTP handler: russh-sftp protocol core |
-| [crates/alknet-git/spec.md](crates/alknet-git/spec.md) | planned | Git handler: gix, pkt-line protocol |
-| [crates/alknet-http/spec.md](crates/alknet-http/spec.md) | planned | HTTP handler: axum, REST API, MCP |
-| [crates/alknet-dns/spec.md](crates/alknet-dns/spec.md) | planned | DNS handler: hickory-proto, pkarr, service discovery |
-| [crates/alknet-msg/spec.md](crates/alknet-msg/spec.md) | planned | Messaging: E2E encryption, mixnet |
-| [crates/alknet-napi/spec.md](crates/alknet-napi/spec.md) | planned | Node.js native addon: call protocol client |
-| [crates/alknet/spec.md](crates/alknet/spec.md) | planned | CLI binary: handler registration, endpoint startup |
+| [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types, design principles |
+| [open-questions.md](open-questions.md) | draft | Centralized OQ tracker with door-type classifications |
+
+Crate-specific specs will be created when each crate is ready for Phase 1 architecture work, not in advance.
 
 ## ADR Table
 
@@ -37,16 +30,29 @@ last_updated: 2026-06-15
 | [004](decisions/004-auth-as-shared-core.md) | Auth as Shared Core (IdentityProvider) | Accepted |
 | [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Accepted |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | Accepted |
+| [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | Accepted |
+| [008](decisions/008-secret-service-integration.md) | Secret Service Integration Point | Accepted |
+| [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Accepted |
 
 ## Open Questions
 
 See [open-questions.md](open-questions.md) for the full tracker.
 
-Key questions affecting current work:
-- **OQ-01**: BiStream type definition — what exactly does BiStream expose? (open)
-- **OQ-02**: AuthContext resolution timing — hybrid model resolved (see ADR-004) (resolved)
-- **OQ-03**: ALPN string naming convention — resolved (see ADR-006) (resolved)
-- **OQ-04**: Dynamic handler registration at runtime vs static at startup (open)
+**Resolved one-way doors:**
+- **OQ-01**: BiStream type — trait with Connection parameter (ADR-007)
+- **OQ-02**: AuthContext timing — hybrid model (ADR-004)
+- **OQ-03**: ALPN naming — `alknet/` prefix, no version (ADR-006)
+- **OQ-06**: ALPN per connection, not per stream (ADR-006)
+- **OQ-08**: Secret service — CLI-embedded via call protocol (ADR-008)
+
+**Two-way doors (deferred to implementation):**
+- **OQ-04**: Dynamic handler registration — start static, add ArcSwap later
+- **OQ-05**: Multi-transport endpoint — start with quinn, add transport trait later
+- **OQ-07**: Call protocol scope — start with one stream per operation
+
+**Deferred (not active):**
+- **OQ-09**: WASM target boundaries — design constraint, not deliverable
+- **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
 
 ## Document Lifecycle
 
