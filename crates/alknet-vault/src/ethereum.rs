@@ -138,8 +138,8 @@ fn derive_child(
 /// # Example
 ///
 /// ```ignore
-/// use alknet_secret::ethereum::derive_secp256k1_path;
-/// use alknet_secret::derivation::PATHS;
+/// use alknet_vault::ethereum::derive_secp256k1_path;
+/// use alknet_vault::derivation::PATHS;
 ///
 /// let key = derive_secp256k1_path(seed, PATHS::ETHEREUM).unwrap();
 /// assert_eq!(key.private_key().len(), 32);

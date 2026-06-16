@@ -3,12 +3,12 @@
 //! These tests verify round-trip encryption, key version handling,
 //! and wire format compatibility.
 
-use alknet_secret::encryption::CURRENT_KEY_VERSION;
-use alknet_secret::service::SecretServiceHandle;
+use alknet_vault::encryption::CURRENT_KEY_VERSION;
+use alknet_vault::service::VaultServiceHandle;
 
 #[test]
 fn test_encrypt_decrypt_round_trip_via_service() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     service.unlock_new(24).unwrap();
 
     let plaintext = "sk-proj-abc123xyz789";
@@ -21,7 +21,7 @@ fn test_encrypt_decrypt_round_trip_via_service() {
 
 #[test]
 fn test_encrypt_produces_different_ciphertext_each_time() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     service.unlock_new(24).unwrap();
 
     let plaintext = "same input different ciphertexts";
@@ -38,7 +38,7 @@ fn test_encrypt_produces_different_ciphertext_each_time() {
 
 #[test]
 fn test_encrypted_data_serialization() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     service.unlock_new(24).unwrap();
 
     let plaintext = "test serialization";
@@ -52,7 +52,7 @@ fn test_encrypted_data_serialization() {
     assert!(json.contains("data"));
 
     // Verify round-trip through JSON
-    let deserialized: alknet_secret::encryption::EncryptedData =
+    let deserialized: alknet_vault::encryption::EncryptedData =
         serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized, encrypted);
 }

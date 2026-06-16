@@ -84,13 +84,13 @@ Door type classifications follow ADR-009:
 
 ## Theme: Security
 
-### OQ-08: Secret Service Integration Point
+### OQ-08: Vault Integration Point
 
 - **Origin**: [overview.md](overview.md)
 - **Status**: resolved
 - **Door type**: One-way
 - **Priority**: medium
-- **Resolution**: CLI-embedded with call protocol exposure. The CLI binary instantiates `SecretServiceHandle` locally and registers secret operations in the call protocol's operation registry. alknet-secret has no ALPN and no alknet-core dependency. Key derivation is local-only; only public key material crosses the network via `alknet/call`. See ADR-008.
+- **Resolution**: CLI-embedded with call protocol exposure. The CLI binary instantiates `VaultServiceHandle` locally and registers vault operations in the call protocol's operation registry. alknet-vault has no ALPN and no alknet-core dependency. Key derivation is local-only; only public key material crosses the network via `alknet/call`. The vault is a capability source — derived keys and decrypted credentials are injected into operation contexts at the assembly layer, not passed as vault references to handlers. See ADR-008.
 - **Cross-references**: ADR-003, ADR-005, ADR-008
 
 ## Deferred Questions

@@ -12,7 +12,7 @@ A self-hostable networking toolkit built on QUIC+TLS with ALPN-based protocol di
 
 | Crate | Status | Description |
 |-------|--------|-------------|
-| `alknet-secret` | stable | BIP39/SLIP-0010/AES-GCM key derivation and encryption |
+| `alknet-vault` | stable | Local key vault: BIP39/SLIP-0010/AES-GCM key derivation and encryption |
 | `alknet-core` | planned | ProtocolHandler trait, ALPN router, auth/identity, config |
 | `alknet-ssh` | planned | SSH handler (russh), SOCKS5, port forwarding |
 | `alknet-call` | planned | JSON-RPC call protocol (EventEnvelope framing) |

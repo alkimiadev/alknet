@@ -17,10 +17,10 @@
 //! byte-for-byte matching against SLIP-0010 raw hex, since the crate's internal
 //! representation handles clamping differently.
 
-use alknet_secret::derivation::{derive_path_from_seed, PATHS};
-use alknet_secret::encryption::{decrypt, encrypt, EncryptionKey, CURRENT_KEY_VERSION};
-use alknet_secret::mnemonic::{Language, Mnemonic};
-use alknet_secret::protocol::KeyType;
+use alknet_vault::derivation::{derive_path_from_seed, PATHS};
+use alknet_vault::encryption::{decrypt, encrypt, EncryptionKey, CURRENT_KEY_VERSION};
+use alknet_vault::mnemonic::{Language, Mnemonic};
+use alknet_vault::protocol::KeyType;
 
 // ---------------------------------------------------------------------------
 // BIP39 Test Vectors
@@ -291,7 +291,7 @@ fn test_aes256gcm_known_key_encrypt_decrypt() {
     ];
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let plaintext = b"hello, alknet secret service!";
+    let plaintext = b"hello, alknet vault!";
 
     // Encrypt with known key and nonce
     let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
@@ -396,13 +396,13 @@ fn test_alknet_encryption_path_regression() {
     assert_ne!(key.private_key(), identity.private_key());
 }
 
-/// Verify that the SecretServiceHandle produces keys consistent with
+/// Verify that the VaultServiceHandle produces keys consistent with
 /// direct derivation (integration test).
 #[test]
 fn test_service_derive_matches_direct_derivation() {
-    use alknet_secret::service::SecretServiceHandle;
+    use alknet_vault::service::VaultServiceHandle;
 
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     let phrase = service.unlock_new(24).unwrap();
 
     // Derive via service (which uses Mnemonic + Seed internally)

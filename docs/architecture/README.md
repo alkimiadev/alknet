@@ -7,7 +7,7 @@ last_updated: 2026-06-16
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-secret` (stable) and research/reference material. Foundational ADRs (001–009) are in place, including the BiStream type definition (ADR-007), secret service integration (ADR-008), and the one-way door decision framework (ADR-009). Architecture specs are ready for Phase 1 implementation planning.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–009) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), and the one-way door decision framework (ADR-009). Architecture specs are ready for Phase 1 implementation planning.
 
 **Next step**: Resolve remaining two-way-door questions during implementation. Start with alknet-core (ProtocolHandler trait, Connection, endpoint, router, auth types, config).
 
@@ -31,7 +31,7 @@ Crate-specific specs will be created when each crate is ready for Phase 1 archit
 | [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Accepted |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | Accepted |
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | Accepted |
-| [008](decisions/008-secret-service-integration.md) | Secret Service Integration Point | Accepted |
+| [008](decisions/008-secret-service-integration.md) | Vault Integration Point | Accepted |
 | [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Accepted |
 
 ## Open Questions
@@ -43,7 +43,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-02**: AuthContext timing — hybrid model (ADR-004)
 - **OQ-03**: ALPN naming — `alknet/` prefix, no version (ADR-006)
 - **OQ-06**: ALPN per connection, not per stream (ADR-006)
-- **OQ-08**: Secret service — CLI-embedded via call protocol (ADR-008)
+- **OQ-08**: Vault integration — CLI-embedded via call protocol (ADR-008)
 
 **Two-way doors (deferred to implementation):**
 - **OQ-04**: Dynamic handler registration — start static, add ArcSwap later

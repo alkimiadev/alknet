@@ -1,21 +1,21 @@
-//! Integration tests for the SecretService lifecycle.
+//! Integration tests for the VaultService lifecycle.
 //!
 //! These tests verify the unlock/lock lifecycle, error conditions,
-//! and that the service correctly manages state transitions.
+//! and that the vault correctly manages state transitions.
 
-use alknet_secret::derivation::PATHS;
-use alknet_secret::service::{SecretServiceError, SecretServiceHandle};
+use alknet_vault::derivation::PATHS;
+use alknet_vault::service::{VaultServiceError, VaultServiceHandle};
 
 #[test]
 fn test_full_lifecycle() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
 
     // Starts locked
     assert!(!service.is_unlocked());
 
     // Can't derive while locked
     let result = service.derive_ed25519(PATHS::IDENTITY);
-    assert!(matches!(result, Err(SecretServiceError::ServiceLocked)));
+    assert!(matches!(result, Err(VaultServiceError::VaultLocked)));
 
     // Unlock
     let phrase = service.unlock_new(24).unwrap();
@@ -32,12 +32,12 @@ fn test_full_lifecycle() {
 
     // Can't derive again
     let result = service.derive_ed25519(PATHS::IDENTITY);
-    assert!(matches!(result, Err(SecretServiceError::ServiceLocked)));
+    assert!(matches!(result, Err(VaultServiceError::VaultLocked)));
 }
 
 #[test]
 fn test_unlock_with_known_phrase() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
 
     // Generate a phrase
     let phrase = service.unlock_new(24).unwrap();
@@ -53,16 +53,16 @@ fn test_unlock_with_known_phrase() {
 
 #[test]
 fn test_double_unlock_fails() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     service.unlock_new(24).unwrap();
 
     let result = service.unlock_new(12);
-    assert!(matches!(result, Err(SecretServiceError::AlreadyUnlocked)));
+    assert!(matches!(result, Err(VaultServiceError::AlreadyUnlocked)));
 }
 
 #[test]
 fn test_lock_when_already_locked_is_noop() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     assert!(!service.is_unlocked());
 
     // Lock on already-locked service is a no-op
@@ -72,7 +72,7 @@ fn test_lock_when_already_locked_is_noop() {
 
 #[test]
 fn test_encrypt_decrypt_lifecycle() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     service.unlock_new(24).unwrap();
 
     let plaintext = "my-api-key-12345";
@@ -83,12 +83,12 @@ fn test_encrypt_decrypt_lifecycle() {
     // After lock, can't decrypt
     service.lock();
     let result = service.decrypt(&encrypted);
-    assert!(matches!(result, Err(SecretServiceError::ServiceLocked)));
+    assert!(matches!(result, Err(VaultServiceError::VaultLocked)));
 }
 
 #[test]
 fn test_multiple_derive_paths_succeed() {
-    let service = SecretServiceHandle::new();
+    let service = VaultServiceHandle::new();
     service.unlock_new(24).unwrap();
 
     // All standard paths should work

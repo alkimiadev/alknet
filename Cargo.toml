@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/alknet-secret",
+    "crates/alknet-vault",
 ]
 resolver = "2"
 

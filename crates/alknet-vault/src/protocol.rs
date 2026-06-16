@@ -1,12 +1,12 @@
-//! SecretProtocol irpc service definition and associated types.
+//! VaultProtocol irpc message definition and associated types.
 //!
-//! This module defines the `SecretProtocol` enum for irpc-based inter-service
-//! communication. The protocol supports unlock/lock lifecycle, key derivation,
+//! This module defines the `VaultProtocol` enum for irpc-based message dispatch.
+//! The protocol supports unlock/lock lifecycle, key derivation,
 //! and encryption/decryption operations.
 //!
 //! # Protocol Operation
 //!
-//! The SecretProtocol follows a lifecycle: the service starts in a **locked**
+//! The VaultProtocol follows a lifecycle: the vault starts in a **locked**
 //! state where no derivation or encryption operations are possible. The `Unlock`
 //! call loads the seed into memory (derived from the mnemonic passphrase). After
 //! that, derive and encrypt/decrypt operations are available. The `Lock` call
@@ -16,7 +16,7 @@
 //!
 //! For local (in-process) calls, the protocol uses tokio channels directly.
 //! For remote (in-cluster) calls, the protocol is serialized with postcard.
-//! For cross-node (call protocol) exposure, the service is wrapped in an
+//! For cross-node (call protocol) exposure, the vault is wrapped in an
 //! operation that serializes to JSON.
 
 use std::fmt;
@@ -98,27 +98,27 @@ impl Serialize for DerivedKey {
     }
 }
 
-/// SecretProtocol service definition.
+/// VaultProtocol message definition.
 ///
-/// This is the irpc protocol enum that defines all secret service operations.
+/// This is the irpc protocol enum that defines all vault operations.
 /// The `#[rpc_requests]` macro generates:
-/// - **`SecretMessage`**: message enum with `WithChannels` wrappers for each variant
-/// - **`Channels<SecretProtocol>`** impls for each wrapper type
+/// - **`VaultMessage`**: message enum with `WithChannels` wrappers for each variant
+/// - **`Channels<VaultProtocol>`** impls for each wrapper type
 /// - **`From`** impls for protocol enum and message enum conversions
 /// - **`Service`** and **`RemoteService`** trait impls for remote dispatch
 ///
 /// # State Requirements
 ///
-/// All operations except `Unlock` require the service to be in an **unlocked**
-/// state. Calling derive/encrypt/decrypt on a locked service returns an error.
-#[rpc_requests(message = SecretMessage, no_spans)]
+/// All operations except `Unlock` require the vault to be in an **unlocked**
+/// state. Calling derive/encrypt/decrypt on a locked vault returns an error.
+#[rpc_requests(message = VaultMessage, no_spans)]
 #[derive(Debug, Serialize, Deserialize)]
-pub enum SecretProtocol {
+pub enum VaultProtocol {
     /// Derive an Ed25519 keypair at the given path.
     ///
     /// Path format: `m/74'/0'/0'/0'` (SLIP-0010 hardened-only notation).
     /// Returns a `DerivedKey` with `KeyType::Ed25519`.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::VaultServiceError>>)]
     #[wrap(DeriveEd25519)]
     DeriveEd25519 {
         /// SLIP-0010 derivation path (e.g., "m/74'/0'/0'/0'").
@@ -129,7 +129,7 @@ pub enum SecretProtocol {
     ///
     /// The default encryption path is `m/74'/2'/0'/0'`.
     /// Returns a `DerivedKey` with `KeyType::Aes256Gcm`.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::VaultServiceError>>)]
     #[wrap(DeriveEncryptionKey)]
     DeriveEncryptionKey {
         /// SLIP-0010 derivation path for the encryption key.
@@ -140,7 +140,7 @@ pub enum SecretProtocol {
     ///
     /// The default Ethereum path is `m/44'/60'/0'/0/0`.
     /// Returns a `DerivedKey` with `KeyType::Secp256k1`.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::VaultServiceError>>)]
     #[wrap(DeriveEthereumKey)]
     DeriveEthereumKey {
         /// BIP-0032 derivation path (e.g., "m/44'/60'/0'/0/0").
@@ -151,7 +151,7 @@ pub enum SecretProtocol {
     ///
     /// Path format: `m/74'/1'/0'/{hash}'` (SLIP-0010 hardened notation).
     /// The `length` parameter controls the output length.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<Vec<u8>, crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<Vec<u8>, crate::service::VaultServiceError>>)]
     #[wrap(DerivePassword)]
     DerivePassword {
         /// SLIP-0010 derivation path for the password.
@@ -164,7 +164,7 @@ pub enum SecretProtocol {
     ///
     /// The key is derived at the path `m/74'/2'/0'/0'` with the given version.
     /// Returns an `EncryptedData` blob suitable for storage.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<EncryptedData, crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<EncryptedData, crate::service::VaultServiceError>>)]
     #[wrap(Encrypt)]
     Encrypt {
         /// The plaintext string to encrypt.
@@ -176,7 +176,7 @@ pub enum SecretProtocol {
     /// Decrypt an `EncryptedData` blob back to plaintext.
     ///
     /// The key is derived from the seed at the path indicated by the key version.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<String, crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<String, crate::service::VaultServiceError>>)]
     #[wrap(Decrypt)]
     Decrypt {
         /// The encrypted data blob to decrypt.
@@ -188,7 +188,7 @@ pub enum SecretProtocol {
     /// After locking, no derive/encrypt/decrypt operations are possible
     /// until `Unlock` is called again. Calls `zeroize()` on all sensitive
     /// material (ADR-038).
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::VaultServiceError>>)]
     #[wrap(Lock)]
     Lock,
 
@@ -197,7 +197,7 @@ pub enum SecretProtocol {
     /// The mnemonic is the space-separated BIP39 word list. The passphrase is
     /// the optional BIP39 password extension (the "25th word"). After unlocking,
     /// derive and encrypt/decrypt operations are available.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::SecretServiceError>>)]
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::VaultServiceError>>)]
     #[wrap(Unlock)]
     Unlock {
         /// The BIP39 mnemonic phrase (space-separated word list).

@@ -1,6 +1,6 @@
-//! SecretService implementation with Unlock/Lock lifecycle.
+//! VaultService implementation with Unlock/Lock lifecycle.
 //!
-//! The `SecretService` is the primary runtime interface for key management.
+//! The `VaultService` is the primary runtime interface for key management.
 //! It holds the master seed in `Zeroize`-protected memory and provides methods
 //! for the Unlock/Lock lifecycle, key derivation, and encryption/decryption.
 //!
@@ -14,7 +14,7 @@
 //!   → cache empty (keys derived on demand)
 //!
 //! DeriveEd25519/DeriveEncryptionKey/Encrypt/Decrypt
-//!   → require unlocked state (ServiceLocked error if locked)
+//!   → require unlocked state (VaultLocked error if locked)
 //!   → derive key, return result
 //!   → optionally cache derived key
 //!
@@ -22,24 +22,24 @@
 //!   → zeroize all cached derived keys
 //!   → zeroize seed
 //!   → drop all sensitive material
-//!   → service returns to locked state
+//!   → vault returns to locked state
 //! ```
 //!
 //! # Dispatch Paths
 //!
-//! There are two ways to interact with the secret service:
+//! There are two ways to interact with the vault:
 //!
-//! 1. **Local (in-process)**: `SecretServiceHandle` wraps `SecretServiceInner`
+//! 1. **Local (in-process)**: `VaultServiceHandle` wraps `VaultServiceInner`
 //!    behind `Arc<RwLock<>>` and provides direct method calls without serialization.
-//! 2. **Remote (in-cluster)**: `SecretServiceActor` processes `SecretMessage`
+//! 2. **Remote (in-cluster)**: `VaultServiceActor` processes `VaultMessage`
 //!    variants from an mpsc channel and dispatches to the handle methods.
 //!
 //! # Assembly
 //!
-//! The `SecretService` is assembled by the CLI binary or NAPI layer. Per ADR-027,
-//! alknet-core never sees the secret service directly — it is wired through the
-//! `OperationEnv` dispatch mechanism. For minimal deployments, no secret service
-//! is available (the `SecretStoreCredentialProvider` returns `None`).
+//! The `VaultService` is assembled by the CLI binary. The CLI unlocks the vault
+//! at startup and injects derived/decrypted material into operation contexts.
+//! No handler crate accesses the vault directly — they receive keys through
+//! their operation context or via the call protocol.
 
 use std::sync::{Arc, RwLock};
 
@@ -54,21 +54,21 @@ use crate::encryption::{self, EncryptedData, EncryptionKey};
 use crate::mnemonic::{Language, Mnemonic, Seed};
 use crate::protocol::{
     Decrypt, DeriveEd25519, DeriveEncryptionKey, DeriveEthereumKey, DerivePassword, Encrypt,
-    SecretMessage, SecretProtocol, Unlock,
+    VaultMessage, VaultProtocol, Unlock,
 };
 use crate::protocol::{DerivedKey, KeyType};
 
-/// Handle to a running SecretService for local (in-process) use.
+/// Handle to a running VaultService for local (in-process) use.
 ///
 /// This is the primary API for local secret operations. It wraps the
 /// service state in an `Arc<RwLock<>>` for thread-safe access.
 #[derive(Clone)]
-pub struct SecretServiceHandle {
-    inner: Arc<RwLock<SecretServiceInner>>,
+pub struct VaultServiceHandle {
+    inner: Arc<RwLock<VaultServiceInner>>,
 }
 
 /// Internal state of the secret service.
-struct SecretServiceInner {
+struct VaultServiceInner {
     /// The mnemonic phrase, if unlocked. None if locked.
     mnemonic: Option<Mnemonic>,
     /// The master seed, if unlocked. None if locked.
@@ -79,12 +79,12 @@ struct SecretServiceInner {
     cache: KeyCache,
 }
 
-/// Errors that can occur during secret service operations.
+/// Errors that can occur during vault operations.
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
-pub enum SecretServiceError {
-    #[error("service is locked; call Unlock first")]
-    ServiceLocked,
-    #[error("service is already unlocked")]
+pub enum VaultServiceError {
+    #[error("vault is locked; call Unlock first")]
+    VaultLocked,
+    #[error("vault is already unlocked")]
     AlreadyUnlocked,
     #[error("mnemonic error: {0}")]
     Mnemonic(String),
@@ -98,34 +98,34 @@ pub enum SecretServiceError {
     UnsupportedKeyType,
 }
 
-impl From<crate::mnemonic::MnemonicError> for SecretServiceError {
+impl From<crate::mnemonic::MnemonicError> for VaultServiceError {
     fn from(e: crate::mnemonic::MnemonicError) -> Self {
-        SecretServiceError::Mnemonic(e.to_string())
+        VaultServiceError::Mnemonic(e.to_string())
     }
 }
 
-impl From<DerivationError> for SecretServiceError {
+impl From<DerivationError> for VaultServiceError {
     fn from(e: DerivationError) -> Self {
-        SecretServiceError::Derivation(e.to_string())
+        VaultServiceError::Derivation(e.to_string())
     }
 }
 
-impl From<encryption::EncryptionError> for SecretServiceError {
+impl From<encryption::EncryptionError> for VaultServiceError {
     fn from(e: encryption::EncryptionError) -> Self {
-        SecretServiceError::Encryption(e.to_string())
+        VaultServiceError::Encryption(e.to_string())
     }
 }
 
-impl SecretServiceHandle {
-    /// Create a new SecretServiceHandle in the locked state with default cache config.
+impl VaultServiceHandle {
+    /// Create a new VaultServiceHandle in the locked state with default cache config.
     pub fn new() -> Self {
         Self::with_cache_config(CacheConfig::default())
     }
 
-    /// Create a new SecretServiceHandle with the given cache configuration.
+    /// Create a new VaultServiceHandle with the given cache configuration.
     pub fn with_cache_config(config: CacheConfig) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(SecretServiceInner {
+            inner: Arc::new(RwLock::new(VaultServiceInner {
                 mnemonic: None,
                 seed: None,
                 unlocked: false,
@@ -138,10 +138,10 @@ impl SecretServiceHandle {
     ///
     /// The passphrase is the BIP39 password (may be empty string for none).
     /// After unlocking, derive and encrypt/decrypt operations are available.
-    pub fn unlock(&self, phrase: &str, passphrase: Option<&str>) -> Result<(), SecretServiceError> {
+    pub fn unlock(&self, phrase: &str, passphrase: Option<&str>) -> Result<(), VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if inner.unlocked {
-            return Err(SecretServiceError::AlreadyUnlocked);
+            return Err(VaultServiceError::AlreadyUnlocked);
         }
 
         let mnemonic = Mnemonic::from_phrase(phrase, Language::English)?;
@@ -157,10 +157,10 @@ impl SecretServiceHandle {
     ///
     /// Returns the generated mnemonic phrase. Store this phrase securely —
     /// it is the root of trust for all derived keys.
-    pub fn unlock_new(&self, word_count: usize) -> Result<String, SecretServiceError> {
+    pub fn unlock_new(&self, word_count: usize) -> Result<String, VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if inner.unlocked {
-            return Err(SecretServiceError::AlreadyUnlocked);
+            return Err(VaultServiceError::AlreadyUnlocked);
         }
 
         let mnemonic = Mnemonic::generate(word_count)?;
@@ -192,10 +192,10 @@ impl SecretServiceHandle {
     }
 
     /// Derive an Ed25519 keypair at the given path.
-    pub fn derive_ed25519(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
+    pub fn derive_ed25519(&self, path: &str) -> Result<DerivedKey, VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
-            return Err(SecretServiceError::ServiceLocked);
+            return Err(VaultServiceError::VaultLocked);
         }
 
         if let Some(cached) = inner.cache.get(path) {
@@ -209,7 +209,7 @@ impl SecretServiceHandle {
         let seed = inner
             .seed
             .as_ref()
-            .ok_or(SecretServiceError::ServiceLocked)?;
+            .ok_or(VaultServiceError::VaultLocked)?;
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key().to_vec();
         let public_key = key.public_key().to_vec();
@@ -223,10 +223,10 @@ impl SecretServiceHandle {
     }
 
     /// Derive an AES-256-GCM encryption key at the given path.
-    pub fn derive_encryption_key(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
+    pub fn derive_encryption_key(&self, path: &str) -> Result<DerivedKey, VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
-            return Err(SecretServiceError::ServiceLocked);
+            return Err(VaultServiceError::VaultLocked);
         }
 
         if let Some(cached) = inner.cache.get(path) {
@@ -240,7 +240,7 @@ impl SecretServiceHandle {
         let seed = inner
             .seed
             .as_ref()
-            .ok_or(SecretServiceError::ServiceLocked)?;
+            .ok_or(VaultServiceError::VaultLocked)?;
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key().to_vec();
         let public_key = key.public_key().to_vec();
@@ -258,12 +258,12 @@ impl SecretServiceHandle {
     /// Uses BIP-0032 derivation (HMAC-SHA512 with "Bitcoin seed") when the
     /// `secp256k1` feature is enabled. Returns `UnsupportedKeyType` when the
     /// feature is disabled.
-    pub fn derive_ethereum_key(&self, path: &str) -> Result<DerivedKey, SecretServiceError> {
+    pub fn derive_ethereum_key(&self, path: &str) -> Result<DerivedKey, VaultServiceError> {
         #[cfg(feature = "secp256k1")]
         {
             let mut inner = self.inner.write().unwrap();
             if !inner.unlocked {
-                return Err(SecretServiceError::ServiceLocked);
+                return Err(VaultServiceError::VaultLocked);
             }
 
             if let Some(cached) = inner.cache.get(path) {
@@ -277,7 +277,7 @@ impl SecretServiceHandle {
             let seed = inner
                 .seed
                 .as_ref()
-                .ok_or(SecretServiceError::ServiceLocked)?;
+                .ok_or(VaultServiceError::VaultLocked)?;
 
             let key = crate::ethereum::derive_secp256k1_path(seed.as_bytes(), path)?;
             let private_key = key.private_key().to_vec();
@@ -295,7 +295,7 @@ impl SecretServiceHandle {
         #[cfg(not(feature = "secp256k1"))]
         {
             let _ = path;
-            Err(SecretServiceError::UnsupportedKeyType)
+            Err(VaultServiceError::UnsupportedKeyType)
         }
     }
 
@@ -303,15 +303,15 @@ impl SecretServiceHandle {
         &self,
         path: &str,
         length: usize,
-    ) -> Result<Vec<u8>, SecretServiceError> {
+    ) -> Result<Vec<u8>, VaultServiceError> {
         let inner = self.inner.read().unwrap();
         if !inner.unlocked {
-            return Err(SecretServiceError::ServiceLocked);
+            return Err(VaultServiceError::VaultLocked);
         }
         let seed = inner
             .seed
             .as_ref()
-            .ok_or(SecretServiceError::ServiceLocked)?;
+            .ok_or(VaultServiceError::VaultLocked)?;
 
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key();
@@ -324,7 +324,7 @@ impl SecretServiceHandle {
         &self,
         path: &str,
         length: usize,
-    ) -> Result<String, SecretServiceError> {
+    ) -> Result<String, VaultServiceError> {
         let bytes = self.derive_password(path, length)?;
         Ok(URL_SAFE_NO_PAD.encode(&bytes))
     }
@@ -336,10 +336,10 @@ impl SecretServiceHandle {
         &self,
         plaintext: &str,
         key_version: u32,
-    ) -> Result<EncryptedData, SecretServiceError> {
+    ) -> Result<EncryptedData, VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
-            return Err(SecretServiceError::ServiceLocked);
+            return Err(VaultServiceError::VaultLocked);
         }
 
         let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
@@ -348,7 +348,7 @@ impl SecretServiceHandle {
             let seed = inner
                 .seed
                 .as_ref()
-                .ok_or(SecretServiceError::ServiceLocked)?;
+                .ok_or(VaultServiceError::VaultLocked)?;
             let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
             let pk = derived.private_key().to_vec();
             let pubk = derived.public_key().to_vec();
@@ -363,10 +363,10 @@ impl SecretServiceHandle {
     }
 
     /// Decrypt an EncryptedData blob using the derived encryption key.
-    pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, SecretServiceError> {
+    pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if !inner.unlocked {
-            return Err(SecretServiceError::ServiceLocked);
+            return Err(VaultServiceError::VaultLocked);
         }
 
         let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
@@ -375,7 +375,7 @@ impl SecretServiceHandle {
             let seed = inner
                 .seed
                 .as_ref()
-                .ok_or(SecretServiceError::ServiceLocked)?;
+                .ok_or(VaultServiceError::VaultLocked)?;
             let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
             let pk = derived.private_key().to_vec();
             let pubk = derived.public_key().to_vec();
@@ -390,42 +390,42 @@ impl SecretServiceHandle {
     }
 }
 
-impl Default for SecretServiceHandle {
+impl Default for VaultServiceHandle {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// The SecretService manages the lifecycle of the master seed and provides
+/// The VaultService manages the lifecycle of the master seed and provides
 /// secret operations. This is the type used by the irpc service handler.
 ///
-/// For local (in-process) use, prefer `SecretServiceHandle` which wraps
+/// For local (in-process) use, prefer `VaultServiceHandle` which wraps
 /// this in thread-safe locks.
-pub struct SecretService {
-    handle: SecretServiceHandle,
+pub struct VaultService {
+    handle: VaultServiceHandle,
 }
 
-impl SecretService {
-    /// Create a new SecretService in the locked state.
+impl VaultService {
+    /// Create a new VaultService in the locked state.
     pub fn new() -> Self {
         Self {
-            handle: SecretServiceHandle::new(),
+            handle: VaultServiceHandle::new(),
         }
     }
 
     /// Get a handle for local (in-process) use.
-    pub fn handle(&self) -> &SecretServiceHandle {
+    pub fn handle(&self) -> &VaultServiceHandle {
         &self.handle
     }
 }
 
-impl Default for SecretService {
+impl Default for VaultService {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Actor that processes `SecretMessage` variants and dispatches to `SecretServiceHandle`.
+/// Actor that processes `VaultMessage` variants and dispatches to `VaultServiceHandle`.
 ///
 /// The actor runs as a `tokio::task`, receives messages from an mpsc channel,
 /// dispatches to the handle methods, and sends responses through oneshot channels.
@@ -433,40 +433,40 @@ impl Default for SecretService {
 /// # Usage
 ///
 /// ```ignore
-/// let handle = SecretServiceHandle::new();
-/// let (client, actor) = SecretServiceActor::spawn(handle);
+/// let handle = VaultServiceHandle::new();
+/// let (client, actor) = VaultServiceActor::spawn(handle);
 /// tokio::task::spawn(actor.run(rx));
 /// // Use client to send messages
 /// ```
-pub struct SecretServiceActor {
-    handle: SecretServiceHandle,
+pub struct VaultServiceActor {
+    handle: VaultServiceHandle,
 }
 
-impl SecretServiceActor {
+impl VaultServiceActor {
     /// Create a new actor wrapping the given handle.
-    pub fn new(handle: SecretServiceHandle) -> Self {
+    pub fn new(handle: VaultServiceHandle) -> Self {
         Self { handle }
     }
 
-    /// Run the actor message loop, processing `SecretMessage` variants.
+    /// Run the actor message loop, processing `VaultMessage` variants.
     ///
     /// This method runs until the receiver channel is closed. Each message
-    /// variant is dispatched to the corresponding `SecretServiceHandle` method
+    /// variant is dispatched to the corresponding `VaultServiceHandle` method
     /// and the response is sent through the oneshot channel embedded in the message.
-    pub async fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<SecretMessage>) {
+    pub async fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<VaultMessage>) {
         while let Some(msg) = rx.recv().await {
             self.handle_message(msg);
         }
     }
 
-    /// Spawn the actor as a `tokio::task` and return a `Client<SecretProtocol>` for sending messages.
+    /// Spawn the actor as a `tokio::task` and return a `Client<VaultProtocol>` for sending messages.
     ///
     /// The actor runs on a tokio task and processes messages from the mpsc channel.
-    /// The returned `Client<SecretProtocol>` can be used to send `SecretMessage` variants
+    /// The returned `Client<VaultProtocol>` can be used to send `VaultMessage` variants
     /// to the actor.
     pub fn spawn(
-        handle: SecretServiceHandle,
-    ) -> (irpc::Client<SecretProtocol>, SecretServiceActor) {
+        handle: VaultServiceHandle,
+    ) -> (irpc::Client<VaultProtocol>, VaultServiceActor) {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let client = irpc::Client::local(tx);
         let actor = Self::new(handle.clone());
@@ -474,10 +474,10 @@ impl SecretServiceActor {
         (client, Self::new(handle))
     }
 
-    /// Handle a single `SecretMessage` by dispatching to the appropriate handle method.
-    fn handle_message(&mut self, msg: SecretMessage) {
+    /// Handle a single `VaultMessage` by dispatching to the appropriate handle method.
+    fn handle_message(&mut self, msg: VaultMessage) {
         match msg {
-            SecretMessage::DeriveEd25519(msg) => {
+            VaultMessage::DeriveEd25519(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let DeriveEd25519 { path } = inner;
                 let result = self.handle.derive_ed25519(&path);
@@ -485,7 +485,7 @@ impl SecretServiceActor {
                     let _ = tx.send(result).await;
                 });
             }
-            SecretMessage::DeriveEncryptionKey(msg) => {
+            VaultMessage::DeriveEncryptionKey(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let DeriveEncryptionKey { path } = inner;
                 let result = self.handle.derive_encryption_key(&path);
@@ -493,7 +493,7 @@ impl SecretServiceActor {
                     let _ = tx.send(result).await;
                 });
             }
-            SecretMessage::DeriveEthereumKey(msg) => {
+            VaultMessage::DeriveEthereumKey(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let DeriveEthereumKey { path } = inner;
                 let result = self.handle.derive_ethereum_key(&path);
@@ -501,7 +501,7 @@ impl SecretServiceActor {
                     let _ = tx.send(result).await;
                 });
             }
-            SecretMessage::DerivePassword(msg) => {
+            VaultMessage::DerivePassword(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let DerivePassword { path, length } = inner;
                 let result = self.handle.derive_password(&path, length);
@@ -509,7 +509,7 @@ impl SecretServiceActor {
                     let _ = tx.send(result).await;
                 });
             }
-            SecretMessage::Encrypt(msg) => {
+            VaultMessage::Encrypt(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let Encrypt {
                     plaintext,
@@ -520,7 +520,7 @@ impl SecretServiceActor {
                     let _ = tx.send(result).await;
                 });
             }
-            SecretMessage::Decrypt(msg) => {
+            VaultMessage::Decrypt(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let Decrypt { encrypted } = inner;
                 let result = self.handle.decrypt(&encrypted);
@@ -528,14 +528,14 @@ impl SecretServiceActor {
                     let _ = tx.send(result).await;
                 });
             }
-            SecretMessage::Lock(msg) => {
+            VaultMessage::Lock(msg) => {
                 let WithChannels { inner: _, tx, .. } = msg;
                 self.handle.lock();
                 tokio::spawn(async move {
                     let _ = tx.send(Ok(())).await;
                 });
             }
-            SecretMessage::Unlock(msg) => {
+            VaultMessage::Unlock(msg) => {
                 let WithChannels { inner, tx, .. } = msg;
                 let Unlock {
                     mnemonic,
@@ -559,13 +559,13 @@ mod tests {
 
     #[test]
     fn test_service_starts_locked() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         assert!(!service.is_unlocked());
     }
 
     #[test]
     fn test_unlock_new_generates_mnemonic() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         let phrase = service.unlock_new(24).unwrap();
         assert!(!phrase.is_empty());
         assert!(service.is_unlocked());
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_lock_purges_state() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
         assert!(service.is_unlocked());
 
@@ -583,21 +583,21 @@ mod tests {
 
     #[test]
     fn test_derive_on_locked_fails() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         let result = service.derive_ed25519(PATHS::IDENTITY);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_encrypt_on_locked_fails() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         let result = service.encrypt("secret", 1);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_full_lifecycle() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
 
         assert!(!service.is_unlocked());
 
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_unlock_with_known_phrase() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
 
         let phrase = service.unlock_new(24).unwrap();
         service.lock();
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_double_unlock_fails() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let result = service.unlock_new(12);
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_lifecycle() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let plaintext = "my-api-key-12345";
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_derive_password_deterministic() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let path = "m/74'/1'/0'/12345'";
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_derive_password_different_paths() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let pw_a = service.derive_password("m/74'/1'/0'/100'", 16).unwrap();
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_derive_password_length_truncation() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let path = "m/74'/1'/0'/999'";
@@ -693,14 +693,14 @@ mod tests {
 
     #[test]
     fn test_derive_password_locked_error() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         let result = service.derive_password("m/74'/1'/0'/1'", 16);
-        assert!(matches!(result, Err(SecretServiceError::ServiceLocked)));
+        assert!(matches!(result, Err(VaultServiceError::VaultLocked)));
     }
 
     #[test]
     fn test_derive_password_string_base64url() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let path = "m/74'/1'/0'/42'";
@@ -722,7 +722,7 @@ mod tests {
     #[cfg(feature = "secp256k1")]
     #[test]
     fn test_derive_ethereum_key_bip32() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let key = service.derive_ethereum_key(PATHS::ETHEREUM).unwrap();
@@ -734,7 +734,7 @@ mod tests {
     #[cfg(feature = "secp256k1")]
     #[test]
     fn test_ethereum_key_differs_from_ed25519() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let eth_key = service.derive_ethereum_key(PATHS::ETHEREUM).unwrap();
@@ -746,19 +746,19 @@ mod tests {
     #[cfg(not(feature = "secp256k1"))]
     #[test]
     fn test_derive_ethereum_key_unsupported_without_feature() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let result = service.derive_ethereum_key(PATHS::ETHEREUM);
         assert!(matches!(
             result,
-            Err(SecretServiceError::UnsupportedKeyType)
+            Err(VaultServiceError::UnsupportedKeyType)
         ));
     }
 
     #[test]
     fn test_cache_hit_avoids_re_derivation() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let key1 = service.derive_ed25519(PATHS::IDENTITY).unwrap();
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn test_cache_miss_derives_and_caches() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         assert_eq!(service.inner.read().unwrap().cache.len(), 0);
@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn test_expired_entry_evicted_on_access() {
         let config = crate::cache::CacheConfig::new(std::time::Duration::from_millis(5), 64);
-        let service = SecretServiceHandle::with_cache_config(config);
+        let service = VaultServiceHandle::with_cache_config(config);
         service.unlock_new(24).unwrap();
 
         let key1 = service.derive_ed25519(PATHS::IDENTITY).unwrap();
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn test_lru_eviction_when_over_max_entries() {
         let config = crate::cache::CacheConfig::new(std::time::Duration::from_secs(3600), 2);
-        let service = SecretServiceHandle::with_cache_config(config);
+        let service = VaultServiceHandle::with_cache_config(config);
         service.unlock_new(24).unwrap();
 
         service.derive_ed25519(PATHS::IDENTITY).unwrap();
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn test_lock_clears_all_cache_entries() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         service.derive_ed25519(PATHS::IDENTITY).unwrap();
@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_uses_cached_encryption_key() {
-        let service = SecretServiceHandle::new();
+        let service = VaultServiceHandle::new();
         service.unlock_new(24).unwrap();
 
         let plaintext = "cached-encryption-test";
@@ -849,13 +849,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_unlock_responds_successfully() {
-        let handle = SecretServiceHandle::new();
+        let handle = VaultServiceHandle::new();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = SecretServiceActor::new(handle);
+        let actor = VaultServiceActor::new(handle);
         tokio::task::spawn(actor.run(rx));
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = SecretMessage::Unlock(WithChannels::from((
+        let msg = VaultMessage::Unlock(WithChannels::from((
             Unlock {
                 mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
                 passphrase: None,
@@ -870,14 +870,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_derive_ed25519_returns_key() {
-        let handle = SecretServiceHandle::new();
+        let handle = VaultServiceHandle::new();
         handle.unlock_new(24).unwrap();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = SecretServiceActor::new(handle);
+        let actor = VaultServiceActor::new(handle);
         tokio::task::spawn(actor.run(rx));
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = SecretMessage::DeriveEd25519(WithChannels::from((
+        let msg = VaultMessage::DeriveEd25519(WithChannels::from((
             DeriveEd25519 {
                 path: PATHS::IDENTITY.to_string(),
             },
@@ -897,15 +897,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_lock_clears_state() {
-        let handle = SecretServiceHandle::new();
+        let handle = VaultServiceHandle::new();
         handle.unlock_new(24).unwrap();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = SecretServiceActor::new(handle.clone());
+        let actor = VaultServiceActor::new(handle.clone());
         tokio::task::spawn(actor.run(rx));
 
-        let (resp_tx, resp_rx): (oneshot::Sender<Result<(), SecretServiceError>>, _) =
+        let (resp_tx, resp_rx): (oneshot::Sender<Result<(), VaultServiceError>>, _) =
             oneshot::channel();
-        let msg = SecretMessage::Lock(WithChannels::from((Lock, resp_tx)));
+        let msg = VaultMessage::Lock(WithChannels::from((Lock, resp_tx)));
         tx.send(msg).await.unwrap();
 
         let result = resp_rx.await.unwrap();
@@ -915,8 +915,8 @@ mod tests {
 
     #[test]
     fn test_unlock_with_passphrase_produces_different_seed() {
-        let service_a = SecretServiceHandle::new();
-        let service_b = SecretServiceHandle::new();
+        let service_a = VaultServiceHandle::new();
+        let service_b = VaultServiceHandle::new();
 
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
@@ -946,15 +946,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_unlock_with_passphrase() {
-        let handle = SecretServiceHandle::new();
+        let handle = VaultServiceHandle::new();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = SecretServiceActor::new(handle);
+        let actor = VaultServiceActor::new(handle);
         tokio::task::spawn(actor.run(rx));
 
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = SecretMessage::Unlock(WithChannels::from((
+        let msg = VaultMessage::Unlock(WithChannels::from((
             Unlock {
                 mnemonic: mnemonic.to_string(),
                 passphrase: Some("TREZOR".to_string()),

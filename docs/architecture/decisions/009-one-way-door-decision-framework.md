@@ -20,7 +20,7 @@ Every architectural decision is classified as one of:
 
 **One-way door** — Reversing this decision requires rewriting significant code across multiple crates or permanently closes a capability door. Examples:
 - BiStream as a concrete quinn type (closes WASM door permanently)
-- alknet-secret pulled into alknet-core as a dependency (loses standalone property permanently)
+- alknet-vault pulled into alknet-core as a dependency (loses standalone property permanently)
 - ProtocolHandler signature changes (every handler must be rewritten)
 
 **Two-way door** — Reversing this decision is cheap or additive. Examples:

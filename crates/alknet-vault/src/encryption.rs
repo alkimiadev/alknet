@@ -52,7 +52,7 @@ pub const CURRENT_KEY_VERSION: u32 = 1;
 ///
 /// The Rust `EncryptedData` is a superset of the TypeScript `EncryptedDataSchema`
 /// from `@alkdev/storage`. Migration path: re-encrypt TypeScript-encrypted data
-/// using the Rust secret service with a new key version.
+/// using the Rust vault with a new key version.
 ///
 /// See OQ-SVC-03 for the compatibility tracking.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

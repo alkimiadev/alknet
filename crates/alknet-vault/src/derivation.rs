@@ -24,7 +24,7 @@ type HmacSha512 = Hmac<Sha512>;
 
 /// Well-known derivation path constants for alknet key material.
 ///
-/// These paths are defined once and referenced by both the secret service and
+/// These paths are defined once and referenced by both the vault service and
 /// external consumers that need to request specific key types.
 #[allow(non_snake_case)]
 pub mod PATHS {
@@ -101,8 +101,8 @@ impl ExtendedPrivKey {
 /// # Example
 ///
 /// ```
-/// use alknet_secret::derivation::{derive_path_from_seed, PATHS};
-/// use alknet_secret::mnemonic::Mnemonic;
+/// use alknet_vault::derivation::{derive_path_from_seed, PATHS};
+/// use alknet_vault::mnemonic::Mnemonic;
 ///
 /// let mnemonic = Mnemonic::generate(24).unwrap();
 /// let seed = mnemonic.to_seed(None);

@@ -25,12 +25,12 @@ See [ADR-001](decisions/001-alpn-protocol-dispatch.md) for the full rationale.
 ## Crate Graph
 
 ```
-alknet-secret (standalone, no alknet-core dependency)
+alknet-vault (standalone, no alknet-core dependency)
 │
 alknet-core
 │   ├── ProtocolHandler trait
 │   ├── ALPN router / endpoint
-│   ├── BiStream type
+│   ├── BiStream trait, Connection type
 │   ├── AuthContext, IdentityProvider
 │   └── StaticConfig, DynamicConfig (ArcSwap)
 │
@@ -44,15 +44,15 @@ alknet-core
 │
 ├── alknet-napi       (depends on alknet-call, napi-rs)
 │
-└── alknet            (CLI binary, depends on all handler crates)
+└── alknet            (CLI binary, depends on all handler crates + alknet-vault)
 ```
 
 Dependency rules:
 - No handler crate depends on another handler crate
 - All handler crates depend on alknet-core
-- alknet-secret has zero alknet crate dependencies
+- alknet-vault has zero alknet crate dependencies
 - alknet-napi depends only on alknet-call (call protocol client)
-- alknet (CLI) is the only crate that depends on all handler crates
+- alknet (CLI) is the only crate that depends on all handler crates and alknet-vault
 
 See [ADR-003](decisions/003-crate-decomposition.md) for the full decomposition rationale.
 
@@ -91,7 +91,7 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 | `h3` | HttpAdapter (WebTransport upgrade) | Browser-compatible WebTransport, then ALPN upgrade |
 | `h2` / `http/1.1` | HttpAdapter | Standard HTTP for browsers, curl |
 
-> **Note**: `alknet/secret` is not in the ALPN registry. alknet-secret is a standalone crate with no alknet-core dependency. The CLI binary embeds it and exposes its operations through `alknet/call`. See ADR-008 for the integration rationale.
+> **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency. The CLI binary embeds it and exposes its operations through `alknet/call`. The vault is a capability source — derived keys and decrypted credentials are injected into operation contexts at the assembly layer, not passed as vault references to handlers. See ADR-008 for the integration rationale.
 
 ## Authentication
 
@@ -181,7 +181,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Call protocol uses irpc for registry, framing, dispatch |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | `alknet/` prefix, one ALPN per connection |
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | BiStream is a trait, handlers receive Connection not BiStream |
-| [008](decisions/008-secret-service-integration.md) | Secret Service Integration Point | CLI-embedded, exposed via call protocol, no ALPN for secrets |
+| [008](decisions/008-secret-service-integration.md) | Vault Integration Point | CLI-embedded, exposed via call protocol, vault is a capability source |
 | [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Classify decisions by reversal cost; one-way doors need ADRs |
 
 ## Open Questions
@@ -192,7 +192,7 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-02**: AuthContext resolution timing (resolved: hybrid — see ADR-004)
 - **OQ-03**: ALPN string naming convention (resolved: see ADR-006)
 - **OQ-04**: Dynamic handler registration at runtime vs static at startup (two-way door, defer to implementation)
-- **OQ-08**: Secret service integration point (resolved: CLI-embedded via call protocol — see ADR-008)
+- **OQ-08**: Vault integration point (resolved: CLI-embedded via call protocol — see ADR-008)
 
 ## Failure Modes
 

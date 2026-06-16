@@ -12,7 +12,7 @@ The new ALPN dispatch model eliminates the need for a shared interface layer. Ea
 
 Key constraints:
 - Protocol crates must depend on alknet-core for auth/identity/config — but not on each other
-- alknet-secret is already standalone (no alknet-core dependency) and must remain so
+- alknet-secret is already standalone (no alknet-core dependency) and must remain so (renamed to alknet-vault — see ADR-008)
 - The CLI binary assembles everything — it's the only crate that depends on all handler crates
 - Some handlers (SFTP, call protocol) need to compile to WASM for browser/client use
 - irpc is the foundation for the call protocol — it provides the operation registry, framing, and pub/sub patterns
@@ -24,7 +24,7 @@ The workspace decomposes into the following crates:
 | Crate | Responsibility | Depends on |
 |-------|---------------|------------|
 | `alknet-core` | ProtocolHandler trait, ALPN router, endpoint, BiStream, AuthContext, IdentityProvider, config, ArcSwap dynamic config | tokio, quinn, rustls, irpc |
-| `alknet-secret` | BIP39/SLIP-0010/AES-GCM key derivation and encryption, SecretProtocol service | (standalone, no alknet-core) |
+| `alknet-vault` | Local key vault: BIP39/SLIP-0010/AES-GCM key derivation, encryption, VaultProtocol dispatch | (standalone, no alknet-core) |
 | `alknet-ssh` | SshAdapter (russh, SOCKS5, port forwarding) | alknet-core, russh |
 | `alknet-call` | CallAdapter (JSON-RPC via irpc, operation registry, pub/sub, access control) | alknet-core, irpc |
 | `alknet-git` | GitAdapter (gix, pkt-line protocol) | alknet-core, gix |
@@ -37,7 +37,7 @@ The workspace decomposes into the following crates:
 
 Dependency flow:
 ```
-alknet-secret (standalone)
+alknet-vault (standalone)
 alknet-core ← all handler crates ← alknet (CLI)
 alknet-call ← alknet-napi
 ```
@@ -49,7 +49,7 @@ No handler crate depends on another handler crate. Cross-handler communication g
 **Positive:**
 - Each handler can be developed, tested, and versioned independently
 - WASM-compatible handlers (sftp, call) don't pull in heavy dependencies (russh, axum)
-- alknet-secret remains standalone — no circular dependency risk
+- alknet-vault remains standalone — no circular dependency risk
 - New handlers are added by creating a crate and registering it with the endpoint
 - Clean separation of concerns — each crate has one job
 

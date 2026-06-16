@@ -1,13 +1,13 @@
 [package]
-name = "alknet-secret"
+name = "alknet-vault"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "BIP39 mnemonic generation, SLIP-0010 Ed25519 HD key derivation, AES-256-GCM encryption, and SecretProtocol irpc service for alknet"
+description = "Local key vault: BIP39 mnemonic generation, SLIP-0010 Ed25519 HD key derivation, AES-256-GCM encryption for securing provider keys, credentials, and identity material"
 repository.workspace = true
 
 [lib]
-name = "alknet_secret"
+name = "alknet_vault"
 
 [features]
 default = []

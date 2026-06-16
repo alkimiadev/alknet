@@ -47,7 +47,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "alknet-secret"
+name = "alknet-vault"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",

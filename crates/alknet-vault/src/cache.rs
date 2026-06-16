@@ -1,4 +1,4 @@
-//! TTL-based key cache with LRU eviction for SecretService.
+//! TTL-based key cache with LRU eviction for VaultService.
 //!
 //! The `KeyCache` stores derived key material keyed by derivation path. Entries
 //! expire after a configurable TTL (default: 1 hour) and are evicted lazily on
