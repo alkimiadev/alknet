@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-17
+last_updated: 2026-06-16
 ---
 
 # Open Questions
@@ -76,11 +76,11 @@ Door type classifications follow ADR-009:
 ### OQ-07: Call Protocol Scope Within a Connection
 
 - **Origin**: ADR-005
-- **Status**: open
+- **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: medium
-- **Resolution**: (deferred to implementation) Start with one stream per operation/request in the call protocol. Multiplexing within a stream can be added later if needed without breaking existing clients. Resolve when speccing alknet-call.
-- **Cross-references**: ADR-005
+- **Resolution**: The call protocol uses bidirectional QUIC streams with EventEnvelope framing and ID-based correlation via PendingRequestMap. The protocol is stream-agnostic — the client can open one stream per operation, multiplex on one stream, or any mix. Correlation is by request ID, not by stream. Both sides can initiate calls. One `alknet/call` connection gives access to the full operation registry (call, subscribe, batch, schema). No multiplexing layer is needed inside the connection. See ADR-012.
+- **Cross-references**: ADR-005, ADR-012
 
 ## Theme: Security
 
@@ -132,5 +132,23 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: medium
-- **Resolution**: Start with file paths in StaticConfig (option A). The CLI binary provides `tls_cert` and `tls_key` paths at startup. ACME auto-provisioning (option B) and external cert managers (option C) are additive — they can be added as features without changing the core StaticConfig or endpoint lifecycle. `StaticConfig` does NOT include `acme_domain` in v1; ACME will be a separate feature when implemented.
+- **Resolution**: Start with file paths in StaticConfig (option a). The CLI binary provides `tls_cert` and `tls_key` paths at startup. ACME auto-provisioning (option b) and external cert managers (option c) are additive — they can be added as features without changing the core StaticConfig or endpoint lifecycle. `StaticConfig` does NOT include `acme_domain` in v1; ACME will be a separate feature when implemented.
 - **Cross-references**: ADR-010, [config.md](crates/core/config.md)
+
+### OQ-13: Operation Path Format and Routing Scope
+
+- **Origin**: [operation-registry.md](crates/call/operation-registry.md)
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: medium
+- **Resolution**: Phase 1 uses `/{service}/{op}` (e.g., `/vault/derive`, `/services/list`). The head/worker `/{node}/{service}/{op}` routing from the reference implementation is a Phase 2+ concern that can be added when remote dispatch is implemented — the node prefix is additive and doesn't break existing operations. Two-way door.
+- **Cross-references**: ADR-005, ADR-012
+
+### OQ-14: Batch Operation Semantics
+
+- **Origin**: [call-protocol.md](crates/call/call-protocol.md)
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: Phase 1 treats batch as a client-side pattern — multiple `call.requested` events with correlated IDs, responses arrive independently. Batch-specific event types can be added later if needed (e.g., `batch.requested`, `batch.responded`) without breaking the existing protocol. Two-way door.
+- **Cross-references**: ADR-012

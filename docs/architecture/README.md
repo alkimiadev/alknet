@@ -1,15 +1,15 @@
 ---
 status: draft
-last_updated: 2026-06-17
+last_updated: 2026-06-16
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–011) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), and AuthContext structure (ADR-011). The alknet-core crate spec is in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–012) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), and call protocol stream model (ADR-012). The alknet-core and alknet-call crate specs are in draft.
 
-**Next step**: Review alknet-core spec documents, then begin implementation. Two-way-door questions (OQ-05, OQ-07, OQ-11, OQ-12) will be resolved during implementation.
+**Next step**: Review alknet-call spec documents, then begin implementation. Two-way-door questions (OQ-11, OQ-13, OQ-14) will be resolved during implementation.
 
 ## Architecture Documents
 
@@ -22,8 +22,9 @@ last_updated: 2026-06-17
 | [crates/core/endpoint.md](crates/core/endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, shutdown |
 | [crates/core/auth.md](crates/core/auth.md) | draft | AuthContext, Identity, IdentityProvider, AuthToken, resolution flow |
 | [crates/core/config.md](crates/core/config.md) | draft | StaticConfig, DynamicConfig, ArcSwap, ConfigReloadHandle |
-
-Crate-specific specs for alknet-call, alknet-ssh, etc. will be created when each crate is ready for Phase 1 architecture work.
+| [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
+| [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, EventEnvelope framing, stream model, PendingRequestMap, bidirectional calls |
+| [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, service discovery, irpc integration |
 
 ## ADR Table
 
@@ -38,8 +39,9 @@ Crate-specific specs for alknet-call, alknet-ssh, etc. will be created when each
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | Accepted |
 | [008](decisions/008-secret-service-integration.md) | Vault Integration Point | Accepted |
 | [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Accepted |
-| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Proposed |
-| [011](decisions/011-authcontext-structure.md) | AuthContext Structure and Resolution Flow | Proposed |
+| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Accepted |
+| [011](decisions/011-authcontext-structure.md) | AuthContext Structure and Resolution Flow | Accepted |
+| [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Accepted |
 
 ## Open Questions
 
@@ -55,11 +57,13 @@ See [open-questions.md](open-questions.md) for the full tracker.
 
 **Resolved two-way doors:**
 - **OQ-04**: Dynamic handler registration — static at startup (ADR-010)
+- **OQ-07**: Call protocol scope — bidirectional streams, EventEnvelope, ID-based correlation (ADR-012)
 - **OQ-12**: TLS certificate provisioning — file paths in StaticConfig, ACME later
 
-**Two-way doors (resolved or deferred to implementation):**
-- **OQ-07**: Call protocol scope — start with one stream per operation
+**Open two-way doors (resolved during implementation):**
 - **OQ-11**: Handler-level auth resolution observability — decide during implementation
+- **OQ-13**: Operation path format — `/{service}/{op}` for Phase 1, `/{node}/{service}/{op}` later
+- **OQ-14**: Batch operation semantics — client-side pattern for Phase 1, batch event types later
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
