@@ -8,7 +8,7 @@ Accepted
 
 Not all architectural decisions carry the same reversal cost. Some decisions are easy to change later — if you pick the wrong data structure, you refactor. Other decisions are nearly impossible to reverse — if you build a type hierarchy that forecloses WASM compatibility, every handler written against that hierarchy must be rewritten.
 
-This distinction matters especially during Phase 0 (exploration) and early Phase 1 (architecture). The project is post-pivot with foundational ADRs in place but no implementation code yet (except alknet-secret). Decisions made now shape the API surface that every handler depends on.
+This distinction matters especially during Phase 0 (exploration) and early Phase 1 (architecture). The project is post-pivot with foundational ADRs in place but no implementation code yet (except alknet-vault). Decisions made now shape the API surface that every handler depends on.
 
 Without an explicit framework, one-way doors can be treated as casually as two-way doors, leading to costly rework. Or conversely, two-way doors can be over-analyzed, blocking progress on decisions that are cheap to reverse.
 

@@ -30,7 +30,7 @@ This means:
 - The TypeScript "operations" and "pub/sub" patterns that can import OpenAPI schemas and expose MCP tools are supported at the protocol level
 - Future NAPI and WASM clients speak the same wire format
 
-The `SecretProtocol` in alknet-secret also uses irpc as its service protocol. This is consistent — alknet-secret's irpc service is an independent service that happens to use the same framing, not a dependency on alknet-call.
+The `VaultProtocol` in alknet-vault also uses irpc as its service protocol. This is consistent — alknet-vault's irpc service is an independent service that happens to use the same framing, not a dependency on alknet-call.
 
 ## Consequences
 
@@ -39,7 +39,7 @@ The `SecretProtocol` in alknet-secret also uses irpc as its service protocol. Th
 - JSON Schema compatible — OpenAPI import, MCP tool exposure, cross-language client generation
 - No need to design a custom RPC wire format — irpc's is already battle-tested
 - The call protocol inherits irpc's streaming and subscription patterns
-- Consistency with alknet-secret's service model — both use irpc
+- Consistency with alknet-vault's service model — both use irpc
 
 **Negative:**
 - alknet-call depends on irpc — if irpc has limitations or bugs, we're affected (mitigated: irpc is lightweight and we can fork if needed)

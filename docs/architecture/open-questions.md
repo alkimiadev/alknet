@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-17
 ---
 
 # Open Questions
@@ -45,11 +45,11 @@ Door type classifications follow ADR-009:
 ### OQ-04: Dynamic Handler Registration at Runtime vs Static at Startup
 
 - **Origin**: [overview.md](overview.md)
-- **Status**: open
+- **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: (deferred to implementation) Start with static registration at startup. The `ArcSwap<DynamicConfig>` pattern from the previous implementation can be applied later if needed. ALPN advertisement requires endpoint restart anyway (TLS ALPN is negotiated during handshake), so dynamic registration has limited value in v1.
-- **Cross-references**: ADR-001
+- **Resolution**: Static registration at startup. `HandlerRegistry` is immutable after construction. ALPN strings in the TLS `ServerConfig` are derived from the registry at startup — adding a handler at runtime requires rebuilding the TLS config. The `ArcSwap<HandlerRegistry>` pattern can be applied later if needed (two-way door). See ADR-010.
+- **Cross-references**: ADR-001, ADR-010, [endpoint.md](crates/core/endpoint.md)
 
 ## Theme: Transport and Endpoint
 
@@ -59,8 +59,8 @@ Door type classifications follow ADR-009:
 - **Status**: open
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: (deferred to implementation) Start with quinn (QUIC over UDP). The endpoint can be made transport-agnostic later by abstracting the connection accept loop behind a trait. iroh connectivity produces QUIC connections that can feed into the same ALPN router.
-- **Cross-references**: ADR-001
+- **Resolution**: Start with quinn (QUIC over UDP). `AlknetEndpoint` uses `quinn::Endpoint` directly. The endpoint can be made transport-agnostic later by abstracting the connection accept loop behind a trait. iroh connectivity produces QUIC connections that can feed into the same ALPN router. `SendStream`/`RecvStream` are concrete wrappers over quinn types — can become enum dispatch if multi-transport is needed. See ADR-010.
+- **Cross-references**: ADR-001, ADR-010, [core-types.md](crates/core/core-types.md)
 
 ### OQ-06: Server-Side ALPN vs Client-Side ALPN
 
@@ -114,3 +114,23 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Priority**: low
 - **Resolution**: Deferred per the cleanup plan. Start with git smart protocol over QUIC streams. ERC721 integration and full server capabilities are additive. Resolve when speccing alknet-git.
 - **Cross-references**: ADR-001
+
+## Theme: alknet-core
+
+### OQ-11: Handler-Level Auth Resolution Observability
+
+- **Origin**: [auth.md](crates/core/auth.md)
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: medium
+- **Resolution**: When a handler resolves identity inside `handle()`, should the resolved `Identity` be stored somewhere for observability (e.g., connection logging), or is the handler's local variable sufficient? Options: (A) handlers return the resolved identity from `handle()`, (B) handlers call a method on Connection to set identity, (C) handlers log locally and the resolved identity stays local. Two-way door — can be decided during implementation.
+- **Cross-references**: ADR-004, ADR-011
+
+### OQ-12: TLS Certificate Provisioning in AlknetEndpoint
+
+- **Origin**: [endpoint.md](crates/core/endpoint.md), [config.md](crates/core/config.md)
+- **Status**: resolved
+- **Door type**: Two-way
+- **Priority**: medium
+- **Resolution**: Start with file paths in StaticConfig (option A). The CLI binary provides `tls_cert` and `tls_key` paths at startup. ACME auto-provisioning (option B) and external cert managers (option C) are additive — they can be added as features without changing the core StaticConfig or endpoint lifecycle. `StaticConfig` does NOT include `acme_domain` in v1; ACME will be a separate feature when implemented.
+- **Cross-references**: ADR-010, [config.md](crates/core/config.md)

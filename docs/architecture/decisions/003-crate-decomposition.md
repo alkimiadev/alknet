@@ -12,7 +12,7 @@ The new ALPN dispatch model eliminates the need for a shared interface layer. Ea
 
 Key constraints:
 - Protocol crates must depend on alknet-core for auth/identity/config — but not on each other
-- alknet-secret is already standalone (no alknet-core dependency) and must remain so (renamed to alknet-vault — see ADR-008)
+- alknet-vault is already standalone (no alknet-core dependency) and must remain so (see ADR-008)
 - The CLI binary assembles everything — it's the only crate that depends on all handler crates
 - Some handlers (SFTP, call protocol) need to compile to WASM for browser/client use
 - irpc is the foundation for the call protocol — it provides the operation registry, framing, and pub/sub patterns

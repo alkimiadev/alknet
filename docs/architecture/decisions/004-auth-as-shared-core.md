@@ -42,7 +42,7 @@ The `AuthContext` passed to `handle()` may be partial — containing only transp
 
 The `CredentialProvider` concept from the previous architecture is simplified: there is no phase progression (A–D). The `IdentityProvider` has two resolution paths — fingerprint and token — and a `ConfigIdentityProvider` implementation that draws from static and dynamic config.
 
-`alknet-secret` remains independent. It does not depend on `alknet-core` or `IdentityProvider`. The secret service provides derived keys on request; identity resolution is a separate concern.
+`alknet-vault` stays standalone. It does not depend on `alknet-core` or `IdentityProvider`. The vault provides derived keys on request; identity resolution is a separate concern.
 
 ## Consequences
 
