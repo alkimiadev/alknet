@@ -14,7 +14,7 @@ The previous implementation used `irpc` for the call protocol's operation regist
 - Request/response and streaming patterns
 - Type-safe operation definitions via derive macros
 
-The call protocol is derived from a TypeScript implementation of "operations" and "pub/sub" that can wholesale import OpenAPI schemas, wrap MCP servers, and go the other direction — exposing operations as HTTP endpoints, MCP tools, etc. This bidirectional capability is strategically important.
+The call protocol is derived from a TypeScript implementation (`@alkdev/operations`, `@alkdev/pubsub`) that informed the design of the operation registry, EventEnvelope framing, and adapter patterns (from_openapi, from_mcp, from_call). This bidirectional composition capability is strategically important. The TypeScript code is a reference that informed the Rust design — it is not a parallel implementation (see ADR-013).
 
 ## Decision
 
@@ -27,8 +27,8 @@ irpc is not replaced or wrapped in an abstraction layer — it IS the call proto
 This means:
 - The wire format is irpc's EventEnvelope framing — length-prefixed JSON
 - Operation schemas follow irpc's schema model — JSON Schema compatible
-- The TypeScript "operations" and "pub/sub" patterns that can import OpenAPI schemas and expose MCP tools are supported at the protocol level
-- Future NAPI and WASM clients speak the same wire format
+- The TypeScript operation and pub/sub patterns that can import OpenAPI schemas, wrap MCP servers, and expose operations as endpoints are supported at the protocol level — the adapter contract (from_*, to_*) is defined in Rust (see ADR-013)
+- Future NAPI and WASM clients speak the same wire format — alknet-napi projects the Rust call protocol client to Node.js; a browser SDK can be adapted from the existing TypeScript code
 
 The `VaultProtocol` in alknet-vault also uses irpc as its service protocol. This is consistent — alknet-vault's irpc service is an independent service that happens to use the same framing, not a dependency on alknet-call.
 

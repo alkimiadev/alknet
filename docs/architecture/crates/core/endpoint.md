@@ -54,7 +54,7 @@ pub struct HandlerRegistry {
 
 impl HandlerRegistry {
     pub fn new() -> Self;
-    pub fn register(&mut self, handler: Arc<dyn ProtocolController>);
+    pub fn register(&mut self, handler: Arc<dyn ProtocolHandler>);
     pub fn get(&self, alpn: &[u8]) -> Option<&Arc<dyn ProtocolHandler>>;
     pub fn alpn_strings(&self) -> Vec<Vec<u8>>;
 }
@@ -170,34 +170,58 @@ This matches the reference implementation: the TLS cert encrypts and camouflages
 
 ## RFC 7250: Raw Public Keys in TLS
 
-iroh uses RFC 7250 raw public keys instead of X.509 certificates for TLS. The implementation is ~100 lines (see `iroh/iroh/src/tls/resolver.rs`): take an Ed25519 key, wrap its SPKI public key as a `CertificateDer`, tell rustls `only_raw_public_keys() -> true`. No X.509, no CAs, no domain names, no cert renewal.
+RFC 7250 raw public keys are the **default TLS identity mode** for most alknet nodes. They eliminate the need for domain names, CAs, and certificate renewal — the Ed25519 public key IS the node's identity.
 
-rustls already supports RFC 7250. This means the quinn endpoint can also use raw Ed25519 public keys instead of X.509 certs:
+iroh uses this model with its `NodeId`. The implementation is ~100 lines (see `iroh/iroh/src/tls/resolver.rs`): take an Ed25519 key, wrap its SPKI public key as a `CertificateDer`, tell rustls `only_raw_public_keys() -> true`. No X.509, no CAs, no domain names, no cert renewal.
 
-- **No domain required**: A node without a domain name can use raw public keys for the quinn path — key-based identity, but with direct QUIC over UDP instead of relay-assisted connections.
+Key implications:
+
+- **Default for alknet-native clients**: SSH, git, and alknet-native clients all work with raw Ed25519 keys out of the box. The same key type used for SSH auth can serve as the TLS identity. This is the most common deployment mode.
+- **No domain required**: A node without a domain name uses raw public keys for the quinn path — key-based identity with direct QUIC over UDP.
 - **Key = identity**: The Ed25519 public key IS the node's identity. No CA trust chain, no cert expiry. The key can be derived from alknet-vault.
-- **X.509 is optional**: Domain-facing identity (replicators, public services) uses X.509 certs. Key-based identity (personal nodes, P2P) uses raw public keys. Both work with the same quinn endpoint.
-- **Browser limitation**: Browsers don't support RFC 7250. For browser/WebTransport clients, X.509 certs are needed. For alknet-native clients, raw public keys work fine.
+- **X.509 is for domain-hosted services**: Domain-facing identity (replicators, public services, browsers) uses X.509 certs. This is a separate use case, not the default.
+- **Browser limitation**: Browsers don't support RFC 7250. For browser/WebTransport clients, X.509 certs are needed. For all other clients, raw public keys work fine.
 
-This reframes the connectivity model. The quinn and iroh paths share the same key-based identity model via RFC 7250. They're distinguished by **connection establishment** (direct UDP vs relay-assisted), not by identity:
+The quinn and iroh paths share the same key-based identity model via RFC 7250. They're distinguished by **connection establishment** (direct UDP vs relay-assisted), not by identity:
 
-| Path | Connection establishment | Identity (domain-facing) | Identity (key-facing) |
-|------|------------------------|------------------------|---------------------|
-| quinn | Direct UDP, public IP | X.509 cert (domain name) | RFC 7250 raw key |
-| iroh | Relay-assisted P2P | N/A | RFC 7250 raw key (NodeId) |
+| Path | Connection establishment | Default identity | Alternative identity |
+|------|------------------------|-----------------|---------------------|
+| quinn | Direct UDP, public IP | RFC 7250 raw key (most nodes) | X.509 cert (domain-hosted, browsers) |
+| iroh | Relay-assisted P2P | RFC 7250 raw key (NodeId) | N/A |
 
-## TLS Certificate Provisioning
+## TLS Identity
 
-For the quinn endpoint, `StaticConfig` provides TLS configuration via file paths:
+TLS identity in alknet has two distinct use cases, each with a different trust model and provisioning mechanism. See OQ-12 for the full rationale.
 
-- **Manual**: `tls_cert` and `tls_key` file paths. Required for production use.
-- **Self-signed**: For development. The endpoint can generate a self-signed cert on startup.
+### Use case 1: P2P / Key-based identity (default)
 
-The `rustls::ServerConfig` is built from cert + key + ALPN list at startup.
+Most alknet nodes use RFC 7250 raw Ed25519 public keys for TLS identity. No domain name, no CA, no certificate renewal. The Ed25519 public key IS the node's identity — the same key model as iroh's `NodeId`, but for direct QUIC connections.
 
-ACME auto-provisioning (Let's Encrypt) is not in scope for v1. It will be added as a feature later (see OQ-12).
+`TlsIdentity::RawKey` in `StaticConfig` configures this mode. The endpoint builds a `rustls::ServerConfig` with `only_raw_public_keys() -> true` and a `ResolvesServerCert` that generates the certificate on-the-fly from the key, exactly as iroh does (see `iroh/iroh/src/tls/resolver.rs`).
 
-The iroh endpoint does not need TLS certs — it uses `NodeId` for identity.
+This mode works natively with SSH auth (same key type) and git (SSH key-based auth). It is the default for alknet-native clients. **Browser/WebTransport clients do not support RFC 7250** — they require X.509 certificates.
+
+### Use case 2: Domain-hosted services
+
+Nodes that serve browser/WebTransport clients, or nodes with public domain names, use X.509 certificates. This has two sub-cases:
+
+- **Manual**: Provide cert/key file paths via `TlsIdentity::X509`. The endpoint loads them at startup and builds a standard `rustls::ServerConfig`.
+- **ACME auto-provisioning**: Let's Encrypt via `rustls-acme`. The reverse-proxy project (`/workspace/@alkdev/reverse-proxy`) demonstrates the complete pattern: per-listener ACME state machine, `ResolvesServerCertAcme` rustls integration, TLS-ALPN-01 challenge handling, automatic renewal. This is a proven, solved implementation pattern. It will be adapted to alknet's `AlknetEndpoint` context as an additional `TlsIdentity` variant or `ResolvesServerCert` implementation.
+
+`TlsIdentity::SelfSigned` is for development only — the endpoint generates a self-signed cert on startup. External clients will not trust it.
+
+### iroh endpoint identity
+
+The iroh endpoint does not need TLS certificate configuration — it uses `NodeId` (Ed25519) for identity, which is RFC 7250 raw key identity built into the iroh endpoint.
+
+### Identity model comparison
+
+| Path | Identity model | Client compatibility | Use case |
+|------|---------------|---------------------|----------|
+| quinn + `TlsIdentity::RawKey` | RFC 7250 Ed25519 raw key | alknet-native, SSH, git | Personal nodes, P2P, most deployments |
+| quinn + `TlsIdentity::X509` | X.509 domain certificate | All clients including browsers | Relays, public services, WebTransport |
+| quinn + `TlsIdentity::SelfSigned` | X.509 self-signed cert | None (dev only) | Local development |
+| iroh | NodeId (Ed25519, RFC 7250 built-in) | alknet-native, iroh clients | NAT traversal, home servers |
 
 ## Graceful Shutdown
 
@@ -270,4 +294,4 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-04**: Resolved — HandlerRegistry is static at startup.
 - **OQ-05**: Resolved — multi-connectivity endpoint with quinn + iroh, both feature-gated.
-- **OQ-12**: Resolved — start with file paths in StaticConfig, add ACME later.
+- **OQ-12**: Resolved — two distinct TLS identity use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME is a proven pattern from the reverse-proxy project, not speculative future work.

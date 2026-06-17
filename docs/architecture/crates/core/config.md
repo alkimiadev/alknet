@@ -51,7 +51,9 @@ pub enum TlsIdentity {
 
 ### Why `TlsIdentity` instead of `tls_cert`/`tls_key` options
 
-The original `tls_cert: Option<PathBuf>` / `tls_key: Option<PathBuf>` assumed X.509 was the only TLS identity model. RFC 7250 raw public keys (used by iroh, supported by rustls) provide an alternative: Ed25519 key as identity, no X.509, no CA, no domain. This is a separate mode, not just "no cert."
+TLS identity in alknet has two distinct use cases, not one. The original `tls_cert: Option<PathBuf>` / `tls_key: Option<PathBuf>` assumed X.509 was the only TLS identity model. RFC 7250 raw public keys (used by iroh, supported by rustls) provide a fundamentally different mode: Ed25519 key as identity, no X.509, no CA, no domain. This is the default for most alknet nodes — it works natively with SSH auth and git. X.509 certs are for domain-hosted services and browser/WebTransport clients, which don't support RFC 7250.
+
+The `TlsIdentity` enum captures both use cases plus a development mode. See OQ-12 for the full rationale.
 
 ### Key differences from reference implementation
 
@@ -70,10 +72,23 @@ The reference `StaticConfig` (in `alknet-main/crates/alknet-core/src/config/stat
 // The CLI binary constructs StaticConfig from its own options/config.
 // StartupOptions is NOT a core type — it belongs to the alknet CLI binary.
 // alknet-core receives a fully populated StaticConfig.
-let static_config = StaticConfig {
-    listen_addr: "0.0.0.0:4433".parse()?,
-    tls_cert: Some("/path/to/cert.pem".into()),
-    tls_key: Some("/path/to/key.pem".into()),
+
+// P2P / key-based identity (default for most nodes)
+let p2p_config = StaticConfig {
+    listen_addr: Some("0.0.0.0:4433".parse()?),
+    tls_identity: Some(TlsIdentity::RawKey(SecretKey::generate())),
+    iroh_relay: None,
+    drain_timeout: Duration::from_secs(2),
+};
+
+// Domain-hosted service (relays, public services, browsers)
+let domain_config = StaticConfig {
+    listen_addr: Some("0.0.0.0:4433".parse()?),
+    tls_identity: Some(TlsIdentity::X509 {
+        cert: "/path/to/cert.pem".into(),
+        key: "/path/to/key.pem".into(),
+    }),
+    iroh_relay: None,
     drain_timeout: Duration::from_secs(2),
 };
 ```
@@ -148,12 +163,7 @@ pub struct RateLimitConfig {
 }
 ```
 
-Carries forward from the reference implementation. Note: `max_connections_per_ip` and `max_auth_attempts` appear in both `StaticConfig` and `RateLimitConfig`. The relationship is:
-
-- `StaticConfig` does NOT contain rate limit fields. Rate limits are entirely dynamic.
-- `RateLimitConfig` in `DynamicConfig` is the authoritative source at runtime.
-- The CLI binary sets initial `RateLimitConfig` values when creating the initial `DynamicConfig`.
-- Hot-reloading `DynamicConfig` via `ConfigReloadHandle` replaces rate limits immediately — no restart needed.
+Carries forward from the reference implementation. Rate limits are entirely dynamic — `StaticConfig` does not contain rate limit fields. The CLI binary sets initial `RateLimitConfig` values when constructing the initial `DynamicConfig`. Hot-reloading via `ConfigReloadHandle` replaces rate limits immediately without restart.
 
 ## ArcSwap Pattern
 

@@ -183,7 +183,7 @@ pub enum HandlerError {
 **Negative:**
 - alknet-core depends on both quinn and iroh (mitigated: both are feature-gated; a node that only needs one doesn't compile the other)
 - The endpoint is more complex than a single quinn listener — it manages multiple accept loops
-- TLS cert provisioning is manual (file paths) for v1 — ACME auto-provisioning is a future feature (OQ-12)
+- TLS identity provisioning has two distinct use cases: RFC 7250 raw keys (default for P2P/key-based identity) and X.509 certs (for domain-hosted services and browsers). ACME auto-provisioning for X.509 is a proven pattern from the reverse-proxy project, not speculative future work. See OQ-12.
 - No runtime handler registration without regenerating the TLS config (mitigated: two-way door, start static, add ArcSwap later if needed)
 
 ## References

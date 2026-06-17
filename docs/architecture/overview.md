@@ -36,6 +36,16 @@ alknet-core
 │
 ├── alknet-ssh        (depends on alknet-core, russh)
 ├── alknet-call       (depends on alknet-core, irpc)
+│   ├── CallAdapter (server: ProtocolHandler for alknet/call)
+│   ├── Call client (send/receive over QUIC)
+│   ├── OperationSpec, OperationRegistry, AccessControl
+│   └── Adapter traits (from_*, to_*)
+│
+├── alknet-agent      (depends on alknet-call)
+│   ├── LLM execution loop (forked aisdk, simplified)
+│   ├── Tool dispatch via call protocol
+│   └── Provider key retrieval via vault (no env vars)
+│
 ├── alknet-git        (depends on alknet-core, gix)
 ├── alknet-sftp       (depends on alknet-core, russh-sftp)
 ├── alknet-msg        (depends on alknet-core)
@@ -43,6 +53,7 @@ alknet-core
 ├── alknet-dns        (depends on alknet-core, hickory-proto)
 │
 ├── alknet-napi       (depends on alknet-call, napi-rs)
+│   └── Thin NAPI projection of call protocol client to Node.js
 │
 └── alknet            (CLI binary, depends on all handler crates + alknet-vault)
 ```
@@ -51,8 +62,10 @@ Dependency rules:
 - No handler crate depends on another handler crate
 - All handler crates depend on alknet-core
 - alknet-vault has zero alknet crate dependencies
-- alknet-napi depends only on alknet-call (call protocol client)
+- alknet-agent depends on alknet-call (not alknet-core) — it uses the call protocol client for tool dispatch
+- alknet-napi depends only on alknet-call — thin NAPI projection, no business logic
 - alknet (CLI) is the only crate that depends on all handler crates and alknet-vault
+- Rust is the canonical implementation language — TypeScript is a reference/browser adaptation, not a parallel implementation (see ADR-013)
 
 See [ADR-003](decisions/003-crate-decomposition.md) for the full decomposition rationale.
 
@@ -83,6 +96,7 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 |------|---------|-------------|
 | `alknet/ssh` | SshAdapter | SSH-2 handshake, channel multiplexing, SOCKS5, port forwarding |
 | `alknet/call` | CallAdapter | JSON-RPC via irpc: operations, streaming, pub/sub |
+| `alknet/agent` | AgentAdapter | LLM agent service: tool dispatch via call protocol, provider key retrieval via vault |
 | `alknet/git` | GitAdapter | Git smart protocol over QUIC (gix, pkt-line) |
 | `alknet/sftp` | SftpAdapter | SFTP protocol (russh-sftp core) |
 | `alknet/msg` | MessageAdapter | E2E encrypted messaging, mixnet |
@@ -112,7 +126,7 @@ See [ADR-004](decisions/004-auth-as-shared-core.md) for the full rationale.
 
 alknet-call uses irpc as its foundation. The wire format is length-prefixed JSON (EventEnvelope framing). Operations are registered in an irpc registry with JSON Schema discovery. The call protocol supports request/response, streaming subscriptions, and pub/sub.
 
-The call protocol's TypeScript predecessor can import OpenAPI schemas and expose operations as HTTP endpoints or MCP tools. This bidirectional capability carries forward.
+The call protocol's adapter contract (from_openapi, from_mcp, from_call, to_openapi, to_mcp) enables bidirectional composition — operations can be imported from external sources and exported to external protocols. These adapter traits are defined in Rust in alknet-call. The existing TypeScript `@alkdev/operations` library informed the design and may be adapted for browser use (see ADR-013).
 
 See [ADR-005](decisions/005-irpc-as-call-protocol-foundation.md) for the full rationale.
 
@@ -124,14 +138,15 @@ This means:
 - Core types (BiStream, Connection, ProtocolHandler, AuthContext) must not assume tokio or quinn
 - Protocol parsers that are pure data transformations remain transport-agnostic
 - The cost of keeping the WASM door open is low (trait vs concrete type, abstracted I/O) and the cost of closing it is high
+- The call protocol's wire format (length-prefixed JSON EventEnvelope) is inherently cross-language and WASM-friendly
 
-Handlers with transport-agnostic cores are particularly WASM-friendly:
+The browser path is through a JavaScript SDK adapted from the existing TypeScript `@alkdev/operations` library, speaking the EventEnvelope wire format over WebTransport streams — not through Rust-to-WASM compilation of the full stack (see ADR-013). A browser gets a WebTransport stream and speaks the call protocol directly.
+
+Handlers with protocol-agnostic cores are particularly WASM-friendly:
 - russh-sftp's protocol core is already transport-agnostic
 - hickory-proto is `#![no_std]` with `wasm-bindgen` feature
 - The call protocol's JSON framing is inherently cross-language
 - Git's pkt-line is simple enough to implement anywhere
-
-A browser gets a WebTransport stream and speaks SFTP, Git, or call protocol directly — but only if we haven't closed that door with concrete type choices.
 
 ## Shared Types
 

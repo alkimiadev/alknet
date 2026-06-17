@@ -85,7 +85,7 @@ The `Value` type is `serde_json::Value`. The envelope is JSON because it must be
 
 Binary payloads (postcard, protobuf) are base64-encoded as a JSON string within the `payload` field. The convention is: if an operation's output schema specifies a binary field, the handler encodes it as a base64 string and the client decodes it. The `EventEnvelope` structure is not aware of this convention — it carries a `serde_json::Value` and does not interpret the payload. This is a handler-level concern, not a protocol-level concern.
 
-This is the same framing used by irpc and by the `@alkdev/pubsub` TypeScript adapters. The wire format is identical — an `EventEnvelope` flowing from a Rust handler through core, out over a QUIC stream, can be consumed by a JavaScript `@alkdev/operations` call handler with zero translation at the wire level.
+This is the same framing used by irpc. The Rust implementation in alknet-call is canonical — the `@alkdev/pubsub` TypeScript adapters serve as a reference and browser adaptation, not a parallel implementation (see ADR-013).
 
 ### Event Types
 
@@ -115,7 +115,7 @@ The `id` field carries the `requestId` for correlation.
 }
 ```
 
-Error codes use an extensible string enum. Phase 1 defines the following codes:
+Error codes use an extensible string enum. The protocol defines the following codes:
 - `NOT_FOUND` — operation not in registry
 - `FORBIDDEN` — access denied (insufficient scopes or unauthenticated)
 - `INVALID_INPUT` — input doesn't match the operation's JSON Schema
@@ -254,7 +254,7 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 - Operation specs use JSON Schema. The envelope is always JSON. Binary payloads may be base64-encoded in the `payload` field.
 - Batch is not a protocol primitive — multiple `call.requested` events with correlated IDs provide equivalent semantics. See OQ-14.
 - The call protocol is transport-agnostic at the envelope level. The `EventEnvelope` framing can run over QUIC streams, WebSocket frames, or Worker `postMessage`. The `CallAdapter` is the QUIC-specific implementation.
-- Phase 1 is local dispatch only. The operation registry dispatches to handlers in the same process. Remote dispatch (head/worker routing) and irpc service dispatch are contracted but not built. See ADR-005 and OQ-13.
+- `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer. See ADR-005 and OQ-13.
 
 ## Design Decisions
 
@@ -267,8 +267,10 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 
 ## Open Questions
 
-- **OQ-13**: What is the operation path format for the alknet-call crate? The reference implementation used `/{node}/{service}/{op}` for head/worker routing. Phase 1 is single-node, so `/{service}/{op}` may be sufficient. The node prefix can be added later when remote dispatch is implemented.
-- **OQ-14**: Should batch be a distinct protocol primitive with its own event types, or is the "multiple call.requested with correlated IDs" pattern sufficient? The reference implementation treats batch as a client-side pattern. This is a two-way door — batch-specific event types can be added later without breaking existing clients.
+See [open-questions.md](../../open-questions.md) for full details.
+
+- **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
+- **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 
 ## References
 

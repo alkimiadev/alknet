@@ -19,9 +19,9 @@ The operation registry provides:
 - **Discoverability**: Clients can query `/services/list` and `/services/schema` to learn what operations exist before calling them
 - **Access control**: Each operation declares its required scopes and resources; the registry enforces ACL before invoking the handler
 - **Type safety**: JSON Schema for input and output enables validation and client code generation
-- **Composability**: Handlers can invoke other operations through `OperationEnv` (local dispatch in Phase 1)
+- **Composability**: Handlers can invoke other operations through `OperationEnv` (local dispatch — remote dispatch is a separate architectural concern, see Constraints)
 
-The registry design is derived from the `@alkdev/operations` TypeScript package, which provides the same capabilities in JavaScript runtimes. The Rust implementation preserves the behavioral contract: namespace + operation name → invoke with input, return output.
+The registry design is informed by the `@alkdev/operations` TypeScript package, which demonstrated the same capabilities in JavaScript runtimes. The Rust implementation in alknet-call is canonical — it preserves the behavioral contract (namespace + operation name → invoke with input, return output) while defining the adapter contract (from_*, to_*) in Rust (see ADR-013).
 
 ## Architecture
 
@@ -146,7 +146,7 @@ pub trait OperationEnv: Send + Sync {
 
 The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.identity`, and is marked `trusted: true`.
 
-**Phase 1: Local dispatch only.** The initial `OperationEnv` implementation dispatches directly through the local `OperationRegistry`:
+**Local dispatch only.** The initial `OperationEnv` implementation dispatches directly through the local `OperationRegistry`:
 
 ```rust
 pub struct LocalOperationEnv {
@@ -156,7 +156,7 @@ pub struct LocalOperationEnv {
 #[async_trait]
 impl OperationEnv for LocalOperationEnv {
     async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope {
-        let name = format!("/{namespace}/{operation}");
+        let name = format!("{namespace}/{operation}");
         let context = OperationContext {
             request_id: format!("env-{name}"),
             parent_request_id: Some(parent.request_id.clone()),
@@ -170,7 +170,7 @@ impl OperationEnv for LocalOperationEnv {
 }
 ```
 
-Future phases add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
+Future work may add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
 
 ### Service Discovery
 
@@ -239,7 +239,7 @@ The registry is immutable after construction. Adding operations requires restart
 
 - The registry is immutable after construction. No runtime registration or deregistration. Two-way door — `ArcSwap<OperationRegistry>` can be added later.
 - Operation specs use JSON Schema. The call protocol's external interface is always JSON. irpc's postcard serialization is internal only.
-- Phase 1 is local dispatch only. `OperationEnv::invoke()` goes through the local registry. irpc service dispatch and remote call protocol dispatch are contracted but not built.
+- `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths. irpc service dispatch is contracted but not built.
 - The call protocol does not depend on any database. Operation specs are in-memory, populated at startup.
 - `OperationContext.trusted` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as trusted.
 
@@ -254,8 +254,10 @@ The registry is immutable after construction. Adding operations requires restart
 
 ## Open Questions
 
-- **OQ-13**: Operation path format — `/{service}/{op}` for Phase 1 (single-node), with the node prefix `/{node}/{service}/{op}` added when remote dispatch is implemented. Two-way door — the prefix can be added later without breaking existing operations.
-- **OQ-14**: Batch operation semantics — whether to add batch-specific event types or rely on the "multiple call.requested with correlated IDs" pattern. Two-way door — can be added later.
+See [open-questions.md](../../open-questions.md) for full details.
+
+- **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
+- **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 
 ## References
 

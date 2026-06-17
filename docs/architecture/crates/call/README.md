@@ -33,8 +33,8 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
 | OQ-07 | Call protocol scope within a connection | resolved (ADR-012) | Stream model, multiplexing, scope |
-| OQ-13 | Operation path format and routing scope | open | Namespace paths: `/{service}/{op}` vs `/{node}/{service}/{op}` |
-| OQ-14 | Batch operation semantics | open | Whether batch is a protocol primitive or client-side pattern |
+| OQ-13 | Operation path format and routing scope | resolved | `/{service}/{op}` is the correct design; remote dispatch is a separate layer |
+| OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
 
 ## Key Design Principles
 
@@ -43,4 +43,4 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 3. **Stream-agnostic correlation**: PendingRequestMap correlates by request ID, not by stream. The protocol works with any stream arrangement.
 4. **Operation registry is dynamic**: Operations are registered at startup by the CLI binary. The registry supports JSON Schema discovery.
 5. **irpc is one dispatch backend**: Local operations dispatch directly. irpc service calls (vault, auth) are internal. The call protocol is the external interface.
-6. **Phase 1 is local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (head/worker routing) and irpc service dispatch are contracted but not built yet.
+6. **Local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer, not a modification to alknet-call's path format.

@@ -14,8 +14,9 @@ Key constraints:
 - Protocol crates must depend on alknet-core for auth/identity/config — but not on each other
 - alknet-vault is already standalone (no alknet-core dependency) and must remain so (see ADR-008)
 - The CLI binary assembles everything — it's the only crate that depends on all handler crates
-- Some handlers (SFTP, call protocol) need to compile to WASM for browser/client use
-- irpc is the foundation for the call protocol — it provides the operation registry, framing, and pub/sub patterns
+- Handlers with protocol-agnostic cores (SFTP, call protocol) preserve the WASM door — browser clients can implement the wire format over WebTransport (see ADR-009, ADR-013)
+- alknet-call includes the call protocol client and adapter traits, not just the server side — this enables alknet-agent and alknet-napi to use it for remote invocation
+- Rust is the canonical implementation language. TypeScript is a reference/browser adaptation, not a parallel implementation (see ADR-013)
 
 ## Decision
 
@@ -26,23 +27,29 @@ The workspace decomposes into the following crates:
 | `alknet-core` | ProtocolHandler trait, ALPN router, endpoint, BiStream, AuthContext, IdentityProvider, config, ArcSwap dynamic config | tokio, quinn, rustls, irpc |
 | `alknet-vault` | Local key vault: BIP39/SLIP-0010/AES-GCM key derivation, encryption, VaultProtocol dispatch | (standalone, no alknet-core) |
 | `alknet-ssh` | SshAdapter (russh, SOCKS5, port forwarding) | alknet-core, russh |
-| `alknet-call` | CallAdapter (JSON-RPC via irpc, operation registry, pub/sub, access control) | alknet-core, irpc |
+| `alknet-call` | CallAdapter (JSON-RPC via irpc, operation registry, pub/sub, access control, call protocol client, adapter traits) | alknet-core, irpc |
+| `alknet-agent` | Agent service: LLM execution loop (forked aisdk), tool dispatch via call protocol, provider key retrieval via vault | alknet-call |
 | `alknet-git` | GitAdapter (gix, pkt-line protocol) | alknet-core, gix |
 | `alknet-sftp` | SftpAdapter (russh-sftp protocol core) | alknet-core, russh-sftp |
 | `alknet-msg` | MessageAdapter (E2E encryption, mixnet) | alknet-core |
 | `alknet-http` | HttpAdapter (axum, REST API, MCP endpoint) | alknet-core, axum |
 | `alknet-dns` | DnsAdapter (hickory-proto, pkarr, service discovery) | alknet-core, hickory-proto |
-| `alknet-napi` | Node.js native addon (call protocol client) | alknet-call, napi-rs |
-| `alknet` | CLI binary — registers handlers, starts endpoint | all handler crates |
+| `alknet-napi` | Node.js native addon — thin NAPI projection of the call protocol client | alknet-call, napi-rs |
+| `alknet` | CLI binary — registers handlers, starts endpoint | all handler crates, alknet-vault |
 
 Dependency flow:
 ```
 alknet-vault (standalone)
 alknet-core ← all handler crates ← alknet (CLI)
+alknet-call ← alknet-agent
 alknet-call ← alknet-napi
 ```
 
 No handler crate depends on another handler crate. Cross-handler communication goes through the call protocol (alknet-call) or through alknet-core's endpoint.
+
+alknet-agent depends on alknet-call (not alknet-core directly) because it uses the call protocol client for tool dispatch and the operation registry for tool registration. It retrieves LLM provider keys through alknet-call → alknet-vault (via the call protocol), never from environment variables.
+
+alknet-napi is a thin projection layer — it exposes the Rust call protocol client to Node.js via NAPI. It does not contain business logic or adapter implementations. See ADR-013.
 
 ## Consequences
 

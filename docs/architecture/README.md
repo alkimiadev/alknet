@@ -1,15 +1,15 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-17
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–012) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), and call protocol stream model (ADR-012). The alknet-core and alknet-call crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–013) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), and Rust as canonical implementation language (ADR-013). The alknet-core and alknet-call crate specs are in draft.
 
-**Next step**: Review alknet-call spec documents, then begin implementation. Two-way-door questions (OQ-11, OQ-13, OQ-14) will be resolved during implementation.
+**Next step**: Review alknet-call spec documents, then begin implementation. OQ-11 (handler-level auth resolution observability) will be resolved during implementation.
 
 ## Architecture Documents
 
@@ -42,6 +42,7 @@ last_updated: 2026-06-16
 | [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Accepted |
 | [011](decisions/011-authcontext-structure.md) | AuthContext Structure and Resolution Flow | Accepted |
 | [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Accepted |
+| [013](decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Accepted |
 
 ## Open Questions
 
@@ -58,12 +59,15 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Resolved two-way doors:**
 - **OQ-04**: Dynamic handler registration — static at startup (ADR-010)
 - **OQ-07**: Call protocol scope — bidirectional streams, EventEnvelope, ID-based correlation (ADR-012)
-- **OQ-12**: TLS certificate provisioning — file paths in StaticConfig, ACME later
+- **OQ-12**: TLS identity provisioning — two use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME is a proven pattern.
+- **OQ-13**: Operation path format — `/{service}/{op}` is the correct design for alknet-call, not a simplification
+- **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
 
 **Open two-way doors (resolved during implementation):**
 - **OQ-11**: Handler-level auth resolution observability — decide during implementation
-- **OQ-13**: Operation path format — `/{service}/{op}` for Phase 1, `/{node}/{service}/{op}` later
-- **OQ-14**: Batch operation semantics — client-side pattern for Phase 1, batch event types later
+
+**Open one-way doors (need ADR before implementation):**
+- **OQ-15**: Call protocol client and adapter contract — alknet-call needs both the server (CallAdapter) and client (call invocation over QUIC), plus the adapter contract traits (from_*, to_*) that enable composition
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
