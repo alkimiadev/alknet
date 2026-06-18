@@ -30,6 +30,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [012](../../decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Bidirectional streams, EventEnvelope, ID-based correlation |
 | [014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Call protocol carries no secret material; capabilities injected at assembly layer |
 | [015](../../decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
+| [016](../../decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
 
 ## Relevant Open Questions
 
@@ -40,7 +41,6 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
 | OQ-15 | Call protocol client and adapter contract | open | ADR-014 constrains adapters: credential sources, not static tokens. ADR-015: adapter ops are Internal by default |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
-| OQ-17 | Abort cascade semantics | open | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in. One-way door on event schema |
 | OQ-19 | Session-scoped operation registries | open | Agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point |
 
 ## Key Design Principles
@@ -52,5 +52,5 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 5. **irpc is one dispatch backend**: Local operations dispatch directly. irpc service calls (in-process, type-safe) are internal. The call protocol is the external interface.
 6. **Local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer, not a modification to alknet-call's path format.
 7. **No secret material on the wire**: The call protocol carries no private keys, API keys, mnemonics, or decrypted credentials. Handlers receive outbound credentials through `OperationContext.capabilities`, injected at the assembly layer. See ADR-014.
-8. **Abort cascades to descendants**: `call.aborted` for a parent request cascades to all non-terminal descendants. Default `abort-dependents`; `continue-running` opt-in. See OQ-17.
+8. **Abort cascades to descendants**: `call.aborted` for a parent request cascades to all non-terminal descendants. Default `abort-dependents`; `continue-running` opt-in. See ADR-016.
 9. **Internal calls switch authority context, not skip ACL**: The `internal` flag marks composition-originated calls. ACL runs against the handler's identity, not the caller's and not as a blanket skip. Operations have External/Internal visibility. Scoped composition env bounds reachability. See ADR-015.

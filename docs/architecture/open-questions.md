@@ -186,17 +186,11 @@ These questions are acknowledged but not active. They will be promoted to open w
 ### OQ-17: Abort Cascade Semantics for Nested Calls
 
 - **Origin**: [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
-- **Status**: open
+- **Status**: resolved
 - **Door type**: One-way (protocol schema), two-way (mechanism)
 - **Priority**: high
-- **Resolution**: When a handler composes other operations via `OperationEnv::invoke()`, it creates a call tree (parent → children via `parent_request_id`). When `call.aborted` arrives for a parent request, the protocol cascades the abort to all non-terminal descendants in the tree. The default policy is `abort-dependents`: aborting a request aborts everything downstream, regardless of branch. This is the correct default because aborted parent work has no consumer waiting for results — continuing is wasted work at best and unwanted side effects at worst (e.g., a `bash/exec` that keeps running after the caller stopped caring). An opt-in `continue-running` policy is available for cases where long-running work should survive a parent's abort (e.g., a subscription that should keep streaming).
-
-  The one-way door is the protocol event schema: `call.aborted` must carry cascade semantics before implementation, because retrofitting cascade onto a non-cascading abort is a breaking protocol change (existing clients send `call.aborted` for one ID, the server processes one ID). The mechanism — how the runtime discovers descendants and propagates cancellation (cancellation tokens propagated through `OperationContext`, a parent-indexed map in `PendingRequestMap`, or a separate graph structure consuming call events) — is a two-way door for implementation. The `@alkdev/flowgraph` TypeScript package demonstrates a reactive call-graph approach (directed graph with `descendants()`, `FailurePolicy: "abort-dependents" | "continue-running"`, signal-based status propagation); a Rust adaptation could use `petgraph` for the graph structure or tokio `CancellationToken` for a simpler implicit tree. The flowgraph may live as a separate crate consuming call events (as the TS version does), not necessarily inside alknet-call.
-
-  This is a protocol-level concern, not specific to any single consumer. The call protocol is a general-purpose cross-boundary RPC mechanism — every consumer (NAPI adapter, Python adapter, agent service, future services) inherits whatever abort model is locked in. Nested composition is a core protocol feature, not an agent feature. The agent use case makes the deep/dynamic call tree case concrete, but the abort cascade problem exists for any handler that composes other operations.
-
-  This OQ will be resolved with an ADR before alknet-call implementation begins.
-- **Cross-references**: ADR-012, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+- **Resolution**: `call.aborted` cascades to all non-terminal descendants in the call tree. The CallAdapter walks the tree (indexed by `parent_request_id` in `PendingRequestMap`) and sends `call.aborted` for each descendant. Default policy is `abort-dependents` (abort everything downstream); `continue-running` is an opt-in for long-running work that should survive a parent's abort. Handlers clean up via Rust's async drop semantics (future dropped → `Drop` guards release resources). The cascade is protocol-level (server discovers descendants and propagates); the mechanism (parent-indexed map, cancellation tokens, or a separate graph) is a two-way door. See ADR-016.
+- **Cross-references**: ADR-012, ADR-015, ADR-016, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
 
 ### OQ-18: Privilege Model and Authority Context
 
