@@ -81,7 +81,7 @@ type is a two-way door — to be decided during implementation of the
   appear in `EventEnvelope` payloads.
 - Capabilities are injected at handler construction (the common case: a static
   decrypted API key held for the handler's lifetime) or scoped per-request for
-  trusted-internal-only flows. They are never populated from call protocol
+  internal-only flows. They are never populated from call protocol
   inputs.
 
 **3. The call protocol carries no secret material.**

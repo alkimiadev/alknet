@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 ---
 
 # Call Protocol
@@ -271,6 +271,16 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 
 **Error handling in `CallAdapter::handle()`**: If a handler panics, the stream is closed and the `PendingRequestMap` entry (if any) is cleaned up by the next sweeper pass. Other streams and the connection are unaffected.
 
+### Abort Cascade and Nested Calls
+
+When a handler composes other operations via `OperationEnv::invoke()`, it creates a call tree: a parent request (r1) spawns children (r1-a, r1-b), which may spawn their own children. The `parent_request_id` field on `OperationContext` records this tree.
+
+When `call.aborted` arrives for a parent request, the protocol cascades the abort to all non-terminal descendants in the tree. The default policy is **`abort-dependents`**: aborting a request aborts everything downstream, regardless of branch. This is the correct default because aborted parent work has no consumer waiting for results — continuing is wasted work at best and unwanted side effects at worst (e.g., a `bash/exec` that keeps running after the caller stopped caring).
+
+An opt-in **`continue-running`** policy is available for cases where long-running work should survive a parent's abort (e.g., a subscription that should keep streaming). The caller or handler specifies the policy at call time.
+
+The one-way door is the protocol event schema: `call.aborted` must carry cascade semantics before implementation, because retrofitting cascade onto a non-cascading abort is a breaking protocol change. The mechanism — how the runtime discovers descendants and propagates cancellation (cancellation tokens, parent-indexed map, or a separate graph structure) — is a two-way door for implementation. See OQ-17.
+
 ## Constraints
 
 - The call protocol does not depend on any database. `PendingRequestMap` is in-memory. Durable session storage is a consumer concern.
@@ -279,6 +289,7 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 - The call protocol is transport-agnostic at the envelope level. The `EventEnvelope` framing can run over QUIC streams, WebSocket frames, or Worker `postMessage`. The `CallAdapter` is the QUIC-specific implementation.
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer. See ADR-005 and OQ-13.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials, raw tokens) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. The wire format carries `serde_json::Value` and cannot enforce this at the type level — the constraint is architectural, enforced by the operation registry and by convention. Operations that need to share public key material use a dedicated operation that returns only the public component. See ADR-014.
+- **Abort cascades to descendants.** `call.aborted` for a parent request cascades to all non-terminal descendants in the call tree. Default policy is `abort-dependents`; `continue-running` is an opt-in. See OQ-17.
 
 ## Design Decisions
 
@@ -299,6 +310,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
+- **OQ-17** (open): Abort cascade semantics — `call.aborted` cascades to descendants, default `abort-dependents`, `continue-running` opt-in. One-way door on the event schema; mechanism is a two-way door.
+- **OQ-18** (open): Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Needs agent crate in view.
 
 ## References
 

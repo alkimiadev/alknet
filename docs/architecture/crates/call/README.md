@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 ---
 
 # alknet-call
@@ -39,6 +39,8 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
 | OQ-15 | Call protocol client and adapter contract | open | ADR-014 constrains adapters: credential sources, not static tokens |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
+| OQ-17 | Abort cascade semantics | open | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in. One-way door on event schema |
+| OQ-18 | Privilege model and authority context | open | `internal` flag switches authority to handler identity, not blanket ACL skip. External/Internal operation visibility. Scoped composition env + handler identity. Needs agent crate in view |
 
 ## Key Design Principles
 
@@ -49,3 +51,5 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 5. **irpc is one dispatch backend**: Local operations dispatch directly. irpc service calls (in-process, type-safe) are internal. The call protocol is the external interface.
 6. **Local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer, not a modification to alknet-call's path format.
 7. **No secret material on the wire**: The call protocol carries no private keys, API keys, mnemonics, or decrypted credentials. Handlers receive outbound credentials through `OperationContext.capabilities`, injected at the assembly layer. See ADR-014.
+8. **Abort cascades to descendants**: `call.aborted` for a parent request cascades to all non-terminal descendants. Default `abort-dependents`; `continue-running` opt-in. See OQ-17.
+9. **Internal calls switch authority context, not skip ACL**: The `internal` flag marks composition-originated calls. ACL runs against the handler's identity, not the caller's and not as a blanket skip. See OQ-18.

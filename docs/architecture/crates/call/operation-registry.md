@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 ---
 
 # Operation Registry
@@ -69,7 +69,7 @@ When a `call.requested` event arrives:
 
 Operations with empty `AccessControl` (no required scopes, no resource checks) are accessible to all callers, including unauthenticated ones.
 
-**Trusted calls skip ACL**: When a handler invokes another operation through `OperationEnv`, the nested call is marked `trusted: true` and skips access control checks. This prevents double-checking: if `/agent/chat` is allowed and it internally calls `/auth/verify`, the auth check is trusted.
+**Internal calls and authority context**: When a handler invokes another operation through `OperationEnv`, the nested call is marked `internal: true`, meaning it originated from composition (not from a wire request). The `internal` flag switches the authority context: the ACL check runs against the composing handler's identity (set at registration), not the caller's identity and not as a blanket skip. This prevents privilege escalation through composition — a handler can only compose operations its own identity is authorized for. See OQ-18 for the full privilege model, which is open pending the agent crate spec.
 
 ### Handler
 
@@ -95,7 +95,7 @@ pub struct OperationContext {
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
-    pub trusted: bool,
+    pub internal: bool,
 }
 ```
 
@@ -105,9 +105,9 @@ pub struct OperationContext {
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
 - `metadata`: Additional context (connection info, tracing IDs). **Must not hold secret material** — see ADR-014
 - `env`: The operation environment for composing calls to other operations
-- `trusted`: When `true`, ACL checks are skipped (set by `OperationEnv`, not by callers). The `trusted` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `trusted: true`, or through the `CallAdapter` dispatch path which sets `trusted: false`. The field is not `pub` for writes; only `pub fn is_trusted(&self) -> bool` is exposed for reads.
+- `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: the ACL check runs against the composing handler's identity, not the caller's and not as a blanket skip. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See OQ-18.
 
-`identity` and `capabilities` are orthogonal: identity is inbound (resolved per-request from the caller's credentials), capabilities are outbound (provisioned by the assembly layer from the vault). See ADR-014 for the full rationale.
+`identity` and `capabilities` are orthogonal: identity is inbound (resolved per-request from the caller's credentials), capabilities are outbound (provisioned by the assembly layer from the vault). See ADR-014 for the full rationale. The `internal` flag governs which authority applies to composition — see OQ-18 for the privilege model.
 
 ### OperationRegistry
 
@@ -147,7 +147,7 @@ pub trait OperationEnv: Send + Sync {
 
 `OperationEnv` is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
 
-The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.identity`, and is marked `trusted: true`.
+The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.identity`, and is marked `internal: true`.
 
 **Local dispatch only.** The initial `OperationEnv` implementation dispatches directly through the local `OperationRegistry`:
 
@@ -167,7 +167,7 @@ impl OperationEnv for LocalOperationEnv {
             capabilities: parent.capabilities.clone(), // Inherit caller's capabilities
             metadata: parent.metadata.clone(),       // Inherit caller's metadata
             env: self.clone(),
-            trusted: true,                           // Nested calls skip ACL
+            internal: true,                         // Nested calls use handler authority
         };
         self.registry.invoke(&name, input, context).await
     }
@@ -268,7 +268,7 @@ Handler invocation (at call time):
 
 The `Capabilities` type holds non-serializable, zeroized secret material. It does not implement `Serialize` — it cannot cross the call protocol wire even by accident. The concrete shape of the type (a typed map, a struct with named fields, a trait object) is a two-way door for implementation. The one-way constraints are fixed by ADR-014:
 
-- Capabilities are populated by the assembly layer at handler construction (the common case: a static decrypted API key) or scoped per-request for trusted-internal-only flows. They are never populated from call protocol inputs.
+- Capabilities are populated by the assembly layer at handler construction (the common case: a static decrypted API key) or scoped per-request for internal-only flows. They are never populated from call protocol inputs.
 - Capabilities hold secret material that does not implement `Serialize` and does not appear in `EventEnvelope` payloads.
 - The call protocol carries no secret material. See [call-protocol.md](call-protocol.md) for the wire-level constraint.
 
@@ -282,7 +282,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 - Operation specs use JSON Schema. The call protocol's external interface is always JSON. irpc's postcard serialization is internal only.
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths. irpc service dispatch is contracted but not built.
 - The call protocol does not depend on any database. Operation specs are in-memory, populated at startup.
-- `OperationContext.trusted` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as trusted.
+- `OperationContext.internal` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as internal. The `internal` flag switches authority context (handler identity for ACL), it does not skip ACL — see OQ-18.
 - **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. See ADR-014.
 
@@ -304,6 +304,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
+- **OQ-17** (open): Abort cascade semantics — `call.aborted` cascades to descendants, default `abort-dependents`, `continue-running` opt-in. One-way door on the event schema; mechanism is a two-way door.
+- **OQ-18** (open): Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Needs agent crate in view.
 
 ## References
 

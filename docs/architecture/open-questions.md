@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 ---
 
 # Open Questions
@@ -182,3 +182,42 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Priority**: high
 - **Resolution**: No vault operations are exposed over the call protocol for now. The vault is accessed only at the assembly layer (CLI binary at startup). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire. The `operation-registry.md` spec previously showed `vault/derive`, `vault/unlock`, and `vault/decrypt` registered as call protocol operations — that was a contradiction with ADR-008's "capability source" model and has been corrected. If a future use case requires exposing a vault operation over the call protocol (e.g., a restricted `vault/public-key` operation that returns only public key material for identity verification), it would require its own ADR with an explicit threat model justification. See ADR-014.
 - **Cross-references**: ADR-008, ADR-014, [operation-registry.md](crates/call/operation-registry.md)
+
+### OQ-17: Abort Cascade Semantics for Nested Calls
+
+- **Origin**: [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+- **Status**: open
+- **Door type**: One-way (protocol schema), two-way (mechanism)
+- **Priority**: high
+- **Resolution**: When a handler composes other operations via `OperationEnv::invoke()`, it creates a call tree (parent → children via `parent_request_id`). When `call.aborted` arrives for a parent request, the protocol cascades the abort to all non-terminal descendants in the tree. The default policy is `abort-dependents`: aborting a request aborts everything downstream, regardless of branch. This is the correct default because aborted parent work has no consumer waiting for results — continuing is wasted work at best and unwanted side effects at worst (e.g., a `bash/exec` that keeps running after the caller stopped caring). An opt-in `continue-running` policy is available for cases where long-running work should survive a parent's abort (e.g., a subscription that should keep streaming).
+
+  The one-way door is the protocol event schema: `call.aborted` must carry cascade semantics before implementation, because retrofitting cascade onto a non-cascading abort is a breaking protocol change (existing clients send `call.aborted` for one ID, the server processes one ID). The mechanism — how the runtime discovers descendants and propagates cancellation (cancellation tokens propagated through `OperationContext`, a parent-indexed map in `PendingRequestMap`, or a separate graph structure consuming call events) — is a two-way door for implementation. The `@alkdev/flowgraph` TypeScript package demonstrates a reactive call-graph approach (directed graph with `descendants()`, `FailurePolicy: "abort-dependents" | "continue-running"`, signal-based status propagation); a Rust adaptation could use `petgraph` for the graph structure or tokio `CancellationToken` for a simpler implicit tree. The flowgraph may live as a separate crate consuming call events (as the TS version does), not necessarily inside alknet-call.
+
+  The agent use case (parameterized dispatch via LLM tool selection, potentially deep and dynamic call trees, quickjs runtime for agents writing their own operations) makes this urgent — deep nested calls that can't be cleanly aborted would leak resources and produce unwanted side effects.
+
+  This OQ will be resolved with an ADR before alknet-call implementation begins.
+- **Cross-references**: ADR-012, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+
+### OQ-18: Privilege Model and Authority Context
+
+- **Origin**: [operation-registry.md](crates/call/operation-registry.md)
+- **Status**: open
+- **Door type**: One-way (ACL model), two-way (specific APIs)
+- **Priority**: high
+- **Resolution**: The `internal` flag on `OperationContext` marks calls that originated from composition (a handler calling another operation via `OperationEnv`), as opposed to external calls that arrived as `call.requested` from a wire client. The `internal` flag switches the authority context: the ACL check runs against the composing handler's identity (set at registration), not the caller's identity and not as a blanket skip. This replaces the previous `trusted` flag, which skipped ACL entirely — a privilege escalation vector.
+
+  The model has two analogies: kernel/user mode (external operations are syscalls — curated entry points; internal operations are kernel functions — composition-only), and domain/integration events (external operations are integration events — cross-boundary; internal operations are domain events — within the bounded context).
+
+  Three controls prevent privilege escalation through composition:
+  1. **Operation visibility**: `OperationSpec` has a `Visibility` field (`External` — callable from the wire, or `Internal` — composition-only). When a `call.requested` arrives from a client, the registry checks visibility: an `Internal` operation returns `NOT_FOUND` (not `FORBIDDEN` — don't leak that it exists). `services/list` only returns `External` operations to remote callers.
+  2. **Handler identity**: Each handler has its own `Identity` with scopes scoped to its composition needs, set at registration by the assembly layer. Internal calls use the handler's identity for ACL, not the caller's. The handler's identity has only the scopes it needs (least privilege), not blanket root and not the caller's scopes.
+  3. **Scoped composition env**: The `OperationEnv` given to a handler can only invoke a declared set of operations. This bounds the parameterized-dispatch attack surface — an LLM picking tools picks from the declared tool set, not from the entire registry.
+
+  Two escalation vectors that this model addresses:
+  - **Buggy handler**: a handler accidentally calls an operation it shouldn't. With handler identity + scoped env, the call either isn't reachable (scoped env) or fails ACL (handler identity lacks the scope). Under the old `trusted` model, ACL was skipped entirely.
+  - **Parameterized dispatch**: a handler takes caller input that determines which internal operation to call (the agent/LLM tool selection case). With scoped env, the handler can only reach declared operations. With handler identity, the ACL checks against the handler's scopes, not the caller's. The caller's scopes only gate entry to the external operation; they don't propagate into the composition.
+
+  The one-way door is the ACL model (internal = authority context switch, not skip; visibility = External/Internal; handler identity + scoped env). The specific APIs — how handler identity is declared, how the scoped env trait works, how visibility interacts with `services/list` filtering — are two-way doors. These should be resolved with the agent crate spec in view, because the composition patterns (sequential tools, parallel tools, dynamic tool selection) affect which mechanisms fit.
+
+  This OQ will be resolved with an ADR before alknet-call implementation begins.
+- **Cross-references**: ADR-014, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
