@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Operation Registry
@@ -34,6 +34,7 @@ pub struct OperationSpec {
     pub name: String,              // e.g., "fs/readFile", "agent/chat" (no leading slash)
     pub namespace: String,         // e.g., "fs", "agent"
     pub op_type: OperationType,   // Query, Mutation, Subscription
+    pub visibility: Visibility,   // External (wire-callable) or Internal (composition-only)
     pub input_schema: Value,      // JSON Schema for input
     pub output_schema: Value,     // JSON Schema for output
     pub access_control: AccessControl,
@@ -44,11 +45,18 @@ pub enum OperationType {
     Mutation,      // Side effects (e.g., "bash/exec", "github/authenticate")
     Subscription,  // Streaming (e.g., "agent/chat", "events/subscribe")
 }
+
+pub enum Visibility {
+    External,  // Callable from the wire (call.requested from a client)
+    Internal,  // Composition-only (env.invoke from a handler)
+}
 ```
 
 Operation names use slash-based paths without a leading slash, aligned with URL path conventions: `fs/readFile`, `agent/chat`, `services/list`. The leading slash is added when needed for display (`spec.path()` returns `/fs/readFile`) and for wire format (the `call.requested` payload uses `/fs/readFile`). See OQ-13 for the path format decision (single-node `service/op` vs head/worker `node/service/op`).
 
 The `namespace` field is derived from the name: for `fs/readFile` it's `fs`, for `agent/chat` it's `agent`. It's a convenience accessor for ACL matching and service grouping.
+
+Visibility (ADR-015) controls whether an operation is callable from the wire. `External` operations are wire-facing — they appear in `services/list` and accept `call.requested` from clients. `Internal` operations are composition-only — they return `NOT_FOUND` (not `FORBIDDEN`) when called from the wire, and do not appear in `services/list`. The assembly layer declares visibility at registration. `from_openapi` and `from_jsonschema` adapters register operations as `Internal` by default (they're composition material, not directly callable); the handler that composes them is `External`.
 
 ### AccessControl
 
@@ -63,13 +71,14 @@ pub struct AccessControl {
 
 When a `call.requested` event arrives:
 1. The `CallAdapter` resolves the caller's `Identity` from `AuthContext` (and possibly an `AuthToken` in the payload)
-2. The registry checks `access_control.check(identity)` before invoking the handler
-3. If access is denied, the adapter returns `call.error` with code `FORBIDDEN`
-4. If the identity is `None` and the operation has restrictions, the adapter returns `call.error` with code `FORBIDDEN` and message `"authentication required"`
+2. The registry checks operation **visibility** — if the operation is `Internal`, returns `call.error` with code `NOT_FOUND` (does not leak existence)
+3. The registry checks `access_control.check(identity)` — for external calls (`internal: false`), ACL runs against the **caller's identity**; for internal calls (`internal: true`), ACL runs against the **handler's identity** (ADR-015)
+4. If access is denied, the adapter returns `call.error` with code `FORBIDDEN`
+5. If the relevant identity is `None` and the operation has restrictions, the adapter returns `call.error` with code `FORBIDDEN` and message `"authentication required"`
 
 Operations with empty `AccessControl` (no required scopes, no resource checks) are accessible to all callers, including unauthenticated ones.
 
-**Internal calls and authority context**: When a handler invokes another operation through `OperationEnv`, the nested call is marked `internal: true`, meaning it originated from composition (not from a wire request). The `internal` flag switches the authority context: the ACL check runs against the composing handler's identity (set at registration), not the caller's identity and not as a blanket skip. This prevents privilege escalation through composition — a handler can only compose operations its own identity is authorized for. See OQ-18 for the full privilege model.
+**Internal calls and authority context**: When a handler invokes another operation through `OperationEnv`, the nested call is marked `internal: true`, meaning it originated from composition (not from a wire request). The `internal` flag switches the authority context: the ACL check runs against the composing handler's `handler_identity` (set at registration), not the caller's identity and not as a blanket skip. This prevents privilege escalation through composition — a handler can only compose operations its own identity is authorized for. See ADR-015.
 
 ### Handler
 
@@ -91,7 +100,8 @@ And returns a `ResponseEnvelope` containing the result or an error.
 pub struct OperationContext {
     pub request_id: String,
     pub parent_request_id: Option<String>,
-    pub identity: Option<Identity>,
+    pub identity: Option<Identity>,            // Caller's identity (inbound — who invoked me)
+    pub handler_identity: Option<Identity>,    // Handler's identity (composition authority — who am I acting as)
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
@@ -100,14 +110,15 @@ pub struct OperationContext {
 ```
 
 - `request_id`: Correlates with the `call.requested` event's `id` field
-- `parent_request_id`: Set when this call was initiated by another operation (via `OperationEnv`)
-- `identity`: The authenticated identity making the call (from `IdentityProvider`) — inbound auth (who is calling me)
+- `parent_request_id`: Set when this call was initiated by another operation (via `OperationEnv`). Records the agency chain — the call tree is the principal→agent chain (ADR-015)
+- `identity`: The authenticated caller (from `IdentityProvider`) — inbound auth (who is calling me). For external calls, this is who sent the `call.requested`. For internal calls, this is the parent handler's `handler_identity` (propagated through `OperationEnv::invoke()`)
+- `handler_identity`: The identity of the handler processing this call. Set at registration by the assembly layer. For internal calls (`internal: true`), the ACL check runs against this identity (ADR-015)
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
 - `metadata`: Additional context (connection info, tracing IDs). **Must not hold secret material** — see ADR-014
-- `env`: The operation environment for composing calls to other operations
-- `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: the ACL check runs against the composing handler's identity, not the caller's and not as a blanket skip. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See OQ-18.
+- `env`: The operation environment for composing calls to other operations. Scoped — the handler can only invoke a declared set of operations (ADR-015)
+- `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: ACL runs against `handler_identity`, not `identity`. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See ADR-015.
 
-`identity` and `capabilities` are orthogonal: identity is inbound (resolved per-request from the caller's credentials), capabilities are outbound (provisioned by the assembly layer from the vault). See ADR-014 for the full rationale. The `internal` flag governs which authority applies to composition — see OQ-18 for the privilege model.
+`identity` and `capabilities` are orthogonal: identity is inbound (who is calling me), capabilities are outbound (what credentials I can use). `identity` and `handler_identity` are the principal/agent pair: `identity` is the principal (who delegated), `handler_identity` is the agent (who is acting). See ADR-014 for capabilities and ADR-015 for the privilege model.
 
 ### OperationRegistry
 
@@ -163,11 +174,12 @@ impl OperationEnv for LocalOperationEnv {
         let context = OperationContext {
             request_id: format!("env-{name}"),
             parent_request_id: Some(parent.request_id.clone()),
-            identity: parent.identity.clone(),       // Inherit caller's identity
-            capabilities: parent.capabilities.clone(), // Inherit caller's capabilities
-            metadata: parent.metadata.clone(),       // Inherit caller's metadata
+            identity: parent.handler_identity.clone(),   // Parent's handler identity becomes the caller
+            handler_identity: parent.handler_identity.clone(), // Inherit handler authority for ACL
+            capabilities: parent.capabilities.clone(),   // Inherit caller's capabilities
+            metadata: parent.metadata.clone(),           // Inherit caller's metadata
             env: self.clone(),
-            internal: true,                         // Nested calls use handler authority
+            internal: true,                              // Nested calls use handler authority
         };
         self.registry.invoke(&name, input, context).await
     }
@@ -186,6 +198,8 @@ Two built-in operations expose what the node offers:
 | `services/schema` | `/services/schema` | Query | Get the `OperationSpec` for a specific operation |
 
 These are read-only — no admin operations are exposed through the call protocol itself.
+
+`services/list` only returns `External` operations to remote callers. `Internal` operations are not part of the wire-facing API surface — they're implementation details of composition. A remote client cannot enumerate the internal call tree. See ADR-015.
 
 `services/list` returns:
 
@@ -274,7 +288,9 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). A handler that needs a child key for a specific operation (e.g., signing for GitHub auth) receives a scoped capability that performs the derivation in-process — it never holds the master seed and never calls a network-exposed vault operation.
 
-**Adapters take credential sources.** The `from_openapi` and `from_jsonschema` adapter patterns (see OQ-15, constrained by ADR-014) register HTTP-backed operations. The credential the HTTP service needs (bearer token, API key) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into HTTP-backed operations, including LLM providers that expose OpenAPI-compatible endpoints.
+**Adapters take credential sources.** The `from_openapi` and `from_jsonschema` adapter patterns (see OQ-15, constrained by ADR-014) register HTTP-backed operations. The credential the HTTP service needs (bearer token, API key) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into HTTP-backed operations, including LLM providers that expose OpenAPI-compatible endpoints. Adapter-registered operations are `Internal` by default (ADR-015) — they're composition material, not directly callable from the wire.
+
+**Scoped composition env.** The `OperationEnv` given to a handler is scoped — it can only invoke a declared set of operations, set at registration by the assembly layer. This bounds the parameterized-dispatch attack surface: a handler (or an LLM picking tools, or a quickjs sandbox) can only reach declared operations, not the entire registry. The scoped env is the reachability control; the handler identity is the authority control. Both are needed for least privilege. See ADR-015.
 
 ## Constraints
 
@@ -282,7 +298,9 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 - Operation specs use JSON Schema. The call protocol's external interface is always JSON. irpc's postcard serialization is internal only.
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths. irpc service dispatch is contracted but not built.
 - The call protocol does not depend on any database. Operation specs are in-memory, populated at startup.
-- `OperationContext.internal` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as internal. The `internal` flag switches authority context (handler identity for ACL), it does not skip ACL — see OQ-18.
+- `OperationContext.internal` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as internal. The `internal` flag switches authority context (handler identity for ACL), it does not skip ACL — see ADR-015.
+- **Operations have External/Internal visibility.** `Internal` operations return `NOT_FOUND` when called from the wire and are excluded from `services/list`. The assembly layer declares visibility at registration. See ADR-015.
+- **The composition env is scoped.** A handler can only invoke operations declared in its scoped env. This bounds parameterized-dispatch attack surface. See ADR-015.
 - **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. See ADR-014.
 
@@ -295,6 +313,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Registry is immutable after construction |
 | Vault integration via assembly layer | [ADR-008](../../decisions/008-secret-service-integration.md) | Vault is a capability source, accessed at assembly time |
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Capabilities carry outbound credentials; call protocol carries no secret material |
+| Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 
 ## Open Questions
 
@@ -302,10 +321,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
-- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
+- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens. ADR-015 constrains: adapter-registered operations are `Internal` by default.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-17** (open): Abort cascade semantics — `call.aborted` cascades to descendants, default `abort-dependents`, `continue-running` opt-in. One-way door on the event schema; mechanism is a two-way door.
-- **OQ-18** (open): Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Protocol-level concern — every consumer inherits this model.
 - **OQ-19** (open): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point.
 
 ## References

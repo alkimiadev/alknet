@@ -1,15 +1,15 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–014) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), and secret material flow with capability injection (ADR-014). The alknet-core and alknet-call crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–015) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), and privilege model with authority context (ADR-015). The alknet-core and alknet-call crate specs are in draft.
 
-**Next step**: Review alknet-call spec documents, then begin implementation. OQ-11 (handler-level auth resolution observability) and OQ-15 (call protocol client and adapter contract) will be resolved during implementation.
+**Next step**: Review alknet-call spec documents, then begin implementation. OQ-11 (handler-level auth resolution observability), OQ-15 (call protocol client and adapter contract), and OQ-17 (abort cascade) will be resolved during or before implementation.
 
 ## Architecture Documents
 
@@ -44,6 +44,7 @@ last_updated: 2026-06-19
 | [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Accepted |
 | [013](decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Accepted |
 | [014](decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Accepted |
+| [015](decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | Accepted |
 
 ## Open Questions
 
@@ -57,6 +58,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-06**: ALPN per connection, not per stream (ADR-006)
 - **OQ-08**: Vault integration — CLI-embedded, assembly-layer only (ADR-008, ADR-014)
 - **OQ-16**: Safe vault operations for call protocol exposure — none for now (ADR-014)
+- **OQ-18**: Privilege model — `internal` = authority switch, External/Internal visibility, handler identity + scoped env (ADR-015)
 
 **Resolved two-way doors:**
 - **OQ-04**: Dynamic handler registration — static at startup (ADR-010)
@@ -69,9 +71,8 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-11**: Handler-level auth resolution observability — decide during implementation
 
 **Open one-way doors (need ADR before implementation):**
-- **OQ-15**: Call protocol client and adapter contract — alknet-call needs both the server (CallAdapter) and client (call invocation over QUIC), plus the adapter contract traits (from_*, to_*) that enable composition. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
+- **OQ-15**: Call protocol client and adapter contract — alknet-call needs both the server (CallAdapter) and client (call invocation over QUIC), plus the adapter contract traits (from_*, to_*) that enable composition. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens. ADR-015 constrains: adapter-registered operations are `Internal` by default.
 - **OQ-17**: Abort cascade semantics — `call.aborted` cascades to descendants. Default `abort-dependents`, `continue-running` opt-in. One-way door on the event schema; mechanism is a two-way door.
-- **OQ-18**: Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Protocol-level concern — every consumer inherits this model.
 - **OQ-19**: Session-scoped operation registries — agent-written operations in a quickjs sandbox, overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; the one-way door is not closing the trait-based composition point. Promotion from session to core requires curation review.
 
 **Deferred (not active):**

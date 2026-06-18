@@ -165,6 +165,7 @@ The following types live in alknet-core and are used across handler crates:
 | `IdentityProvider` | Trait for resolving credentials to identity |
 | `AuthToken` | Opaque authentication token |
 | `Capabilities` | Outbound credentials injected by the assembly layer (non-serializable, zeroized) |
+| `Visibility` | Operation visibility — External (wire-callable) or Internal (composition-only) |
 | `StaticConfig` | Immutable configuration loaded at startup |
 | `DynamicConfig` | Hot-reloadable configuration (`ArcSwap`) |
 | `ConfigReloadHandle` | Handle for triggering config reloads |
@@ -203,6 +204,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Bidirectional streams, EventEnvelope, ID-based correlation |
 | [013](decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Rust canonical, TypeScript reference adaptation |
 | [014](decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Capabilities carry outbound credentials; call protocol carries no secret material |
+| [015](decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 
 ## Open Questions
 

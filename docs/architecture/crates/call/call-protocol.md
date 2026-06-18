@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Call Protocol
@@ -301,6 +301,7 @@ The one-way door is the protocol event schema: `call.aborted` must carry cascade
 | ProtocolHandler receives Connection | [ADR-007](../../decisions/007-bistream-type-definition.md) | CallAdapter gets Connection, can accept/open multiple streams |
 | Vault integration point | [ADR-008](../../decisions/008-secret-service-integration.md) | Vault is a capability source, accessed at assembly time |
 | Secret material flow | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Call protocol carries no secret material; capabilities injected at assembly layer |
+| Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 
 ## Open Questions
 
@@ -308,10 +309,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
-- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
+- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens. ADR-015 constrains: adapter-registered operations are `Internal` by default.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-17** (open): Abort cascade semantics — `call.aborted` cascades to descendants, default `abort-dependents`, `continue-running` opt-in. One-way door on the event schema; mechanism is a two-way door.
-- **OQ-18** (open): Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Protocol-level concern — every consumer inherits this model.
 - **OQ-19** (open): Session-scoped operation registries — agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes.
 
 ## References

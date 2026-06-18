@@ -201,28 +201,11 @@ These questions are acknowledged but not active. They will be promoted to open w
 ### OQ-18: Privilege Model and Authority Context
 
 - **Origin**: [operation-registry.md](crates/call/operation-registry.md)
-- **Status**: open
+- **Status**: resolved
 - **Door type**: One-way (ACL model), two-way (specific APIs)
 - **Priority**: high
-- **Resolution**: The `internal` flag on `OperationContext` marks calls that originated from composition (a handler calling another operation via `OperationEnv`), as opposed to external calls that arrived as `call.requested` from a wire client. The `internal` flag switches the authority context: the ACL check runs against the composing handler's identity (set at registration), not the caller's identity and not as a blanket skip. This replaces the previous `trusted` flag, which skipped ACL entirely — a privilege escalation vector.
-
-  The model has two analogies: kernel/user mode (external operations are syscalls — curated entry points; internal operations are kernel functions — composition-only), and domain/integration events (external operations are integration events — cross-boundary; internal operations are domain events — within the bounded context).
-
-  Three controls prevent privilege escalation through composition:
-  1. **Operation visibility**: `OperationSpec` has a `Visibility` field (`External` — callable from the wire, or `Internal` — composition-only). When a `call.requested` arrives from a client, the registry checks visibility: an `Internal` operation returns `NOT_FOUND` (not `FORBIDDEN` — don't leak that it exists). `services/list` only returns `External` operations to remote callers.
-  2. **Handler identity**: Each handler has its own `Identity` with scopes scoped to its composition needs, set at registration by the assembly layer. Internal calls use the handler's identity for ACL, not the caller's. The handler's identity has only the scopes it needs (least privilege), not blanket root and not the caller's scopes.
-  3. **Scoped composition env**: The `OperationEnv` given to a handler can only invoke a declared set of operations. This bounds the parameterized-dispatch attack surface — a caller (or an LLM) picking which operation to invoke picks from the declared set, not from the entire registry.
-
-  Two escalation vectors that this model addresses:
-  - **Buggy handler**: a handler accidentally calls an operation it shouldn't. With handler identity + scoped env, the call either isn't reachable (scoped env) or fails ACL (handler identity lacks the scope). Under the old `trusted` model, ACL was skipped entirely.
-  - **Parameterized dispatch**: a handler takes caller input that determines which internal operation to call. With scoped env, the handler can only reach declared operations. With handler identity, the ACL checks against the handler's scopes, not the caller's. The caller's scopes only gate entry to the external operation; they don't propagate into the composition.
-
-  The one-way door is the ACL model (internal = authority context switch, not skip; visibility = External/Internal; handler identity + scoped env). The specific APIs — how handler identity is declared, how the scoped env trait works, how visibility interacts with `services/list` filtering — are two-way doors.
-
-  This is a protocol-level concern. The call protocol is a general-purpose cross-boundary RPC mechanism — every consumer (NAPI adapter, Python adapter, agent service, future services speaking the EventEnvelope wire format) inherits whatever privilege model is locked in. The privilege boundary between external and internal calls, and the authority context switch for composition, are core protocol semantics, not features of any single consumer. The agent use case is a useful test case for thinking through the edge cases (parameterized dispatch via LLM tool selection makes the escalation vector concrete), but the decisions belong to the call protocol.
-
-  This OQ will be resolved with an ADR before alknet-call implementation begins.
-- **Cross-references**: ADR-014, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+- **Resolution**: The `internal` flag on `OperationContext` marks calls that originated from composition (a handler calling another operation via `OperationEnv`), as opposed to external calls that arrived as `call.requested` from a wire client. The `internal` flag switches the authority context: the ACL check runs against the composing handler's identity (set at registration), not the caller's identity and not as a blanket skip. This replaces the previous `trusted` flag, which skipped ACL entirely — a privilege escalation vector. Operations have External/Internal visibility. Internal operations return `NOT_FOUND` when called from the wire and are excluded from `services/list`. The composition env is scoped — a handler can only invoke a declared set of operations. Handler identity is carried on `OperationContext` alongside caller identity (the principal/agent pair). See ADR-015.
+- **Cross-references**: ADR-014, ADR-015, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
 
 ### OQ-19: Session-Scoped Operation Registries and Agent-Written Operations
 
