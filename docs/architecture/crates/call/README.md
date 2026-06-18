@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-21
 ---
 
 # alknet-call
@@ -31,6 +31,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Call protocol carries no secret material; capabilities injected at assembly layer |
 | [015](../../decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | [016](../../decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
+| [017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
 
 ## Relevant Open Questions
 
@@ -39,7 +40,6 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-07 | Call protocol scope within a connection | resolved (ADR-012) | Stream model, multiplexing, scope |
 | OQ-13 | Operation path format and routing scope | resolved | `/{service}/{op}` is the correct design; remote dispatch is a separate layer |
 | OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
-| OQ-15 | Call protocol client and adapter contract | open | ADR-014 constrains adapters: credential sources, not static tokens. ADR-015: adapter ops are Internal by default |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
 | OQ-19 | Session-scoped operation registries | open | Agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point |
 

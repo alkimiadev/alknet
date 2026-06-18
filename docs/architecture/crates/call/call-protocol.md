@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-21
 ---
 
 # Call Protocol
@@ -303,6 +303,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Secret material flow | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Call protocol carries no secret material; capabilities injected at assembly layer |
 | Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
 
 ## Open Questions
 
@@ -310,7 +311,6 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
-- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens. ADR-015 constrains: adapter-registered operations are `Internal` by default.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (open): Session-scoped operation registries — agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes.
 

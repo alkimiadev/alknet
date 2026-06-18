@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-21
 ---
 
 # Operation Registry
@@ -288,7 +288,9 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). A handler that needs a child key for a specific operation (e.g., signing for GitHub auth) receives a scoped capability that performs the derivation in-process — it never holds the master seed and never calls a network-exposed vault operation.
 
-**Adapters take credential sources.** The `from_openapi` and `from_jsonschema` adapter patterns (see OQ-15, constrained by ADR-014) register HTTP-backed operations. The credential the HTTP service needs (bearer token, API key) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into HTTP-backed operations, including LLM providers that expose OpenAPI-compatible endpoints. Adapter-registered operations are `Internal` by default (ADR-015) — they're composition material, not directly callable from the wire.
+**Adapters take credential sources.** The `from_openapi`, `from_jsonschema`, and `from_call` adapter patterns (see ADR-017, constrained by ADR-014) register HTTP-backed or remote-call-backed operations. The credential each service needs (bearer token, API key, TLS identity for the remote connection) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into backed operations, including LLM providers that expose OpenAPI-compatible endpoints. Adapter-registered operations are `Internal` by default (ADR-015) — they're composition material, not directly callable from the wire.
+
+**`from_call` imports remote operations.** The `from_call` adapter (ADR-017) discovers operations on a remote call protocol endpoint via `services/list` and `services/schema`, then registers them with handlers that forward calls over the QUIC connection. This makes cross-node composition transparent — a handler calling `env.invoke("worker", "exec", ...)` doesn't know whether the operation is local or remote. Connection direction (who opened the QUIC connection) is independent of call direction (who calls whom) — both sides can call each other once connected.
 
 **Scoped composition env.** The `OperationEnv` given to a handler is scoped — it can only invoke a declared set of operations, set at registration by the assembly layer. This bounds the parameterized-dispatch attack surface: a handler (or an LLM picking tools, or a quickjs sandbox) can only reach declared operations, not the entire registry. The scoped env is the reachability control; the handler identity is the authority control. Both are needed for least privilege. See ADR-015.
 
@@ -321,7 +323,6 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
-- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens. ADR-015 constrains: adapter-registered operations are `Internal` by default.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (open): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point.
 
