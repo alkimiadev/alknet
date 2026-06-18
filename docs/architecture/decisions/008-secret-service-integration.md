@@ -28,17 +28,20 @@ The vault is a capability source, not a service endpoint. Operations that need p
 
 ## Decision
 
-**Option 4: CLI-embedded with call protocol exposure.**
+**Option 4: CLI-embedded, assembly-layer only.**
 
 The CLI binary (the `alknet` crate) is the integration point. It:
 
 1. Instantiates `VaultServiceHandle` locally at startup (or on-demand with Unlock/Lock lifecycle).
-2. Registers vault operations (DeriveEd25519, DeriveEncryptionKey, Encrypt, Decrypt, etc.) in the call protocol's operation registry.
-3. Other handlers access vault capabilities by calling operations on `alknet/call` — they don't import alknet-vault directly.
+2. Derives and decrypts the credentials each handler needs.
+3. Injects those credentials into handler capabilities at construction time.
+4. Other handlers access vault-derived material through their `OperationContext.capabilities` — they don't import alknet-vault directly and don't call vault operations over the wire.
 
 **alknet-vault does NOT get its own ALPN.** Key derivation is a local operation — the master seed never crosses the network. If a remote node needs derived public keys (e.g., for identity verification), they're shared through the call protocol, not through direct vault access.
 
 **The vault is accessed at the assembly layer, not by individual handlers.** The CLI (or a configuration middleware it sets up) is the only component that talks to the vault directly. Derived keys and decrypted credentials are injected into operation contexts — handlers receive the material they need, not a vault reference.
+
+**No vault operations are registered in the call protocol.** The vault is not exposed over the wire. This is the mechanism this ADR described in prose ("derived keys and decrypted credentials are injected into operation contexts at the assembly layer"); ADR-014 specifies it as a one-way door with explicit constraints. See ADR-014.
 
 This is analogous to the reverse-proxy admin key pattern (ADR-028 in the reverse-proxy project): the proxy reads the key file once at startup, hashes it, and individual handlers never see the file. Here, the CLI unlocks the vault once at startup, and individual handlers receive the results of vault operations through their contexts.
 
@@ -63,6 +66,7 @@ This is analogous to the reverse-proxy admin key pattern (ADR-028 in the reverse
 - ADR-003: Crate decomposition (alknet-vault is standalone)
 - ADR-005: irpc as call protocol foundation
 - ADR-009: One-way door decision framework
-- OQ-08: Secret service integration point (resolved by this ADR)
+- ADR-014: Secret material flow and capability injection (specifies the mechanism this ADR described in prose)
+- OQ-08: Secret service integration point (resolved by this ADR, refined by ADR-014)
 - alknet-vault implementation: `crates/alknet-vault/`
 - Reverse-proxy ADR-028: Admin HTTP API (analogous key management pattern)

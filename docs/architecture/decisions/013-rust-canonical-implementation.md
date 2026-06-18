@@ -35,7 +35,7 @@ The relationship between the TypeScript and Rust implementations:
 | Adapter patterns (from_*, to_*) | alknet-call defines adapter traits and Rust implementations | Browser-adapted implementations where needed |
 | Call protocol client | alknet-call (QUIC) | alknet-napi (QUIC via NAPI) or browser SDK (WebTransport) |
 | LLM provider integration | alknet-agent (forked aisdk, simplified) | Not applicable |
-| Provider key management | alknet-vault via call protocol (no env vars) | Not applicable |
+| Provider key management | alknet-vault via assembly-layer capabilities (no env vars) | Not applicable |
 
 **The adapter contract (from_openapi, from_mcp, from_call, to_openapi, to_mcp) lives in Rust.** These patterns convert external specifications or protocols into `OperationSpec + Handler` pairs that register in the local `OperationRegistry`. The TypeScript implementations serve as reference for browser adaptations, not as the source of truth.
 

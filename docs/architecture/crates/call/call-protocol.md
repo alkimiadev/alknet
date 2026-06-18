@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-17
+last_updated: 2026-06-18
 ---
 
 # Call Protocol
@@ -158,6 +158,29 @@ The server calls client operations using the same `PendingRequestMap` and the sa
 
 This enables patterns where the server pushes notifications, requests configuration from the client, or orchestrates workflows that require the client to perform operations.
 
+### Streaming Subscribe Example: LLM Chat
+
+The subscribe operation pattern maps naturally to LLM streaming. An agent handler exposing `/agent/chat` as a subscription receives a `call.requested` event and streams `call.responded` events back as the LLM generates tokens. The output payloads use a normalized streaming UI format (e.g., Vercel AI SDK UI chunks — text-delta, tool-input-delta, etc.):
+
+```
+Client                                               Server (agent handler)
+  │                                                    │
+  │── open_bi() → stream ──────────────────────────────▶│
+  │── call.requested  { id: "c1",                      │
+  │                       operationId: "/agent/chat",   │
+  │                       input: { messages, model } }  │
+  │                                                    │  handler reads capabilities (API key)
+  │                                                    │  handler makes HTTP request to LLM provider
+  │                                                    │  handler normalizes provider SSE → UI chunks
+  │←─ call.responded  { id: "c1", output: { type: "text-start", ... } }        │
+  │←─ call.responded  { id: "c1", output: { type: "text-delta", delta: "Hel" } }│
+  │←─ call.responded  { id: "c1", output: { type: "text-delta", delta: "lo" } } │
+  │←─ call.responded  { id: "c1", output: { type: "text-end", ... } }           │
+  │←─ call.completed  { id: "c1" }                                              │
+```
+
+The API key used for the outbound LLM HTTP request comes from `OperationContext.capabilities`, not from the call protocol input and not from environment variables. See ADR-014 and [operation-registry.md → Capability Injection](operation-registry.md#capability-injection).
+
 ### PendingRequestMap
 
 Manages in-flight calls and subscriptions. Correlates `call.responded` events back to the original `call.requested`:
@@ -255,6 +278,7 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 - Batch is not a protocol primitive — multiple `call.requested` events with correlated IDs provide equivalent semantics. See OQ-14.
 - The call protocol is transport-agnostic at the envelope level. The `EventEnvelope` framing can run over QUIC streams, WebSocket frames, or Worker `postMessage`. The `CallAdapter` is the QUIC-specific implementation.
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer. See ADR-005 and OQ-13.
+- **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials, raw tokens) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. The wire format carries `serde_json::Value` and cannot enforce this at the type level — the constraint is architectural, enforced by the operation registry and by convention. Operations that need to share public key material use a dedicated operation that returns only the public component. See ADR-014.
 
 ## Design Decisions
 
@@ -264,6 +288,8 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 | Call protocol stream model | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | Bidirectional streams, EventEnvelope, ID-based correlation |
 | ALPN per connection | [ADR-006](../../decisions/006-alpn-convention-and-connection-model.md) | `alknet/call` is a distinct ALPN, one connection per ALPN |
 | ProtocolHandler receives Connection | [ADR-007](../../decisions/007-bistream-type-definition.md) | CallAdapter gets Connection, can accept/open multiple streams |
+| Vault integration point | [ADR-008](../../decisions/008-secret-service-integration.md) | Vault is a capability source, accessed at assembly time |
+| Secret material flow | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Call protocol carries no secret material; capabilities injected at assembly layer |
 
 ## Open Questions
 
@@ -271,6 +297,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
+- **OQ-15** (open): Call protocol client and adapter contract. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
+- **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 
 ## References
 

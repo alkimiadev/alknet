@@ -47,7 +47,7 @@ alknet-call ← alknet-napi
 
 No handler crate depends on another handler crate. Cross-handler communication goes through the call protocol (alknet-call) or through alknet-core's endpoint.
 
-alknet-agent depends on alknet-call (not alknet-core directly) because it uses the call protocol client for tool dispatch and the operation registry for tool registration. It retrieves LLM provider keys through alknet-call → alknet-vault (via the call protocol), never from environment variables.
+alknet-agent depends on alknet-call (not alknet-core directly) because it uses the call protocol client for tool dispatch and the operation registry for tool registration. It receives LLM provider keys through capabilities injected at the assembly layer (from alknet-vault), never from environment variables and never over the call protocol. See ADR-008 and ADR-014.
 
 alknet-napi is a thin projection layer — it exposes the Rust call protocol client to Node.js via NAPI. It does not contain business logic or adapter implementations. See ADR-013.
 

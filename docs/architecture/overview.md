@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-18
 ---
 
 # Alknet Overview
@@ -44,7 +44,7 @@ alknet-core
 ├── alknet-agent      (depends on alknet-call)
 │   ├── LLM execution loop (forked aisdk, simplified)
 │   ├── Tool dispatch via call protocol
-│   └── Provider key retrieval via vault (no env vars)
+│   └── Provider credentials via capabilities (no env vars, no vault on the wire)
 │
 ├── alknet-git        (depends on alknet-core, gix)
 ├── alknet-sftp       (depends on alknet-core, russh-sftp)
@@ -96,16 +96,16 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 |------|---------|-------------|
 | `alknet/ssh` | SshAdapter | SSH-2 handshake, channel multiplexing, SOCKS5, port forwarding |
 | `alknet/call` | CallAdapter | JSON-RPC via irpc: operations, streaming, pub/sub |
-| `alknet/agent` | AgentAdapter | LLM agent service: tool dispatch via call protocol, provider key retrieval via vault |
+| `alknet/agent` | AgentAdapter | LLM agent service: tool dispatch via call protocol, provider credentials via capabilities |
 | `alknet/git` | GitAdapter | Git smart protocol over QUIC (gix, pkt-line) |
 | `alknet/sftp` | SftpAdapter | SFTP protocol (russh-sftp core) |
 | `alknet/msg` | MessageAdapter | E2E encrypted messaging, mixnet |
 | `alknet/http` | HttpAdapter | axum REST API, dashboard, MCP endpoint |
-| `alknet/dns` | DnsAdapter | DNS over QUIC/TLS, pkarr service discovery |
+| `alknet/dns` | DnsAdapter | DNS over QUIC/TLS, pkrr service discovery |
 | `h3` | HttpAdapter (WebTransport upgrade) | Browser-compatible WebTransport, then ALPN upgrade |
 | `h2` / `http/1.1` | HttpAdapter | Standard HTTP for browsers, curl |
 
-> **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency. The CLI binary embeds it and exposes its operations through `alknet/call`. The vault is a capability source — derived keys and decrypted credentials are injected into operation contexts at the assembly layer, not passed as vault references to handlers. See ADR-008 for the integration rationale.
+> **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency. The CLI binary embeds it and accesses it at the assembly layer — unlocking the vault at startup, deriving and decrypting credentials, and injecting them into handler capabilities. The vault is not exposed over the call protocol. No vault operations are registered in the operation registry. See ADR-008 and ADR-014.
 
 ## Authentication
 
@@ -122,6 +122,23 @@ Each handler extracts credentials differently (SSH key fingerprint, AuthToken, B
 
 See [ADR-004](decisions/004-auth-as-shared-core.md) for the full rationale.
 
+## Security Model: Secret Material Flow
+
+Authentication (above) handles inbound identity — who is calling me. Secret material flow handles outbound credentials — what secrets a handler uses for its own outbound calls (LLM provider API keys, HTTP service tokens, signing keys). These are orthogonal concerns with different sources and lifetimes:
+
+| Axis | Question | Source | Lifetime |
+|------|----------|--------|----------|
+| Identity (inbound) | Who is the caller? | AuthContext, per-request (TLS cert, auth token) | Per-request |
+| Capabilities (outbound) | What secrets can I use outbound? | Assembly layer, from vault, injected at construction | Handler lifetime |
+
+The vault (alknet-vault) holds the master seed and derives keys and decrypts credentials. It is accessed **only at the assembly layer** — the CLI binary unlocks it at startup, derives/decrypts what each handler needs, and injects the results into handler capabilities. The vault is not exposed over the call protocol. No vault operations are registered in the operation registry. The master seed and derived private keys never cross the network.
+
+This replaces the industry default of environment variables and plaintext config files for storing credentials. There is no `std::env::var("API_KEY")` path — the only way a handler gets a credential is through a capability, and the only way a capability is populated is through the assembly layer from the vault.
+
+The call protocol carries no secret material — not in request payloads, not in response payloads, not in operation metadata. Operations that need to share public key material use a dedicated operation that returns only the public component.
+
+See [ADR-008](decisions/008-secret-service-integration.md) and [ADR-014](decisions/014-secret-material-flow-and-capability-injection.md) for the full rationale.
+
 ## Call Protocol
 
 alknet-call uses irpc as its foundation. The wire format is length-prefixed JSON (EventEnvelope framing). Operations are registered in an irpc registry with JSON Schema discovery. The call protocol supports request/response, streaming subscriptions, and pub/sub.
@@ -132,21 +149,7 @@ See [ADR-005](decisions/005-irpc-as-call-protocol-foundation.md) for the full ra
 
 ## WASM Compatibility
 
-WASM is not an immediate implementation target, but it is a **design constraint on one-way doors** (see ADR-009). Decisions that would permanently prevent WASM targets from participating as peers require explicit justification.
-
-This means:
-- Core types (BiStream, Connection, ProtocolHandler, AuthContext) must not assume tokio or quinn
-- Protocol parsers that are pure data transformations remain transport-agnostic
-- The cost of keeping the WASM door open is low (trait vs concrete type, abstracted I/O) and the cost of closing it is high
-- The call protocol's wire format (length-prefixed JSON EventEnvelope) is inherently cross-language and WASM-friendly
-
-The browser path is through a JavaScript SDK adapted from the existing TypeScript `@alkdev/operations` library, speaking the EventEnvelope wire format over WebTransport streams — not through Rust-to-WASM compilation of the full stack (see ADR-013). A browser gets a WebTransport stream and speaks the call protocol directly.
-
-Handlers with protocol-agnostic cores are particularly WASM-friendly:
-- russh-sftp's protocol core is already transport-agnostic
-- hickory-proto is `#![no_std]` with `wasm-bindgen` feature
-- The call protocol's JSON framing is inherently cross-language
-- Git's pkt-line is simple enough to implement anywhere
+WASM is not an implementation target. It is a design constraint on one-way doors (see ADR-009): core types must not assume tokio or quinn, and protocol parsers that are pure data transformations remain transport-agnostic. The cost of keeping this door open is low (trait vs concrete type, abstracted I/O); the cost of closing it is irreversibly high. The browser path is through a JavaScript SDK adapted from the existing TypeScript `@alkdev/operations` library, speaking the EventEnvelope wire format over WebTransport streams — not through Rust-to-WASM compilation of the full stack (see ADR-013). Specific WASM targeting decisions are deferred to individual crate specs. See OQ-09.
 
 ## Shared Types
 
@@ -158,9 +161,10 @@ The following types live in alknet-core and are used across handler crates:
 | `Connection` | QUIC connection (or mock) — handlers open/accept streams on it |
 | `BiStream` | Trait: `AsyncRead + AsyncWrite + Send + Unpin` — bidirectional byte stream |
 | `AuthContext` | Resolved identity for a connection (may be partial) |
-| `Identity` | Authenticated peer identity |
+| `Identity` | Authenticated peer identity (inbound) |
 | `IdentityProvider` | Trait for resolving credentials to identity |
 | `AuthToken` | Opaque authentication token |
+| `Capabilities` | Outbound credentials injected by the assembly layer (non-serializable, zeroized) |
 | `StaticConfig` | Immutable configuration loaded at startup |
 | `DynamicConfig` | Hot-reloadable configuration (`ArcSwap`) |
 | `ConfigReloadHandle` | Handle for triggering config reloads |
@@ -169,11 +173,7 @@ The following types live in alknet-core and are used across handler crates:
 
 ### One-Way and Two-Way Doors
 
-Not all decisions carry the same reversal cost. One-way door decisions (BiStream type, crate independence) require ADRs and possibly POCs before commitment. Two-way door decisions (static vs dynamic registration, single vs multi-transport) can be decided during implementation — start simple, add complexity when needed. See [ADR-009](decisions/009-one-way-door-decision-framework.md).
-
-### WASM Door Preservation
-
-WASM compatibility is not an active deliverable, but it is a design constraint. Decisions that would permanently close the WASM door (e.g., concrete quinn types in public APIs) require explicit justification. The cost of keeping the door open is low; the cost of closing it is irreversibly high.
+Not all decisions carry the same reversal cost. One-way door decisions (BiStream type, crate independence, secret material flow) require ADRs and possibly POCs before commitment. Two-way door decisions (static vs dynamic registration, single vs multi-transport) can be decided during implementation — start simple, add complexity when needed. WASM compatibility is a design constraint within this framework, not a separate principle: decisions that would permanently close the WASM door require explicit justification. See [ADR-009](decisions/009-one-way-door-decision-framework.md).
 
 ### One ALPN, One Connection, One Handler
 
@@ -196,8 +196,13 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Call protocol uses irpc for registry, framing, dispatch |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | `alknet/` prefix, one ALPN per connection |
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | BiStream is a trait, handlers receive Connection not BiStream |
-| [008](decisions/008-secret-service-integration.md) | Vault Integration Point | CLI-embedded, exposed via call protocol, vault is a capability source |
+| [008](decisions/008-secret-service-integration.md) | Vault Integration Point | CLI-embedded, vault is a capability source accessed at assembly time |
 | [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Classify decisions by reversal cost; one-way doors need ADRs |
+| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | HandlerRegistry, accept loop, static registration |
+| [011](decisions/011-authcontext-structure.md) | AuthContext Structure and Resolution Flow | AuthContext fields, hybrid resolution |
+| [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Bidirectional streams, EventEnvelope, ID-based correlation |
+| [013](decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Rust canonical, TypeScript reference adaptation |
+| [014](decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Capabilities carry outbound credentials; call protocol carries no secret material |
 
 ## Open Questions
 
@@ -207,7 +212,8 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-02**: AuthContext resolution timing (resolved: hybrid — see ADR-004)
 - **OQ-03**: ALPN string naming convention (resolved: see ADR-006)
 - **OQ-04**: Dynamic handler registration at runtime vs static at startup (two-way door, defer to implementation)
-- **OQ-08**: Vault integration point (resolved: CLI-embedded via call protocol — see ADR-008)
+- **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014)
+- **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
 
 ## Failure Modes
 

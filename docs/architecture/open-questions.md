@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-17
+last_updated: 2026-06-18
 ---
 
 # Open Questions
@@ -90,8 +90,8 @@ Door type classifications follow ADR-009:
 - **Status**: resolved
 - **Door type**: One-way
 - **Priority**: medium
-- **Resolution**: CLI-embedded with call protocol exposure. The CLI binary instantiates `VaultServiceHandle` locally and registers vault operations in the call protocol's operation registry. alknet-vault has no ALPN and no alknet-core dependency. Key derivation is local-only; only public key material crosses the network via `alknet/call`. The vault is a capability source — derived keys and decrypted credentials are injected into operation contexts at the assembly layer, not passed as vault references to handlers. See ADR-008.
-- **Cross-references**: ADR-003, ADR-005, ADR-008
+- **Resolution**: CLI-embedded, assembly-layer only. The CLI binary instantiates `VaultServiceHandle` locally at startup, derives and decrypts the credentials each handler needs, and injects them into handler capabilities. alknet-vault has no ALPN, no alknet-core dependency, and no operations registered in the call protocol. The master seed and derived private keys never cross the network. The vault is a capability source, not a network service. See ADR-008 and ADR-014.
+- **Cross-references**: ADR-003, ADR-005, ADR-008, ADR-014
 
 ## Deferred Questions
 
@@ -151,7 +151,7 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: medium
-- **Resolution**: alknet-call uses `/{service}/{op}` (e.g., `/vault/derive`, `/services/list`). This is the correct format for the alknet-call crate — it is not a "Phase 1 simplification" but the right design for this architecture. The `/{node}/{service}/{op}` pattern from the reference implementation served a head/worker routing model that is a separate architectural concern. Remote dispatch (federation / node-level routing) would be a different mechanism at a different layer, not a prefix added to alknet-call's operation paths. If remote dispatch is ever needed, it would be addressed by a separate crate or a routing layer above the operation registry, not by changing alknet-call's path format. Two-way door — the path format can be extended later if needed, but `/{service}/{op}` is the correct design now.
+- **Resolution**: alknet-call uses `/{service}/{op}` (e.g., `/fs/readFile`, `/agent/chat`, `/services/list`). This is the correct format for the alknet-call crate — it is not a "Phase 1 simplification" but the right design for this architecture. The `/{node}/{service}/{op}` pattern from the reference implementation served a head/worker routing model that is a separate architectural concern. Remote dispatch (federation / node-level routing) would be a different mechanism at a different layer, not a prefix added to alknet-call's operation paths. If remote dispatch is ever needed, it would be addressed by a separate crate or a routing layer above the operation registry, not by changing alknet-call's path format. Two-way door — the path format can be extended later if needed, but `/{service}/{op}` is the correct design now.
 - **Cross-references**: ADR-005, ADR-012
 
 ### OQ-14: Batch Operation Semantics
@@ -171,5 +171,14 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: open
 - **Door type**: One-way
 - **Priority**: high
-- **Resolution**: alknet-call currently specifies only the server side (CallAdapter receives connections and dispatches to the operation registry). A call protocol client is needed for: (1) alknet-napi to expose remote invocation to Node.js, (2) alknet-agent to dispatch tool calls (call, batch, search, schema) to remote nodes, (3) the `from_call` adapter pattern that creates operations whose handlers invoke remote services. The adapter contract (from_openapi, from_mcp, from_call, to_openapi, to_mcp) determines how external specifications and protocols compose with the operation registry. These traits belong in alknet-call because they define how operations are produced and consumed — the same contract that enables an agent to register call/batch/search/schema as tools also enables from_openapi to register HTTP-backed operations. The TypeScript `@alkdev/operations` library demonstrated these patterns; the Rust implementation defines the canonical traits (ADR-013). Two-way door for the specific trait signatures, one-way door for the architectural commitment that the adapter contract lives in alknet-call.
-- **Cross-references**: ADR-005, ADR-013, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+- **Resolution**: alknet-call currently specifies only the server side (CallAdapter receives connections and dispatches to the operation registry). A call protocol client is needed for: (1) alknet-napi to expose remote invocation to Node.js, (2) alknet-agent to dispatch tool calls (call, batch, search, schema) to remote nodes, (3) the `from_call` adapter pattern that creates operations whose handlers invoke remote services. The adapter contract (from_openapi, from_mcp, from_call, to_openapi, to_mcp) determines how external specifications and protocols compose with the operation registry. These traits belong in alknet-call because they define how operations are produced and consumed — the same contract that enables an agent to register call/batch/search/schema as tools also enables from_openapi to register HTTP-backed operations. The TypeScript `@alkdev/operations` library demonstrated these patterns; the Rust implementation defines the canonical traits (ADR-013). Two-way door for the specific trait signatures, one-way door for the architectural commitment that the adapter contract lives in alknet-call. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer (wired to the vault), not static token strings — the `from_openapi` and `from_jsonschema` patterns receive credentials at registration time, not at call time.
+- **Cross-references**: ADR-005, ADR-013, ADR-014, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+
+### OQ-16: Safe Vault Operations for Call Protocol Exposure
+
+- **Origin**: [operation-registry.md](crates/call/operation-registry.md), ADR-008
+- **Status**: resolved
+- **Door type**: One-way
+- **Priority**: high
+- **Resolution**: No vault operations are exposed over the call protocol for now. The vault is accessed only at the assembly layer (CLI binary at startup). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire. The `operation-registry.md` spec previously showed `vault/derive`, `vault/unlock`, and `vault/decrypt` registered as call protocol operations — that was a contradiction with ADR-008's "capability source" model and has been corrected. If a future use case requires exposing a vault operation over the call protocol (e.g., a restricted `vault/public-key` operation that returns only public key material for identity verification), it would require its own ADR with an explicit threat model justification. See ADR-014.
+- **Cross-references**: ADR-008, ADR-014, [operation-registry.md](crates/call/operation-registry.md)
