@@ -41,6 +41,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
 | OQ-17 | Abort cascade semantics | open | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in. One-way door on event schema |
 | OQ-18 | Privilege model and authority context | open | `internal` flag switches authority to handler identity, not blanket ACL skip. External/Internal operation visibility. Scoped composition env + handler identity. Protocol-level concern |
+| OQ-19 | Session-scoped operation registries | open | Agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point |
 
 ## Key Design Principles
 

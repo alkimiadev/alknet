@@ -223,3 +223,30 @@ These questions are acknowledged but not active. They will be promoted to open w
 
   This OQ will be resolved with an ADR before alknet-call implementation begins.
 - **Cross-references**: ADR-014, [call-protocol.md](crates/call/call-protocol.md), [operation-registry.md](crates/call/operation-registry.md)
+
+### OQ-19: Session-Scoped Operation Registries and Agent-Written Operations
+
+- **Origin**: [operation-registry.md](crates/call/operation-registry.md)
+- **Status**: open
+- **Door type**: Two-way (protocol doesn't need changes), one-way (if implementation closes the door)
+- **Priority**: medium
+- **Resolution**: The agent service pattern includes a self-improving workflow where agents write their own operations (tools, scripts) within a session. A POC at `/workspace/toolEnv` demonstrated the mechanism: a quickjs WASM sandbox inside Deno web workers, with a `Proxy`-based env that intercepts property access and bridges to the operation registry via `postMessage`. The sandbox runs with locked-down permissions (no net, no fs, no env). The POC exposed the full registry to the sandbox — a security gap that the scoped composition env (OQ-18) addresses.
+
+  The registry model has three tiers:
+
+  | Tier | Scope | Lifetime | Visibility | Who populates it |
+  |------|-------|----------|------------|-------------------|
+  | Core (global) | All sessions | Process lifetime, static at startup | External + Internal (curated) | Assembly layer at startup |
+  | Session | One session | Session lifetime, dynamic | Internal only (never wire-facing) | Agent during session (sandbox) |
+  | Promotion | Session → Core | One-time transition | Manual/curated review | Human or architect agent reviews, then redeploys |
+
+  Session-scoped operations are always `Internal` (never wire-facing, never in `services/list`), run under the handler's identity (the agent handler that authorized the sandbox), can only compose operations in the handler's scoped env, and are ephemeral (gone when the session ends). Core operations are curated — reviewed by a human or architect agent before promotion. The promotion path is the curation checkpoint where autonomous (session-scoped) becomes curated (core). This is not auto-promotion.
+
+  The call protocol does not need changes to support this. The `OperationEnv` trait is the composition point — a session-scoped env wraps the global env (check session registry first, fall through to global). The protocol constraints all apply regardless of which registry an operation lives in: abort cascade (OQ-17), privilege model (OQ-18), visibility (OQ-18), capabilities (ADR-014). The static registration constraint (OQ-04) applies to the global registry only; session registries are dynamic by nature and are a different registry overlaying the global one.
+
+  The one-way door this OQ guards against: an implementation that makes `OperationEnv` concrete instead of a trait, or hardcodes the global registry into the dispatch path, would close the session-overlay pattern. The trait-based design already accommodates layering — this OQ documents the pattern so a future implementation doesn't accidentally close it.
+
+  The security boundary: session-scoped operations run in a locked-down sandbox (no direct net/fs/env access), can only reach operations in the handler's scoped env, and their output should be validated against their declared schema before returning. The promotion path requires review — an agent with a `promote` scope (the architect role) performs the promotion; the writing agent (lower-privileged role) requests it. This is the role-based escalation pattern: privileges escalate through a chain of command, not through direct authority.
+
+  This is a protocol-level concern in the sense that the protocol must not prevent it, but the agent-specific mechanism (quickjs sandbox, session registry lifecycle, promotion workflow) belongs to the agent crate spec. The call protocol's job is to keep the `OperationEnv` trait composable and the visibility/ACL model consistent across tiers.
+- **Cross-references**: OQ-04, OQ-17, OQ-18, ADR-014, [operation-registry.md](crates/call/operation-registry.md)
