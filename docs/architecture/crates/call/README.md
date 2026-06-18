@@ -40,7 +40,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-15 | Call protocol client and adapter contract | open | ADR-014 constrains adapters: credential sources, not static tokens |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
 | OQ-17 | Abort cascade semantics | open | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in. One-way door on event schema |
-| OQ-18 | Privilege model and authority context | open | `internal` flag switches authority to handler identity, not blanket ACL skip. External/Internal operation visibility. Scoped composition env + handler identity. Needs agent crate in view |
+| OQ-18 | Privilege model and authority context | open | `internal` flag switches authority to handler identity, not blanket ACL skip. External/Internal operation visibility. Scoped composition env + handler identity. Protocol-level concern |
 
 ## Key Design Principles
 

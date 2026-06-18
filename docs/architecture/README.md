@@ -71,7 +71,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Open one-way doors (need ADR before implementation):**
 - **OQ-15**: Call protocol client and adapter contract — alknet-call needs both the server (CallAdapter) and client (call invocation over QUIC), plus the adapter contract traits (from_*, to_*) that enable composition. ADR-014 constrains the adapter contract: adapters take credential sources from the assembly layer, not static tokens.
 - **OQ-17**: Abort cascade semantics — `call.aborted` cascades to descendants. Default `abort-dependents`, `continue-running` opt-in. One-way door on the event schema; mechanism is a two-way door.
-- **OQ-18**: Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Needs agent crate in view.
+- **OQ-18**: Privilege model and authority context — `internal` flag switches authority to handler identity, not blanket ACL skip. Operations have External/Internal visibility. Scoped composition env + handler identity. Protocol-level concern — every consumer inherits this model.
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
