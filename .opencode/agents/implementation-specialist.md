@@ -212,12 +212,24 @@ Read `AGENTS.md` at project root for full details. Key rules:
 1. **No comments in code** — Per project convention.
 2. **Error handling** — Use `anyhow::Result` for application code, `thiserror` for
    library error types. Never panic in library code.
-3. **Feature flags** — Transports are feature-gated (`tls`, `iroh`, `acme`). Base
+3. **No `unwrap()` or `expect()` outside tests** — These are debug signals that
+   something wasn't clear. If you reach for `unwrap()`, it means the error
+   handling path wasn't specified — stop and think about what should actually
+   happen on that error. For poisoned locks, use
+   `unwrap_or_else(|e| e.into_inner())` or explicit error propagation. A panic
+   in one operation must not cascade to other operations.
+4. **Cryptographic nonces use `OsRng`** — AES-GCM IVs and any other cryptographic
+   nonces must use `OsRng` (or equivalent CSPRNG), never `rand::random()`. IV
+   reuse under the same key is catastrophic for GCM.
+5. **Secret material is zeroized on drop** — Any type holding derived keys,
+   decrypted credentials, or other secret material must derive `Zeroize` and
+   `ZeroizeOnDrop`. Secrets must not linger in freed heap memory.
+6. **Feature flags** — Transports are feature-gated (`tls`, `iroh`, `acme`). Base
    crate should compile lean.
-4. **Async runtime** — `tokio` is the async runtime. All I/O is async.
-5. **Naming conventions** — Rust standard: `snake_case` for functions/variables/
+7. **Async runtime** — `tokio` is the async runtime. All I/O is async.
+8. **Naming conventions** — Rust standard: `snake_case` for functions/variables/
    modules, `PascalCase` for types/traits, `SCREAMING_SNAKE_CASE` for constants.
-6. **Module structure** — One module per component under `src/`. Re-export via
+9. **Module structure** — One module per component under `src/`. Re-export via
    `mod.rs` or `lib.rs` as appropriate.
 
 ## Key Principles

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-22
 ---
 
 # Operation Registry
@@ -114,7 +114,7 @@ pub struct OperationContext {
 - `identity`: The authenticated caller (from `IdentityProvider`) — inbound auth (who is calling me). For external calls, this is who sent the `call.requested`. For internal calls, this is the parent handler's `handler_identity` (propagated through `OperationEnv::invoke()`)
 - `handler_identity`: The identity of the handler processing this call. Set at registration by the assembly layer. For internal calls (`internal: true`), the ACL check runs against this identity (ADR-015)
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
-- `metadata`: Additional context (connection info, tracing IDs). **Must not hold secret material** — see ADR-014
+- `metadata`: Request-scoped context (tracing IDs, connection info). **Must not hold secret material** — see ADR-014. **Does not propagate through `OperationEnv::invoke()`** — nested calls get fresh metadata. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`.
 - `env`: The operation environment for composing calls to other operations. Scoped — the handler can only invoke a declared set of operations (ADR-015)
 - `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: ACL runs against `handler_identity`, not `identity`. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See ADR-015.
 
@@ -151,10 +151,25 @@ The CLI binary (or assembly layer) constructs the registry and passes it to the 
 
 ```rust
 #[async_trait]
-pub trait OperationEnv: Send + Sync {
-    async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope;
+impl OperationEnv for LocalOperationEnv {
+    async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope {
+        let name = format!("{namespace}/{operation}");
+        let context = OperationContext {
+            request_id: format!("env-{name}"),
+            parent_request_id: Some(parent.request_id.clone()),
+            identity: parent.handler_identity.clone(),   // Parent's handler identity becomes the caller
+            handler_identity: parent.handler_identity.clone(), // Inherit handler authority for ACL
+            capabilities: parent.capabilities.clone(),   // Inherit caller's capabilities
+            metadata: HashMap::new(),                     // Fresh — does NOT propagate parent metadata
+            env: self.clone(),
+            internal: true,                              // Nested calls use handler authority
+        };
+        self.registry.invoke(&name, input, context).await
+    }
 }
 ```
+
+**Metadata does not propagate through composition.** Nested calls get fresh metadata (`HashMap::new()`), not the parent's metadata bag. This is a security constraint (ADR-014): `metadata: HashMap<String, Value>` accepts any `serde_json::Value`, including secret material. If metadata propagated through `env.invoke()`, a handler that accidentally placed a secret in metadata would leak it to every child operation — and if a child is a `from_call` operation (ADR-017), the metadata would cross the wire to the remote node. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`, not in ambient context.
 
 `OperationEnv` is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
 
@@ -294,6 +309,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 **`from_call` imports remote operations.** The `from_call` adapter (ADR-017) discovers operations on a remote call protocol endpoint via `services/list` and `services/schema`, then registers them with handlers that forward calls over the QUIC connection. This makes cross-node composition transparent — a handler calling `env.invoke("worker", "exec", ...)` doesn't know whether the operation is local or remote. Connection direction (who opened the QUIC connection) is independent of call direction (who calls whom) — both sides can call each other once connected.
 
+**`from_call` trust is transitive.** A `from_call`-imported operation executes the remote node's code, not yours. The scoped env (ADR-015) bounds *which* operations are reachable, but not *what* they do. A compromised remote node can do anything its operations are declared to do (and anything its handler bugs allow). This is inherent to remote composition — same as trusting any RPC endpoint — but it must be explicit in the threat model. `from_call` means "I trust the remote node as much as my own handlers." The scoping protects the caller from reaching arbitrary ops; it does not protect against what the reached op does.
+
 **Scoped composition env.** The `OperationEnv` given to a handler is scoped — it can only invoke a declared set of operations, set at registration by the assembly layer. This bounds the parameterized-dispatch attack surface: a handler (or an LLM picking tools, or a quickjs sandbox) can only reach declared operations, not the entire registry. The scoped env is the reachability control; the handler identity is the authority control. Both are needed for least privilege. See ADR-015.
 
 ## Constraints
@@ -307,6 +324,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 - **The composition env is scoped.** A handler can only invoke operations declared in its scoped env. This bounds parameterized-dispatch attack surface. See ADR-015.
 - **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. See ADR-014.
+- **Metadata does not propagate through composition.** `OperationEnv::invoke()` constructs fresh metadata for nested calls (`HashMap::new()`), not the parent's metadata. This prevents a handler that accidentally places a secret in metadata from leaking it to child operations — and if a child is a `from_call` operation (ADR-017), across the wire to a remote node. The tracing link is `parent_request_id`, not metadata propagation. See ADR-014.
 
 ## Design Decisions
 

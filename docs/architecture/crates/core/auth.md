@@ -250,3 +250,14 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 ## Open Questions
 
 None. All auth-related open questions are resolved.
+
+## Security Constraints
+
+These are security-critical implementation requirements, not architectural decisions (the architecture is locked by the ADRs above). They are documented here so implementation agents don't miss them.
+
+- **Token entropy**: generated `alk_` tokens must have ≥128 bits of entropy. The prefix (first 8 chars) is for O(1) lookup and is not secret — it appears in logs by design. SHA-256 of the full token allows offline verification; this is safe only if the full token is high-entropy. The prefix alone must not be sufficient to authenticate.
+- **Config reload must be authenticated**: a reload that adds an authorized fingerprint or API key grants access immediately (see [config.md](config.md)). The reload trigger must be local-only (SIGHUP, file watch) or an admin-scoped call protocol operation. A malicious reload is equivalent to root-level privilege grant.
+- **Connection-level identity is for observability only**: `Connection::set_identity` stores the handler-resolved identity for logging/audit. Per-request identity (`OperationContext.identity`) takes precedence for ACL. See OQ-11.
+- **Cryptographic nonces use OsRng**: AES-GCM IVs and any other cryptographic nonces must use `OsRng` (or equivalent CSPRNG), not `rand::random()`. IV reuse under the same key is catastrophic for GCM (authenticity breaks, two-time-pad on plaintext). The vault implementation (`crates/alknet-vault/src/encryption.rs`) must use `OsRng` for IV generation.
+- **Derived keys are zeroized on drop**: cached derived keys (`CachedKey`) must derive `Zeroize` and `ZeroizeOnDrop`. When the cache evicts an entry (LRU) or the process exits without explicit `lock()`, derived private keys must not linger in freed heap memory. The cache must clear on drop, not just on explicit `lock()`.
+- **No `unwrap()` or `expect()` outside tests**: poisoned lock recovery uses `unwrap_or_else(|e| e.into_inner())` or explicit error propagation. A panic in one vault operation must not brick the vault for all other operations.

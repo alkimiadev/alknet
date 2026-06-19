@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-21
 ---
 
 # Configuration
@@ -196,6 +196,8 @@ impl ConfigReloadHandle {
 - `dynamic()`: Returns the current config as `Arc<DynamicConfig>`.
 
 The CLI binary creates a `ConfigReloadHandle` and passes it to a config watcher (file watcher, SIGHUP handler, or call protocol operation) that calls `reload()` when config changes are detected.
+
+**Config reload is a privilege-escalation path.** `ConfigIdentityProvider` reads from `ArcSwap<DynamicConfig>`, so a reload that adds an authorized fingerprint or API key grants access immediately. A malicious reload is equivalent to root-level privilege grant. The reload trigger **must be authenticated/local-only**: SIGHUP (local signal), local file watch, or an admin call protocol operation with the same auth treatment as any other mutation (requires `admin` scope, ADR-015). The implementation must not ship a reload endpoint with no auth "for convenience."
 
 ## ConfigError
 
