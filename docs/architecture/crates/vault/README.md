@@ -44,6 +44,7 @@ cross the network.
 | [018](../../decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Zero alknet crate dependencies |
 | [019](../../decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer is the sole caller |
 | [020](../../decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation, not PBKDF2; salt unused in v2 |
+| [021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Version-indexed paths; `rotate` re-encrypts |
 
 ## Relevant Open Questions
 
@@ -51,7 +52,7 @@ cross the network.
 |----|-------|--------|-----------|
 | OQ-20 | Encryption key derivation | resolved (ADR-020) | HD derivation from seed; salt field unused in v2 |
 | OQ-21 | Remote vault administration | deferred | Network unlock not supported; needs ADR if ever needed |
-| OQ-22 | Key rotation mechanism | open | Key versioning is in place; rotation workflow is not specced |
+| OQ-22 | Key rotation mechanism | resolved (ADR-021) | Version-indexed paths; `rotate` method |
 
 ## Key Design Principles
 

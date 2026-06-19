@@ -211,6 +211,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [018](decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Zero alknet crate dependencies; vault defines own types and errors |
 | [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer (CLI binary) is the sole direct caller; handlers never hold a vault reference |
 | [020](decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation from seed, not PBKDF2; salt field unused in v2 |
+| [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Version-indexed derivation paths; `rotate` re-encrypts between versions |
 
 ## Open Questions
 
@@ -224,7 +225,7 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
 - **OQ-20**: Encryption key derivation (resolved: HD derivation, not PBKDF2 — see ADR-020)
 - **OQ-21**: Remote vault administration (deferred: network unlock not supported — see ADR-019)
-- **OQ-22**: Key rotation mechanism (open: versioning in place, workflow not specced — see [encryption.md](crates/vault/encryption.md))
+- **OQ-22**: Key rotation (resolved: version-indexed paths, `rotate` method — see ADR-021)
 
 ## Failure Modes
 

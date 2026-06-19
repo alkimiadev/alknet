@@ -261,8 +261,8 @@ These questions are acknowledged but not active. They will be promoted to open w
 ### OQ-22: Key Rotation Mechanism
 
 - **Origin**: [encryption.md](crates/vault/encryption.md)
-- **Status**: open
-- **Door type**: Two-way
-- **Priority**: low
-- **Resolution**: Key versioning is in place (`EncryptedData.key_version`, `CURRENT_KEY_VERSION = 1`), but the rotation workflow — re-encrypt all existing data with a new key version, update storage — is not specced. The mechanism is straightforward (derive a new key at a new path or from a new seed, decrypt with v1, re-encrypt with v2), but the operational workflow (when to rotate, how to track which data is at which version, how to handle partially-rotated state) needs design. Low priority: keys don't rotate frequently, and v1 is stable. Two-way door — rotation is additive; a v2 key doesn't break v1 data.
-- **Cross-references**: [encryption.md](crates/vault/encryption.md)
+- **Status**: resolved
+- **Door type**: One-way (path scheme), two-way (rotation policy)
+- **Priority**: medium
+- **Resolution**: Key rotation uses version-indexed derivation paths. Each key version maps to a distinct SLIP-0010 path: `m/74'/2'/0'/{version-2}'`. v2 (current) is at `m/74'/2'/0'/0'`; v3 is at `m/74'/2'/0'/1'`; etc. The `decrypt` method derives the key at the path indicated by `encrypted.key_version` (not always at `PATHS::ENCRYPTION`). The `rotate` method decrypts with the old version's key and re-encrypts with the new version's key — no new mnemonic needed. The assembly layer or a migration tool iterates stored blobs and calls `rotate` on each; the vault does not self-rotate. Partial rotation is safe (old keys remain derivable). See ADR-021.
+- **Cross-references**: ADR-020, ADR-021, [encryption.md](crates/vault/encryption.md), [service.md](crates/vault/service.md)

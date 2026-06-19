@@ -211,45 +211,21 @@ pub fn site_password_path(site_hash: &str) -> String; // m/74'/1'/0'/{site_hash}
 | `m/74'/0'/0'/{n}'` | Worker/device identity | Ed25519 | Multi-device nodes, workers |
 | `m/74'/0'/1'/0'` | SSH host key | Ed25519 | SSH handler |
 | `m/74'/1'/0'/{hash}'` | Site-specific deterministic password | Ed25519 bytes | Per-site passwords (not cached) |
-| `m/74'/2'/0'/0'` | Encryption key for external credentials | AES-256-GCM | Credential encryption (see [encryption.md](encryption.md)) |
+| `m/74'/2'/0'/0'` | Encryption key for external credentials | AES-256-GCM | Credential encryption (v2, see [encryption.md](encryption.md)) |
 | `m/44'/60'/0'/0/0` | Ethereum signing key | secp256k1 | Ethereum signing (feature-gated) |
 
-### Path namespace discipline
-
-The `74'` coin type is alknet's namespace. Sub-paths follow a convention:
-
-| Account (`/X'`) | Purpose |
-|-----------------|---------|
-| `0'` | Identity keys (node, devices, SSH) |
-| `1'` | Deterministic passwords |
-| `2'` | Encryption keys (external credentials) |
-
-New key purposes should allocate a new account index, not reuse an
-existing one. This prevents cross-purpose key collisions.
-
-### The `74'` coin type is a one-way door
-
-The `74'` coin type is **committed** — once keys are derived at `m/74'/...`,
-changing the coin type breaks every existing key. Every node's identity,
-SSH host key, and encryption key is derived at a `74'`-rooted path. This is
-effectively a one-way door per ADR-009: reversal requires re-deriving every
-key from the seed at a new coin type and re-deploying all nodes. The
-reservation is documented inline rather than in a separate ADR because it
-is a single, self-evident commitment (the coin type is the alknet
-namespace; there is no alternative to evaluate). The SLIP-0044 registry
-lists `74'` as unallocated, so there is no collision risk with other
-projects.
-
-## Key Types
+Helper functions construct parameterized paths:
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum KeyType {
-    Ed25519,      // SLIP-0010 derivation
-    Aes256Gcm,    // Symmetric key (derived from seed, used for encryption)
-    Secp256k1,    // BIP-0032 derivation (Ethereum, feature-gated)
-}
+pub fn device_path(index: u32) -> String;           // m/74'/0'/0'/{index}'
+pub fn site_password_path(site_hash: &str) -> String; // m/74'/1'/0'/{site_hash}'
+pub fn encryption_path_for_version(version: u32) -> String; // m/74'/2'/0'/{version-2}'
 ```
+
+`encryption_path_for_version` maps a key version to its derivation path
+(ADR-021). v2 (current) maps to `m/74'/2'/0'/0'` (which is `PATHS::ENCRYPTION`);
+v3 maps to `m/74'/2'/0'/1'`; etc. This is the rotation mechanism — each
+version gets a cryptographically independent key from the same seed.
 
 `KeyType` tags `DerivedKey` (see [protocol.md](protocol.md)) and
 `CachedKey` (see [service.md](service.md)) so consumers know what they

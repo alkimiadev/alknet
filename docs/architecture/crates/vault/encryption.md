@@ -136,7 +136,7 @@ pub fn decrypt(encrypted: &EncryptedData, key: &EncryptionKey) -> Result<String,
 
 `encrypt`:
 1. Generates a random 12-byte IV (must use `OsRng` — see Security Constraints)
-2. Generates a random 32-byte salt (stored, not used in v1)
+2. Generates a random 32-byte salt (stored for wire-format compat, unused in key derivation)
 3. Encrypts the plaintext with AES-256-GCM
 4. Returns `EncryptedData { key_version, salt, iv, data }`
 
@@ -153,23 +153,39 @@ constraint — see below.
 ## Key Versioning
 
 `CURRENT_KEY_VERSION` is `2`. Version `1` is reserved for the TypeScript
-predecessor's PBKDF2-encrypted data (see ADR-020). Key versioning allows
-re-encryption when the encryption key is rotated:
+predecessor's PBKDF2-encrypted data (see ADR-020). Each version maps to a
+unique derivation path — the last hardened index is the version offset
+(see ADR-021):
 
-1. Derive a new key from a new derivation path or new seed
-2. Decrypt all existing `EncryptedData` with key version 2
-3. Re-encrypt with key version 3
-4. Update storage
+```
+v2: m/74'/2'/0'/0'    ← PATHS::ENCRYPTION (current)
+v3: m/74'/2'/0'/1'
+v4: m/74'/2'/0'/2'
+```
 
-The key version is stored in `EncryptedData.key_version` so decryption can
-select the right key. The rotation workflow itself is not specced — see
-OQ-22.
+`encrypt` stamps the version onto new blobs. `decrypt` derives the key at
+the path indicated by `encrypted.key_version` — each version has its own
+cryptographically independent key. Old version keys remain derivable (the
+seed doesn't change), so partial rotation is safe.
 
-**The current source uses `CURRENT_KEY_VERSION = 1` with HD derivation.**
-This is a drift from the spec — the source's v1 is HD-derived, but the TS
-v1 is PBKDF2-derived. Same version number, different derivation. The source
-must be updated to `CURRENT_KEY_VERSION = 2` to distinguish vault-encrypted
-data from TS-encrypted data. See ADR-020.
+### Rotation
+
+Key rotation re-encrypts a blob from one version to another. The vault
+provides a `rotate` method; the caller (assembly layer or migration tool)
+handles replacing the blob in storage:
+
+```rust
+pub fn rotate(&self, encrypted: &EncryptedData, to_version: u32) -> Result<EncryptedData, VaultServiceError>;
+```
+
+Rotation decrypts with the old version's key and re-encrypts with the new
+version's key. No new mnemonic needed — the same seed produces all version
+keys via different paths. See ADR-021 for the full mechanism.
+
+**The current source uses `CURRENT_KEY_VERSION = 1` with HD derivation and
+does not implement version-indexed paths or `rotate`.** These are drift
+items to be corrected during implementation sync. See ADR-020 (version
+bump to 2) and ADR-021 (rotation mechanism).
 
 ## Errors
 
@@ -201,6 +217,7 @@ implementer should not expect this variant to fire in v2.
 | HD derivation, not PBKDF2 | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Seed-derived key; no password; deterministic |
 | Salt unused in v2 (wire-format compat) | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Kept for TS compat; not used in key derivation |
 | Key derived at `m/74'/2'/0'/0'` | — | Dedicated account for encryption keys |
+| Version-indexed paths for rotation | [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | `m/74'/2'/0'/{version-2}'` |
 | Key versioning (v1=TS PBKDF2, v2=vault HD) | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Distinguishes derivation methods |
 | All fields base64-encoded | — | JSON serialization compatibility |
 
@@ -210,9 +227,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-20** (resolved by ADR-020): Salt/KDF — HD derivation is the method;
   the salt field is unused in v2 (wire-format compatibility only).
-- **OQ-22** (open): Key rotation mechanism — the key versioning is in place,
-  but the rotation workflow (re-encrypt all data, update storage) is not
-  specced.
+- **OQ-22** (resolved by ADR-021): Key rotation — version-indexed paths;
+  `rotate` method decrypts old, re-encrypts new.
 
 ## Security Constraints
 

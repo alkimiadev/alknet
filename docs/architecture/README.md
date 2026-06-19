@@ -7,9 +7,9 @@ last_updated: 2026-06-19
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists) and research/reference material. Foundational ADRs (001–020) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), and HD derivation for encryption keys (ADR-020). The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists) and research/reference material. Foundational ADRs (001–021) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), HD derivation for encryption keys (ADR-020), and key rotation via version-indexed paths (ADR-021). The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
 
-**Next step**: Review the vault spec documents, then begin implementation. All open questions for the core and call crates are resolved; the vault crate has two open/deferred OQs (OQ-21, OQ-22) that do not block implementation.
+**Next step**: Review the vault spec documents, then begin implementation. All open questions for the core and call crates are resolved; the vault crate has one deferred OQ (OQ-21, remote vault administration) that does not block implementation.
 
 ## Architecture Documents
 
@@ -55,6 +55,7 @@ last_updated: 2026-06-19
 | [018](decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Accepted |
 | [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | Accepted |
 | [020](decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | Accepted |
+| [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Accepted |
 
 ## Open Questions
 
@@ -81,9 +82,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
 - **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait
 - **OQ-20**: Encryption key derivation — HD derivation from BIP39 seed, not PBKDF2; salt field unused in v2 (wire-format compat) (ADR-020)
-
-**Open (low priority, does not block implementation):**
-- **OQ-22**: Key rotation mechanism — key versioning is in place; the rotation workflow is not specced. Two-way door.
+- **OQ-22**: Key rotation — version-indexed derivation paths; `rotate` method re-encrypts (ADR-021)
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

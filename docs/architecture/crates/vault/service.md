@@ -172,12 +172,27 @@ cryptographic details.
 pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, VaultServiceError>;
 ```
 
-Decrypt an `EncryptedData` blob. Derives (and caches) the encryption key at
-`PATHS::ENCRYPTION` if not already cached. The `encrypted.key_version` is
-stamped onto the `EncryptionKey` for forward compatibility but **does not
-select a different derivation path in v1** — the same key (at
-`m/74'/2'/0'/0'`) decrypts any version. Path-per-version routing is a Phase
-B concern (OQ-22). See [encryption.md](encryption.md).
+Decrypt an `EncryptedData` blob. Derives (and caches) the encryption key
+at the version-indexed path indicated by `encrypted.key_version` (ADR-021).
+Each version maps to a distinct path (`m/74'/2'/0'/{version-2}'`), so old
+and new keys can coexist during partial rotation. See
+[encryption.md](encryption.md).
+
+### rotate(encrypted, to_version) → EncryptedData
+
+```rust
+pub fn rotate(&self, encrypted: &EncryptedData, to_version: u32) -> Result<EncryptedData, VaultServiceError>;
+```
+
+Re-encrypt an `EncryptedData` blob from its current key version to a new
+version. Decrypts with the old version's key, re-encrypts with the new
+version's key. Returns the new `EncryptedData` — the caller replaces the
+blob in storage. No new mnemonic needed; the same seed produces all
+version keys via different derivation paths (ADR-021).
+
+This is the rotation primitive. The assembly layer or a migration tool
+iterates stored blobs and calls `rotate` on each. The vault does not
+self-rotate — rotation is an operational action.
 
 ## Cache
 
@@ -303,6 +318,7 @@ error types — the CLI binary converts at the assembly boundary (ADR-018).
 |----------|-----|---------|
 | Assembly layer is the sole caller | [ADR-019](../../decisions/019-vault-assembly-layer-only.md) | Handlers never hold a vault reference |
 | Encryption key via HD derivation | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Seed-derived key at `m/74'/2'/0'/0'`, not PBKDF2 |
+| Version-indexed paths for rotation | [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | `decrypt` selects key by version; `rotate` re-encrypts |
 | RwLock for thread safety | — | Multiple readers (derive), exclusive writer (unlock/lock) |
 | TTL + LRU cache | — | Bounded memory, fresh keys, zeroized eviction |
 | Actor for in-process irpc dispatch | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc message dispatch; not on the call protocol |
