@@ -283,8 +283,9 @@ assembly-layer concern.
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-20** (open): Salt/KDF Phase B — the `EncryptedData.salt` field is
-  reserved; v1 does not use it. See [encryption.md](encryption.md).
+- **OQ-20** (resolved by ADR-020): Encryption key derivation — HD derivation
+  from seed, not PBKDF2. The salt field is unused in v2. See
+  [encryption.md](encryption.md).
 
 ## References
 

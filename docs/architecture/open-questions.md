@@ -240,14 +240,14 @@ These questions are acknowledged but not active. They will be promoted to open w
 
 ## Theme: alknet-vault
 
-### OQ-20: Salt/KDF Phase B
+### OQ-20: Salt/KDF and Encryption Key Derivation Method
 
 - **Origin**: [encryption.md](crates/vault/encryption.md)
-- **Status**: open
-- **Door type**: Two-way
-- **Priority**: low
-- **Resolution**: The `EncryptedData.salt` field is reserved for future KDF-based key derivation. In v1, the encryption key is derived directly from the seed at path `m/74'/2'/0'/0'` without using the salt. The salt is generated and stored for forward compatibility but does not participate in key derivation. When KDF-based key derivation (HKDF or PBKDF2 using the salt) is implemented, the wire format does not need to change — the `salt` field is already present. The question of *when* to implement Phase B and *which* KDF to use is open but low-priority: v1's direct derivation is secure; the salt is a forward-compatibility hedge, not a gap. Two-way door — the salt is additive; implementing KDF usage doesn't break v1 data.
-- **Cross-references**: [encryption.md](crates/vault/encryption.md)
+- **Status**: resolved
+- **Door type**: One-way (key derivation method), two-way (salt field usage)
+- **Priority**: high
+- **Resolution**: The vault uses SLIP-0010 HD derivation from the BIP39 seed at path `m/74'/2'/0'/0'` to produce the AES-256-GCM encryption key — not PBKDF2. The `salt` field in `EncryptedData` is unused for key derivation (kept for wire-format compatibility with the TS predecessor). The TypeScript `@alkdev/storage` crypto module used PBKDF2 with a password + salt; data encrypted by that method (key_version=1) cannot be decrypted by the vault and must be migrated via one-time re-encryption to key_version=2. See ADR-020 for the full rationale and migration path.
+- **Cross-references**: ADR-020, [encryption.md](crates/vault/encryption.md)
 
 ### OQ-21: Remote Vault Administration
 

@@ -29,7 +29,7 @@ cross the network.
 | Document | Status | Description |
 |----------|--------|-------------|
 | [mnemonic-derivation.md](mnemonic-derivation.md) | draft | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
-| [encryption.md](encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
+| [encryption.md](encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, HD derivation (ADR-020) |
 | [service.md](service.md) | draft | VaultServiceHandle lifecycle, actor dispatch, cache, error model |
 | [protocol.md](protocol.md) | draft | VaultProtocol irpc messages, DerivedKey redaction, serialization |
 
@@ -43,12 +43,13 @@ cross the network.
 | [014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Capabilities carry vault-derived material |
 | [018](../../decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Zero alknet crate dependencies |
 | [019](../../decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer is the sole caller |
+| [020](../../decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation, not PBKDF2; salt unused in v2 |
 
 ## Relevant Open Questions
 
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
-| OQ-20 | Salt/KDF Phase B | open | Salt field is reserved; v1 does not use it |
+| OQ-20 | Encryption key derivation | resolved (ADR-020) | HD derivation from seed; salt field unused in v2 |
 | OQ-21 | Remote vault administration | deferred | Network unlock not supported; needs ADR if ever needed |
 | OQ-22 | Key rotation mechanism | open | Key versioning is in place; rotation workflow is not specced |
 

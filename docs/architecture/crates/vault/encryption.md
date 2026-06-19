@@ -36,6 +36,27 @@ dangerous) plaintext.
 GCM is also hardware-accelerated on modern CPUs (AES-NI), making it fast
 enough that encryption is never a bottleneck.
 
+## Key Derivation: HD, Not PBKDF2
+
+The encryption key is derived from the BIP39 seed via SLIP-0010 HD
+derivation at path `m/74'/2'/0'/0'` (`PATHS::ENCRYPTION`). This is a
+deliberate choice over the PBKDF2 approach used by the TypeScript
+predecessor (`@alkdev/storage/src/graphs/crypto.ts`). See ADR-020 for the
+full rationale.
+
+| Aspect | TS predecessor (PBKDF2) | Vault (HD derivation) |
+|--------|--------------------------|----------------------|
+| Secret input | Password (user-provided) | BIP39 seed (64 bytes) |
+| Salt role | Load-bearing — part of key derivation | Unused — stored for wire-format compat |
+| Derivation | PBKDF2 (100k iterations) | SLIP-0010 (a few HMACs) |
+| Speed | Intentionally slow | Instant |
+| Reproducible | Only with exact password | Deterministic from mnemonic |
+| key_version | 1 | 2 |
+
+Data encrypted by the TS implementation (PBKDF2, key_version=1) **cannot be
+decrypted by the vault** — the keys are different even if the password
+equals the mnemonic. Migration is a one-time re-encryption (see ADR-020).
+
 ## Encryption Key
 
 The encryption key is derived from the seed at path `m/74'/2'/0'/0'`
@@ -77,7 +98,7 @@ changing it breaks both `alknet-storage` and the TypeScript consumer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EncryptedData {
     pub key_version: u32,  // rotation tracking
-    pub salt: String,      // base64, 32 bytes — reserved for Phase B (see OQ-20)
+    pub salt: String,      // base64, 32 bytes — unused in v2 (wire-format compat, see ADR-020)
     pub iv: String,        // base64, 12 bytes — AES-GCM nonce
     pub data: String,      // base64 — ciphertext + auth tag
 }
@@ -88,23 +109,23 @@ compatibility. The `iv` is 12 bytes (the standard GCM nonce size). The
 `data` field includes the GCM authentication tag appended to the ciphertext
 (the `aes-gcm` crate handles this).
 
-### Salt field (reserved for Phase B)
+### Salt field (unused in v2 — reserved for future KDF)
 
-The `salt` field is **reserved for future KDF-based key derivation** (Phase
-B, OQ-20). In v1, the encryption key is derived directly from the seed at
-path `m/74'/2'/0'/0'` **without using the salt**. The salt is generated
-randomly (32 bytes) and stored in `EncryptedData.salt` for forward
-compatibility, but it plays no role in the v1 key derivation process.
+The `salt` field is **unused for key derivation in v2** (HD derivation
+doesn't need a salt — the derivation path provides domain separation). The
+salt is generated randomly (32 bytes) and stored for wire-format
+compatibility with the TypeScript `EncryptedDataSchema`, but it plays no
+cryptographic role.
 
-When key rotation is implemented in Phase B, the salt will be used as
-input to HKDF or PBKDF2 for stretch-based key derivation, allowing the
-same seed to produce different encryption keys without changing the
-derivation path. The wire format does not need to change — the `salt`
-field is already present and populated.
+In the TypeScript predecessor, the salt was load-bearing — it was part of
+the PBKDF2 key derivation. The vault's HD derivation doesn't use it, but the
+field is kept in the wire format so the struct doesn't need to change if a
+future KDF-based derivation is added.
 
-This is a deliberate forward-compatibility decision: the field exists in
-v1 so that v2 can use it without a format migration. The cost is 32 extra
-bytes per `EncryptedData`; the benefit is no future format break.
+If KDF-based key derivation is ever implemented (using HKDF or PBKDF2 with
+the salt as input), it would be a new `key_version` and would not affect
+existing v2 data. This is additive — see OQ-22 (key rotation) and ADR-020
+(HD derivation decision).
 
 ## Encrypt and Decrypt
 
@@ -131,17 +152,24 @@ constraint — see below.
 
 ## Key Versioning
 
-`CURRENT_KEY_VERSION` is `1`. Key versioning allows re-encryption when the
-encryption key is rotated:
+`CURRENT_KEY_VERSION` is `2`. Version `1` is reserved for the TypeScript
+predecessor's PBKDF2-encrypted data (see ADR-020). Key versioning allows
+re-encryption when the encryption key is rotated:
 
 1. Derive a new key from a new derivation path or new seed
-2. Decrypt all existing `EncryptedData` with key version 1
-3. Re-encrypt with key version 2
+2. Decrypt all existing `EncryptedData` with key version 2
+3. Re-encrypt with key version 3
 4. Update storage
 
 The key version is stored in `EncryptedData.key_version` so decryption can
 select the right key. The rotation workflow itself is not specced — see
 OQ-22.
+
+**The current source uses `CURRENT_KEY_VERSION = 1` with HD derivation.**
+This is a drift from the spec — the source's v1 is HD-derived, but the TS
+v1 is PBKDF2-derived. Same version number, different derivation. The source
+must be updated to `CURRENT_KEY_VERSION = 2` to distinguish vault-encrypted
+data from TS-encrypted data. See ADR-020.
 
 ## Errors
 
@@ -150,7 +178,7 @@ pub enum EncryptionError {
     Encryption(String),       // encryption failed
     Decryption(String),       // decryption failed (wrong key, tampered data, bad UTF-8)
     Decoding(String),         // base64 decoding failed
-    KeyVersionMismatch { expected: u32, actual: u32 },  // reserved for Phase B
+    KeyVersionMismatch { expected: u32, actual: u32 },  // reserved for future rotation (OQ-22)
 }
 ```
 
@@ -158,29 +186,30 @@ Decryption failures are intentionally generic — they don't distinguish
 "wrong key" from "tampered data" from "corrupted storage" to avoid
 leaking information to an attacker.
 
-`KeyVersionMismatch` is **defined but unused in v1** — neither `encrypt()`
-nor `decrypt()` returns it. It is reserved for Phase B key rotation (OQ-22),
-where the vault may enforce version matching before decrypting. In v1, the
-`key_version` is stamped onto `EncryptedData` and `EncryptionKey` for
-forward compatibility but does not gate decryption. An implementer should
-not expect this variant to fire in v1.
+`KeyVersionMismatch` is **defined but unused in v2** — neither `encrypt()`
+nor `decrypt()` returns it. It is reserved for future key rotation
+enforcement (OQ-22), where the vault may enforce version matching before
+decrypting. In v2, the `key_version` is stamped onto `EncryptedData` and
+`EncryptionKey` for forward compatibility but does not gate decryption. An
+implementer should not expect this variant to fire in v2.
 
 ## Design Decisions
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | AES-256-GCM for credential encryption | — | Authenticated encryption, hardware-accelerated |
-| Salt reserved for Phase B (OQ-20) | — | Forward-compatible wire format; v1 doesn't use salt |
+| HD derivation, not PBKDF2 | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Seed-derived key; no password; deterministic |
+| Salt unused in v2 (wire-format compat) | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Kept for TS compat; not used in key derivation |
 | Key derived at `m/74'/2'/0'/0'` | — | Dedicated account for encryption keys |
-| Key versioning | — | Rotation support without format break |
+| Key versioning (v1=TS PBKDF2, v2=vault HD) | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Distinguishes derivation methods |
 | All fields base64-encoded | — | JSON serialization compatibility |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-20** (open): Salt/KDF Phase B — when and how to use the reserved
-  `salt` field for KDF-based key derivation.
+- **OQ-20** (resolved by ADR-020): Salt/KDF — HD derivation is the method;
+  the salt field is unused in v2 (wire-format compatibility only).
 - **OQ-22** (open): Key rotation mechanism — the key versioning is in place,
   but the rotation workflow (re-encrypt all data, update storage) is not
   specced.

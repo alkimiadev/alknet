@@ -302,9 +302,10 @@ error types — the CLI binary converts at the assembly boundary (ADR-018).
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | Assembly layer is the sole caller | [ADR-019](../../decisions/019-vault-assembly-layer-only.md) | Handlers never hold a vault reference |
+| Encryption key via HD derivation | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Seed-derived key at `m/74'/2'/0'/0'`, not PBKDF2 |
 | RwLock for thread safety | — | Multiple readers (derive), exclusive writer (unlock/lock) |
 | TTL + LRU cache | — | Bounded memory, fresh keys, zeroized eviction |
-| Actor for in-cluster dispatch | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc message dispatch; not on the call protocol |
+| Actor for in-process irpc dispatch | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc message dispatch; not on the call protocol |
 | `derive_password` not cached | — | One-shot; caching grows cache with no reuse |
 
 ## Open Questions
