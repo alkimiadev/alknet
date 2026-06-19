@@ -41,7 +41,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-13 | Operation path format and routing scope | resolved | `/{service}/{op}` is the correct design; remote dispatch is a separate layer |
 | OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
-| OQ-19 | Session-scoped operation registries | open | Agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point |
+| OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait |
 
 ## Key Design Principles
 

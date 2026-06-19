@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-21
 ---
 
 # alknet-core
@@ -36,7 +36,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 |----|-------|--------|-----------|
 | OQ-04 | Dynamic handler registration | resolved (start static) | HandlerRegistry is immutable at startup |
 | OQ-05 | Multi-connectivity endpoint | resolved (quinn + iroh) | AlknetEndpoint supports both, both feature-gated |
-| OQ-11 | AuthContext resolution completeness | open | How handlers signal auth completion |
+| OQ-11 | Handler-level auth resolution observability | resolved | Handlers store resolved identity on Connection; two identity scopes (connection-level for observability, per-request for ACL) |
 
 ## Key Design Principles
 

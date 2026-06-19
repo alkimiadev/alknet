@@ -120,11 +120,23 @@ These questions are acknowledged but not active. They will be promoted to open w
 ### OQ-11: Handler-Level Auth Resolution Observability
 
 - **Origin**: [auth.md](crates/core/auth.md)
-- **Status**: open
+- **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: medium
-- **Resolution**: When a handler resolves identity inside `handle()`, should the resolved `Identity` be stored somewhere for observability (e.g., connection logging), or is the handler's local variable sufficient? Options: (A) handlers return the resolved identity from `handle()`, (B) handlers call a method on Connection to set identity, (C) handlers log locally and the resolved identity stays local. Two-way door — can be decided during implementation.
-- **Cross-references**: ADR-004, ADR-011
+- **Resolution**: **Option B — handlers store resolved identity on the Connection.** When a handler resolves identity inside `handle()` (the handler-level auth phase), it calls `connection.set_identity(identity)` to store the resolved `Identity` on the connection object. The endpoint and observability layers can read it later for connection logging, audit trails, and metrics.
+
+  Why not Option A (return identity from `handle()`): it changes the `ProtocolHandler` trait signature for all handlers, even those that don't do auth resolution (DNS, health check). It also assumes one identity per connection — but the call protocol can have different identities per request on the same connection (one connection, multiple `call.requested` events with different auth tokens). Returning a single identity from `handle()` would be misleading for the call protocol.
+
+  Why not Option C (identity stays local): the resolved identity is useful beyond the handler. The endpoint may want to log "connection from X authenticated as Y." A connection-level observability layer needs the identity. If it stays local, every handler that resolves identity would need to duplicate logging logic, and the endpoint can't correlate connections to identities.
+
+  **Two identity scopes exist and must not be conflated:**
+  - **Connection-level identity** (this decision): set once by the handler in `handle()`, stored on `Connection`, read by the endpoint for logging/observability. This is the "connection owner" — who opened this QUIC connection.
+  - **Per-request identity** (already in the call protocol spec): set per `call.requested` by the `CallAdapter`, stored on `OperationContext.identity`. This is the "call caller" — who is making this specific call, which may upgrade mid-session (different auth tokens on the same connection).
+
+  Both exist. The connection-level identity is the stable "who is this connection from"; the per-request identity is the dynamic "who is this specific call from." The call protocol's per-request resolution (which may produce a different identity than the connection-level resolution) takes precedence for ACL on `OperationContext` — the connection-level identity is for observability only, not for ACL.
+
+  `Connection` exposes `set_identity` via interior mutability (`OnceLock<Identity>` or `RwLock<Option<Identity>>` — the handler sets it once when resolved, the endpoint and observability layers read it). `handle()` receives `Connection` by value (owned), but the endpoint may also hold a reference for logging. The identity is write-once-read-many.
+- **Cross-references**: ADR-004, ADR-011, ADR-015 (per-request identity on OperationContext), [auth.md](crates/core/auth.md)
 
 ### OQ-12: TLS Identity Provisioning in AlknetEndpoint
 
@@ -204,10 +216,10 @@ These questions are acknowledged but not active. They will be promoted to open w
 ### OQ-19: Session-Scoped Operation Registries and Agent-Written Operations
 
 - **Origin**: [operation-registry.md](crates/call/operation-registry.md)
-- **Status**: open
+- **Status**: resolved
 - **Door type**: Two-way (protocol doesn't need changes), one-way (if implementation closes the door)
 - **Priority**: medium
-- **Resolution**: The agent service pattern includes a self-improving workflow where agents write their own operations (tools, scripts) within a session. A POC at `/workspace/toolEnv` demonstrated the mechanism: a quickjs WASM sandbox inside Deno web workers, with a `Proxy`-based env that intercepts property access and bridges to the operation registry via `postMessage`. The sandbox runs with locked-down permissions (no net, no fs, no env). The POC exposed the full registry to the sandbox — a security gap that the scoped composition env (OQ-18) addresses.
+- **Resolution**: The call protocol supports session-scoped registries through `OperationEnv` trait layering. No protocol changes needed. The pattern is documented here and in [operation-registry.md](crates/call/operation-registry.md) to prevent an implementation from accidentally closing it.
 
   The registry model has three tiers:
 
@@ -217,13 +229,11 @@ These questions are acknowledged but not active. They will be promoted to open w
   | Session | One session | Session lifetime, dynamic | Internal only (never wire-facing) | Agent during session (sandbox) |
   | Promotion | Session → Core | One-time transition | Manual/curated review | Human or architect agent reviews, then redeploys |
 
-  Session-scoped operations are always `Internal` (never wire-facing, never in `services/list`), run under the handler's identity (the agent handler that authorized the sandbox), can only compose operations in the handler's scoped env, and are ephemeral (gone when the session ends). Core operations are curated — reviewed by a human or architect agent before promotion. The promotion path is the curation checkpoint where autonomous (session-scoped) becomes curated (core). This is not auto-promotion.
+  Session-scoped operations are always `Internal` (ADR-015), run under the handler's identity (the agent handler that authorized the sandbox), can only compose operations in the handler's scoped env, and are ephemeral (gone when the session ends). Core operations are curated — reviewed before promotion. The promotion path is the curation checkpoint where autonomous (session-scoped) becomes curated (core). This is not auto-promotion.
 
-  The call protocol does not need changes to support this. The `OperationEnv` trait is the composition point — a session-scoped env wraps the global env (check session registry first, fall through to global). The protocol constraints all apply regardless of which registry an operation lives in: abort cascade (OQ-17), privilege model (OQ-18), visibility (OQ-18), capabilities (ADR-014). The static registration constraint (OQ-04) applies to the global registry only; session registries are dynamic by nature and are a different registry overlaying the global one.
+  **Implementation guard**: `OperationEnv` must remain a trait, not a concrete type. A session-scoped env wraps the global env (check session registry first, fall through to global). Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close this pattern. The static registration constraint (OQ-04) applies to the global registry only; session registries are dynamic by nature and are a different registry overlaying the global one.
 
-  The one-way door this OQ guards against: an implementation that makes `OperationEnv` concrete instead of a trait, or hardcodes the global registry into the dispatch path, would close the session-overlay pattern. The trait-based design already accommodates layering — this OQ documents the pattern so a future implementation doesn't accidentally close it.
+  Session-scoped operations run in a locked-down sandbox (no direct net/fs/env access), can only reach operations in the handler's scoped env, and their output should be validated against their declared schema before returning. The promotion path requires review — an agent with a `promote` scope (the architect role) performs the promotion; the writing agent (lower-privileged role) requests it. This is the role-based escalation pattern (ADR-015): privileges escalate through a chain of command, not through direct authority.
 
-  The security boundary: session-scoped operations run in a locked-down sandbox (no direct net/fs/env access), can only reach operations in the handler's scoped env, and their output should be validated against their declared schema before returning. The promotion path requires review — an agent with a `promote` scope (the architect role) performs the promotion; the writing agent (lower-privileged role) requests it. This is the role-based escalation pattern: privileges escalate through a chain of command, not through direct authority.
-
-  This is a protocol-level concern in the sense that the protocol must not prevent it, but the agent-specific mechanism (quickjs sandbox, session registry lifecycle, promotion workflow) belongs to the agent crate spec. The call protocol's job is to keep the `OperationEnv` trait composable and the visibility/ACL model consistent across tiers.
-- **Cross-references**: OQ-04, OQ-17, OQ-18, ADR-014, [operation-registry.md](crates/call/operation-registry.md)
+  The agent-specific mechanism (quickjs sandbox, session registry lifecycle, promotion workflow) belongs to the agent crate spec. The call protocol's job is to keep the `OperationEnv` trait composable and the visibility/ACL model consistent across tiers.
+- **Cross-references**: OQ-04, ADR-014, ADR-015, ADR-016, [operation-registry.md](crates/call/operation-registry.md)

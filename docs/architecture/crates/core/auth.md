@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-21
 ---
 
 # Authentication
@@ -44,7 +44,7 @@ The endpoint constructs `AuthContext` from the QUIC connection:
 
 ### Handler-level resolution
 
-Handlers that require authentication extract protocol-specific credentials and call `IdentityProvider` inside `handle()`:
+Handlers that require authentication extract protocol-specific credentials and call `IdentityProvider` inside `handle()`. When identity is resolved, the handler stores it on the `Connection` for observability:
 
 ```rust
 // Example: CallAdapter extracting an AuthToken from the first frame
@@ -59,11 +59,25 @@ async fn handle(&self, connection: Connection, auth: &AuthContext) -> Result<(),
                 .ok_or(HandlerError::AuthRequired)?
         }
     };
+    connection.set_identity(identity);  // Store for observability (OQ-11)
     // ... proceed with authenticated identity
 }
 ```
 
-Handlers that don't require authentication (e.g., DNS resolver, health check) can ignore `auth.identity` entirely.
+Handlers that don't require authentication (e.g., DNS resolver, health check) can ignore `auth.identity` entirely and don't call `set_identity`.
+
+### Two Identity Scopes
+
+There are two distinct identity scopes that must not be conflated:
+
+| Scope | Where it's set | Where it's stored | What it represents | Used for |
+|-------|---------------|-------------------|-------------------|----------|
+| Connection-level | Handler in `handle()` | `Connection` (via `set_identity`) | Who opened this QUIC connection | Observability, logging, audit |
+| Per-request | `CallAdapter` per `call.requested` | `OperationContext.identity` | Who is making this specific call | ACL (ADR-015) |
+
+The connection-level identity is stable — set once when the handler resolves it. The per-request identity is dynamic — resolved per `call.requested`, potentially different across requests on the same connection (if different auth tokens are used). The per-request identity takes precedence for ACL on `OperationContext`; the connection-level identity is for observability only, not for ACL.
+
+`Connection` exposes `set_identity` via interior mutability — the handler sets it once when resolved, the endpoint and observability layers read it. The identity is write-once-read-many.
 
 ### AuthContext is Clone and immutable
 
@@ -231,7 +245,8 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 | AuthContext with optional Identity | [ADR-011](../../decisions/011-authcontext-structure.md) | Explicit None, not "partially authenticated" |
 | AuthContext is immutable in handle() | [ADR-011](../../decisions/011-authcontext-structure.md) | Handlers create local variables for resolved identity |
 | Two resolution paths | [ADR-004](../../decisions/004-auth-as-shared-core.md) | Fingerprint and token, not phased auth |
+| Handler stores resolved identity on Connection | OQ-11 (resolved) | `connection.set_identity()` — write-once-read-many for observability |
 
 ## Open Questions
 
-- **OQ-11**: See [open-questions.md](../../open-questions.md) — handler-level auth resolution observability.
+None. All auth-related open questions are resolved.

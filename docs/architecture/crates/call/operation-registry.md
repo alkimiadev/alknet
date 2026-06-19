@@ -188,6 +188,8 @@ impl OperationEnv for LocalOperationEnv {
 
 Future work may add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
 
+**`OperationEnv` must remain a trait.** This is a constraint, not a suggestion. The trait-based design enables session-scoped registries (OQ-19) — a session env wraps the global env (check session registry first, fall through to global). Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close the session-overlay pattern. See OQ-19.
+
 ### Service Discovery
 
 Two built-in operations expose what the node offers:
@@ -324,7 +326,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
-- **OQ-19** (open): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; one-way door is not closing the trait-based composition point.
+- **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait.
 
 ## References
 

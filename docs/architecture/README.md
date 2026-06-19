@@ -9,7 +9,7 @@ last_updated: 2026-06-21
 
 **Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–017) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), and call protocol client and adapter contract (ADR-017). The alknet-core and alknet-call crate specs are in draft.
 
-**Next step**: Review alknet-call spec documents, then begin implementation. OQ-11 (handler-level auth resolution observability) will be resolved during implementation.
+**Next step**: Review alknet-call spec documents, then begin implementation. All open questions are resolved.
 
 ## Architecture Documents
 
@@ -67,16 +67,17 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Resolved two-way doors:**
 - **OQ-04**: Dynamic handler registration — static at startup (ADR-010)
 - **OQ-07**: Call protocol scope — bidirectional streams, EventEnvelope, ID-based correlation (ADR-012)
+- **OQ-11**: Handler-level auth resolution observability — handlers store resolved identity on Connection (Option B); two identity scopes: connection-level (observability) and per-request (ACL)
 - **OQ-12**: TLS identity provisioning — two use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME is a proven pattern.
 - **OQ-13**: Operation path format — `/{service}/{op}` is the correct design for alknet-call, not a simplification
 - **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
-
-**Open two-way doors (resolved during implementation):**
-- **OQ-11**: Handler-level auth resolution observability — decide during implementation
+- **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
 - **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
+
+**All open questions are resolved.** No open one-way or two-way doors remain. The architecture is ready for review.
 
 ## Document Lifecycle
 
