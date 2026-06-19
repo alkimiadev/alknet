@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 ---
 
 # Alknet Overview
@@ -208,6 +208,8 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [015](decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | [016](decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
 | [017](decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
+| [018](decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Zero alknet crate dependencies; vault defines own types and errors |
+| [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer (CLI binary) is the sole direct caller; handlers never hold a vault reference |
 
 ## Open Questions
 
@@ -217,8 +219,11 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-02**: AuthContext resolution timing (resolved: hybrid — see ADR-004)
 - **OQ-03**: ALPN string naming convention (resolved: see ADR-006)
 - **OQ-04**: Dynamic handler registration at runtime vs static at startup (two-way door, defer to implementation)
-- **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014)
+- **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014, ADR-018, ADR-019)
 - **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
+- **OQ-20**: Salt/KDF Phase B (open: reserved field, v1 doesn't use it — see [encryption.md](crates/vault/encryption.md))
+- **OQ-21**: Remote vault administration (deferred: network unlock not supported — see ADR-019)
+- **OQ-22**: Key rotation mechanism (open: versioning in place, workflow not specced — see [encryption.md](crates/vault/encryption.md))
 
 ## Failure Modes
 

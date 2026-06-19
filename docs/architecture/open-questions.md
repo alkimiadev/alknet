@@ -237,3 +237,32 @@ These questions are acknowledged but not active. They will be promoted to open w
 
   The agent-specific mechanism (quickjs sandbox, session registry lifecycle, promotion workflow) belongs to the agent crate spec. The call protocol's job is to keep the `OperationEnv` trait composable and the visibility/ACL model consistent across tiers.
 - **Cross-references**: OQ-04, ADR-014, ADR-015, ADR-016, [operation-registry.md](crates/call/operation-registry.md)
+
+## Theme: alknet-vault
+
+### OQ-20: Salt/KDF Phase B
+
+- **Origin**: [encryption.md](crates/vault/encryption.md)
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: The `EncryptedData.salt` field is reserved for future KDF-based key derivation. In v1, the encryption key is derived directly from the seed at path `m/74'/2'/0'/0'` without using the salt. The salt is generated and stored for forward compatibility but does not participate in key derivation. When KDF-based key derivation (HKDF or PBKDF2 using the salt) is implemented, the wire format does not need to change — the `salt` field is already present. The question of *when* to implement Phase B and *which* KDF to use is open but low-priority: v1's direct derivation is secure; the salt is a forward-compatibility hedge, not a gap. Two-way door — the salt is additive; implementing KDF usage doesn't break v1 data.
+- **Cross-references**: [encryption.md](crates/vault/encryption.md)
+
+### OQ-21: Remote Vault Administration
+
+- **Origin**: [service.md](crates/vault/service.md), ADR-019
+- **Status**: deferred
+- **Door type**: One-way (if implemented)
+- **Priority**: low
+- **Resolution**: Network unlock of a running node's vault is not supported (ADR-008, ADR-019). The vault is unlocked at startup by the CLI binary from a local mnemonic prompt or file. If a future use case requires remote vault administration (e.g., unlocking a headless node's vault over the network), it requires a separate, heavily restricted mechanism: admin scope (ADR-015), mTLS-only (never expose the mnemonic over an unauthenticated channel), and its own ADR with an explicit threat model. This decision does not close that door; it simply does not open it. Deferred because no current use case requires it.
+- **Cross-references**: ADR-008, ADR-014, ADR-019, [service.md](crates/vault/service.md)
+
+### OQ-22: Key Rotation Mechanism
+
+- **Origin**: [encryption.md](crates/vault/encryption.md)
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: Key versioning is in place (`EncryptedData.key_version`, `CURRENT_KEY_VERSION = 1`), but the rotation workflow — re-encrypt all existing data with a new key version, update storage — is not specced. The mechanism is straightforward (derive a new key at a new path or from a new seed, decrypt with v1, re-encrypt with v2), but the operational workflow (when to rotate, how to track which data is at which version, how to handle partially-rotated state) needs design. Low priority: keys don't rotate frequently, and v1 is stable. Two-way door — rotation is additive; a v2 key doesn't break v1 data.
+- **Cross-references**: [encryption.md](crates/vault/encryption.md)

@@ -1,15 +1,15 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-19
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable) and research/reference material. Foundational ADRs (001–017) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), and call protocol client and adapter contract (ADR-017). The alknet-core and alknet-call crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists) and research/reference material. Foundational ADRs (001–019) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), and vault assembly-layer-only access (ADR-019). The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
 
-**Next step**: Review alknet-call spec documents, then begin implementation. All open questions are resolved.
+**Next step**: Review the vault spec documents (newly added), then begin implementation. All open questions for the core and call crates are resolved; the vault crate has three open/deferred OQs (OQ-20, OQ-21, OQ-22) that do not block implementation.
 
 ## Architecture Documents
 
@@ -25,6 +25,11 @@ last_updated: 2026-06-21
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, EventEnvelope framing, stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
 | [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery, irpc integration |
+| [crates/vault/README.md](crates/vault/README.md) | draft | alknet-vault crate index |
+| [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | draft | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
+| [crates/vault/encryption.md](crates/vault/encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
+| [crates/vault/service.md](crates/vault/service.md) | draft | VaultServiceHandle lifecycle, actor dispatch, cache, error model |
+| [crates/vault/protocol.md](crates/vault/protocol.md) | draft | VaultProtocol irpc messages, DerivedKey redaction, serialization |
 
 ## ADR Table
 
@@ -47,6 +52,8 @@ last_updated: 2026-06-21
 | [015](decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | Accepted |
 | [016](decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | Accepted |
 | [017](decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | Accepted |
+| [018](decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Accepted |
+| [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | Accepted |
 
 ## Open Questions
 
@@ -73,11 +80,14 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
 - **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait
 
+**Open (low priority, does not block implementation):**
+- **OQ-20**: Salt/KDF Phase B — the `EncryptedData.salt` field is reserved; v1 does not use it. Two-way door.
+- **OQ-22**: Key rotation mechanism — key versioning is in place; the rotation workflow is not specced. Two-way door.
+
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
 - **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
-
-**All open questions are resolved.** No open one-way or two-way doors remain. The architecture is ready for review.
+- **OQ-21**: Remote vault administration — network unlock not supported; needs ADR if ever needed
 
 ## Document Lifecycle
 
