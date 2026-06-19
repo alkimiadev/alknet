@@ -105,6 +105,24 @@ Five event types carry request/response and subscription semantics:
 
 The `id` field carries the `requestId` for correlation.
 
+### `call.requested` Payload
+
+The `payload` of a `call.requested` event has this shape:
+
+```json
+{
+  "operationId": "/fs/readFile",
+  "input": { ... },
+  "auth_token": "alk_..."    // optional — see Identity Resolution below
+}
+```
+
+- `operationId` — the operation to invoke, **with a leading slash** on the wire (e.g., `/fs/readFile`, `/agent/chat`, `/services/list`). This is the display form of the operation name. The registry stores names without the leading slash (`fs/readFile` — see [operation-registry.md](operation-registry.md#operationspec)); the wire format adds it. The `CallAdapter` strips the leading slash before registry lookup.
+- `input` — the operation input, matching the operation's `input_schema` (JSON Schema). Always a `serde_json::Value`.
+- `auth_token` — optional. If present, the `CallAdapter` resolves it via `IdentityProvider::resolve_from_token()` and the resulting `Identity` takes precedence over the connection-level identity for this request. See [Identity Resolution](#authcontext-and-identity-resolution) below.
+
+**Leading-slash convention**: `operationId` on the wire always has a leading slash (`/fs/readFile`). `OperationSpec.name` in the registry and in `services/list` responses never has a leading slash (`fs/readFile`). `OperationSpec.path()` produces the wire form (`/fs/readFile`). This is a single rule applied consistently — do not mix the two forms.
+
 ### `call.error` Payload
 
 ```json
@@ -241,6 +259,33 @@ The `CallAdapter` receives an `AuthContext` from the endpoint. The call protocol
 5. If `identity` is `None` and the operation's `AccessControl` has restrictions, the registry returns `FORBIDDEN` with message `"authentication required"`.
 
 **Key point**: Identity is resolved per-request, not per-connection. This allows a single connection to upgrade authentication mid-session (e.g., after an `auth/login` operation returns a token), and allows different operations on the same connection to have different identity levels.
+
+### Root OperationContext Construction
+
+When a `call.requested` arrives from the wire, the `CallAdapter` constructs the root `OperationContext` — the entry point of the call tree. This is the counterpart to `OperationEnv::invoke()` (which constructs nested contexts with `internal: true`): the wire path sets `internal: false`, meaning ACL runs against the caller's `identity`, not a handler's `handler_identity` (ADR-015).
+
+```rust
+// CallAdapter dispatch path — root context for an incoming wire request
+fn build_root_context(
+    &self,
+    request_id: String,
+    identity: Option<Identity>,        // resolved per-request above
+    capabilities: Capabilities,         // the CallAdapter's own capabilities (if any)
+) -> OperationContext {
+    OperationContext {
+        request_id,
+        parent_request_id: None,        // wire request — top of the call tree
+        identity: identity.clone(),      // caller's identity (inbound)
+        handler_identity: None,         // no composition authority — wire call
+        capabilities,
+        metadata: HashMap::new(),        // fresh per request
+        env: self.env.clone(),          // LocalOperationEnv for composition
+        internal: false,                 // external call — ACL against caller identity
+    }
+}
+```
+
+The `internal: false` here is what makes a wire call a wire call — ACL checks against the caller's resolved `identity`. When a handler subsequently calls `context.env.invoke(...)`, the `OperationEnv::invoke()` path (see [operation-registry.md](operation-registry.md#operationenv)) constructs a nested `OperationContext` with `internal: true`, switching authority to `handler_identity`. The two construction paths — `CallAdapter` for wire-originated, `OperationEnv::invoke()` for composition-originated — are the only places `internal` is set. Handlers cannot set it themselves (the field is module-private for writes — see [operation-registry.md](operation-registry.md#operationcontext) and ADR-015).
 
 ### ResponseEnvelope
 

@@ -96,7 +96,6 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 |------|---------|-------------|
 | `alknet/ssh` | SshAdapter | SSH-2 handshake, channel multiplexing, SOCKS5, port forwarding |
 | `alknet/call` | CallAdapter | JSON-RPC via irpc: operations, streaming, pub/sub |
-| `alknet/agent` | AgentAdapter | LLM agent service: tool dispatch via call protocol, provider credentials via capabilities |
 | `alknet/git` | GitAdapter | Git smart protocol over QUIC (gix, pkt-line) |
 | `alknet/sftp` | SftpAdapter | SFTP protocol (russh-sftp core) |
 | `alknet/msg` | MessageAdapter | E2E encrypted messaging, mixnet |
@@ -104,6 +103,8 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 | `alknet/dns` | DnsAdapter | DNS over QUIC/TLS, pkrr service discovery |
 | `h3` | HttpAdapter (WebTransport upgrade) | Browser-compatible WebTransport, then ALPN upgrade |
 | `h2` / `http/1.1` | HttpAdapter | Standard HTTP for browsers, curl |
+
+> **Note**: `alknet/agent` is not in the ALPN registry. The agent service is a future consumer that builds on top of `alknet-call` (it depends on `alknet-call`, not `alknet-core` directly — see ADR-003). It uses the call protocol for tool dispatch and exposes agent operations (e.g., `/agent/chat`) as call-protocol operations in the `OperationRegistry`, not as a separate ALPN. The agent is a mental model that informed the core architecture (capabilities, scoped env, abort cascade) but is not specced yet — its design will change as it's built out against the implemented core crates.
 
 > **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency. The CLI binary embeds it and accesses it at the assembly layer — unlocking the vault at startup, deriving and decrypting credentials, and injecting them into handler capabilities. The vault is not exposed over the call protocol. No vault operations are registered in the operation registry. See ADR-008 and ADR-014.
 

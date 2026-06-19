@@ -52,6 +52,8 @@ An opaque type wrapping a QUIC connection. Handlers receive a `Connection` in `h
 ```rust
 pub struct Connection {
     // Private: wraps the underlying QUIC connection or test mock
+    // Private: handler-resolved identity for observability (OQ-11)
+    identity: OnceLock<Identity>,
 }
 
 impl Connection {
@@ -60,6 +62,8 @@ impl Connection {
     pub fn remote_alpn(&self) -> &[u8];
     pub fn remote_addr(&self) -> Option<SocketAddr>;
     pub fn close(&self, code: u32, reason: &str);
+    pub fn set_identity(&self, identity: Identity) -> Result<(), IdentityAlreadySet>;
+    pub fn identity(&self) -> Option<&Identity>;
 }
 ```
 
@@ -68,6 +72,8 @@ impl Connection {
 - `remote_alpn()`: The ALPN negotiated for this connection. Always present.
 - `remote_addr()`: The peer's address, if available. Informational (NAT/proxy).
 - `close()`: Close the connection with an error code and reason.
+- `set_identity()`: Store the handler-resolved identity for observability (OQ-11). Write-once-read-many — a second call returns an error. Handlers that resolve identity inside `handle()` call this; the endpoint and observability layers read it via `identity()`.
+- `identity()`: Read the handler-resolved identity, if set. Returns `None` until `set_identity()` is called.
 
 The `Connection` type does not expose quinn types in its public API. It wraps `quinn::Connection` internally, but the wrapper allows test implementations.
 
@@ -119,6 +125,19 @@ pub enum StreamError {
 
 Returned by `accept_bi()`, `open_bi()`, and stream read/write operations. Maps from `quinn::ConnectionError` / `quinn::StreamError` and their iroh equivalents.
 
+### Mapping `StreamError` to `HandlerError`
+
+When a handler encounters a `StreamError` and needs to return from `handle()`, it maps to `HandlerError`:
+
+| `StreamError` | `HandlerError` | Reason |
+|---------------|----------------|--------|
+| `ConnectionClosed` | `ConnectionClosed` | Peer closed the connection — clean exit |
+| `StreamClosed` | `StreamError(io::Error)` | One stream closed mid-operation; the connection may still be usable for other streams |
+| `Timeout` | `StreamError(io::Error)` (with `TimedOut` kind) | I/O-level timeout on a stream operation |
+| `Internal(e)` | `StreamError(e)` | Underlying I/O error passes through |
+
+Handlers that manage multiple streams (SSH, call) may catch `StreamError::StreamClosed` per-stream and continue serving other streams on the same connection — only `ConnectionClosed` forces `handle()` to return.
+
 ## Design Decisions
 
 | Decision | ADR | Summary |
@@ -127,6 +146,7 @@ Returned by `accept_bi()`, `open_bi()`, and stream read/write operations. Maps f
 | BiStream is a trait | [ADR-007](../../decisions/007-bistream-type-definition.md) | WASM door preserved, test mocks possible |
 | HandlerError is non-fatal | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Handler errors close the connection, not the endpoint |
 | SendStream/RecvStream wrap quinn + iroh | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Internal enum dispatch for both QUIC sources |
+| Connection stores handler-resolved identity | OQ-11 (resolved) | `set_identity` via `OnceLock` — write-once-read-many for observability |
 
 ## Open Questions
 

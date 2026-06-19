@@ -125,7 +125,13 @@ pub struct OperationContext {
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
-    pub internal: bool,
+    /// Module-private for writes; read via `is_internal()`. Set only by
+    /// `OperationEnv::invoke()` (true) or `CallAdapter` dispatch (false).
+    pub(crate) internal: bool,
+}
+
+impl OperationContext {
+    pub fn is_internal(&self) -> bool { self.internal }
 }
 ```
 

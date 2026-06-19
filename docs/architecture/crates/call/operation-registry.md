@@ -92,7 +92,7 @@ A handler receives:
 - `input: Value` — the deserialized `payload` from the `call.requested` event (always `serde_json::Value`)
 - `context: OperationContext` — request ID, identity, metadata, env
 
-And returns a `ResponseEnvelope` containing the result or an error.
+And returns a `ResponseEnvelope` containing the result or an error. `ResponseEnvelope` is defined in [call-protocol.md](call-protocol.md#responseenvelope) — it carries the request ID and a `Result<Value, CallError>`. Local dispatch produces it with no serialization overhead; the `CallAdapter` converts it to `EventEnvelope` for the wire.
 
 ### OperationContext
 
@@ -105,7 +105,14 @@ pub struct OperationContext {
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
-    pub internal: bool,
+    /// Composition-origin flag. Set by `OperationEnv::invoke()` (true) or the
+    /// `CallAdapter` dispatch path (false) — never by handlers. Module-private
+    /// for writes; read via `is_internal()`. See ADR-015.
+    pub(crate) internal: bool,
+}
+
+impl OperationContext {
+    pub fn is_internal(&self) -> bool { self.internal }
 }
 ```
 
@@ -149,31 +156,11 @@ The CLI binary (or assembly layer) constructs the registry and passes it to the 
 
 ### OperationEnv
 
-```rust
-#[async_trait]
-impl OperationEnv for LocalOperationEnv {
-    async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope {
-        let name = format!("{namespace}/{operation}");
-        let context = OperationContext {
-            request_id: format!("env-{name}"),
-            parent_request_id: Some(parent.request_id.clone()),
-            identity: parent.handler_identity.clone(),   // Parent's handler identity becomes the caller
-            handler_identity: parent.handler_identity.clone(), // Inherit handler authority for ACL
-            capabilities: parent.capabilities.clone(),   // Inherit caller's capabilities
-            metadata: HashMap::new(),                     // Fresh — does NOT propagate parent metadata
-            env: self.clone(),
-            internal: true,                              // Nested calls use handler authority
-        };
-        self.registry.invoke(&name, input, context).await
-    }
-}
-```
-
-**Metadata does not propagate through composition.** Nested calls get fresh metadata (`HashMap::new()`), not the parent's metadata bag. This is a security constraint (ADR-014): `metadata: HashMap<String, Value>` accepts any `serde_json::Value`, including secret material. If metadata propagated through `env.invoke()`, a handler that accidentally placed a secret in metadata would leak it to every child operation — and if a child is a `from_call` operation (ADR-017), the metadata would cross the wire to the remote node. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`, not in ambient context.
-
 `OperationEnv` is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
 
 The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.identity`, and is marked `internal: true`.
+
+**Metadata does not propagate through composition.** Nested calls get fresh metadata (`HashMap::new()`), not the parent's metadata bag. This is a security constraint (ADR-014): `metadata: HashMap<String, Value>` accepts any `serde_json::Value`, including secret material. If metadata propagated through `env.invoke()`, a handler that accidentally placed a secret in metadata would leak it to every child operation — and if a child is a `from_call` operation (ADR-017), the metadata would cross the wire to the remote node. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`, not in ambient context.
 
 **Local dispatch only.** The initial `OperationEnv` implementation dispatches directly through the local `OperationRegistry`:
 
@@ -187,14 +174,19 @@ impl OperationEnv for LocalOperationEnv {
     async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope {
         let name = format!("{namespace}/{operation}");
         let context = OperationContext {
-            request_id: format!("env-{name}"),
+            // Unique per invocation — a counter, UUID, or parent_id + suffix.
+            // A deterministic ID (e.g. format!("env-{name}")) collides across
+            // concurrent invocations of the same operation, which corrupts
+            // PendingRequestMap correlation and the abort-cascade tree
+            // (ADR-016), which is indexed by parent_request_id.
+            request_id: generate_request_id(),
             parent_request_id: Some(parent.request_id.clone()),
-            identity: parent.handler_identity.clone(),   // Parent's handler identity becomes the caller
+            identity: parent.handler_identity.clone(),        // Parent's handler identity becomes the caller
             handler_identity: parent.handler_identity.clone(), // Inherit handler authority for ACL
-            capabilities: parent.capabilities.clone(),   // Inherit caller's capabilities
-            metadata: parent.metadata.clone(),           // Inherit caller's metadata
+            capabilities: parent.capabilities.clone(),       // Inherit caller's capabilities
+            metadata: HashMap::new(),                         // Fresh — does NOT propagate parent metadata (ADR-014)
             env: self.clone(),
-            internal: true,                              // Nested calls use handler authority
+            internal: true,                                   // Nested calls use handler authority
         };
         self.registry.invoke(&name, input, context).await
     }
@@ -302,6 +294,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 - Capabilities are populated by the assembly layer at handler construction (the common case: a static decrypted API key) or scoped per-request for internal-only flows. They are never populated from call protocol inputs.
 - Capabilities hold secret material that does not implement `Serialize` and does not appear in `EventEnvelope` payloads.
 - The call protocol carries no secret material. See [call-protocol.md](call-protocol.md) for the wire-level constraint.
+- **Capabilities are `Clone` and cloned through composition.** `OperationEnv::invoke()` calls `parent.capabilities.clone()` to pass capabilities to nested calls. This is intentional: a child handler needs the same outbound credentials as its parent (e.g., the `/agent/chat` handler composing `/fs/readFile` may need the same API key for an outbound LLM call). The security implication is that each composition step duplicates the secret material reference — but capabilities are scoped (the handler can only use what the assembly layer declared), and children run under the parent's handler authority (ADR-015). A clone is the same scoped handle, not a widening of scope. The concrete cloning semantics (reference-counted `Arc` vs deep copy of zeroized material) is a two-way door for implementation, but `Capabilities: Clone` is required by the composition model.
 
 **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). A handler that needs a child key for a specific operation (e.g., signing for GitHub auth) receives a scoped capability that performs the derivation in-process — it never holds the master seed and never calls a network-exposed vault operation.
 
