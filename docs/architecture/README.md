@@ -87,7 +87,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
 - **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
-- **OQ-21**: Remote vault administration — network unlock not supported; needs ADR if ever needed
+- **OQ-21**: Remote vault access — protocol is remote-capable by construction (irpc `RemoteService`); enabling is a server-setup change with an auth-wrapping handler in the assembly layer; `Unlock`/`Lock` are local-only
 
 ## Document Lifecycle
 

@@ -51,7 +51,7 @@ cross the network.
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
 | OQ-20 | Encryption key derivation | resolved (ADR-020) | HD derivation from seed; salt field unused in v2 |
-| OQ-21 | Remote vault administration | deferred | Network unlock not supported; needs ADR if ever needed |
+| OQ-21 | Remote vault access | deferred | Protocol is remote-capable by construction; enabling = server-setup change with auth-wrapping handler; Unlock/Lock local-only |
 | OQ-22 | Key rotation mechanism | resolved (ADR-021) | Version-indexed paths; `rotate` method |
 
 ## Key Design Principles

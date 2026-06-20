@@ -224,7 +224,7 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014, ADR-018, ADR-019)
 - **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
 - **OQ-20**: Encryption key derivation (resolved: HD derivation, not PBKDF2 — see ADR-020)
-- **OQ-21**: Remote vault administration (deferred: network unlock not supported — see ADR-019)
+- **OQ-21**: Remote vault access (deferred: protocol is remote-capable; enabling = server-setup + auth-wrapping handler; Unlock/Lock local-only — see [protocol.md](crates/vault/protocol.md#remote-capability))
 - **OQ-22**: Key rotation (resolved: version-indexed paths, `rotate` method — see ADR-021)
 
 ## Failure Modes

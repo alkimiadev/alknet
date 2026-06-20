@@ -251,12 +251,38 @@ These questions are acknowledged but not active. They will be promoted to open w
 
 ### OQ-21: Remote Vault Administration
 
-- **Origin**: [service.md](crates/vault/service.md), ADR-019
+- **Origin**: [service.md](crates/vault/service.md), [protocol.md](crates/vault/protocol.md), ADR-019
 - **Status**: deferred
-- **Door type**: One-way (if implemented)
-- **Priority**: low
-- **Resolution**: Network unlock of a running node's vault is not supported (ADR-008, ADR-019). The vault is unlocked at startup by the CLI binary from a local mnemonic prompt or file. If a future use case requires remote vault administration (e.g., unlocking a headless node's vault over the network), it requires a separate, heavily restricted mechanism: admin scope (ADR-015), mTLS-only (never expose the mnemonic over an unauthenticated channel), and its own ADR with an explicit threat model. This decision does not close that door; it simply does not open it. Deferred because no current use case requires it.
-- **Cross-references**: ADR-008, ADR-014, ADR-019, [service.md](crates/vault/service.md)
+- **Door type**: One-way (if implemented — wire format exposure), two-way (enabling is non-breaking)
+- **Priority**: medium
+- **Resolution**: The `VaultProtocol` is a remote-capable irpc service by construction — the `#[rpc_requests]` macro generates both `Service` (local) and `RemoteService` (remote) trait implementations. `DerivedKey`'s dual serialization (JSON redacts private key for safety; postcard preserves bytes for remote dispatch) was designed for this. Enabling remote vault access is a server-setup change (register `IrohProtocol` with an ALPN), not a protocol change.
+
+  **What's already in place:**
+  - Protocol: `VaultProtocol` is already a `RemoteService`
+  - Serialization: `DerivedKey` redacts in JSON, preserves in postcard
+  - Actor: `VaultServiceActor` processes all message types, transport-agnostic
+  - Auth transport: irpc over iroh uses iroh's QUIC connections (NodeId auth, RFC 7250 raw keys)
+
+  **What's not in place (the gap):**
+  - The `IrohProtocol` handler forwards all message types without auth checks
+  - Remote use needs: (1) NodeId allowlist, (2) message filtering (reject `Unlock`/`Lock` from remote callers), (3) forwarding to the actor
+  - This auth-wrapping handler cannot live in the vault crate (standalone, ADR-018) — it needs alknet-core's auth model (`IdentityProvider`, scopes). It lives in the assembly layer or a dedicated vault-server crate that depends on both alknet-core and alknet-vault.
+
+  **Operation access policy:**
+  - `Unlock` and `Lock` are local-only (mnemonic and lock control must not be remotely accessible)
+  - All other operations (`DeriveEd25519`, `DeriveEncryptionKey`, `DeriveEthereumKey`, `DerivePassword`, `Encrypt`, `Decrypt`) are remote-capable
+  - The policy is documented in the vault spec; the assembly-layer listener enforces it
+
+  **Use case:** machine node (head, holds mnemonic) exposes restricted vault API to workers (ephemeral, no mnemonic) over irpc/iroh. Per-machine-node vaults, not shared — compartmentalization limits blast radius.
+
+  **What's breaking vs. non-breaking:**
+  - Enabling remote access: non-breaking (server-setup change)
+  - Restricting operations / adding auth: non-breaking (handler policy)
+  - Adding new `VaultProtocol` variants: wire break (inherent to irpc; manageable via ALPN versioning `alknet/vault/v2`)
+  - Changing `DerivedKey` serialization: non-breaking (dual serialization already in place)
+
+  **Why deferred:** the capability is available and the use cases are clear (machine→worker credential access), but no current deployment needs it. The door is left open intentionally — irpc's remote support was chosen for this reason. When a use case materializes, the assembly-layer auth-wrapping handler is the implementation task, not a protocol change. The vault spec documents the policy (which operations are remote-capable) so the future implementer has clear guidance.
+- **Cross-references**: ADR-005, ADR-008, ADR-014, ADR-018, ADR-019, [protocol.md](crates/vault/protocol.md), [service.md](crates/vault/service.md)
 
 ### OQ-22: Key Rotation Mechanism
 

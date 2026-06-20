@@ -280,18 +280,29 @@ in-process pattern (the actor and the handle share state via `Arc`).
 | Direct (in-process) | `VaultServiceHandle` method calls | None | CLI binary at startup (the supported path) |
 | Actor (in-process) | `VaultMessage` over mpsc | None (channel) | irpc service dispatch (in-process) |
 
-Remote (in-cluster) vault dispatch — where the vault runs as a sidecar
-and other processes send `VaultMessage` over a network — is **not
-supported** (ADR-019, OQ-21). The irpc `RemoteService` trait infrastructure
-exists in the library, but exposing the vault over the network would
-require its own ADR with an explicit threat model (the master seed must
-never cross the network). The dispatch table above lists only the
-supported paths.
+Remote vault dispatch — where the vault is exposed over irpc/iroh to
+workers or other processes — is **deferred** (OQ-21). The `VaultProtocol`
+is already a `RemoteService` by construction (irpc's `#[rpc_requests]`
+generates it), and `DerivedKey`'s dual serialization was designed for this.
+Enabling remote access is a server-setup change (register `IrohProtocol`
+with an ALPN), not a protocol change.
+
+However, the `IrohProtocol` handler that irpc provides forwards all
+message types without auth checks. Remote use needs an **auth-wrapping
+handler** in the assembly layer (not the vault crate — the vault is
+standalone, ADR-018, and can't import alknet-core's auth model) that:
+1. Checks the caller's NodeId against an allowlist
+2. Filters `Unlock` and `Lock` messages from remote callers (local-only)
+3. Forwards remaining messages to the actor
+
+See [protocol.md → Remote Capability](protocol.md#remote-capability) for
+the full design, operation access policy, use case (machine node →
+workers), and breaking-vs-non-breaking analysis.
 
 The assembly layer (CLI binary) uses the direct path. The actor path
-exists for in-process irpc dispatch but is not used by the assembly layer
-— it's available for test harnesses and future in-process service
-patterns. Neither path is on the alknet call protocol (ADR-008, ADR-014).
+exists for in-process irpc dispatch. Neither path is on the alknet call
+protocol (ADR-008, ADR-014) — the vault has no ALPN until a future
+deployment explicitly registers one with an auth-wrapping handler.
 
 ## Errors
 
@@ -328,8 +339,11 @@ error types — the CLI binary converts at the assembly boundary (ADR-018).
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-21** (deferred): Remote vault administration — network unlock is not
-  supported; needs an ADR if ever needed.
+- **OQ-21** (deferred): Remote vault access — the `VaultProtocol` is
+  remote-capable by construction (irpc `RemoteService`). Enabling remote
+  access is a server-setup change with an auth-wrapping handler in the
+  assembly layer. `Unlock`/`Lock` are local-only; other operations are
+  remote-capable. See [protocol.md → Remote Capability](protocol.md#remote-capability).
 
 ## Security Constraints
 
