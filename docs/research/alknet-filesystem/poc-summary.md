@@ -1,8 +1,8 @@
 # alknet-filesystem: POC Research Summary
 
-**Status:** Research complete on the two highest-leverage unknowns (path-tree layer + write path); the approach is viable enough to spec. Remaining unknowns are implementation-scope, not feasibility.
+**Status:** Research complete on the three highest-leverage unknowns (path-tree layer, write path, distributed sync); the approach is viable enough to spec. Remaining unknowns are implementation-scope, not feasibility.
 **Date:** 2026-06-20
-**Scope:** Captures what the POC proved, what unknowns it closed, what remains open, and the architectural direction it establishes. Source material for the eventual `alknet-filesystem` crate spec.
+**Scope:** Captures what the three POC iterations proved, what unknowns they closed, what remains open, and the architectural direction they establish. Source material for the eventual `alknet-filesystem` crate spec.
 
 ---
 
@@ -10,12 +10,13 @@
 
 A POC (`alknet-filesystem-poc`, `/workspace/alknet-filesystem-poc`) was completed that resolves the two largest sources of feasibility uncertainty around building a content-addressed, branch-aware, mountable filesystem from three orthogonal layers: SQLite (path tree + application file format), iroh-blobs (content-addressed blob store), and honker (durable pub/sub + queue + locks inside the same SQLite file).
 
-The POC was built in two iterations:
+The POC was built in three iterations:
 
 1. **Path-tree layer** (Tier 1) — proved that a SQLite-backed path tree over an iroh-blobs `MemStore` gives Fossil-style branching with free content dedup, honker notify-on-commit inside the same transaction as path-tree mutations, and free multi-tenant isolation via a `bucket_id` column. 8 tests.
 2. **Write path** — proved that "branch on write, merge on close" reconciles the fundamental mismatch between content-addressed storage (BLAKE3 must hash the complete file) and filesystem write semantics (chunks arrive incrementally, possibly out of order). A concurrent reader sees the old version until `close()` commits atomically; crash/abort leaves the old version intact. 7 tests.
+3. **Distributed sync** — proved that modeling the path tree as an automerge CRDT document, synced via automerge's sync protocol over iroh QUIC connections, gives multi-node convergence with local-latency writes. Concurrent writes to different paths converge cleanly; concurrent writes to the same path resolve via LWW (NFS-equivalent semantics). Content (blobs) and metadata (path tree) sync separately. 9 tests.
 
-**15/15 tests pass.** All deps are published crates.io versions (no workspace path deps), so the POC is portable.
+**15 + 9 = 24 tests pass** across two POC crates. All deps are published crates.io versions (no workspace path deps), so the POCs are portable.
 
 The three layers compose cleanly for both the read path *and* the write path. The remaining unknowns — FsStore/redb vs SQLite, actual SFTP wiring, network distribution, GC/tag management — are implementation details rather than architectural risks.
 
@@ -191,7 +192,86 @@ The write path is where the SQLite-vs-redb-vs-filesystem decision matters most, 
 
 ---
 
-## Architectural Direction (Established by the POC)
+## POC Iteration 3: Distributed Sync — Automerge CRDT over iroh QUIC
+
+**POC:** `alknet-fs-sync-poc` (`/workspace/alknet-fs-sync-poc`)
+**Crates:** `automerge` 0.10, `iroh` 1.0, `iroh-blobs` 0.103
+**Tests:** 9/9 pass (4 local + 5 cross-node)
+
+### The question
+
+The first two POCs proved the local architecture. The open question was: **how do multiple nodes see each other's path-tree changes?** The cache-invalidation/staleness problem — Node B has a local copy of hash X (correct, content-addressed), Node A updates the path to point to hash Y, B's cache is correct but stale.
+
+### The solution: path tree as automerge CRDT
+
+Model the path tree as an **automerge document**. Each node has a local replica. Writes are local + immediate (no network latency). Sync happens via automerge's sync protocol over iroh's QUIC connections — gossip-style, eventually consistent. Conflicts on the same path merge via last-write-wins (LWW) on scalar values, which is what NFS does too.
+
+The architecture splits cleanly:
+
+| Layer | What | How |
+|---|---|---|
+| Content (blobs) | File bytes, content-addressed | iroh-blobs — BLAKE3 hash → blob. Network-transferable via iroh's blob protocol. |
+| Path tree (metadata) | Path → hash mapping, branches, tombstones | **Automerge document**, synced via iroh QUIC. Local replica per node. |
+| Local write path | Chunked writes, crash safety | SQLite write_chunks + honker (from first POC). |
+| Cross-node sync | "Node A changed path X to hash Y" | Automerge sync messages over iroh QUIC. Gossip-style, eventually consistent. |
+
+Content and metadata sync are **separate**: automerge syncs the path tree (small — path edges only, not file bytes); iroh-blobs syncs the content (large — actual file bytes, content-addressed). A node that learns a new path→hash mapping via automerge sync can fetch the blob from a peer that has it via iroh-blobs' network protocol. This keeps the automerge doc small and the sync fast.
+
+### Document structure
+
+```json
+{
+  "branches": {                    // branch_name → { parent: "main" | null }
+    "main":     { "parent": null },
+    "agent-a":  { "parent": "main" }
+  },
+  "paths": {                       // "{branch}:{path}" → { kind, link, size }
+    "main:hello.txt":     { "kind": "file", "link": "abc123...", "size": 42 },
+    "agent-a:agent.txt":  { "kind": "file", "link": "def456...", "size": 20 }
+  },
+  "tombstones": {                  // "{branch}:{path}" → true
+    "agent-a:old.txt": true
+  }
+}
+```
+
+The branch chain walk (resolve) is done in Rust by reading the `branches` map and following parent pointers — same recursive logic as the SQLite CTE, but operating on the CRDT's local replica.
+
+### Sync protocol
+
+Same pattern as the iroh-automerge example (`/workspace/iroh-examples/iroh-automerge`): length-prefixed `automerge::sync::Message` exchanged over a QUIC bidi stream. The `PathTreeSync` struct implements `iroh::protocol::ProtocolHandler`, accepting incoming sync connections and running the sync loop until both sides converge.
+
+For full convergence with concurrent writes on both sides, 2-3 sync rounds are needed (A→B, B→A, A→B). In a production system, sync would be continuous (like the `iroh-automerge-repo` example with `samod`), not one-shot.
+
+### What it proved
+
+| Test | What it proves |
+|---|---|
+| `sync_node_a_write_visible_on_node_b` | **The core test.** Node A writes a file, syncs to Node B, Node B resolves the same path to the same hash. CRDT sync works. |
+| `sync_concurrent_writes_different_paths_converge` | Both nodes write different files concurrently, sync, both see both files. No conflict on different paths. |
+| `sync_concurrent_writes_same_path_lww` | Both nodes write the SAME path with different values, sync, both converge to the same value (LWW). NFS-equivalent semantics. |
+| `sync_branch_inheritance_across_nodes` | Node A creates a branch with a parent and a file. After sync, Node B resolves a file on the child branch by walking the parent chain — even though the branch was created on Node A. |
+| `content_separate_from_metadata_sync` | Node A writes a file (path tree + blob), syncs path tree to Node B. B can resolve path→hash (metadata synced), but B's blob store is empty (content not synced). This validates the metadata/content separation — B knows the file exists but needs to fetch the content separately. |
+
+### The bug that was found and fixed: concurrent root-map initialization
+
+The most important finding from this POC iteration: **automerge concurrent `put_object` on the same key creates a conflict, not a merge.** If two nodes independently call `put_object(ROOT, "paths", Map)`, automerge sees two concurrent writes to the same key and keeps both as conflicting values. When merged, one map wins and the other's contents are invisible.
+
+This affected two places:
+1. **Root maps** (`branches`, `paths`, `tombstones`): if both nodes lazily create them on first write, the maps conflict.
+2. **Branch creation**: if both nodes independently `ensure_branch("main")`, the branch objects conflict.
+
+The fix: one node initializes the root maps and branches, syncs to the other node, then both write independently. The `ensure_branch` method creates all root maps eagerly (idempotent — only creates if absent). This mirrors the real use case: a node joins the network, syncs the current state, then writes locally. A spec must call this out as a design constraint: **root structures must be created by one node and synced before other nodes write.**
+
+### What this means for the spec
+
+The three-layer architecture (SQLite path-tree, iroh content store, honker coordination) extends cleanly to the distributed case by making the path tree an automerge CRDT. The remaining unknowns are now all implementation-scope:
+
+- **SFTP wiring** — mechanical, the `Handler` trait maps 1:1 to the `PathTree` + `WriteSession` API.
+- **FsStore/redb** — needed for production persistence, coexists with automerge for the path tree.
+- **Continuous sync** — the POC does one-shot sync; production needs continuous sync (like `samod`'s `Repo` with `sync_with`).
+- **Content fetch on read** — when a node learns a new path→hash but doesn't have the blob, it needs to fetch via iroh-blobs' network protocol. The `content_separate_from_metadata_sync` test validates this is the correct behavior.
+- **GC and tag management** — same as before, plus cross-node GC coordination.
 
 ### The stack
 
@@ -276,11 +356,9 @@ Two embedded databases means two WAL files, two fsync paths, two crash-recovery 
 
 The alternative — forking iroh-blobs to use SQLite instead of redb — is a big maintenance commitment. The POC's write_chunks table proves SQLite can handle chunk-sized inline BLOBs at iroh's granularity, so the swap is mechanically possible. But it should only be done if the two-database coexistence proves problematic, not for aesthetics. A scoping probe would run `FsStore` alongside the SQLite path tree and measure: double-fsync overhead, WAL contention, operational confusion.
 
-### 2. Incomplete blobs in a distributed context (design, not feasibility)
+### 2. Incomplete blobs in a distributed context (partially solved)
 
-The "many agents" scenario has a second incomplete-blob problem: agent B tries to read a file whose hash is in the path tree (inherited from parent) but whose *content* hasn't been downloaded to B's local store yet. What does the read return? Does it block? Does it trigger a fetch? Does it return an error?
-
-iroh's `BlobReader` errors on missing chunks — but a filesystem caller expects either data or `ENOENT`, not "try again later." This is the seam between "path tree says it exists" and "blob store has the bytes." A design probe would model the fetch-on-read path: resolve → miss → async fetch from a peer that has it → block or return `EIO` temporarily. The honker queue is the coordination mechanism for background fetching.
+The "many agents" scenario's incomplete-blob problem is now partially solved. The `content_separate_from_metadata_sync` test in the sync POC proves that a node can learn a new path→hash mapping via automerge sync without having the blob locally. The remaining design question: what does the read return when the blob isn't local? Does it block? Does it trigger a fetch? Does it return `EIO`? A design probe would wire iroh-blobs' network fetch into the read path: resolve → miss → async fetch from a peer that has it → block or return `EIO` temporarily. The honker queue is the coordination mechanism for background fetching.
 
 ### 3. SFTP wiring (mechanical, not design)
 
@@ -327,7 +405,9 @@ test watch_fires_on_commit ... ok
 
 ---
 
-## POC Structure
+## POCs
+
+### alknet-filesystem-poc (local architecture)
 
 ```
 src/
@@ -347,11 +427,26 @@ tests/
   integration.rs    # 15 tests: 8 path-tree + 7 write-path
 ```
 
+### alknet-fs-sync-poc (distributed sync)
+
+```
+src/
+  path_tree.rs      # AutomergePathTree: automerge-backed path tree with
+                    #   branch chain walk, put_file, resolve, list_dir, unlink
+  sync.rs           # PathTreeSync: iroh ProtocolHandler that exchanges
+                    #   automerge sync::Messages over QUIC bidi streams
+  blob_bridge.rs    # iroh MemStore adapter (same as first POC)
+  lib.rs            # re-exports
+tests/
+  integration.rs    # 9 tests: 4 local + 5 cross-node sync
+```
+
 ---
 
 ## References
 
-- POC: `/workspace/alknet-filesystem-poc` — `Cargo.toml`, `src/`, `tests/integration.rs`
+- POC 1 (local): `/workspace/alknet-filesystem-poc` — `Cargo.toml`, `src/`, `tests/integration.rs` (15 tests)
+- POC 2 (sync): `/workspace/alknet-fs-sync-poc` — `Cargo.toml`, `src/`, `tests/integration.rs` (9 tests)
 - SQLite appfileformat: https://sqlite.org/appfileformat.html
 - iroh-blobs source (v0.100): `/workspace/iroh-blobs` — `DESIGN.md` (blob store tradeoffs, hybrid approach, files-are-hard), `src/store/fs/` (FsStore, redb tables, EntryState), `src/api/blobs.rs` (Blobs API)
 - iroh-blobs published (v0.103): cargo cache — `store/mem.rs` (MemStore), `api/blobs.rs` (AddProgress, BlobReader)
@@ -361,3 +456,6 @@ tests/
 - rudolfs reference: `/workspace/@alkdev/alknet/docs/research/references/gitlfs/rudolfs-reference.md` — decorator pattern, LRU cache, namespace/bucket isolation, fanout streaming
 - iroh-blobs research docs: `/workspace/@alkdev/alknet/docs/research/references/iroh/iroh-blobs/` — overview, storage, key types, transfer protocol
 - russh-sftp research docs: `/workspace/@alkdev/alknet/docs/research/references/ssh/russh-sftp/` — overview, client API, server API, wire protocol
+- iroh-automerge example: `/workspace/iroh-examples/iroh-automerge/` — `src/protocol.rs` (SyncDoc over QUIC bidi stream pattern)
+- iroh-automerge-repo example: `/workspace/iroh-examples/iroh-automerge-repo/` — `src/lib.rs` (samod Repo with continuous sync, TokioFilesystemStorage)
+- automerge source: `~/.cargo/registry/src/*/automerge-0.10.0/` — `src/automerge.rs` (AutoCommit, fork, merge), `src/sync.rs` (SyncDoc trait, Message), `src/iter/map_range.rs` (MapRangeItem)
