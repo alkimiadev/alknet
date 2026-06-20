@@ -285,13 +285,209 @@ In priority order:
 
 ---
 
+## Compute Graphs: flowgraph + ujsx as the Execution Layer
+
+**Location:** `/workspace/@alkdev/flowgraph` (npm-published, uses ujsx)
+**Relevance:** Replaces webgpu-torch's imperative autograd + nn module hierarchy with a declarative, reactive, graph-validated compute graph authoring and execution system. This is the CUDA-graphs-shaped layer, and it's already built.
+
+### The insight
+
+webgpu-torch's `nn.Module` hierarchy is an imperative call-graph: you write `forward(x)` that chains op calls, and autograd records the graph as a side effect. flowgraph inverts this — you write the graph declaratively as a ujsx tree, the graph is validated before execution, and reactive signals drive the execution. The ujsx tree *is* the compute graph, and the existing `@alkdev/flowgraph` library already implements this for the operations protocol that alknet-tensor uses.
+
+### What flowgraph provides
+
+flowgraph sits between `@alkdev/operations` (what can be called) and execution. It defines three graphs:
+
+1. **Operation Graph** — static graph built from `OperationSpec`s at startup. Nodes are operations, edges are type-compatibility relationships. Enables cycle detection, topological ordering, validation.
+2. **Call Graph** — dynamic graph built from call protocol events at runtime. Nodes are call invocations with status/timestamps, edges are parent-child. Enables abort cascading and observability.
+3. **Workflow Template** — declarative ujsx tree defining a reusable workflow structure. A validated path through the operation graph, instantiated as a call graph at runtime.
+
+**The graph is the specification. The template is the authoring surface. The call graph is the execution record.**
+
+The workflow components (`/workspace/@alkdev/flowgraph/src/component/`):
+
+- `<Operation name="tensor.matmul" input={...} />` — a single op call, like a kernel launch
+- `<Sequential>` — ordered execution, outputs flow to inputs (CUDA stream ordering)
+- `<Parallel maxConcurrency={n}>` — concurrent execution (multiple CUDA streams)
+- `<Conditional test={(results) => ...}>` — data-dependent branching (no CUDA-graph equivalent — strictly more powerful)
+- `<Map over={items} as="item">` — fan-out over a collection (batched dispatch)
+
+### The two host configs
+
+flowgraph ships two `HostConfig` implementations (`/workspace/@alkdev/flowgraph/src/host/`):
+
+**`GraphologyHostConfig`** (`graphology.ts`) — renders the ujsx tree into a DAG, validates it against the operation graph (cycle detection via `hasCycle`, type-compatibility edges, topological sort). This is the *compile* step — like `cudagraph.capture()` building the graph from recorded ops, but declarative and validated before execution.
+
+**`ReactiveHostConfig`** (`reactive.ts`) — renders the ujsx tree into a reactive execution structure where node statuses (`idle` → `waiting` → `ready` → `running` → `completed`/`failed`/`aborted`) are `@preact/signals-core` signals. `computePreconditions` checks all predecessors completed, `computeBlockedByFailure` propagates abort cascades, `registerStartEffect` reactively transitions `idle`→`ready` when preconditions are met (`/workspace/@alkdev/flowgraph/src/reactive/node-status.ts`). This is the *execute* step — like `cudagraph.launch()` but with dynamic status propagation.
+
+Both run on the same ujsx reconciler + signals-core that POC 2 verified on QuickJS-NG.
+
+### How this changes alknet-tensor
+
+**The nn module hierarchy becomes flowgraph templates.** You don't port webgpu-torch's `nn_module.ts` `Module` class — you replace it with ujsx components:
+
+```tsx
+// Instead of webgpu-torch's imperative Module:
+class ConvNet extends Module {
+  constructor() {
+    this.conv1 = Conv2d(1, 20, 5);
+    this.conv2 = Conv2d(20, 20, 5);
+  }
+  forward(x) { return this.conv2(this.conv1(x).relu()).relu(); }
+}
+
+// alknet-tensor's declarative template:
+const ConvNet = () => (
+  <Sequential>
+    <Operation name="tensor.conv2d" input={{ weight: w1, stride: 1 }} />
+    <Operation name="tensor.relu" />
+    <Operation name="tensor.conv2d" input={{ weight: w2, stride: 1 }} />
+    <Operation name="tensor.relu" />
+  </Sequential>
+);
+```
+
+**The autograd graph *is* the ujsx tree.** Each `<Operation>` node knows its backward kernel (from the `OpSpec`'s `backward` expression). `backward()` walks the tree in reverse, dispatching backward kernels via the same flowgraph execution model. The `GradientContext` and `saveForBackward` bookkeeping from webgpu-torch's autograd (`src/autograd.ts`) becomes per-node state in the reactive host. The graph is declarative and inspectable before execution, not constructed as a side effect of running the forward pass — strictly cleaner than PyTorch's imperative autograd.
+
+**Training loops are nested templates.** Composability is free because workflows are ujsx trees:
+
+```tsx
+const TrainingStep = ({ batch, labels }) => (
+  <Sequential>
+    <Operation name="model.forward" input={{ x: batch }} />
+    <Operation name="loss.crossEntropy" input={{ predictions: "$.output", labels }} />
+    <Operation name="model.backward" />  // walks the forward graph in reverse
+    <Operation name="optim.step" input={{ params: "$.model.params", grads: "$.grads" }} />
+  </Sequential>
+);
+
+const Epoch = ({ dataset }) => (
+  <Map over={dataset} as="batch">
+    <TrainingStep batch={batch.x} labels={batch.y} />
+  </Map>
+);
+```
+
+**CUDA-graphs-like capture and replay, but better:**
+
+```
+// PyTorch CUDA graph:
+g = torch.cuda.CUDAGraph()
+with torch.cuda.graph(g):
+    out = model(input)
+g.replay()  # re-run the captured graph
+
+// alknet-tensor with flowgraph + ujsx:
+const model = <Sequential>...</Sequential>;
+// The ujsx tree IS the captured graph — declarative, not imperative capture.
+// Replay = render(model) against the ReactiveHostConfig.
+// The reconciler diffs the tree; only changed props re-dispatch.
+// Conditional/Map allow dynamic structure that CUDA graphs can't express.
+```
+
+### Network-callable compute graphs
+
+Since operations are `OperationSpec`s on the registry, a workflow template can mix local and remote ops:
+
+```tsx
+const Distributed = () => (
+  <Parallel>
+    <Operation name="tensor.matmul" input={{ a, b }} />       // local GPU
+    <Operation name="remote.gpu1.matmul" input={{ a, b }} />   // peer GPU via irpc
+    <Operation name="remote.gpu2.matmul" input={{ a, b }} />   // another peer
+  </Parallel>
+);
+```
+
+Same template, same execution model, different target. The `Parallel` host dispatches all three concurrently; the reactive status system tracks which completed; the results are collected. Distributed training is a workflow template, not a separate system.
+
+### TSX authoring
+
+flowgraph's components (`Operation`, `Sequential`, `Parallel`, `Conditional`, `Map`) are `UComponent` functions that return `{type, props, children}` — the exact ujsx element shape. Authoring in TSX is sugar for `h()` calls:
+
+```tsx
+<Sequential><Operation name="tensor.relu" /></Sequential>
+// is sugar for:
+h(Sequential, {}, h(Operation, { name: "tensor.relu" }))
+```
+
+The TSX→h transform is a build step (Rust crates: `swc_ecma_parser` / `oxc` can parse TSX and apply the standard JSX→h transform that ujsx's `jsx-runtime.ts` at `/workspace/@alkdev/ujsx/src/core/jsx-runtime.ts` is the target of). The runtime sees `UElement` trees either way; TSX is authoring ergonomics, not a runtime concern.
+
+### Graph ops in Rust (petgraph), not JS (graphology)
+
+flowgraph currently uses `graphology` + `graphology-dag` (~5400 lines of JS). The actual API surface flowgraph touches is small — ~15 distinct methods:
+
+| graphology / graphology-dag API | petgraph equivalent |
+|----------------------------------|---------------------|
+| `new DirectedGraph()` | `DiGraph::new()` |
+| `.addNode(id, attrs)` | `graph.add_node(attrs)` → returns `NodeIndex` |
+| `.addEdgeWithKey(key, source, target, attrs)` | `graph.add_edge(source, target, attrs)` → returns `EdgeIndex` |
+| `.dropEdge(source, target)` | `graph.remove_edge(edge_idx)` |
+| `.hasNode(id)` | `graph.contains_node(idx)` |
+| `.hasEdge(source, target)` / `.hasDirectedEdge(...)` | `graph.find_edge(n1, n2).is_some()` |
+| `.nodes()` / `.edges()` | `graph.node_indices()` / `graph.edge_indices()` |
+| `.order()` / `.size()` | `graph.node_count()` / `graph.edge_count()` |
+| `.inDegree(id)` / `.outDegree(id)` | `graph.neighbors_directed(idx, Incoming/Outgoing).count()` |
+| `.forEachNode(cb)` / `.forEachEdge(cb)` | `graph.node_indices().for_each(...)` |
+| `hasCycle(graph)` | `petgraph::algo::is_cyclic_directed(graph)` |
+| `topologicalSort(graph)` | `petgraph::algo::topological_sort(graph)` |
+| `willCreateCycle(graph, source, target)` | add edge, check `is_cyclic_directed`, rollback — or check path exists from target to source |
+
+Every graphology operation flowgraph uses maps to a one-line petgraph call. Porting the graph layer to Rust:
+
+- Removes ~5400 lines of JS from the runtime (graphology + graphology-dag), shrinking the quickjs module load surface
+- Makes graph operations native-speed (petgraph is already in the alknet dependency tree as a standard Rust crate)
+- Enables graph validation to happen in Rust before the template is handed to the JS reactive host
+- Keeps the ujsx tree authoring + reactive execution in JS (where the reconciler + signals-core handle the dynamic status propagation)
+
+The `GraphologyHostConfig` becomes a Rust-backed host that builds a `petgraph::DiGraph` instead of a graphology `DirectedGraph`, exposing the graph to JS only for inspection (not manipulation). The `ReactiveHostConfig` stays in JS — it's signals and status propagation, which is what quickjs is good at.
+
+### What this eliminates from the architecture
+
+1. **`nn_module.ts` port** — replaced by flowgraph ujsx components. No `Module` base class, no `Parameter` wrapper, no `StateDict` serialization — those become flowgraph template inspection and registry queries.
+
+2. **Imperative autograd recording** — replaced by declarative graph. The backward pass walks the ujsx tree, not a recorded tape. The graph is known before execution, not reconstructed after.
+
+3. **graphology JS dependency** — replaced by petgraph in Rust. ~5400 lines of JS removed from the runtime.
+
+4. **Custom graph validation** — flowgraph's `validateTemplate` already does cycle detection, type compatibility, topological ordering. This is graph validation that PyTorch and CUDA graphs don't have.
+
+### What flowgraph *doesn't* provide (stays in alknet-tensor)
+
+- **The tensor ops themselves** — `tensor.matmul`, `tensor.conv2d`, `tensor.relu` etc. are still Rust-side wgpu compute kernels, exposed as `OperationSpec`s on the registry. flowgraph orchestrates them; it doesn't implement them.
+- **Buffer management** — still Rust-owned `wgpu::Buffer` with `BufferId` handles in JS (the ~4-5 Rust ops from the architecture section above).
+- **WGSL codegen** — still `WgslGenerator` (handlebars-rs) rendering `KernelSpec` → WGSL. flowgraph is orthogonal to kernel compilation.
+- **`gradcheck`** — finite-difference gradient verification, still a test harness operation.
+
+---
+
+## Updated Recommended Next POCs
+
+In priority order:
+
+1. **WGSL codegen probe** — write the `WgslGenerator` handlebars template against `KernelSpec`, render all ~100 ops from `op_table.ts`, diff output against `getKernelShaderCode`'s output. If they match, the Rust codegen path is proven. Half-day exercise.
+
+2. **`ExprCode` parser assessment** — read `src/expr.ts`, determine if the parser ports to Rust cleanly. If yes, stage 2 moves to Rust entirely. If no, stage 2 stays in JS and sends `KernelSpec` to Rust at init.
+
+3. **End-to-end compute skeleton** — Rust crate that creates a wgpu device on llvmpipe, exposes `create_tensor` / `dispatch_kernel` / `read_tensor` to quickjs, registers `tensor.matmul` as an `OperationSpec` on the operations registry, and runs a matmul via a flowgraph `<Sequential>` template. Proves the full stack (wgpu + quickjs + operations + flowgraph + ujsx) integrates. One day.
+
+4. **`gradcheck` test harness** — implement finite-difference gradient verification as an operation, run against a subset of the op table with a flowgraph `<Sequential>` forward template and reverse-order backward template. Proves the autograd-via-flowgraph design. Half-day.
+
+5. **petgraph host port** — port `GraphologyHostConfig` to a Rust-backed petgraph host, verify `validateTemplate` produces identical results against the existing test suite. Removes the graphology JS dependency. One day.
+
+---
+
 ## References
 
-- **Reference design:** `/workspace/webgpu-torch` — `src/op_spec.ts` (OpSpec schema), `src/op_table.ts` (452 lines, ~100 ops), `src/opgen.ts` (728 lines, op→kernel transform), `src/kernel.ts:299-375` (WGSL shader generation), `src/autograd.ts` (112 lines, gradient graph), `src/nn_module.ts` (467 lines, module hierarchy), `src/optim.ts` (204 lines, optimizers), `src/device_webgpu.ts` (GPU device + buffer pool with FinalizationRegistry)
+- **Reference design (tensor):** `/workspace/webgpu-torch` — `src/op_spec.ts` (OpSpec schema), `src/op_table.ts` (452 lines, ~100 ops), `src/opgen.ts` (728 lines, op→kernel transform), `src/kernel.ts:299-375` (WGSL shader generation), `src/autograd.ts` (112 lines, gradient graph), `src/nn_module.ts` (467 lines, module hierarchy), `src/optim.ts` (204 lines, optimizers), `src/device_webgpu.ts` (GPU device + buffer pool with FinalizationRegistry)
+- **Compute graph layer:** `/workspace/@alkdev/flowgraph` — `src/component/` (`Operation`, `Sequential`, `Parallel`, `Conditional`, `Map` — ujsx components that build the workflow template), `src/host/graphology.ts` (`GraphologyHostConfig` — renders template to DAG, validates), `src/host/reactive.ts` (`ReactiveHostConfig` — renders template to reactive execution structure), `src/reactive/node-status.ts` (`computePreconditions`, `computeBlockedByFailure`, `registerStartEffect` — signal-driven DAG execution), `src/graph/` (construction, validation, queries — graphology API surface to port to petgraph), `src/analysis/` (type-compat, ordering, workflow — graph validation)
 - **Codegen infrastructure:** `/workspace/@alkimiadev/typebox-rs/src/codegen/` — `mod.rs` (`RustGenerator`, `TypeScriptGenerator`), `rust.rs` (handlebars → Rust structs), `typescript.rs` (handlebars → TS interfaces). The `WgslGenerator` would be the third backend here.
 - **Verified substrate (from alknet-desktop POCs):** `/workspace/@alkdev/alknet/docs/research/alknet-desktop/poc-summary.md` — quickjs+wgpu+operations protocol all verified; llvmpipe software Vulkan confirmed as the headless backend
+- **ujsx reconciler (verified on quickjs):** `/workspace/@alkdev/ujsx/src/host/{reconcile,config,fiber}.ts` — fiber-based reconciler with keyed child reconciliation, Value.Diff prop diffing, signal wiring
+- **ujsx jsx-runtime (TSX→h target):** `/workspace/@alkdev/ujsx/src/core/jsx-runtime.ts` — the runtime that a TSX transform would emit calls to
 - **typebox-rs (to be simplified with serde+jsonschema):** `/workspace/@alkimiadev/typebox-rs/` — `Cargo.toml` (handlebars v5, codegen feature), `src/schema.rs`, `src/builder.rs`
 - **toolEnv (UDF sandbox precedent):** `/workspace/toolEnv/core/sandbox/` — `SandboxManager` with `allowFetch`/`allowFs` privilege flags, `@sebastianwessel/quickjs` WASM backend (alknet-tensor would use native rquickjs instead)
 - **Operations protocol (verified on quickjs):** `/workspace/@alkdev/operations/src/` — `registry.ts`, `call.ts`, `types.ts`, `validation.ts`, `response-envelope.ts`, `access.ts`
+- **graphology API surface (to port to petgraph):** `~15 methods` used across `flowgraph/src/host/graphology.ts`, `flowgraph/src/graph/{construction,validation,queries}.ts`, `flowgraph/src/analysis/{type-compat,ordering,workflow}.ts` — all map 1:1 to `petgraph::DiGraph` + `petgraph::algo`
 - **alknet ADRs (shared with alknet-desktop):** `/workspace/@alkdev/alknet/docs/architecture/decisions/` — ADR-005 (irpc), ADR-012 (stream model), ADR-013 (Rust canonical), ADR-017 (call client contract)
 - **wgpu clone (to be bumped to v29):** `/workspace/wgpu` (currently v24.0.5; compute API stable across versions, surface API changed around v25 but tensor compute doesn't use surfaces)
