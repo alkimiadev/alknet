@@ -37,6 +37,7 @@ pub struct OperationSpec {
     pub visibility: Visibility,   // External (wire-callable) or Internal (composition-only)
     pub input_schema: Value,      // JSON Schema for input
     pub output_schema: Value,     // JSON Schema for output
+    pub error_schemas: Vec<ErrorDefinition>,  // Declared domain errors (ADR-023)
     pub access_control: AccessControl,
 }
 
@@ -49,6 +50,14 @@ pub enum OperationType {
 pub enum Visibility {
     External,  // Callable from the wire (call.requested from a client)
     Internal,  // Composition-only (env.invoke from a handler)
+}
+
+/// A declared operation-level error. See ADR-023.
+pub struct ErrorDefinition {
+    pub code: String,           // e.g., "FILE_NOT_FOUND", "RATE_LIMITED"
+    pub description: String,    // Human-readable description
+    pub schema: Value,          // JSON Schema for the error detail payload
+    pub http_status: Option<u16>,  // HTTP status for adapter projection (from_openapi/to_openapi)
 }
 ```
 
@@ -93,6 +102,8 @@ A handler receives:
 - `context: OperationContext` — request ID, identity, metadata, env
 
 And returns a `ResponseEnvelope` containing the result or an error. `ResponseEnvelope` is defined in [call-protocol.md](call-protocol.md#responseenvelope) — it carries the request ID and a `Result<Value, CallError>`. Local dispatch produces it with no serialization overhead; the `CallAdapter` converts it to `EventEnvelope` for the wire.
+
+When a handler returns an error, the `CallError.code` is matched against the operation's declared `error_schemas` (ADR-023). If the code matches a declared `ErrorDefinition`, the `call.error` event carries that code and the error's detail payload. If it doesn't match, the `call.error` carries `INTERNAL`. This is how handler failures become typed errors on the wire instead of string-matched messages.
 
 ### OperationContext
 
@@ -272,7 +283,7 @@ These are read-only — no admin operations are exposed through the call protoco
 }
 ```
 
-`services/schema` accepts `{ "name": "fs/readFile" }` and returns the full `OperationSpec` including input/output JSON Schemas.
+`services/schema` accepts `{ "name": "fs/readFile" }` and returns the full `OperationSpec` including input/output JSON Schemas and declared `error_schemas` (ADR-023). This enables client code generation: a client reading the schema can produce typed error enums instead of generic error handling.
 
 ### irpc Integration
 
@@ -392,6 +403,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Capabilities carry outbound credentials; call protocol carries no secret material |
 | Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; composition authority + scoped env |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
+| Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
 
 ## Open Questions
 

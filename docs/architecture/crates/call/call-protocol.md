@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-22
 ---
 
 # Call Protocol
@@ -127,18 +127,27 @@ The `payload` of a `call.requested` event has this shape:
 
 ```json
 {
-  "code": "NOT_FOUND",
-  "message": "operation not found: /fs/readFile",
-  "retryable": false
+  "code": "FILE_NOT_FOUND",
+  "message": "file not found: /etc/nonexistent",
+  "retryable": false,
+  "details": { "path": "/etc/nonexistent", "errno": 2 }
 }
 ```
 
-Error codes use an extensible string enum. The protocol defines the following codes:
-- `NOT_FOUND` — operation not in registry
+Error codes use an extensible string enum. The protocol defines the following **protocol-level codes** (emitted by the dispatch machinery, not by handlers):
+- `NOT_FOUND` — operation not in registry (or Internal op called from wire)
 - `FORBIDDEN` — access denied (insufficient scopes or unauthenticated)
 - `INVALID_INPUT` — input doesn't match the operation's JSON Schema
-- `INTERNAL` — handler error
+- `INTERNAL` — handler error, panic, connection failure
 - `TIMEOUT` — request timed out (retryable: true)
+
+Operations may also declare **operation-level domain codes** in their `error_schemas` (ADR-023) — e.g., `FILE_NOT_FOUND`, `RATE_LIMITED`, `INSUFFICIENT_CREDITS`. These are emitted by handlers and carry a `details` payload conforming to the declared `ErrorDefinition.schema`. Protocol-level errors omit `details` or carry protocol-specific context (e.g., the operation name for `NOT_FOUND`).
+
+Fields:
+- `code` — the error code (protocol-level or operation-level)
+- `message` — human-readable error message. For logging and debugging, not for programmatic handling. Clients should switch on `code`, not parse `message`.
+- `retryable` — whether the caller should retry. `true` for transient failures, `false` for permanent ones.
+- `details` — optional. When the code matches a declared `ErrorDefinition`, `details` conforms to that definition's schema. This is the typed error payload — it makes errors structured instead of string-matched. See ADR-023.
 
 New error codes may be added in future versions. Clients should treat unknown error codes as `INTERNAL` with `retryable: false`.
 
@@ -304,13 +313,14 @@ pub struct ResponseEnvelope {
 }
 
 pub struct CallError {
-    pub code: String,
-    pub message: String,
+    pub code: String,        // protocol-level (NOT_FOUND, FORBIDDEN, ...) or operation-level (ADR-023)
+    pub message: String,     // human-readable, for logging — not for programmatic handling
     pub retryable: bool,
+    pub details: Option<Value>,  // typed error payload, conforms to ErrorDefinition.schema (ADR-023)
 }
 ```
 
-Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `CallAdapter` converts `ResponseEnvelope` to `EventEnvelope` for the wire.
+Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `CallAdapter` converts `ResponseEnvelope` to `EventEnvelope` for the wire. When a handler returns a `CallError` whose `code` matches a declared `ErrorDefinition`, the `details` field carries the typed error payload. See ADR-023.
 
 ### Connection and Stream Lifecycle
 
@@ -356,6 +366,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
+| Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details` |
 
 ## Open Questions
 

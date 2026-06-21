@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Service
@@ -126,6 +126,23 @@ Derive an AES-256-GCM encryption key at the given path. Same cache
 behavior as `derive_ed25519`. Returns a `DerivedKey` with
 `KeyType::Aes256Gcm`.
 
+### derive_encryption_key_for_version(version) → EncryptionKey
+
+```rust
+pub fn derive_encryption_key_for_version(&self, version: u32) -> Result<EncryptionKey, VaultServiceError>;
+```
+
+Derive the encryption key for a specific key version. Maps the version to
+its derivation path via `encryption_path_for_version(version)` (ADR-021):
+v2 → `m/74'/2'/0'/0'`, v3 → `m/74'/2'/0'/1'`, etc. Cached by path. This is
+the version-aware method that `decrypt` uses to select the correct key for
+each blob — see [encryption.md](encryption.md) and ADR-021.
+
+`derive_encryption_key(path)` (above) remains as the path-based API for
+deriving at arbitrary paths. `derive_encryption_key_for_version(version)`
+is the version-aware API used by `encrypt` and `decrypt`. The two share
+the same cache (keyed by derivation path).
+
 ### derive_ethereum_key(path) → DerivedKey (feature-gated)
 
 ```rust
@@ -173,10 +190,10 @@ pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, VaultServiceE
 ```
 
 Decrypt an `EncryptedData` blob. Derives (and caches) the encryption key
-at the version-indexed path indicated by `encrypted.key_version` (ADR-021).
-Each version maps to a distinct path (`m/74'/2'/0'/{version-2}'`), so old
-and new keys can coexist during partial rotation. See
-[encryption.md](encryption.md).
+at the version-indexed path indicated by `encrypted.key_version` via
+`derive_encryption_key_for_version` (ADR-021). Each version maps to a
+distinct path (`m/74'/2'/0'/{version-2}'`), so old and new keys can
+coexist during partial rotation. See [encryption.md](encryption.md).
 
 ### rotate(encrypted, to_version) → EncryptedData
 

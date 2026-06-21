@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Encryption
@@ -194,7 +194,7 @@ pub enum EncryptionError {
     Encryption(String),       // encryption failed
     Decryption(String),       // decryption failed (wrong key, tampered data, bad UTF-8)
     Decoding(String),         // base64 decoding failed
-    KeyVersionMismatch { expected: u32, actual: u32 },  // reserved for future rotation (OQ-22)
+    KeyVersionMismatch { expected: u32, actual: u32 },  // unused — see note below
 }
 ```
 
@@ -202,12 +202,17 @@ Decryption failures are intentionally generic — they don't distinguish
 "wrong key" from "tampered data" from "corrupted storage" to avoid
 leaking information to an attacker.
 
-`KeyVersionMismatch` is **defined but unused in v2** — neither `encrypt()`
-nor `decrypt()` returns it. It is reserved for future key rotation
-enforcement (OQ-22), where the vault may enforce version matching before
-decrypting. In v2, the `key_version` is stamped onto `EncryptedData` and
-`EncryptionKey` for forward compatibility but does not gate decryption. An
-implementer should not expect this variant to fire in v2.
+`KeyVersionMismatch` is **defined but unused.** ADR-021 implements key
+rotation via version-indexed derivation paths — `decrypt` derives the key
+at the path indicated by `encrypted.key_version`, so there is no
+version-mismatch to detect at the error level (every blob carries its own
+version, and every version has a derivable key). This variant predates
+ADR-021's rotation mechanism and is retained in the enum for source
+compatibility but is not emitted by any code path in v2. An implementer
+should not wire it up or expect it to fire. If a future use case requires
+enforcing version constraints (e.g., "refuse to decrypt blobs older than
+v3"), this variant could be repurposed — but that would be a new decision,
+not part of ADR-021's rotation scheme.
 
 ## Design Decisions
 
