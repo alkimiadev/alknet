@@ -168,11 +168,12 @@ but it only gives the sandbox `fs:read` (not `bash:exec`), because the sandbox
 runs untrusted LLM-generated code. This is the "privileges flow downstream"
 principle: the principal delegates a subset.
 
-The specific API for declaring the scoped operation set (allowed-operations
-list, allowed-namespaces, or a trait-based filter) is a two-way door for
-implementation. The TypeScript `@alkdev/operations` `buildEnv()` used an
-`allowedNamespaces` filter; the Rust implementation may be finer-grained
-(operation-level, not just namespace-level) to be safe.
+The specific API for declaring the scoped operation set is specified in
+ADR-022: `ScopedOperationEnv { allowed_operations: HashSet<String> }`,
+operation-level granularity (not just namespace-level). This is finer-grained
+than the TypeScript `@alkdev/operations` `buildEnv()` which used
+`allowedNamespaces` — operation-level scoping is safer for the
+parameterized-dispatch use case.
 
 ### 5. The three controls together
 
