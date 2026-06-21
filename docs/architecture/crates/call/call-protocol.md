@@ -262,24 +262,30 @@ The `CallAdapter` receives an `AuthContext` from the endpoint. The call protocol
 
 ### Root OperationContext Construction
 
-When a `call.requested` arrives from the wire, the `CallAdapter` constructs the root `OperationContext` — the entry point of the call tree. This is the counterpart to `OperationEnv::invoke()` (which constructs nested contexts with `internal: true`): the wire path sets `internal: false`, meaning ACL runs against the caller's `identity`, not a handler's `handler_identity` (ADR-015).
+When a `call.requested` arrives from the wire, the `CallAdapter` constructs the root `OperationContext` — the entry point of the call tree. This is the counterpart to `OperationEnv::invoke()` (which constructs nested contexts with `internal: true`): the wire path sets `internal: false`, meaning ACL runs against the caller's `identity`, not a handler's composition authority (ADR-015, ADR-022).
 
 ```rust
 // CallAdapter dispatch path — root context for an incoming wire request
 fn build_root_context(
     &self,
     request_id: String,
-    identity: Option<Identity>,        // resolved per-request above
-    capabilities: Capabilities,         // the CallAdapter's own capabilities (if any)
+    operation_name: &str,        // looked up in registry for the registration bundle
+    identity: Option<Identity>,  // resolved per-request above (caller's identity)
 ) -> OperationContext {
+    let registration = self.registry.registration(operation_name);
     OperationContext {
         request_id,
         parent_request_id: None,        // wire request — top of the call tree
-        identity: identity.clone(),      // caller's identity (inbound)
-        handler_identity: None,         // no composition authority — wire call
-        capabilities,
+        identity: identity.clone(),     // caller's identity (inbound — gate credential)
+        // Composition authority from the registration bundle (ADR-022).
+        // None for leaves (FromOpenAPI/FromMCP/FromCall); Some for Local/Session.
+        // This is on the context for PROPAGATION to children via invoke(),
+        // not for the root's own ACL (which uses identity above).
+        handler_identity: registration.composition_authority.clone(),
+        capabilities: registration.capabilities.clone(),  // from the registration bundle
         metadata: HashMap::new(),        // fresh per request
-        env: self.env.clone(),          // LocalOperationEnv for composition
+        env: registration.scoped_env.clone()
+            .unwrap_or_else(ScopedOperationEnv::empty),  // from the bundle, empty for leaves
         internal: false,                 // external call — ACL against caller identity
     }
 }
@@ -349,6 +355,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
+| Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 
 ## Open Questions
 

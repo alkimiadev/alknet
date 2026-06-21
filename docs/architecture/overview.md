@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Alknet Overview
@@ -212,6 +212,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer (CLI binary) is the sole direct caller; handlers never hold a vault reference |
 | [020](decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation from seed, not PBKDF2; salt field unused in v2 |
 | [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Version-indexed derivation paths; `rotate` re-encrypts between versions |
+| [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 
 ## Open Questions
 

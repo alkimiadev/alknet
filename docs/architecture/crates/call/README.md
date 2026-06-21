@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-22
 ---
 
 # alknet-call
@@ -32,6 +32,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [015](../../decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | [016](../../decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
 | [017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
+| [022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Registration bundle carries provenance, composition authority, scoped env, capabilities |
 
 ## Relevant Open Questions
 
@@ -53,4 +54,5 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 6. **Local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer, not a modification to alknet-call's path format.
 7. **No secret material on the wire**: The call protocol carries no private keys, API keys, mnemonics, or decrypted credentials. Handlers receive outbound credentials through `OperationContext.capabilities`, injected at the assembly layer. See ADR-014.
 8. **Abort cascades to descendants**: `call.aborted` for a parent request cascades to all non-terminal descendants. Default `abort-dependents`; `continue-running` opt-in. See ADR-016.
-9. **Internal calls switch authority context, not skip ACL**: The `internal` flag marks composition-originated calls. ACL runs against the handler's identity, not the caller's and not as a blanket skip. Operations have External/Internal visibility. Scoped composition env bounds reachability. See ADR-015.
+9. **Internal calls switch authority context, not skip ACL**: The `internal` flag marks composition-originated calls. ACL runs against the handler's composition authority, not the caller's and not as a blanket skip. Operations have External/Internal visibility. Scoped composition env bounds reachability. See ADR-015, ADR-022.
+10. **Provenance determines composition capability**: Only `Local` and `Session` ops can compose. Leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) are forwarding stubs — they don't get composition authority or a scoped env. The assembly layer is the sole grantor of composition authority. See ADR-022.

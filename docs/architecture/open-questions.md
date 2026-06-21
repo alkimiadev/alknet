@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-20
 ---
 
 # Open Questions
@@ -292,3 +292,12 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Priority**: medium
 - **Resolution**: Key rotation uses version-indexed derivation paths. Each key version maps to a distinct SLIP-0010 path: `m/74'/2'/0'/{version-2}'`. v2 (current) is at `m/74'/2'/0'/0'`; v3 is at `m/74'/2'/0'/1'`; etc. The `decrypt` method derives the key at the path indicated by `encrypted.key_version` (not always at `PATHS::ENCRYPTION`). The `rotate` method decrypts with the old version's key and re-encrypts with the new version's key — no new mnemonic needed. The assembly layer or a migration tool iterates stored blobs and calls `rotate` on each; the vault does not self-rotate. Partial rotation is safe (old keys remain derivable). See ADR-021.
 - **Cross-references**: ADR-020, ADR-021, [encryption.md](crates/vault/encryption.md), [service.md](crates/vault/service.md)
+
+### OQ-23: Handler Identity Registration Path and Composition Authority
+
+- **Origin**: [operation-registry.md](crates/call/operation-registry.md), [call-protocol.md](crates/call/call-protocol.md), ADR-015
+- **Status**: resolved
+- **Door type**: One-way (security model), two-way (bundle shape)
+- **Priority**: high
+- **Resolution**: ADR-015 said handler identity was "set at registration by the assembly layer" but the registration API (`register(spec, handler)`) had no place for it — meaning every internal call would check ACL against `None`, reproducing the escalation gap ADR-015 was written to close. ADR-022 resolves this with a registration bundle (`HandlerRegistration`) carrying `provenance`, `composition_authority` (replacing `handler_identity: Identity` — it's a declared authority bundle, not a peer identity), `scoped_env`, and `capabilities`. The dispatch path (`build_root_context` and `OperationEnv::invoke()`) reads from the bundle. Provenance determines which ops can compose: only `Local` and `Session` get composition authority; leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) get `None` — they don't compose, so they don't need it. Capabilities are per-request on `OperationContext`, populated from the bundle (resolving the closure-capture vs context ambiguity). The kernel/user analogy: user's authority checked once at the External gate; handler's composition authority used for all composition inside; scoped env bounds reachability. No intersection — the user's authority does not limit internal calls. See ADR-022.
+- **Cross-references**: ADR-014, ADR-015, ADR-022, docs/reviews/001-pre-implementation-architecture-sanity-check.md (C1–C4), [operation-registry.md](crates/call/operation-registry.md), [call-protocol.md](crates/call/call-protocol.md)

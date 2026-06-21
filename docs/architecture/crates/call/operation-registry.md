@@ -56,7 +56,7 @@ Operation names use slash-based paths without a leading slash, aligned with URL 
 
 The `namespace` field is derived from the name: for `fs/readFile` it's `fs`, for `agent/chat` it's `agent`. It's a convenience accessor for ACL matching and service grouping.
 
-Visibility (ADR-015) controls whether an operation is callable from the wire. `External` operations are wire-facing — they appear in `services/list` and accept `call.requested` from clients. `Internal` operations are composition-only — they return `NOT_FOUND` (not `FORBIDDEN`) when called from the wire, and do not appear in `services/list`. The assembly layer declares visibility at registration. `from_openapi` and `from_jsonschema` adapters register operations as `Internal` by default (they're composition material, not directly callable); the handler that composes them is `External`.
+Visibility (ADR-015) controls whether an operation is callable from the wire. `External` operations are wire-facing — they appear in `services/list` and accept `call.requested` from clients. `Internal` operations are composition-only — they return `NOT_FOUND` (not `FORBIDDEN`) when called from the wire, and do not appear in `services/list`. The assembly layer declares visibility at registration. All import adapters (`from_openapi`, `from_mcp`, `from_jsonschema`, `from_call`) register operations as `Internal` by default (they're composition material, not directly callable); the handler that composes them is `External`.
 
 ### AccessControl
 
@@ -100,8 +100,8 @@ And returns a `ResponseEnvelope` containing the result or an error. `ResponseEnv
 pub struct OperationContext {
     pub request_id: String,
     pub parent_request_id: Option<String>,
-    pub identity: Option<Identity>,            // Caller's identity (inbound — who invoked me)
-    pub handler_identity: Option<Identity>,    // Handler's identity (composition authority — who am I acting as)
+    pub identity: Option<Identity>,                       // Caller's identity (inbound — who invoked me)
+    pub handler_identity: Option<CompositionAuthority>,    // Handler's composition authority (ADR-022)
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
@@ -119,46 +119,74 @@ impl OperationContext {
 - `request_id`: Correlates with the `call.requested` event's `id` field
 - `parent_request_id`: Set when this call was initiated by another operation (via `OperationEnv`). Records the agency chain — the call tree is the principal→agent chain (ADR-015)
 - `identity`: The authenticated caller (from `IdentityProvider`) — inbound auth (who is calling me). For external calls, this is who sent the `call.requested`. For internal calls, this is the parent handler's `handler_identity` (propagated through `OperationEnv::invoke()`)
-- `handler_identity`: The identity of the handler processing this call. Set at registration by the assembly layer. For internal calls (`internal: true`), the ACL check runs against this identity (ADR-015)
+- `handler_identity`: The composition authority of the handler processing this call. `None` for leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) — they don't compose. `Some(...)` for `Local` and `Session` ops that can compose children. For internal calls (`internal: true`), the ACL check runs against this authority (ADR-015, ADR-022). This is NOT a peer `Identity` — it's a declared authority bundle set at registration by the assembly layer
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
 - `metadata`: Request-scoped context (tracing IDs, connection info). **Must not hold secret material** — see ADR-014. **Does not propagate through `OperationEnv::invoke()`** — nested calls get fresh metadata. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`.
-- `env`: The operation environment for composing calls to other operations. Scoped — the handler can only invoke a declared set of operations (ADR-015)
+- `env`: The operation environment for composing calls to other operations. Scoped — the handler can only invoke a declared set of operations (ADR-015). `None`/empty for leaves.
 - `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: ACL runs against `handler_identity`, not `identity`. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See ADR-015.
 
-`identity` and `capabilities` are orthogonal: identity is inbound (who is calling me), capabilities are outbound (what credentials I can use). `identity` and `handler_identity` are the principal/agent pair: `identity` is the principal (who delegated), `handler_identity` is the agent (who is acting). See ADR-014 for capabilities and ADR-015 for the privilege model.
+`identity` and `capabilities` are orthogonal: identity is inbound (who is calling me), capabilities are outbound (what credentials I can use). `identity` and `handler_identity` are the principal/agent pair: `identity` is the principal (who delegated), `handler_identity` is the agent (who is acting). See ADR-014 for capabilities, ADR-015 for the privilege model, and ADR-022 for the composition authority type.
 
 ### OperationRegistry
 
 ```rust
 pub struct OperationRegistry {
-    operations: HashMap<String, (OperationSpec, Handler)>,
+    operations: HashMap<String, HandlerRegistration>,
 }
 ```
 
-The registry maps operation names to `(OperationSpec, Handler)` pairs. Key methods:
+The registry maps operation names to `HandlerRegistration` bundles. See ADR-022 for the full registration model. Key methods:
 
-- `register(spec, handler)`: Add an operation at startup
-- `lookup(name)`: Find an operation by name, returning spec and handler
+- `register(registration)`: Add an operation at startup
+- `registration(name)`: Find a registration by operation name (returns spec, handler, provenance, composition authority, scoped env, capabilities)
 - `invoke(name, input, context)`: Look up, check ACL, invoke handler, return result
 - `list_operations()`: Return all registered specs (for `/services/list`)
 
-The `OperationRegistryBuilder` provides a fluent API for constructing the registry at startup:
+### HandlerRegistration
+
+The registration bundle carries everything the dispatch path needs to construct an `OperationContext`. See ADR-022 for the full rationale.
+
+```rust
+pub struct HandlerRegistration {
+    pub spec: OperationSpec,
+    pub handler: Handler,
+    pub provenance: OperationProvenance,
+    pub composition_authority: Option<CompositionAuthority>, // None for leaves
+    pub scoped_env: Option<ScopedOperationEnv>,               // None for leaves
+    pub capabilities: Capabilities,
+}
+```
+
+- `provenance`: Where the op came from (`Local`, `FromOpenAPI`, `FromMCP`, `FromCall`, `FromJsonSchema`, `Session`). Determines composition capability, default visibility, and trust model. Only `Local` and `Session` ops can compose; leaves get `composition_authority: None` and `scoped_env: None`.
+- `composition_authority`: The declared authority (label + scopes + resources) the handler operates under when composing children. `None` for leaves. This replaces ADR-015's `handler_identity: Identity` — it's not a peer identity, it's a declared authority bundle. See ADR-022.
+- `scoped_env`: The set of operations this handler may reach via `env.invoke()`. `None` for leaves (empty env). The reachability control from ADR-015.
+- `capabilities`: Outbound credentials (decrypted API keys, signing keys). Populated by the assembly layer from the vault at registration time. See [Capability Injection](#capability-injection).
+
+The `OperationRegistryBuilder` provides a fluent API with convenience methods for common cases:
 
 ```rust
 let registry = OperationRegistryBuilder::new()
-    .with(services_list_spec(), Arc::new(services_list_handler))
-    .with(services_schema_spec(), Arc::new(schema_handler))
-    .with(agent_chat_spec(), Arc::new(agent_chat_handler))
+    // Built-in service discovery (Local, no composition)
+    .with_local(services_list_spec(), Arc::new(services_list_handler),
+                CompositionAuthority::none(), ScopedOperationEnv::empty())
+    .with_local(services_schema_spec(), Arc::new(schema_handler),
+                CompositionAuthority::none(), ScopedOperationEnv::empty())
+    // Agent handler (Local, composes — has authority + scoped env)
+    .with_local(agent_chat_spec(), Arc::new(agent_chat_handler),
+                CompositionAuthority::new("agent-chat", ["llm:call", "fs:read", "vastai:query"]),
+                ScopedOperationEnv::new(["fs/readFile", "vastai/listMachines", "llm/generate"]))
+    // Imported ops (leaves — no authority, no scoped env)
+    .with_leaf(vastai_listMachines_spec(), Arc::new(vastai_handler), vastai_credentials)
     .build();
 ```
 
-The CLI binary (or assembly layer) constructs the registry and passes it to the `CallAdapter`. Handlers are constructed with injected capabilities (see [Capability Injection](#capability-injection)) before registration. Once built, the registry is immutable.
+The CLI binary (or assembly layer) constructs the registry and passes it to the `CallAdapter`. Once built, the registry is immutable.
 
 ### OperationEnv
 
 `OperationEnv` is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
 
-The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.identity`, and is marked `internal: true`.
+The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.handler_identity` as the caller identity, and is marked `internal: true`.
 
 **Metadata does not propagate through composition.** Nested calls get fresh metadata (`HashMap::new()`), not the parent's metadata bag. This is a security constraint (ADR-014): `metadata: HashMap<String, Value>` accepts any `serde_json::Value`, including secret material. If metadata propagated through `env.invoke()`, a handler that accidentally placed a secret in metadata would leak it to every child operation — and if a child is a `from_call` operation (ADR-017), the metadata would cross the wire to the remote node. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`, not in ambient context.
 
@@ -173,6 +201,16 @@ pub struct LocalOperationEnv {
 impl OperationEnv for LocalOperationEnv {
     async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope {
         let name = format!("{namespace}/{operation}");
+
+        // Reachability check (ADR-015, ADR-022): is this op in the parent's
+        // scoped env? If not, return NOT_FOUND. This bounds the
+        // parameterized-dispatch attack surface — a handler (or an LLM
+        // picking tools) can only reach declared ops.
+        if !parent.env.allows(&name) {
+            return ResponseEnvelope::not_found(name);
+        }
+
+        let registration = self.registry.registration(&name);
         let context = OperationContext {
             // Unique per invocation — a counter, UUID, or parent_id + suffix.
             // A deterministic ID (e.g. format!("env-{name}")) collides across
@@ -181,17 +219,29 @@ impl OperationEnv for LocalOperationEnv {
             // (ADR-016), which is indexed by parent_request_id.
             request_id: generate_request_id(),
             parent_request_id: Some(parent.request_id.clone()),
-            identity: parent.handler_identity.clone(),        // Parent's handler identity becomes the caller
-            handler_identity: parent.handler_identity.clone(), // Inherit handler authority for ACL
+            // Parent's composition authority becomes the caller for the child.
+            // This is the authority switch: the child's ACL checks against
+            // the parent's authority, not the original wire caller's identity.
+            identity: parent.handler_identity.as_identity(),
+            // Child's own composition authority (from its registration).
+            // None for leaves — they don't compose, so this is never used
+            // for ACL on a grandchild.
+            handler_identity: registration.composition_authority.clone(),
             capabilities: parent.capabilities.clone(),       // Inherit caller's capabilities
             metadata: HashMap::new(),                         // Fresh — does NOT propagate parent metadata (ADR-014)
-            env: self.clone(),
+            env: registration.scoped_env.clone()
+                .unwrap_or_else(ScopedOperationEnv::empty),  // Child's own scoped env (empty for leaves)
             internal: true,                                   // Nested calls use handler authority
         };
         self.registry.invoke(&name, input, context).await
     }
 }
 ```
+
+Two things happen in `invoke()`:
+
+1. **Reachability check**: before constructing the child context, `invoke()` checks whether the requested op is in the parent's scoped env. If not, `NOT_FOUND`. This is the reachability control — a handler can only compose declared ops.
+2. **Authority propagation**: the child's `identity` is the parent's `handler_identity` (the parent's composition authority becomes the caller). The child's `handler_identity` is the child's own registration's `composition_authority` — so if the child itself composes further, its children inherit the child's authority. This is the principal/agent chain from ADR-015, now wired via ADR-022.
 
 Future work may add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
 
@@ -240,39 +290,47 @@ If a handler internally uses an irpc-based service, the handler bridges the two:
 
 ### Operation Registration at Startup
 
-The CLI binary (or assembly layer) constructs handlers with the credentials they need (from the vault — see [Capability Injection](#capability-injection)), then registers them before starting the endpoint:
+The CLI binary (or assembly layer) constructs `HandlerRegistration` bundles with provenance, composition authority, scoped env, and capabilities (from the vault — see [Capability Injection](#capability-injection)), then registers them before starting the endpoint:
 
 ```rust
-// Assembly layer: unlock vault, derive credentials, construct handlers
+// Assembly layer: unlock vault, derive credentials
 let vault = VaultServiceHandle::new();
 vault.unlock(&mnemonic, passphrase.as_deref())?;
 let google_api_key = vault.decrypt(&google_key_blob)?;
 let github_signing_key = vault.derive_ed25519(PATHS::GITHUB_SIGNING)?;
-
-// Construct handlers with injected capabilities
-let agent_handler = Arc::new(agent_chat_handler(Capabilities::new()
-    .with_api_key("google", google_api_key)));
-let github_handler = Arc::new(github_authenticate_handler(Capabilities::new()
-    .with_signing_key(github_signing_key)));
+let vastai_credentials = Capabilities::new().with_http_token("vastai", vastai_token);
 
 // Register operations — vault operations are NOT registered here
 let registry = OperationRegistryBuilder::new()
-    // Built-in service discovery
-    .with(services_list_spec(), Arc::new(services_list_handler))
-    .with(services_schema_spec(), Arc::new(schema_handler))
-    // Agent and GitHub handlers (constructed with injected capabilities)
-    .with(agent_chat_spec(), agent_handler)
-    .with(github_authenticate_spec(), github_handler)
+    // Built-in service discovery (Local, no composition)
+    .with_local(services_list_spec(), Arc::new(services_list_handler),
+                CompositionAuthority::none(), ScopedOperationEnv::empty())
+    .with_local(services_schema_spec(), Arc::new(schema_handler),
+                CompositionAuthority::none(), ScopedOperationEnv::empty())
+    // Agent handler (Local, composes — has authority + scoped env + capabilities)
+    .with(HandlerRegistration {
+        spec: agent_chat_spec(),
+        handler: Arc::new(agent_chat_handler),
+        provenance: OperationProvenance::Local,
+        composition_authority: Some(CompositionAuthority::new(
+            "agent-chat", ["llm:call", "fs:read", "vastai:query"])),
+        scoped_env: Some(ScopedOperationEnv::new(
+            ["fs/readFile", "vastai/listMachines", "llm/generate"])),
+        capabilities: Capabilities::new().with_api_key("google", google_api_key),
+    })
+    // Vastai ops (FromOpenAPI, leaves — no authority, no scoped env)
+    .with_leaf(vastai_listMachines_spec(), Arc::new(vastai_listMachines_handler),
+               vastai_credentials.clone())
     .build();
 
 let call_adapter = CallAdapter::new(Arc::new(registry), identity_provider);
 ```
 
-The vault is used at construction time, not registered as call protocol operations. The registry is immutable after construction. Adding operations requires restarting the process. This is consistent with OQ-04, ADR-008, and ADR-014.
+The vault is used at construction time to populate `capabilities` in the registration bundle, not registered as call protocol operations. The registry is immutable after construction. Adding operations requires restarting the process. This is consistent with OQ-04, ADR-008, ADR-014, and ADR-022.
 
 ### Capability Injection
 
-Handlers that need outbound credentials (LLM provider API keys, signing keys, HTTP service tokens) receive them through the `Capabilities` type on `OperationContext`, not by calling vault operations over the wire and not from environment variables. This is the mechanism that ADR-008 described in prose ("derived keys and decrypted credentials are injected into operation contexts at the assembly layer") and that ADR-014 specifies as a one-way door.
+Handlers that need outbound credentials (LLM provider API keys, signing keys, HTTP service tokens) receive them through the `Capabilities` type on `OperationContext`, not by calling vault operations over the wire and not from environment variables. This is the mechanism that ADR-008 described in prose ("derived keys and decrypted credentials are injected into operation contexts at the assembly layer") and that ADR-014 specifies as a one-way door. ADR-022 specifies the registration path: capabilities live on the `HandlerRegistration` bundle, and the dispatch path populates `OperationContext.capabilities` from the bundle at call time.
 
 The flow is:
 
@@ -280,31 +338,34 @@ The flow is:
 Assembly layer (CLI startup):
   1. Unlock vault (local, mnemonic from secure prompt or file)
   2. Derive / decrypt the credentials each handler needs
-  3. Construct handlers with those credentials
-  4. Register operations with the constructed handlers
+  3. Construct HandlerRegistration bundles with capabilities from the vault
+  4. Register the bundles in the OperationRegistry
   5. Start the endpoint
 
 Handler invocation (at call time):
-  call.requested → OperationContext { capabilities, identity, ... }
-  handler reads capabilities → uses the credential for its outbound call
+  call.requested → CallAdapter looks up registration by op name
+  → build_root_context populates OperationContext.capabilities from registration.capabilities
+  → handler reads context.capabilities → uses the credential for its outbound call
 ```
+
+The handler closure does **not** capture capabilities — that was the pre-ADR-022 "Model A" that created a circular dependency with per-request `OperationContext.capabilities`. Capabilities live on the registration bundle, and the dispatch path populates the context from the bundle. One model, one wiring path. See ADR-022 Decision 6.
 
 The `Capabilities` type holds non-serializable, zeroized secret material. It does not implement `Serialize` — it cannot cross the call protocol wire even by accident. The concrete shape of the type (a typed map, a struct with named fields, a trait object) is a two-way door for implementation. The one-way constraints are fixed by ADR-014:
 
-- Capabilities are populated by the assembly layer at handler construction (the common case: a static decrypted API key) or scoped per-request for internal-only flows. They are never populated from call protocol inputs.
+- Capabilities are populated by the assembly layer at registration (on the `HandlerRegistration` bundle). They are never populated from call protocol inputs.
 - Capabilities hold secret material that does not implement `Serialize` and does not appear in `EventEnvelope` payloads.
 - The call protocol carries no secret material. See [call-protocol.md](call-protocol.md) for the wire-level constraint.
-- **Capabilities are `Clone` and cloned through composition.** `OperationEnv::invoke()` calls `parent.capabilities.clone()` to pass capabilities to nested calls. This is intentional: a child handler needs the same outbound credentials as its parent (e.g., the `/agent/chat` handler composing `/fs/readFile` may need the same API key for an outbound LLM call). The security implication is that each composition step duplicates the secret material reference — but capabilities are scoped (the handler can only use what the assembly layer declared), and children run under the parent's handler authority (ADR-015). A clone is the same scoped handle, not a widening of scope. The concrete cloning semantics (reference-counted `Arc` vs deep copy of zeroized material) is a two-way door for implementation, but `Capabilities: Clone` is required by the composition model.
+- **Capabilities are `Clone` and cloned through composition.** `OperationEnv::invoke()` calls `parent.capabilities.clone()` to pass capabilities to nested calls. This is intentional: a child handler needs the same outbound credentials as its parent (e.g., the `/agent/chat` handler composing `/fs/readFile` may need the same API key for an outbound LLM call). The security implication is that each composition step duplicates the secret material reference — but capabilities are scoped (the handler can only use what the assembly layer declared on the registration bundle), and children run under the parent's composition authority (ADR-015, ADR-022). A clone is the same scoped handle, not a widening of scope. The concrete cloning semantics (reference-counted `Arc` vs deep copy of zeroized material) is a two-way door for implementation, but `Capabilities: Clone` is required by the composition model.
 
 **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). A handler that needs a child key for a specific operation (e.g., signing for GitHub auth) receives a scoped capability that performs the derivation in-process — it never holds the master seed and never calls a network-exposed vault operation.
 
-**Adapters take credential sources.** The `from_openapi`, `from_jsonschema`, and `from_call` adapter patterns (see ADR-017, constrained by ADR-014) register HTTP-backed or remote-call-backed operations. The credential each service needs (bearer token, API key, TLS identity for the remote connection) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into backed operations, including LLM providers that expose OpenAPI-compatible endpoints. Adapter-registered operations are `Internal` by default (ADR-015) — they're composition material, not directly callable from the wire.
+**Adapters take credential sources.** All import adapters (`from_openapi`, `from_mcp`, `from_jsonschema`, `from_call` — see ADR-017, constrained by ADR-014) register HTTP-backed, MCP-backed, or remote-call-backed operations. The credential each service needs (bearer token, API key, TLS identity for the remote connection) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into backed operations, including LLM providers that expose OpenAPI-compatible endpoints. Adapter-registered operations are `Internal` by default (ADR-015) — they're composition material, not directly callable from the wire.
 
 **`from_call` imports remote operations.** The `from_call` adapter (ADR-017) discovers operations on a remote call protocol endpoint via `services/list` and `services/schema`, then registers them with handlers that forward calls over the QUIC connection. This makes cross-node composition transparent — a handler calling `env.invoke("worker", "exec", ...)` doesn't know whether the operation is local or remote. Connection direction (who opened the QUIC connection) is independent of call direction (who calls whom) — both sides can call each other once connected.
 
 **`from_call` trust is transitive.** A `from_call`-imported operation executes the remote node's code, not yours. The scoped env (ADR-015) bounds *which* operations are reachable, but not *what* they do. A compromised remote node can do anything its operations are declared to do (and anything its handler bugs allow). This is inherent to remote composition — same as trusting any RPC endpoint — but it must be explicit in the threat model. `from_call` means "I trust the remote node as much as my own handlers." The scoping protects the caller from reaching arbitrary ops; it does not protect against what the reached op does.
 
-**Scoped composition env.** The `OperationEnv` given to a handler is scoped — it can only invoke a declared set of operations, set at registration by the assembly layer. This bounds the parameterized-dispatch attack surface: a handler (or an LLM picking tools, or a quickjs sandbox) can only reach declared operations, not the entire registry. The scoped env is the reachability control; the handler identity is the authority control. Both are needed for least privilege. See ADR-015.
+**Scoped composition env.** The `OperationEnv` given to a handler is scoped — it can only invoke a declared set of operations, set at registration on the `HandlerRegistration` bundle by the assembly layer (ADR-022). This bounds the parameterized-dispatch attack surface: a handler (or an LLM picking tools, or a quickjs sandbox) can only reach declared operations, not the entire registry. The scoped env is the reachability control; the composition authority is the authority control. Both are needed for least privilege. See ADR-015 and ADR-022.
 
 ## Constraints
 
@@ -312,12 +373,13 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 - Operation specs use JSON Schema. The call protocol's external interface is always JSON. irpc's postcard serialization is internal only.
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths. irpc service dispatch is contracted but not built.
 - The call protocol does not depend on any database. Operation specs are in-memory, populated at startup.
-- `OperationContext.internal` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as internal. The `internal` flag switches authority context (handler identity for ACL), it does not skip ACL — see ADR-015.
+- `OperationContext.internal` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as internal. The `internal` flag switches authority context (composition authority for ACL), it does not skip ACL — see ADR-015, ADR-022.
 - **Operations have External/Internal visibility.** `Internal` operations return `NOT_FOUND` when called from the wire and are excluded from `services/list`. The assembly layer declares visibility at registration. See ADR-015.
-- **The composition env is scoped.** A handler can only invoke operations declared in its scoped env. This bounds parameterized-dispatch attack surface. See ADR-015.
+- **The composition env is scoped.** A handler can only invoke operations declared in its scoped env (on the `HandlerRegistration` bundle). This bounds parameterized-dispatch attack surface. See ADR-015, ADR-022.
 - **No vault operations are registered in the call protocol.** The vault is assembly-layer only (ADR-008, ADR-014). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. See ADR-014.
 - **Metadata does not propagate through composition.** `OperationEnv::invoke()` constructs fresh metadata for nested calls (`HashMap::new()`), not the parent's metadata. This prevents a handler that accidentally places a secret in metadata from leaking it to child operations — and if a child is a `from_call` operation (ADR-017), across the wire to a remote node. The tracing link is `parent_request_id`, not metadata propagation. See ADR-014.
+- **Provenance determines composition capability.** Only `Local` and `Session` ops can compose. Leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) get `composition_authority: None` and `scoped_env: None` — they don't compose, so they don't need authority or reachability bounds. See ADR-022.
 
 ## Design Decisions
 
@@ -328,7 +390,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Registry is immutable after construction |
 | Vault integration via assembly layer | [ADR-008](../../decisions/008-secret-service-integration.md) | Vault is a capability source, accessed at assembly time |
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Capabilities carry outbound credentials; call protocol carries no secret material |
-| Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
+| Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; composition authority + scoped env |
+| Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 
 ## Open Questions
 
@@ -337,7 +400,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
-- **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait.
+- **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Session ops are `Session` provenance (ADR-022) — always `Internal`, compose under restricted authority scoped down at sandbox creation.
 
 ## References
 

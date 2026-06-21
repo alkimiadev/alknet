@@ -67,9 +67,10 @@ credential encryption:
    decrypting multiple credentials at startup.
 
 4. **Domain separation via paths.** Different encryption purposes can use
-   different derivation paths (`m/74'/2'/0'/0'` for v1, `m/74'/2'/1'/0'`
-   for a future v2). PBKDF2 has no equivalent — the only versioning knob is
-   the iteration count or the password.
+   different derivation paths (`m/74'/2'/0'/0'` for v2, `m/74'/2'/0'/1'`
+   for a future v3). PBKDF2 has no equivalent — the only versioning knob is
+   the iteration count or the password. See ADR-021 for the version-indexed
+   path scheme.
 
 5. **The salt becomes unnecessary for key derivation.** HD derivation
    doesn't need a salt — the path provides domain separation. The salt
