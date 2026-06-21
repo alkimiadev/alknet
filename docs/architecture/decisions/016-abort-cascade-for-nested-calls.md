@@ -84,9 +84,10 @@ Use cases for `continue-running`: a long-running subscription that should keep
 streaming after its parent's sibling failed; a background task that was spawned
 by a handler and should survive the handler's abort.
 
-The caller or handler specifies the policy at call time. The specific mechanism
-(a field in the `call.requested` payload, a field on `OperationContext`, or a
-per-operation declaration) is a two-way door for implementation.
+The caller or handler specifies the policy at call time. The policy is set
+on the `OperationContext` and propagated to children via `OperationEnv::invoke()`
+— see Decision 6 below. The default is `abort-dependents`; `continue-running`
+is an opt-in for long-running work that should survive a parent's abort.
 
 ### 4. Cleanup hooks
 
@@ -115,6 +116,52 @@ reactive status propagation, `FailurePolicy`) is prior art and may be adapted
 as a separate Rust crate for consumers that need richer call-tree visualization
 or reactive status tracking. It is not required for the protocol-level cascade
 — a parent-indexed map suffices.
+
+### 6. The abort policy is set on `OperationContext`, not on the wire payload
+
+The abort policy (`abort-dependents` vs `continue-running`) is set on
+`OperationContext` and propagated to children via `OperationEnv::invoke()`.
+It is NOT a field in the `call.requested` wire payload, and it is NOT a
+per-operation declaration on `OperationSpec`.
+
+**Why not the wire payload**: the wire caller doesn't know the composition
+tree. The caller of `/agent/chat` cannot meaningfully decide whether
+`/fs/readFile` (composed internally by the agent handler) should survive an
+abort — the handler that composes the child knows that, not the wire caller.
+Putting the policy on the wire payload would give the wire caller control
+over internal composition behavior it can't see.
+
+**Why not per-operation declaration**: ADR-016 Assumption 5 says the policy
+is per-call, not per-operation. The same operation may need
+`abort-dependents` in one composition context and `continue-running` in
+another. A static property on `OperationSpec` can't express that.
+
+**How it works on `OperationContext`**: the root context
+(`build_root_context` in the CallAdapter) gets the default policy
+(`abort-dependents`). When a handler composes a child via
+`env.invoke()`, it can specify the policy for that child:
+
+```rust
+// Default: abort-dependents (child aborts if parent aborts)
+context.env.invoke("fs", "readFile", input, &context).await
+
+// Opt-in: continue-running (child survives parent's abort)
+context.env.invoke_with_policy(
+    "fs", "readFile", input, &context, AbortPolicy::ContinueRunning
+).await
+```
+
+The child's `OperationContext` carries the policy. If the child itself
+composes grandchildren, the policy propagates unless the child explicitly
+overrides it. This is consistent with the composition authority and scoped
+env propagation in ADR-022 — the parent handler decides the child's
+runtime context, including abort policy.
+
+The `OperationEnv` trait gains an optional policy parameter. The specific
+API shape (a separate `invoke_with_policy` method, a policy field on an
+`InvokeOptions` struct, or a builder pattern) is a two-way door for
+implementation — but the policy enters through `OperationEnv::invoke()`,
+not through the wire and not through `OperationSpec`.
 
 ## Consequences
 
@@ -175,10 +222,10 @@ or reactive status tracking. It is not required for the protocol-level cascade
    release, lock release).
 
 5. **`continue-running` is per-call, not per-operation.** The policy is
-   specified at call time, not declared at registration. If the policy should
-   be a static property of the operation (declared in `OperationSpec`), the
-   model changes. The assumption is that the caller or handler decides at call
-   time based on the specific context.
+   specified at call time via `OperationEnv::invoke()`, not declared at
+   registration on `OperationSpec` and not set by the wire caller. The
+   composing handler decides the child's policy based on the specific
+   context. See Decision 6.
 
 ## References
 

@@ -121,6 +121,8 @@ The `payload` of a `call.requested` event has this shape:
 - `input` — the operation input, matching the operation's `input_schema` (JSON Schema). Always a `serde_json::Value`.
 - `auth_token` — optional. If present, the `CallAdapter` resolves it via `IdentityProvider::resolve_from_token()` and the resulting `Identity` takes precedence over the connection-level identity for this request. See [Identity Resolution](#authcontext-and-identity-resolution) below.
 
+The `call.requested` payload does **not** carry an abort policy field. The abort policy (`abort-dependents` vs `continue-running`, ADR-016) is set on `OperationContext` and propagated through `OperationEnv::invoke()` — the composing handler decides the child's policy, not the wire caller. See [Abort Cascade and Nested Calls](#abort-cascade-and-nested-calls) below.
+
 **Leading-slash convention**: `operationId` on the wire always has a leading slash (`/fs/readFile`). `OperationSpec.name` in the registry and in `services/list` responses never has a leading slash (`fs/readFile`). `OperationSpec.path()` produces the wire form (`/fs/readFile`). This is a single rule applied consistently — do not mix the two forms.
 
 ### `call.error` Payload
@@ -339,6 +341,8 @@ When a handler composes other operations via `OperationEnv::invoke()`, it create
 When `call.aborted` arrives for a parent request, the protocol cascades the abort to all non-terminal descendants in the tree. The CallAdapter walks the tree (indexed by `parent_request_id` in `PendingRequestMap`) and sends `call.aborted` for each descendant. The default policy is **`abort-dependents`**: aborting a request aborts everything downstream, regardless of branch. This is the correct default because aborted parent work has no consumer waiting for results — continuing is wasted work at best and unwanted side effects at worst (e.g., a `bash/exec` that keeps running after the caller stopped caring).
 
 An opt-in **`continue-running`** policy is available for cases where long-running work should survive a parent's abort (e.g., a subscription that should keep streaming). Under `continue-running`, descendants that have already started continue to completion; descendants that haven't started yet are aborted; no new descendants start.
+
+The abort policy is set on `OperationContext` and propagated through `OperationEnv::invoke()` — the composing handler decides the child's policy, not the wire caller. The `call.requested` payload does not carry an abort policy field (the wire caller doesn't know the composition tree). The root context gets the default (`abort-dependents`); a handler can opt a child into `continue-running` at `invoke()` time. See ADR-016 Decision 6.
 
 Handlers clean up resources when their call is cancelled (in Rust, the future is dropped and `Drop` guards release resources — HTTP streams, file handles, locks). This is a handler-level concern; the protocol's job is to cascade the abort. See ADR-016.
 

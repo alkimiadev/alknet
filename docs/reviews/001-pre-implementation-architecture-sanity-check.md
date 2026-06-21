@@ -1,5 +1,5 @@
 ---
-status: draft
+status: resolved
 last_updated: 2026-06-20
 reviewed_documents:
   - overview.md
@@ -443,37 +443,33 @@ subsumed by the version-based one.
 
 ## Suggestions
 
-### S1. Abort Policy Field Absent from `call.requested` Payload
+### S1. Abort Policy Field Absent from `call.requested` Payload (RESOLVED)
 
 **Documents**: call-protocol.md (lines 112–118, call.requested payload),
 ADR-016 (lines 86–89, 177–181)
 
-**Suggestion**: ADR-016 says the `abort-dependents` vs `continue-running` policy
-is per-call and "the specific mechanism (a field in the `call.requested`
-payload, a field on `OperationContext`, or a per-operation declaration) is a
-two-way door for implementation." call-protocol.md's `call.requested` payload
-(L112–118) shows `operationId`, `input`, `auth_token` — no policy field. Since
-ADR-016 explicitly leaves the mechanism open, this isn't an inconsistency, but
-a one-line note in call-protocol.md ("the abort policy is conveyed via [TBD —
-two-way door, ADR-016]") would prevent an implementer from assuming the payload
-is final and forgetting the policy exists.
+**Resolution**: ADR-016 Decision 6 (added during this review's resolution
+pass) specifies that the abort policy is set on `OperationContext` and
+propagated through `OperationEnv::invoke()` — not on the wire payload, not
+on `OperationSpec`. The composing handler decides the child's policy. The
+`call.requested` payload explicitly does not carry an abort policy field.
+call-protocol.md updated to state this. ADR-016 Assumption 5 updated to be
+definitive. No longer a TBD.
 
 ---
 
-### S2. `build_root_context` "CallAdapter's Own Capabilities (If Any)" Hedge
+### S2. `build_root_context` "CallAdapter's Own Capabilities (If Any)" Hedge (RESOLVED)
 
 **Documents**: call-protocol.md (line 274)
 
-**Suggestion**: The "(if any)" hedge reflects the C3 ambiguity. Once C3/C4 is
-resolved, this comment should be made definitive — either "the handler's
-capabilities, looked up from the registry by operation name" (if option (a))
-or removed (if capabilities are closure-captured only). Leaving it hedged
-propagates the ambiguity into the one place an implementer looks for "how does
-the root context get built."
+**Resolution**: Resolved by ADR-022. The hedge is gone —
+`build_root_context` now reads `registration.capabilities.clone()` from the
+`HandlerRegistration` bundle looked up by operation name. The comment is
+definitive.
 
 ---
 
-### S3. Example Style: `Arc::new(handler)` Inline vs. Pre-wrapped
+### S3. Example Style: `Arc::new(handler)` Inline vs. Pre-wrapped (RESOLVED)
 
 **Documents**: operation-registry.md (lines 149, 264)
 
@@ -482,16 +478,25 @@ L264 uses `.with(spec, agent_handler)` where `agent_handler` was already
 `Arc::new`'d at L253. Both are valid; pick one style in the examples to avoid a
 moment of "wait, does `with` take an `Arc` or a `Handler`?" confusion. Trivial.
 
+**Resolution**: Resolved by ADR-022. The registration API changed to
+`with(HandlerRegistration)` / `with_local(...)` / `with_leaf(...)`, so the
+inline `Arc::new` vs pre-wrapped ambiguity no longer exists — the builder
+methods take the handler as part of the registration bundle.
+
 ---
 
 ### S4. `last_updated` Dates Scattered; README Index Older Than Sub-docs
 
 **Documents**: frontmatter across all docs
 
-**Suggestion**: The README index date (2026-06-19) is older than several
+**Suggestion**: The README index date (2026-06-19) was older than several
 sub-documents (core/README 06-21, call/operation-registry 06-22, etc.). If
 frontmatter dates are meant to mean something, bump README/overview when
 sub-docs change. Not worth a cycle on its own.
+
+**Resolution**: README and overview dates bumped during the ADR-022/023
+resolution pass. Ongoing date maintenance is cosmetic and can be addressed
+opportunistically.
 
 ---
 
@@ -499,23 +504,27 @@ sub-docs change. Not worth a cycle on its own.
 
 | Severity | Count | Status |
 |----------|-------|--------|
-| Critical | 5 | Needs resolution before implementation |
-| Warning | 4 | Should resolve — mostly quick spec clarifications |
-| Suggestion | 4 | Consider for clarity |
+| Critical | 5 | All resolved (C1–C4 via ADR-022, C5 via ADR-023) |
+| Warning | 4 | All resolved (W1–W4 fixed in spec edits) |
+| Suggestion | 4 | All resolved (S1 via ADR-016 Decision 6, S2 via ADR-022, S3 via ADR-022, S4 during ADR-022/023 pass) |
 
 ## Recommended Resolution Order
 
-1. **Critical findings C1–C4** — These are one tangle (the registration
-   bundle). Resolve together via ADR-022 (Handler Registration and Dispatch
-   Context) before any call-crate implementation begins. C1, C2, C3 are kept as
-   separate findings for traceability (each cites specific lines) but C4
-   synthesizes them: the registration bundle carries handler identity, scoped
-   env, and capabilities, and the dispatch path reads from it. This is the
-   highest-value work before implementation.
-2. **Critical finding C5** — Error schemas. Resolve via ADR-023 (Operation
-   Error Schemas) before implementing `from_openapi`/`to_openapi`, otherwise
-   the adapter contract in ADR-017 can't be faithfully implemented.
-3. **Warning findings W1–W4** — Small doc edits. W1 (stale ADR-020 path) and W4
-   (missing service.md method) should go in the same pass as the ADR-022 spec
-   updates since they touch the same files. W2 and W3 are one-line fixes.
-4. **Suggestions S1–S4** — Address opportunistically during implementation.
+All findings resolved. Resolution summary:
+
+1. **C1–C4** (registration bundle tangle) → ADR-022 (Handler Registration,
+   Provenance, and Composition Authority). Registration bundle carries
+   provenance, composition authority, scoped env, capabilities. Dispatch
+   path reads from bundle.
+2. **C5** (error schemas) → ADR-023 (Operation Error Schemas).
+   `error_schemas` on `OperationSpec`, `details` on `call.error`, adapter
+   fidelity for `from_openapi`/`to_openapi`.
+3. **W1–W4** (spec drift/missing methods) → Fixed in spec edits during the
+   ADR-022/023 resolution pass.
+4. **S1–S4** → S1 resolved by ADR-016 Decision 6 (abort policy on
+   `OperationContext`, not wire payload). S2, S3 resolved by ADR-022 (API
+   surface change eliminated the hedges/ambiguities). S4 resolved during
+   the ADR-022/023 pass (dates bumped).
+
+Review #001 is complete. All 5 critical, 4 warning, and 4 suggestion
+findings resolved.
