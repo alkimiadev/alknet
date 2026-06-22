@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-22-20
 ---
 
 # Alknet Overview
@@ -222,7 +222,7 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-01**: BiStream type definition (resolved: trait, Connection parameter — see ADR-007)
 - **OQ-02**: AuthContext resolution timing (resolved: hybrid — see ADR-004)
 - **OQ-03**: ALPN string naming convention (resolved: see ADR-006)
-- **OQ-04**: Dynamic handler registration at runtime vs static at startup (two-way door, defer to implementation)
+- **OQ-04**: Dynamic handler registration (resolved: static at startup — see ADR-010)
 - **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014, ADR-018, ADR-019)
 - **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
 - **OQ-20**: Encryption key derivation (resolved: HD derivation, not PBKDF2 — see ADR-020)
@@ -234,11 +234,11 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 | Failure | Behavior |
 |---------|----------|
 | ALPN negotiation fails (no intersection) | TLS handshake fails — correct behavior, the client and server have no protocol in common |
-| Handler `handle()` returns `HandlerError` | Endpoint logs the error, closes the QUIC stream. Other streams on the same connection are unaffected |
-| Handler panics | The handler's task is caught by tokio's panic handling. The stream is closed. Other streams and connections are unaffected |
-| `IdentityProvider` returns `None` | AuthContext is partial. If the handler requires authentication and cannot extract credentials from the stream, it closes the stream with an auth error |
+| Handler `handle()` returns `HandlerError` | Endpoint logs the error, closes the QUIC connection. Other connections are unaffected |
+| Handler panics | The handler's task is caught by tokio's panic handling. The connection is dropped. Other connections are unaffected |
+| `IdentityProvider` returns `None` | AuthContext is partial. If the handler requires authentication and cannot extract credentials from the stream, it closes the connection with an auth error |
 | Config reload fails | `ArcSwap<DynamicConfig>` keeps the previous valid config. Error is logged. No service interruption |
-| BiStream read/write error | QUIC stream-level error. The handler detects this as an I/O error and returns from `handle()`. The connection itself may remain open for other streams |
+| BiStream read/write error | QUIC stream-level error. The handler detects this as an I/O error and returns from `handle()`. The connection itself may remain open for other streams — but since each handler owns a full `Connection` (one ALPN per connection, ADR-006), a stream error typically causes the handler to return, closing the connection |
 
 ## What Stays from the Previous Implementation
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-22-19
 ---
 
 # alknet-vault
@@ -38,8 +38,10 @@ cross the network.
 | ADR | Title | Relevance |
 |-----|-------|-----------|
 | [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-vault's standalone position |
+| [006](../../decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention | ALPN versioning pattern for potential `alknet/vault/v2` |
 | [005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | VaultProtocol uses irpc directly |
 | [008](../../decisions/008-secret-service-integration.md) | Vault Integration Point | CLI-embedded, capability source |
+| [010](../../decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Ed25519 as default curve for TLS raw key identity |
 | [014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Capabilities carry vault-derived material |
 | [018](../../decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Zero alknet crate dependencies |
 | [019](../../decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer is the sole caller |
@@ -100,6 +102,21 @@ the full list.
   raw bytes in binary formats (postcard). The redaction is a defense-in-
   depth measure, not the primary control — the primary control is that
   `DerivedKey` never crosses the call protocol wire (ADR-014).
+
+## Known Source Drift
+
+The vault crate carries over source from the POC. The following items are
+known divergences between the current source and the spec. All must be
+corrected during implementation sync. This table is the single source of
+truth for drift tracking — if an item is fixed in source, update this table.
+
+| # | Item | Current source behavior | Target behavior (per spec) | Source location | Spec reference |
+|---|------|------------------------|-----------------------------|-----------------|----------------|
+| 1 | IV generation | `rand::random()` | `OsRng` (CSPRNG) | `encryption.rs` L133 | [encryption.md → Security Constraints](encryption.md#security-constraints), [service.md → Security Constraints](service.md#security-constraints) |
+| 2 | RwLock `unwrap()` | `unwrap()` on every `RwLock` acquisition (L142, 161, 182, 191, 196, 227, 264, 307, 340, 367) | `unwrap_or_else(\|e\| e.into_inner())` for poisoned lock recovery | `service.rs` (see line numbers) | [service.md → Security Constraints](service.md#security-constraints) |
+| 3 | `CURRENT_KEY_VERSION` | `1` (HD-derived, but v1 is reserved for TS PBKDF2 legacy per ADR-020) | `2` (HD-derived, per ADR-020) | `encryption.rs` | [encryption.md → Key Versioning](encryption.md#key-versioning), [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) |
+| 4 | `spawn()` return value | Returns a fresh, unspawned `VaultServiceActor` as the second tuple element (the spawned actor is consumed by `run`) | Either drop the second return value (return only `Client<VaultProtocol>`) or restructure so the returned actor is the one that was spawned | `service.rs` `VaultServiceActor::spawn()` | [service.md → Actor Dispatch](service.md#actor-dispatch) |
+| 5 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
 
 ## Public API
 

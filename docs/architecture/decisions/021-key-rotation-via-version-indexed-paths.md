@@ -123,9 +123,9 @@ impl VaultServiceHandle {
 ```
 
 `decrypt` now derives the key at the path **indicated by
-`encrypted.key_version`** — not always at `PATHS::ENCRYPTION`. This is
-the fix for the W1 drift issue from the vault review: the current source
-ignores `key_version` for key selection; the spec now makes it functional.
+`encrypted.key_version`** — not always at `PATHS::ENCRYPTION`. This corrects
+a source drift: the current source ignores `key_version` for key selection;
+the spec now makes it functional.
 
 ### 3. `rotate` method
 

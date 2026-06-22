@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-17
+last_updated: 2026-06-22-17
 ---
 
 # Endpoint
@@ -124,7 +124,7 @@ fn dispatch(connection) {
     match handlers.get(alpn) {
         Some(handler) => {
             let auth = AuthContext::from_connection(&connection);
-            let conn = Connection::new(connection);
+            let conn = Connection::from_quinn(connection); // or from_iroh
             tokio::spawn(async move {
                 if let Err(e) = handler.handle(conn, &auth).await {
                     // log error, connection closes

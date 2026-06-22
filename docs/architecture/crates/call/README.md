@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22
+last_updated: 2026-06-22-22
 ---
 
 # alknet-call
@@ -21,6 +21,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [001](../../decisions/001-alpn-protocol-dispatch.md) | ALPN-Based Protocol Dispatch | CallAdapter registers on ALPN `alknet/call` |
 | [002](../../decisions/002-protocol-handler-trait.md) | ProtocolHandler Trait | CallAdapter implements ProtocolHandler |
 | [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-call depends on alknet-core and irpc |
+| [013](../../decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Adapter traits defined in Rust; TS is reference/browser adaptation |
 | [004](../../decisions/004-auth-as-shared-core.md) | Auth as Shared Core | AuthContext passed to call handlers |
 | [005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | irpc provides framing and service dispatch |
 | [006](../../decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention | `alknet/call` ALPN, one ALPN per connection |

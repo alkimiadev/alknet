@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-22-20
 ---
 
 # Alknet Architecture
@@ -56,8 +56,8 @@ last_updated: 2026-06-20
 | [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | Accepted |
 | [020](decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | Accepted |
 | [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Accepted |
-| [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Proposed |
-| [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Proposed |
+| [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Accepted |
+| [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Accepted |
 
 ## Open Questions
 

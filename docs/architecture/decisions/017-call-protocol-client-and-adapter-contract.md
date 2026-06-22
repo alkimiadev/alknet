@@ -113,10 +113,11 @@ pub async fn from_call(
 The adapter:
 1. Calls `services/list` on the remote node → gets the list of `External`
    operations
-2. Calls `services/schema` for each → gets the input/output JSON Schemas
+2. Calls `services/schema` for each → gets the input/output JSON Schemas and
+   declared error_schemas (ADR-023)
 3. For each discovered operation, constructs an `(OperationSpec, Handler)` pair:
-   - The spec mirrors the remote operation's name, namespace, type, schemas,
-     and access control
+   - The spec mirrors the remote operation's name, namespace, type, schemas
+     (input, output, and error_schemas — ADR-023), and access control
    - The handler sends `call.requested` through the `CallConnection` and awaits
      `call.responded` (or streams for subscriptions)
 4. The caller registers these pairs in their local registry
@@ -272,8 +273,8 @@ same as `from_openapi` receives HTTP credentials.
    remote call failures are handled the same as local handler failures.
 
 4. **`from_call`-registered operations mirror the remote spec.** The imported
-   `OperationSpec` has the same name, namespace, type, schemas, and access
-   control as the remote operation. If the remote operation changes (new
+   `OperationSpec` has the same name, namespace, type, schemas (input, output,
+   and error_schemas per ADR-023), and access control as the remote operation. If the remote operation changes (new
    schema, renamed), the imported spec is stale until re-import. The
    assumption is that re-import happens on reconnection or is triggered
    explicitly. Hot-swapping imported specs is a two-way door.

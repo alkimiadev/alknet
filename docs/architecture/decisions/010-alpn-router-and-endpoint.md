@@ -114,7 +114,7 @@ fn dispatch(connection) {
     match handler {
         Some(h) => {
             auth = AuthContext::from_connection(&connection)
-            conn = Connection::new(connection)
+            conn = Connection::from_quinn(connection) // or from_iroh
             tokio::spawn(h.handle(conn, &auth))
         }
         None => connection.close()

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-19
+last_updated: 2026-06-22-19
 ---
 
 # Mnemonic and Key Derivation
@@ -201,6 +201,7 @@ Helper functions construct parameterized paths:
 ```rust
 pub fn device_path(index: u32) -> String;           // m/74'/0'/0'/{index}'
 pub fn site_password_path(site_hash: &str) -> String; // m/74'/1'/0'/{site_hash}'
+pub fn encryption_path_for_version(version: u32) -> String; // m/74'/2'/0'/{version-2}'
 ```
 
 ### Path semantics
@@ -213,14 +214,6 @@ pub fn site_password_path(site_hash: &str) -> String; // m/74'/1'/0'/{site_hash}
 | `m/74'/1'/0'/{hash}'` | Site-specific deterministic password | Ed25519 bytes | Per-site passwords (not cached) |
 | `m/74'/2'/0'/0'` | Encryption key for external credentials | AES-256-GCM | Credential encryption (v2, see [encryption.md](encryption.md)) |
 | `m/44'/60'/0'/0/0` | Ethereum signing key | secp256k1 | Ethereum signing (feature-gated) |
-
-Helper functions construct parameterized paths:
-
-```rust
-pub fn device_path(index: u32) -> String;           // m/74'/0'/0'/{index}'
-pub fn site_password_path(site_hash: &str) -> String; // m/74'/1'/0'/{site_hash}'
-pub fn encryption_path_for_version(version: u32) -> String; // m/74'/2'/0'/{version-2}'
-```
 
 `encryption_path_for_version` maps a key version to its derivation path
 (ADR-021). v2 (current) maps to `m/74'/2'/0'/0'` (which is `PATHS::ENCRYPTION`);

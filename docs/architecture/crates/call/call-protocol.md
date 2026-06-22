@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22
+last_updated: 2026-06-22-22
 ---
 
 # Call Protocol
@@ -104,6 +104,10 @@ Five event types carry request/response and subscription semantics:
 - **subscribe()**: Sends `call.requested`, yields each `call.responded` until `call.completed` or `call.aborted`
 
 The `id` field carries the `requestId` for correlation.
+
+`call.completed` is sent only for subscriptions. A plain `call()` (request/response)
+is complete after its single `call.responded`; no `call.completed` follows. The
+`PendingRequestMap` entry for a `Call` is deleted on the first `call.responded`.
 
 ### `call.requested` Payload
 
@@ -297,6 +301,7 @@ fn build_root_context(
         metadata: HashMap::new(),        // fresh per request
         env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),  // from the bundle, empty for leaves
+        abort_policy: AbortPolicy::default(),  // abort-dependents (ADR-016 Decision 6)
         internal: false,                 // external call — ACL against caller identity
     }
 }

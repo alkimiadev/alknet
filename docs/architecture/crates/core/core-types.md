@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-16
+last_updated: 2026-06-22-16
 ---
 
 # Core Types
@@ -57,6 +57,14 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Construct from a quinn connection (feature-gated on quinn).
+    #[cfg(feature = "quinn")]
+    pub fn from_quinn(conn: quinn::Connection) -> Self;
+
+    /// Construct from an iroh connection (feature-gated on iroh).
+    #[cfg(feature = "iroh")]
+    pub fn from_iroh(conn: iroh::Connection) -> Self;
+
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
     pub fn remote_alpn(&self) -> &[u8];
@@ -110,7 +118,7 @@ impl AsyncRead for RecvStream { ... }
 - `RecvStream` implements `AsyncRead`. Read bytes from the peer.
 - These are concrete wrapper types that use internal enum dispatch to delegate to the appropriate QUIC stream type (quinn or iroh) in production, and to test mocks in tests.
 
-Since the endpoint supports both quinn and iroh connection sources (ADR-010), streams may come from either. `Connection::new()` wraps the appropriate stream source based on where the connection came from.
+Since the endpoint supports both quinn and iroh connection sources (ADR-010), streams may come from either. `Connection::from_quinn()` / `Connection::from_iroh()` wrap the appropriate stream source based on where the connection came from.
 
 ## StreamError
 
@@ -137,6 +145,39 @@ When a handler encounters a `StreamError` and needs to return from `handle()`, i
 | `Internal(e)` | `StreamError(e)` | Underlying I/O error passes through |
 
 Handlers that manage multiple streams (SSH, call) may catch `StreamError::StreamClosed` per-stream and continue serving other streams on the same connection — only `ConnectionClosed` forces `handle()` to return.
+
+The mapping is provided as a `From` impl so handlers can use the `?` operator:
+
+```rust
+impl From<StreamError> for HandlerError {
+    fn from(e: StreamError) -> Self {
+        match e {
+            StreamError::ConnectionClosed => HandlerError::ConnectionClosed,
+            StreamError::StreamClosed => {
+                HandlerError::StreamError(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "stream closed",
+                ))
+            }
+            StreamError::Timeout => {
+                HandlerError::StreamError(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "stream timed out",
+                ))
+            }
+            StreamError::Internal(e) => HandlerError::StreamError(e),
+        }
+    }
+}
+```
+
+This `From` impl is the canonical conversion — handler examples that use
+`.await?` on `accept_bi()` / `open_bi()` rely on it. The `StreamError` →
+`HandlerError::StreamError(io::Error)` mapping is lossy by design: the
+distinction between stream-level and connection-level errors is preserved
+in `StreamError`, but once a handler propagates via `HandlerError`, the
+endpoint treats all variants as "close the connection" (one-ALPN-per-
+connection, ADR-006).
 
 ## Design Decisions
 

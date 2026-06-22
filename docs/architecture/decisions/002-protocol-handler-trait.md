@@ -16,19 +16,27 @@ iroh's `ProtocolHandler` trait demonstrates this: it takes a bidirectional QUIC 
 
 A single `ProtocolHandler` trait replaces both `StreamInterface` and `MessageInterface`:
 
+> **Note**: The signature below was revised by ADR-007. The `handle()` method
+> now receives a `Connection` (not a `BiStream`) — see ADR-007 for the
+> current authoritative signature. The original signature is retained here
+> for historical context.
+
 ```rust
 #[async_trait]
 pub trait ProtocolHandler: Send + Sync + 'static {
     /// The ALPN string this handler claims (e.g. b"alknet/ssh")
     fn alpn(&self) -> &'static [u8];
 
-    /// Handle an incoming bidirectional QUIC stream
-    async fn handle(&self, stream: BiStream, auth: &AuthContext) -> Result<(), HandlerError>;
+    /// Handle an incoming connection (revised by ADR-007 to receive
+    /// `Connection` instead of `BiStream`)
+    async fn handle(&self, connection: Connection, auth: &AuthContext) -> Result<(), HandlerError>;
 }
 ```
 
 - `alpn()` returns a static byte string — the handler's ALPN identifier
-- `handle()` receives a `BiStream` (a joined `(SendStream, RecvStream)` implementing `AsyncRead + AsyncWrite`) and an `AuthContext` carrying the authenticated identity, and returns `HandlerError` on failure
+- `handle()` receives a `Connection` (revised by ADR-007 from the original
+  `BiStream`) and an `AuthContext` carrying the authenticated identity, and
+  returns `HandlerError` on failure
 - Every handler manages its own wire format — no shared framing, no StreamInterface/MessageInterface split
 - The `ListenerConfig` enum is eliminated — ALPN advertisement configuration replaces it
 

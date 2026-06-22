@@ -131,7 +131,7 @@ abort — the handler that composes the child knows that, not the wire caller.
 Putting the policy on the wire payload would give the wire caller control
 over internal composition behavior it can't see.
 
-**Why not per-operation declaration**: ADR-016 Assumption 5 says the policy
+**Why not per-operation declaration**: Assumption 5 says the policy
 is per-call, not per-operation. The same operation may need
 `abort-dependents` in one composition context and `continue-running` in
 another. A static property on `OperationSpec` can't express that.

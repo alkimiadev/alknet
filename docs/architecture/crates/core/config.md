@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-22-21
 ---
 
 # Configuration
@@ -115,19 +115,17 @@ pub struct AuthPolicy {
     /// Stored as strings to avoid russh dependency in core.
     pub authorized_fingerprints: HashSet<String>,
 
-    /// Certificate authorities for certificate-based auth.
-    /// The exact structure is TBD — it will be defined when alknet-ssh
-    /// is implemented. For now, this is a placeholder that reserves
-    /// the field. alknet-ssh will define `CertAuthorityEntry` with
-    /// the necessary fields (public key, principals, options).
-    pub cert_authorities: Vec<CertAuthorityEntry>,
-
     /// API keys for token-based auth.
     pub api_keys: Vec<ApiKeyEntry>,
 }
 ```
 
-`CertAuthorityEntry` is a placeholder type. Its fields will be defined when alknet-ssh is implemented and the certificate authority validation requirements are clear. For v1, `cert_authorities` will be an empty vector.
+Certificate authority entries for cert-based auth will be added when
+alknet-ssh is implemented. The `cert_authorities` field is omitted from v1
+to avoid referencing an undefined type. Adding it back is additive (a new
+field on `AuthPolicy` is non-breaking for existing config files that don't
+use it). alknet-ssh will define `CertAuthorityEntry` with the necessary
+fields (public key, principals, options).
 
 This replaces the reference implementation's `AuthPolicy` which depended on `russh::keys::PublicKey`. The new version stores fingerprints as strings, not russh types. This removes the russh dependency from alknet-core.
 
@@ -217,7 +215,7 @@ Simplified from the reference implementation. Removes proxy-specific errors (now
 
 | Aspect | Reference | New Model |
 |--------|-----------|-----------|
-| StaticConfig fields | SSH host key, stealth, transport_mode, listeners, proxy | listen_addr, TLS cert/key, drain_timeout, rate limits |
+| StaticConfig fields | SSH host key, stealth, transport_mode, listeners, proxy | listen_addr, TLS cert/key, drain_timeout |
 | DynamicConfig.auth | `HashSet<PublicKey>` (russh types) | `HashSet<String>` (fingerprint strings) |
 | ListenerConfig | Enum with Stream/Http/Dns variants | Eliminated — single endpoint, ALPN dispatch |
 | TransportMode | Tcp/Tls/Iroh | Eliminated — always QUIC+TLS |

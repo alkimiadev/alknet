@@ -12,6 +12,13 @@ The ALPN dispatch model simplifies this: every handler receives the same `AuthCo
 
 ## Decision
 
+> **Note**: The original text of this decision described the handler
+> "enriching or replacing" the `AuthContext`. This was superseded by
+> ADR-011, which made `AuthContext` immutable in `handle()` (passed as
+> `&AuthContext`). Handlers resolve identity into a local variable and
+> store it on `Connection` via `set_identity()`. The text below has been
+> updated to reflect the ADR-011 model.
+
 Authentication and identity resolution live in `alknet-core` as shared infrastructure. Each handler presents credentials differently, but all resolve through the same `IdentityProvider`:
 
 ```rust
@@ -36,7 +43,7 @@ Auth resolution is **hybrid** — the endpoint resolves what it can, and handler
 
 1. **Endpoint-level resolution** (before `handle()` is called): If the TLS handshake provides a client certificate, the endpoint resolves the fingerprint to an `Identity` and passes it in `AuthContext`. This is the case for SSH (where the key exchange happens at the protocol level, but the TLS layer may also provide information).
 
-2. **Handler-level resolution** (inside `handle()`): For protocols that carry credentials in application frames (AuthToken in the first call frame, Bearer header in HTTP), the handler extracts the credential from the stream and calls `IdentityProvider` to resolve it. The handler then enriches or replaces the partial `AuthContext` with the fully resolved `Identity`.
+2. **Handler-level resolution** (inside `handle()`): For protocols that carry credentials in application frames (AuthToken in the first call frame, Bearer header in HTTP), the handler extracts the credential from the stream and calls `IdentityProvider` to resolve it. The handler then resolves the `Identity` into a local variable and stores it on the `Connection` via `set_identity()` for observability — it does **not** mutate the `AuthContext` (which is passed as `&AuthContext`, an immutable reference — see ADR-011). The per-request identity (for ACL) is resolved separately by the `CallAdapter` at `call.requested` time.
 
 The `AuthContext` passed to `handle()` may be partial — containing only transport-level information if no TLS client certificate was provided. Handlers must not assume `AuthContext` contains a fully resolved `Identity`. Each handler knows its own credential extraction protocol and is responsible for completing authentication.
 

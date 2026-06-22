@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -120,7 +120,8 @@ pub enum OperationProvenance {
     FromOpenAPI,
     /// MCP forwarding stub (from_mcp), leaf — cannot compose.
     FromMCP,
-    /// QUIC forwarding stub (from_call), leaf locally — cannot compose.
+    /// QUIC forwarding stub (from_call). Leaf in the local registry —
+    /// forwards calls to a remote node; cannot compose locally.
     FromCall,
     /// JSON Schema definition (from_jsonschema), no handler — schema only.
     FromJsonSchema,
@@ -134,7 +135,7 @@ pub enum OperationProvenance {
 | `Local` | Yes | Yes — scopes set by assembly layer | External or Internal (assembly declares) | Trusted code |
 | `FromOpenAPI` | No (leaf) | No | Internal | HTTP endpoint trusted; handler is a forwarding stub |
 | `FromMCP` | No (leaf) | No | Internal | MCP server trusted; handler is a forwarding stub |
-| `FromCall` | No (leaf locally) | No | Internal | Remote node trusted; handler is a forwarding stub |
+| `FromCall` | No (leaf in local registry) | No | Internal | Remote node trusted; handler is a forwarding stub |
 | `FromJsonSchema` | N/A (no handler) | No | N/A | N/A |
 | `Session` | Yes (within sandbox) | Yes — scopes set by assembly layer at sandbox creation | Internal always | Untrusted code in sandbox |
 
@@ -178,6 +179,24 @@ pub struct CompositionAuthority {
     /// handler can reach in composition.
     pub resources: HashMap<String, Vec<String>>,
 }
+
+impl CompositionAuthority {
+    /// `None` — for leaves that don't compose (convenience for
+    /// `composition_authority: CompositionAuthority::none()`).
+    pub fn none() -> Option<Self> { None }
+
+    /// Construct a composition authority with the given label and scopes.
+    pub fn new(
+        label: &str,
+        scopes: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            label: label.to_string(),
+            scopes: scopes.into_iter().collect(),
+            resources: HashMap::new(),
+        }
+    }
+}
 ```
 
 This supersedes ADR-015's Assumption 6. ADR-015's core decision (authority
@@ -211,6 +230,23 @@ pub struct ScopedOperationEnv {
     /// returns NOT_FOUND. This is the reachability boundary — it bounds the
     /// parameterized-dispatch attack surface.
     pub allowed_operations: HashSet<String>,
+}
+
+impl ScopedOperationEnv {
+    /// Empty set — for leaves that don't compose (no reachable operations).
+    pub fn empty() -> Self {
+        Self { allowed_operations: HashSet::new() }
+    }
+
+    /// Construct from an iterable of operation names.
+    pub fn new(ops: impl IntoIterator<Item = String>) -> Self {
+        Self { allowed_operations: ops.into_iter().collect() }
+    }
+
+    /// Returns true if the given operation name is reachable.
+    pub fn allows(&self, name: &str) -> bool {
+        self.allowed_operations.contains(name)
+    }
 }
 ```
 

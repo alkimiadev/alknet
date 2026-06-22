@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22
+last_updated: 2026-06-22-22
 ---
 
 # Operation Registry
@@ -116,10 +116,34 @@ pub struct OperationContext {
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
+    /// Abort policy for this call's descendants (ADR-016 Decision 6).
+    /// Default `AbortDependents` — aborting this request aborts all
+    /// non-terminal descendants. `ContinueRunning` is an opt-in for
+    /// long-running work that should survive a parent's abort. Set by the
+    /// composing handler via `OperationEnv::invoke()` (or
+    /// `invoke_with_policy()`), not by the wire caller.
+    pub abort_policy: AbortPolicy,
     /// Composition-origin flag. Set by `OperationEnv::invoke()` (true) or the
     /// `CallAdapter` dispatch path (false) — never by handlers. Module-private
     /// for writes; read via `is_internal()`. See ADR-015.
     pub(crate) internal: bool,
+}
+
+/// Abort cascade policy for a call's descendants (ADR-016).
+///
+/// `AbortDependents` (default): aborting this call cascades to all
+/// non-terminal descendants.
+///
+/// `ContinueRunning` (opt-in): descendants that have already started
+/// continue to completion; descendants that haven't started are aborted;
+/// no new descendants start.
+pub enum AbortPolicy {
+    AbortDependents,
+    ContinueRunning,
+}
+
+impl Default for AbortPolicy {
+    fn default() -> Self { Self::AbortDependents }
 }
 
 impl OperationContext {
@@ -195,7 +219,45 @@ The CLI binary (or assembly layer) constructs the registry and passes it to the 
 
 ### OperationEnv
 
-`OperationEnv` is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
+The `OperationEnv` trait is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
+
+```rust
+/// The composition dispatch trait. A handler composes child operations
+/// through its `OperationContext.env` (which implements this trait).
+///
+/// This must remain a trait, not a concrete type — session-scoped
+/// registries (OQ-19) depend on wrapping the global env via trait
+/// layering. Making `OperationEnv` concrete or hardcoding the global
+/// registry into the dispatch path would close the session-overlay
+/// pattern.
+#[async_trait]
+pub trait OperationEnv: Send + Sync {
+    /// Compose a child operation. The child's `OperationContext` is
+    /// constructed with `internal: true`, inheriting the parent's
+    /// composition authority as the child's caller identity. The abort
+    /// policy defaults to the parent's (ADR-016 Decision 6).
+    async fn invoke(
+        &self,
+        namespace: &str,
+        operation: &str,
+        input: Value,
+        parent: &OperationContext,
+    ) -> ResponseEnvelope;
+
+    /// Compose a child with an explicit abort policy (ADR-016 Decision 6).
+    /// Use `AbortPolicy::ContinueRunning` for long-running work that
+    /// should survive a parent's abort. The default `invoke()` inherits
+    /// the parent's policy; this method overrides it for this child.
+    async fn invoke_with_policy(
+        &self,
+        namespace: &str,
+        operation: &str,
+        input: Value,
+        parent: &OperationContext,
+        policy: AbortPolicy,
+    ) -> ResponseEnvelope;
+}
+```
 
 The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.handler_identity` as the caller identity, and is marked `internal: true`.
 
@@ -242,6 +304,9 @@ impl OperationEnv for LocalOperationEnv {
             metadata: HashMap::new(),                         // Fresh — does NOT propagate parent metadata (ADR-014)
             env: registration.scoped_env.clone()
                 .unwrap_or_else(ScopedOperationEnv::empty),  // Child's own scoped env (empty for leaves)
+            // Abort policy: inherit the parent's policy by default (ADR-016).
+            // The parent handler can override via `invoke_with_policy()`.
+            abort_policy: parent.abort_policy.clone(),
             internal: true,                                   // Nested calls use handler authority
         };
         self.registry.invoke(&name, input, context).await
@@ -283,7 +348,14 @@ These are read-only — no admin operations are exposed through the call protoco
 }
 ```
 
-`services/schema` accepts `{ "name": "fs/readFile" }` and returns the full `OperationSpec` including input/output JSON Schemas and declared `error_schemas` (ADR-023). This enables client code generation: a client reading the schema can produce typed error enums instead of generic error handling.
+`services/schema` accepts `{ "name": "fs/readFile" }` (no leading slash —
+registry form, same as `OperationSpec.name`) and returns the full
+`OperationSpec` including input/output JSON Schemas and declared
+`error_schemas` (ADR-023). The `CallAdapter` normalizes the leading slash
+from wire `operationId`s before lookup, so `services/schema` accepts both
+`fs/readFile` and `/fs/readFile`. This enables client code generation: a
+client reading the schema can produce typed error enums instead of generic
+error handling.
 
 ### irpc Integration
 

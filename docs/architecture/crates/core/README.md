@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-22-21
 ---
 
 # alknet-core
@@ -29,6 +29,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | [009](../../decisions/009-one-way-door-decision-framework.md) | One-Way Door Framework | Decision classification |
 | [010](../../decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Endpoint, HandlerRegistry, accept loop |
 | [011](../../decisions/011-authcontext-structure.md) | AuthContext Structure | AuthContext fields and resolution flow |
+| [015](../../decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | Per-request identity on OperationContext; admin scope for config reload |
 
 ## Relevant Open Questions
 

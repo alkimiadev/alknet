@@ -113,15 +113,23 @@ enumerate the internal call tree.
 
 ### 3. Handler identity is carried on OperationContext
 
-`OperationContext` carries both the caller's identity (who invoked me) and the
-handler's identity (who am I acting as):
+> **Note**: This decision's `handler_identity: Option<Identity>` type was
+> superseded by ADR-022, which replaced `Identity` with
+> `CompositionAuthority` — a declared authority bundle that is not a peer
+> identity and is not resolvable through `IdentityProvider`. The core
+> decision (authority switch, not ACL skip) holds unchanged. See ADR-022
+> Decision 2 for the current type.
+
+`OperationContext` carries both the caller's identity (who invoked me) and
+the handler's identity (who am I acting as):
 
 ```rust
 pub struct OperationContext {
     pub request_id: String,
     pub parent_request_id: Option<String>,
     pub identity: Option<Identity>,            // Caller's identity (inbound)
-    pub handler_identity: Option<Identity>,    // Handler's identity (composition authority)
+    // Type changed to Option<CompositionAuthority> by ADR-022:
+    pub handler_identity: Option<CompositionAuthority>,  // Handler's composition authority
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub env: OperationEnv,
@@ -273,11 +281,14 @@ Principle of least privilege.
    is more important than debuggability from the wire.
 
 6. **The handler identity is a full `Identity` (with scopes), not a special
-   principal type.** This reuses the existing `Identity` type and `IdentityProvider`
-   infrastructure (ADR-004). If handler identities need different resolution
-   semantics (e.g., not resolvable through `IdentityProvider`), a separate type
-   may be needed. The assumption is that the existing identity infrastructure
-   suffices.
+   principal type.** ~~This reuses the existing `Identity` type and
+   `IdentityProvider` infrastructure (ADR-004).~~ **Superseded by ADR-022
+   Decision 2**: composition authority is a declared authority bundle
+   (`CompositionAuthority`), not a peer `Identity`. It is not resolvable
+   through `IdentityProvider` and does not represent an inbound caller. The
+   distinction is necessary because a handler is not a network peer — its
+   authority is declared by the assembly layer at registration, not resolved
+   from credentials.
 
 ## References
 
