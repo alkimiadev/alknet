@@ -25,7 +25,7 @@ The workspace decomposes into the following crates:
 | Crate | Responsibility | Depends on |
 |-------|---------------|------------|
 | `alknet-core` | ProtocolHandler trait, ALPN router, endpoint, BiStream, AuthContext, IdentityProvider, config, ArcSwap dynamic config | tokio, quinn, rustls, irpc, iroh (feature-gated, added by ADR-010) |
-| `alknet-vault` | Local key vault: BIP39/SLIP-0010/AES-GCM key derivation, encryption, VaultProtocol dispatch | (standalone, no alknet-core) |
+| `alknet-vault` | Local key vault: BIP39/SLIP-0010/AES-GCM key derivation, encryption | (standalone, no alknet-core) |
 | `alknet-ssh` | SshAdapter (russh, SOCKS5, port forwarding) | alknet-core, russh |
 | `alknet-call` | CallAdapter (JSON-RPC via irpc, operation registry, pub/sub, access control, call protocol client, adapter traits) | alknet-core, irpc |
 | `alknet-agent` | Agent service: LLM execution loop (forked aisdk), tool dispatch via call protocol, provider key retrieval via vault | alknet-call |

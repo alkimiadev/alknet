@@ -267,37 +267,17 @@ These questions are acknowledged but not active. They will be promoted to open w
 ### OQ-21: Remote Vault Administration
 
 - **Origin**: [service.md](crates/vault/service.md), [protocol.md](crates/vault/protocol.md), ADR-019
-- **Status**: deferred
-- **Door type**: One-way (if implemented — wire format exposure), two-way (enabling is non-breaking)
+- **Status**: resolved
+- **Door type**: One-way (vault crate is local-only by construction)
 - **Priority**: medium
-- **Resolution**: The `VaultProtocol` is a remote-capable irpc service by construction — the `#[rpc_requests]` macro generates both `Service` (local) and `RemoteService` (remote) trait implementations. `DerivedKey`'s dual serialization (JSON redacts private key for safety; postcard preserves bytes for remote dispatch) was designed for this. Enabling remote vault access is a server-setup change (register `IrohProtocol` with an ALPN), not a protocol change.
+- **Resolution**: Remote vault access is **not a feature of the vault crate**. ADR-025 dropped irpc from the vault, making the vault local-only by construction — no `RemoteService` trait, no wire format for vault messages, no default-insecure remote handler. The vault's API is `VaultServiceHandle` (direct method calls), nothing else.
 
-  **What's already in place:**
-  - Protocol: `VaultProtocol` is already a `RemoteService`
-  - Serialization: `DerivedKey` redacts in JSON, preserves in postcard
-  - Actor: `VaultServiceActor` processes all message types, transport-agnostic
-  - Auth transport: irpc over iroh uses iroh's QUIC connections (NodeId auth, RFC 7250 raw keys)
+  If remote vault access is ever needed (e.g., the machine→worker pattern), it requires a **separate vault-server crate** that depends on both alknet-core (for `IdentityProvider`, scopes, auth-wrapping) and alknet-vault (for `VaultServiceHandle`). That crate would define its own threat model, access policy, operation filtering (Unlock/Lock local-only), and wire format — and requires its own ADR. This is a deliberate addition, not a flag flip on a default that was already loaded.
 
-  **What's not in place (the gap):**
-  - The `IrohProtocol` handler forwards all message types without auth checks
-  - Remote use needs: (1) NodeId allowlist, (2) message filtering (reject `Unlock`/`Lock` from remote callers), (3) forwarding to the actor
-  - This auth-wrapping handler cannot live in the vault crate (standalone, ADR-018) — it needs alknet-core's auth model (`IdentityProvider`, scopes). It lives in the assembly layer or a dedicated vault-server crate that depends on both alknet-core and alknet-vault.
+  The pre-ADR-025 deferral framed remote access as "non-breaking" (the wire format was additive). That framing was misleading: once workers build dependencies on the remote vault API, disabling it breaks them — the door is operationally one-way even if the wire format is additive. ADR-025 inverts the default: the vault is local-only by construction, and remote access requires building something new, not removing a default.
 
-  **Operation access policy:**
-  - `Unlock` and `Lock` are local-only (mnemonic and lock control must not be remotely accessible)
-  - All other operations (`DeriveEd25519`, `DeriveEncryptionKey`, `DeriveEthereumKey`, `DerivePassword`, `Encrypt`, `Decrypt`) are remote-capable
-  - The policy is documented in the vault spec; the assembly-layer listener enforces it
-
-  **Use case:** machine node (head, holds mnemonic) exposes restricted vault API to workers (ephemeral, no mnemonic) over irpc/iroh. Per-machine-node vaults, not shared — compartmentalization limits blast radius.
-
-  **What's breaking vs. non-breaking:**
-  - Enabling remote access: non-breaking (server-setup change)
-  - Restricting operations / adding auth: non-breaking (handler policy)
-  - Adding new `VaultProtocol` variants: wire break (inherent to irpc; manageable via ALPN versioning `alknet/vault/v2`)
-  - Changing `DerivedKey` serialization: non-breaking (dual serialization already in place)
-
-  **Why deferred:** the capability is available and the use cases are clear (machine→worker credential access), but no current deployment needs it. The door is left open intentionally — irpc's remote support was chosen for this reason. When a use case materializes, the assembly-layer auth-wrapping handler is the implementation task, not a protocol change. The vault spec documents the policy (which operations are remote-capable) so the future implementer has clear guidance.
-- **Cross-references**: ADR-005, ADR-008, ADR-014, ADR-018, ADR-019, [protocol.md](crates/vault/protocol.md), [service.md](crates/vault/service.md)
+  Per-node vaults are the recommended pattern for multi-node deployments: each node has its own vault and mnemonic; credentials are encrypted *for* the receiving node's public key, not decrypted centrally. This is end-to-end encryption between nodes, matching ADR-008's "capability source" model.
+- **Cross-references**: ADR-005, ADR-008, ADR-014, ADR-018, ADR-019, ADR-025, [protocol.md](crates/vault/protocol.md), [service.md](crates/vault/service.md)
 
 ### OQ-22: Key Rotation Mechanism
 

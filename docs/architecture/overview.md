@@ -106,7 +106,7 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 
 > **Note**: `alknet/agent` is not in the ALPN registry. The agent service is a future consumer that builds on top of `alknet-call` (it depends on `alknet-call`, not `alknet-core` directly — see ADR-003). It uses the call protocol for tool dispatch and exposes agent operations (e.g., `/agent/chat`) as call-protocol operations in the `OperationRegistry`, not as a separate ALPN. The agent is a mental model that informed the core architecture (capabilities, scoped env, abort cascade) but is not specced yet — its design will change as it's built out against the implemented core crates.
 
-> **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency. The CLI binary embeds it and accesses it at the assembly layer — unlocking the vault at startup, deriving and decrypting credentials, and injecting them into handler capabilities. The vault is not exposed over the call protocol. No vault operations are registered in the operation registry. See ADR-008 and ADR-014.
+> **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency and no remote dispatch capability (ADR-025). The CLI binary embeds it and accesses it at the assembly layer — unlocking the vault at startup, deriving and decrypting credentials, and injecting them into handler capabilities. The vault is not exposed over the call protocol. No vault operations are registered in the operation registry. See ADR-008, ADR-014, and ADR-025.
 
 ## Authentication
 
@@ -215,6 +215,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point |
+| [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Dropped irpc from vault; direct method calls; local-only by construction |
 
 ## Open Questions
 
@@ -227,7 +228,7 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014, ADR-018, ADR-019)
 - **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
 - **OQ-20**: Encryption key derivation (resolved: HD derivation, not PBKDF2 — see ADR-020)
-- **OQ-21**: Remote vault access (deferred: protocol is remote-capable; enabling = server-setup + auth-wrapping handler; Unlock/Lock local-only — see [protocol.md](crates/vault/protocol.md#remote-capability))
+- **OQ-21**: Remote vault access (resolved: vault is local-only by construction — see ADR-025; remote access requires a separate vault-server crate with its own ADR)
 - **OQ-22**: Key rotation (resolved: version-indexed paths, `rotate` method — see ADR-021)
 
 ## Failure Modes

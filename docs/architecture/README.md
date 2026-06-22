@@ -7,9 +7,9 @@ last_updated: 2026-06-22-20
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists) and research/reference material. Foundational ADRs (001–024) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), HD derivation for encryption keys (ADR-020), key rotation via version-indexed paths (ADR-021), handler registration, provenance, and composition authority (ADR-022), operation error schemas (ADR-023), and operation registry layering (ADR-024). ADR-024 resolves the registry mutability question that ADR-022/017 surfaced (`from_call` imports require a runtime-mutable home) and the `OperationContext.env` type identity crisis (review #002 C6), by layering the registry by trust boundary (curated static + session/connection dynamic overlays) and making `OperationEnv` a trait-object integration point. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists, pending ADR-025 refactor to drop irpc) and research/reference material. Foundational ADRs (001–025) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), HD derivation for encryption keys (ADR-020), key rotation via version-indexed paths (ADR-021), handler registration, provenance, and composition authority (ADR-022), operation error schemas (ADR-023), operation registry layering (ADR-024), and vault local-only dispatch (ADR-025). ADR-024 resolves the registry mutability question (`from_call` imports require a runtime-mutable home) and the `OperationContext.env` type identity crisis (review #002 C6), by layering the registry by trust boundary and making `OperationEnv` a trait-object integration point. ADR-025 drops irpc from the vault, making it local-only by construction (inverting the security default from remote-capable-by-default to local-only-by-default) and resolving OQ-21, C7, C8, and W8. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
 
-**Next step**: Continue working through review #002's remaining Tier 4 findings (vault security decisions, guard clauses, ADR-writing exercises, smaller spec decisions). All open questions for the core and call crates are resolved; the vault crate has one deferred OQ (OQ-21, remote vault administration) that does not block implementation.
+**Next step**: Continue working through review #002's remaining Tier 4 findings (vault security decisions, guard clauses, ADR-writing exercises, smaller spec decisions). All open questions for the core and call crates are resolved; the vault crate's OQ-21 (remote vault) is now resolved (ADR-025 — vault is local-only by construction).
 
 ## Architecture Documents
 
@@ -29,7 +29,7 @@ last_updated: 2026-06-22-20
 | [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | draft | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
 | [crates/vault/encryption.md](crates/vault/encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
 | [crates/vault/service.md](crates/vault/service.md) | draft | VaultServiceHandle lifecycle, actor dispatch, cache, error model |
-| [crates/vault/protocol.md](crates/vault/protocol.md) | draft | VaultProtocol irpc messages, DerivedKey redaction, serialization |
+| [crates/vault/protocol.md](crates/vault/protocol.md) | draft | DerivedKey redaction, KeyType, serialization behavior |
 
 ## ADR Table
 
@@ -59,6 +59,7 @@ last_updated: 2026-06-22-20
 | [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Accepted |
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Accepted |
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Accepted |
+| [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Accepted |
 
 ## Open Questions
 
@@ -85,6 +86,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
 - **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays as well.
 - **OQ-20**: Encryption key derivation — HD derivation from BIP39 seed, not PBKDF2; salt field unused in v2 (wire-format compat) (ADR-020)
+- **OQ-21**: Remote vault access — resolved (ADR-025): vault is local-only by construction; remote access requires a separate vault-server crate with its own ADR
 - **OQ-22**: Key rotation — version-indexed derivation paths; `rotate` method re-encrypts (ADR-021)
 - **OQ-23**: Handler identity registration path — registration bundle with provenance, composition authority, scoped env, capabilities (ADR-022)
 - **OQ-24**: Operation error schemas — declared domain errors with typed `details` payload; adapter fidelity for `from_openapi`/`to_openapi` (ADR-023)
@@ -92,7 +94,6 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
 - **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
-- **OQ-21**: Remote vault access — protocol is remote-capable by construction (irpc `RemoteService`); enabling is a server-setup change with an auth-wrapping handler in the assembly layer; `Unlock`/`Lock` are local-only
 
 ## Document Lifecycle
 

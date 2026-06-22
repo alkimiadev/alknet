@@ -131,9 +131,13 @@ that door; it simply does not open it.
   assembly layer, not just registering an operation. This is a feature:
   it forces an explicit decision about what secret material a handler needs.
 - Remote vault administration (unlock a running node's vault over the
-  network) is not supported. If needed in the future, it requires a
-  separate, heavily restricted mechanism (admin scope, mTLS-only, never
-  expose the mnemonic over an unauthenticated channel) and its own ADR.
+  network) is not supported. The vault is local-only by construction
+  (ADR-025) — no remote dispatch capability exists in the vault crate. If
+  remote vault access is needed in the future, it requires a separate
+  vault-server crate that depends on both alknet-core (for auth) and
+  alknet-vault (for the handle), with a heavily restricted mechanism
+  (admin scope, mTLS-only, never expose the mnemonic over an
+  unauthenticated channel) and its own ADR.
 
 ## Assumptions
 

@@ -436,10 +436,9 @@ irpc and the operation registry serve different scopes:
 | Layer | Mechanism | Serialization | Scope |
 |-------|-----------|---------------|-------|
 | Call protocol (external) | `EventEnvelope` over QUIC streams | JSON | Cross-language, cross-node |
-| irpc services (internal) | `VaultProtocol` derive macro, `Service` trait | postcard (binary) | Rust-to-Rust, in-process or in-cluster |
-| Local dispatch (in-process) | Direct function call through `OperationRegistry` | None | Same process |
+| irpc services (internal) | `#[rpc_requests]` derive macro, `Service` trait | postcard (binary) | Rust-to-Rust, in-process or in-cluster |
 
-irpc services are an internal dispatch mechanism — they are not directly exposed on the call protocol. The vault's `VaultProtocol` uses irpc for in-process, type-safe dispatch via `VaultServiceHandle` (postcard serialization for in-cluster, direct calls for in-process). The vault is accessed by the assembly layer (CLI binary) at startup, not by handlers at call time. See ADR-008 and ADR-014.
+irpc services are an internal dispatch mechanism — they are not directly exposed on the call protocol. alknet-call itself uses irpc for its call-protocol framing (ADR-005); the vault no longer uses irpc (ADR-025 — direct method calls on `VaultServiceHandle`). The vault is accessed by the assembly layer (CLI binary) at startup, not by handlers at call time. See ADR-008 and ADR-014.
 
 If a handler internally uses an irpc-based service, the handler bridges the two: it receives JSON input from the call protocol, calls the irpc service in-process (postcard, type-safe), and serializes the result back to JSON for the call protocol response. This layering preserves irpc's type safety for internal calls while keeping the external interface cross-language.
 

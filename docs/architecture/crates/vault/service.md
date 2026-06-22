@@ -1,12 +1,13 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-22-25
 ---
 
 # Service
 
 The `VaultServiceHandle` runtime API: unlock/lock lifecycle, key
-derivation, encryption, caching, and the actor dispatch path.
+derivation, encryption, caching, and the direct method-call dispatch
+path.
 
 ## What
 
@@ -16,7 +17,9 @@ stateful runtime with a clear lifecycle. It holds the master seed in
 lifecycle, key derivation, and encryption/decryption.
 
 This is the API the assembly layer (CLI binary) calls. No other component
-calls these methods directly (ADR-019).
+calls these methods directly (ADR-019). The vault is local-only by
+construction (ADR-025) — direct method calls, no actor, no message enum,
+no remote dispatch.
 
 ## VaultServiceHandle
 
@@ -254,91 +257,54 @@ pub struct CacheConfig {
 bytes, not a keypair that's reused. Caching it would grow the cache with
 unique paths (one per site hash) for no reuse benefit.
 
-## Actor Dispatch
+## Dispatch
 
-The `VaultServiceActor` processes `VaultMessage` variants from an mpsc
-channel and dispatches to `VaultServiceHandle` methods. This is the irpc
-dispatch mechanism (ADR-005) — the in-process actor pattern that irpc
-services use.
+The vault uses **direct method calls** on `VaultServiceHandle` — no actor,
+no message enum, no channels, no serialization (ADR-025). The handle is
+`Arc<RwLock<VaultServiceInner>>` — clone it, share it, call methods
+directly. The RwLock provides concurrent reads (derive operations) and
+exclusive writes (unlock/lock).
 
-```rust
-pub struct VaultServiceActor {
-    handle: VaultServiceHandle,
-}
-
-impl VaultServiceActor {
-    pub fn new(handle: VaultServiceHandle) -> Self;
-    pub async fn run(mut self, mut rx: mpsc::Receiver<VaultMessage>);
-    pub fn spawn(handle: VaultServiceHandle) -> (Client<VaultProtocol>, VaultServiceActor);
-}
+```
+Assembly layer (CLI binary):
+  1. Create VaultServiceHandle
+  2. Unlock with mnemonic (local, from secure prompt or file)
+  3. Call derive/encrypt/decrypt methods directly
+  4. Extract bytes, construct alknet-core types at the assembly boundary
+  5. Inject into handler capabilities (ADR-014)
 ```
 
-- `run(rx)`: Message loop. Each `VaultMessage` variant is dispatched to the
-  corresponding handle method, and the response is sent through the oneshot
-  channel embedded in the message. Consumes `self`.
-- `spawn(handle)`: Spawn the actor as a `tokio::task` and return a
-  `Client<VaultProtocol>` for sending messages. **Source bug: the current
-  `spawn` implementation returns a fresh, unspawned `VaultServiceActor` as
-  the second tuple element (the spawned actor is consumed by `run`). The
-  returned actor has no channel and is non-functional. This should be
-  corrected during implementation sync — either drop the second return
-  value (return only `Client<VaultProtocol>`) or restructure the API so
-  the returned actor is the one that was spawned.**
+There is no `VaultProtocol` enum, no `VaultServiceActor`, no `Client<S>`,
+and no remote dispatch capability. The vault is local-only by
+construction (ADR-025). If remote vault access is ever needed, it requires
+a separate vault-server crate with its own ADR (OQ-021, ADR-025).
 
-The actor pattern is the irpc dispatch mechanism (ADR-005). For local
-in-process use, prefer `VaultServiceHandle` directly — no channel, no
-serialization. The actor exists for irpc service dispatch, which is an
-in-process pattern (the actor and the handle share state via `Arc`).
-
-### Dispatch paths
-
-| Path | Type | Serialization | Use case |
-|------|------|---------------|----------|
-| Direct (in-process) | `VaultServiceHandle` method calls | None | CLI binary at startup (the supported path) |
-| Actor (in-process) | `VaultMessage` over mpsc | None (channel) | irpc service dispatch (in-process) |
-
-Remote vault dispatch — where the vault is exposed over irpc/iroh to
-workers or other processes — is **deferred** (OQ-21). The `VaultProtocol`
-is already a `RemoteService` by construction (irpc's `#[rpc_requests]`
-generates it), and `DerivedKey`'s dual serialization was designed for this.
-Enabling remote access is a server-setup change (register `IrohProtocol`
-with an ALPN), not a protocol change.
-
-However, the `IrohProtocol` handler that irpc provides forwards all
-message types without auth checks. Remote use needs an **auth-wrapping
-handler** in the assembly layer (not the vault crate — the vault is
-standalone, ADR-018, and can't import alknet-core's auth model) that:
-1. Checks the caller's NodeId against an allowlist
-2. Filters `Unlock` and `Lock` messages from remote callers (local-only)
-3. Forwards remaining messages to the actor
-
-See [protocol.md → Remote Capability](protocol.md#remote-capability) for
-the full design, operation access policy, use case (machine node →
-workers), and breaking-vs-non-breaking analysis.
-
-The assembly layer (CLI binary) uses the direct path. The actor path
-exists for in-process irpc dispatch. Neither path is on the alknet call
-protocol (ADR-008, ADR-014) — the vault has no ALPN until a future
-deployment explicitly registers one with an auth-wrapping handler.
+The pre-ADR-025 design had an actor path (mpsc channel + oneshot
+backchannels, using irpc's `Service` trait) that was described as
+"secondary" to direct calls. ADR-025 removed it — the actor existed only
+to make irpc's dispatch work, and the direct path was always preferred.
+The RwLock-based concurrency model is both simpler and better for
+throughput (concurrent reads vs. sequential processing).
 
 ## Errors
 
 ```rust
-#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
+#[derive(Debug, thiserror::Error)]
 pub enum VaultServiceError {
     VaultLocked,          // called derive/encrypt/decrypt while locked
     AlreadyUnlocked,      // called unlock while already unlocked
     Mnemonic(String),     // mnemonic generation/validation failed
     Derivation(String),   // HD derivation failed (bad path, HMAC error)
-    Encryption(String),   // AES-GCM encrypt/decrypt failed
-    InvalidPath(String),  // derivation path is malformed
+    Encryption(String),    // AES-GCM encrypt/decrypt failed
+    InvalidPath(String),   // derivation path is malformed
     UnsupportedKeyType,   // secp256k1 called without the feature
 }
 ```
 
-`VaultServiceError` is `Serialize`/`Deserialize` (for irpc dispatch) and
-wraps sub-errors as strings. It does not implement `From` for alknet-core
-error types — the CLI binary converts at the assembly boundary (ADR-018).
+`VaultServiceError` is a plain `thiserror::Error` enum (ADR-025 dropped
+the `Serialize`/`Deserialize` derives that were needed for irpc dispatch).
+It wraps sub-errors as strings. The CLI binary converts vault errors to
+alknet-core error types at the assembly boundary (ADR-018).
 
 ## Design Decisions
 
@@ -349,18 +315,19 @@ error types — the CLI binary converts at the assembly boundary (ADR-018).
 | Version-indexed paths for rotation | [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | `decrypt` selects key by version; `rotate` re-encrypts |
 | RwLock for thread safety | — | Multiple readers (derive), exclusive writer (unlock/lock) |
 | TTL + LRU cache | — | Bounded memory, fresh keys, zeroized eviction |
-| Actor for in-process irpc dispatch | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc message dispatch; not on the call protocol |
+| Direct method calls (no actor) | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) | No irpc, no message enum, no remote dispatch capability |
 | `derive_password` not cached | — | One-shot; caching grows cache with no reuse |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-21** (deferred): Remote vault access — the `VaultProtocol` is
-  remote-capable by construction (irpc `RemoteService`). Enabling remote
-  access is a server-setup change with an auth-wrapping handler in the
-  assembly layer. `Unlock`/`Lock` are local-only; other operations are
-  remote-capable. See [protocol.md → Remote Capability](protocol.md#remote-capability).
+- **OQ-21** (resolved by ADR-025): Remote vault access is not a feature
+  of the vault crate. The vault is local-only by construction — direct
+  method calls on `VaultServiceHandle`, no remote dispatch capability.
+  If remote access is ever needed, it requires a separate vault-server
+  crate with its own ADR. See [protocol.md → Local-Only by
+  Construction](protocol.md#local-only-by-construction).
 
 ## Security Constraints
 
@@ -405,5 +372,5 @@ don't miss them.
 - Tests: `crates/alknet-vault/tests/service_tests.rs`,
   `crates/alknet-vault/src/service.rs` (unit tests),
   `crates/alknet-vault/src/cache.rs` (unit tests)
-- [protocol.md](protocol.md) — `VaultMessage` and `DerivedKey`
+- [protocol.md](protocol.md) — `DerivedKey` and `KeyType`
 - [encryption.md](encryption.md) — `encrypt` / `decrypt` cryptographic details

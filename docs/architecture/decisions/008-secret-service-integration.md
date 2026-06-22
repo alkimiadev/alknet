@@ -6,11 +6,11 @@ Accepted
 
 ## Context
 
-alknet-vault (formerly alknet-secret) is a standalone crate with zero alknet crate dependencies. It provides BIP39 mnemonic generation, SLIP-0010 Ed25519 HD key derivation, AES-256-GCM encryption, and an irpc-based `VaultProtocol` for message dispatch. It is already implemented and stable.
+alknet-vault (formerly alknet-secret) is a standalone crate with zero alknet crate dependencies and zero RPC framework dependencies (ADR-025). It provides BIP39 mnemonic generation, SLIP-0010 Ed25519 HD key derivation, AES-256-GCM encryption, and a direct-method-call API (`VaultServiceHandle`). It is already implemented and stable, pending the ADR-025 refactor to drop irpc.
 
 The question (OQ-08) was: how does the rest of the alknet system access alknet-vault's capabilities? The options were:
 
-1. **irpc service over `alknet/call`**: Other services call vault operations through the call protocol.
+1. **Call protocol exposure**: Other services call vault operations through the call protocol.
 2. **ALPN handler on `alknet/secret`**: alknet-vault implements ProtocolHandler and gets its own ALPN.
 3. **Direct library dependency**: alknet-core or handler crates depend on alknet-vault directly, breaking its independence.
 4. **CLI-embedded with call protocol exposure**: The CLI binary instantiates VaultServiceHandle locally and registers vault operations in the call protocol's registry.
@@ -64,9 +64,9 @@ This is analogous to the reverse-proxy admin key pattern (ADR-028 in the reverse
 ## References
 
 - ADR-003: Crate decomposition (alknet-vault is standalone)
-- ADR-005: irpc as call protocol foundation
+- ADR-005: irpc as call protocol foundation (for alknet-call; the vault no longer uses irpc — see ADR-025)
 - ADR-009: One-way door decision framework
 - ADR-014: Secret material flow and capability injection (specifies the mechanism this ADR described in prose)
+- ADR-025: Vault local-only dispatch (dropped irpc from the vault; direct method calls only)
 - OQ-08: Secret service integration point (resolved by this ADR, refined by ADR-014)
 - alknet-vault implementation: `crates/alknet-vault/`
-- Reverse-proxy ADR-028: Admin HTTP API (analogous key management pattern)

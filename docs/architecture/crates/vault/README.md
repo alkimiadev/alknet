@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-19
+last_updated: 2026-06-22-25
 ---
 
 # alknet-vault
@@ -13,16 +13,18 @@ and encrypted credentials in the alknet system.
 ## What This Crate Is
 
 alknet-vault is a **standalone crate** with zero alknet crate dependencies
-(ADR-018). It provides the cryptographic primitives and runtime API for
-managing the root of trust. The CLI binary (the `alknet` crate) is the sole
-component that talks to the vault directly (ADR-019) — handlers receive
-derived/decrypted material through capabilities, never through a vault
-reference.
+(ADR-018) and zero RPC framework dependencies (ADR-025). It provides the
+cryptographic primitives and runtime API for managing the root of trust.
+The CLI binary (the `alknet` crate) is the sole component that talks to the
+vault directly (ADR-019) — handlers receive derived/decrypted material
+through capabilities, never through a vault reference.
 
 The vault is **not a network service**. It has no ALPN, no
-`ProtocolHandler` implementation, and no operations registered in the call
-protocol (ADR-008, ADR-014). The master seed and derived private keys never
-cross the network.
+`ProtocolHandler` implementation, no operations registered in the call
+protocol (ADR-008, ADR-014), and no remote dispatch capability (ADR-025).
+The vault is **local-only by construction** — direct method calls on
+`VaultServiceHandle`, no actor, no message enum, no wire format. The master
+seed and derived private keys never cross the network.
 
 ## Documents
 
@@ -30,16 +32,14 @@ cross the network.
 |----------|--------|-------------|
 | [mnemonic-derivation.md](mnemonic-derivation.md) | draft | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
 | [encryption.md](encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, HD derivation (ADR-020) |
-| [service.md](service.md) | draft | VaultServiceHandle lifecycle, actor dispatch, cache, error model |
-| [protocol.md](protocol.md) | draft | VaultProtocol irpc messages, DerivedKey redaction, serialization |
+| [service.md](service.md) | draft | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
+| [protocol.md](protocol.md) | draft | DerivedKey redaction, KeyType, serialization behavior |
 
 ## Applicable ADRs
 
 | ADR | Title | Relevance |
 |-----|-------|-----------|
 | [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-vault's standalone position |
-| [006](../../decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention | ALPN versioning pattern for potential `alknet/vault/v2` |
-| [005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | VaultProtocol uses irpc directly |
 | [008](../../decisions/008-secret-service-integration.md) | Vault Integration Point | CLI-embedded, capability source |
 | [010](../../decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Ed25519 as default curve for TLS raw key identity |
 | [014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Capabilities carry vault-derived material |
@@ -47,33 +47,38 @@ cross the network.
 | [019](../../decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer is the sole caller |
 | [020](../../decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation, not PBKDF2; salt unused in v2 |
 | [021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Version-indexed paths; `rotate` re-encrypts |
+| [025](../../decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Dropped irpc; direct method calls; local-only by construction |
 
 ## Relevant Open Questions
 
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
 | OQ-20 | Encryption key derivation | resolved (ADR-020) | HD derivation from seed; salt field unused in v2 |
-| OQ-21 | Remote vault access | deferred | Protocol is remote-capable by construction; enabling = server-setup change with auth-wrapping handler; Unlock/Lock local-only |
+| OQ-21 | Remote vault access | resolved (ADR-025) | Vault is local-only by construction; remote access requires a separate vault-server crate with its own ADR |
 | OQ-22 | Key rotation mechanism | resolved (ADR-021) | Version-indexed paths; `rotate` method |
 
 ## Key Design Principles
 
-1. **Standalone**: The vault depends on no alknet crate. It defines its own
-   types, errors, and protocol. External crates depend on the vault; the
-   vault depends on nothing in alknet.
+1. **Standalone**: The vault depends on no alknet crate and no RPC framework.
+   It defines its own types and errors. External crates depend on the vault;
+   the vault depends on nothing in alknet.
 2. **Assembly-layer only**: The vault's API is consumed by the CLI binary,
    not by handlers. Handlers receive material through capabilities
    (ADR-014). The vault is not on the wire.
-3. **Zeroize everything sensitive**: The mnemonic, seed, derived private
+3. **Local-only by construction**: The vault has no remote dispatch
+   capability. Direct method calls on `VaultServiceHandle` — no actor, no
+   message enum, no wire format (ADR-025). Remote access, if ever needed,
+   requires a separate crate with its own ADR.
+4. **Zeroize everything sensitive**: The mnemonic, seed, derived private
    keys, encryption keys, and cached keys all implement `Zeroize` and
    `ZeroizeOnDrop`. Secret material does not linger in freed heap memory.
-4. **Deterministic derivation**: The same mnemonic + passphrase + path
+5. **Deterministic derivation**: The same mnemonic + passphrase + path
    always produces the same key. Derivation is reproducible across runs
    and across nodes.
-5. **OsRng for nonces**: AES-GCM IVs and any cryptographic nonces use
+6. **OsRng for nonces**: AES-GCM IVs and any cryptographic nonces use
    `OsRng` (or equivalent CSPRNG), never `rand::random()`. IV reuse under
    the same key is catastrophic for GCM.
-6. **No `unwrap()` or `expect()` outside tests**: vault operations
+7. **No `unwrap()` or `expect()` outside tests**: vault operations
    propagate errors. A poisoned lock is recovered with
    `unwrap_or_else(|e| e.into_inner())`, not `unwrap()`. A panic in one
    vault operation must not brick the vault for all other operations.
@@ -97,11 +102,13 @@ the full list.
   `unwrap_or_else(|e| e.into_inner())` or explicit error propagation. The
   current source uses `unwrap()` in `VaultServiceHandle` methods — this
   is a known drift and must be corrected.
-- **DerivedKey redaction in JSON**: `DerivedKey` serializes the
-  `private_key` as `"[REDACTED]"` in human-readable formats (JSON) and as
-  raw bytes in binary formats (postcard). The redaction is a defense-in-
-  depth measure, not the primary control — the primary control is that
-  `DerivedKey` never crosses the call protocol wire (ADR-014).
+- **DerivedKey redaction in serialization**: `DerivedKey` serializes the
+  `private_key` as `"[REDACTED]"` in all formats (ADR-025 dropped the
+  postcard/remote path that previously preserved bytes in binary formats).
+  Deserialization rejects `"[REDACTED]"` with an error (resolves review
+  #002 W8). The redaction is a defense-in-depth measure for logging safety,
+  not the primary control — the primary control is that `DerivedKey` never
+  crosses the call protocol wire (ADR-014).
 
 ## Known Source Drift
 
@@ -115,8 +122,9 @@ truth for drift tracking — if an item is fixed in source, update this table.
 | 1 | IV generation | `rand::random()` | `OsRng` (CSPRNG) | `encryption.rs` L133 | [encryption.md → Security Constraints](encryption.md#security-constraints), [service.md → Security Constraints](service.md#security-constraints) |
 | 2 | RwLock `unwrap()` | `unwrap()` on every `RwLock` acquisition (L142, 161, 182, 191, 196, 227, 264, 307, 340, 367) | `unwrap_or_else(\|e\| e.into_inner())` for poisoned lock recovery | `service.rs` (see line numbers) | [service.md → Security Constraints](service.md#security-constraints) |
 | 3 | `CURRENT_KEY_VERSION` | `1` (HD-derived, but v1 is reserved for TS PBKDF2 legacy per ADR-020) | `2` (HD-derived, per ADR-020) | `encryption.rs` | [encryption.md → Key Versioning](encryption.md#key-versioning), [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) |
-| 4 | `spawn()` return value | Returns a fresh, unspawned `VaultServiceActor` as the second tuple element (the spawned actor is consumed by `run`) | Either drop the second return value (return only `Client<VaultProtocol>`) or restructure so the returned actor is the one that was spawned | `service.rs` `VaultServiceActor::spawn()` | [service.md → Actor Dispatch](service.md#actor-dispatch) |
-| 5 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
+| 4 | irpc dependency | `VaultProtocol` enum with `#[rpc_requests]`, `VaultServiceActor`, `Client<VaultProtocol>`, irpc/postcard deps | Remove entirely — direct method calls on `VaultServiceHandle` (ADR-025) | `protocol.rs`, `service.rs`, `Cargo.toml` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
+| 5 | `DerivedKey` dual serialization | JSON redacts, postcard preserves bytes | Always redact on serialize; reject `"[REDACTED]"` on deserialize with error (ADR-025, resolves W8) | `protocol.rs` | [protocol.md → Serialization Redaction](protocol.md#serialization-redaction), [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
+| 6 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
 
 ## Public API
 
@@ -132,11 +140,11 @@ pub use derivation::{DerivationError, ExtendedPrivKey, PATHS};
 // Encryption
 pub use encryption::{EncryptedData, EncryptionError};
 
-// Protocol (irpc messages)
-pub use protocol::{DerivedKey, KeyType, VaultMessage, VaultProtocol};
+// Key types (DerivedKey, KeyType)
+pub use protocol::{DerivedKey, KeyType};
 
 // Service (runtime)
-pub use service::{VaultService, VaultServiceActor, VaultServiceError, VaultServiceHandle};
+pub use service::{VaultServiceError, VaultServiceHandle};
 
 // Cache
 pub use cache::CacheConfig;

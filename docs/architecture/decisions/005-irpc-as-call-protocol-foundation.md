@@ -30,7 +30,12 @@ This means:
 - The TypeScript operation and pub/sub patterns that can import OpenAPI schemas, wrap MCP servers, and expose operations as endpoints are supported at the protocol level — the adapter contract (from_*, to_*) is defined in Rust (see ADR-013)
 - Future NAPI and WASM clients speak the same wire format — alknet-napi projects the Rust call protocol client to Node.js; a browser SDK can be adapted from the existing TypeScript code
 
-The `VaultProtocol` in alknet-vault also uses irpc as its service protocol. This is consistent — alknet-vault's irpc service is an independent service that happens to use the same framing, not a dependency on alknet-call.
+The `VaultProtocol` in alknet-vault previously used irpc as its service
+protocol. ADR-025 dropped irpc from the vault — the vault uses direct method
+calls on `VaultServiceHandle`, not irpc dispatch. irpc remains the
+foundation for alknet-*call* (the call protocol), not for alknet-*vault*.
+See ADR-025 for the rationale (security default inversion: the vault is
+local-only by construction, not remote-capable by default).
 
 ## Consequences
 
@@ -39,7 +44,6 @@ The `VaultProtocol` in alknet-vault also uses irpc as its service protocol. This
 - JSON Schema compatible — OpenAPI import, MCP tool exposure, cross-language client generation
 - No need to design a custom RPC wire format — irpc's is already battle-tested
 - The call protocol inherits irpc's streaming and subscription patterns
-- Consistency with alknet-vault's service model — both use irpc
 
 **Negative:**
 - alknet-call depends on irpc — if irpc has limitations or bugs, we're affected (mitigated: irpc is lightweight and we can fork if needed)

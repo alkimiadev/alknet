@@ -17,7 +17,7 @@ The question is: what does alknet-vault depend on? The candidates:
    pulls QUIC, quinn, iroh, rustls, and tokio runtime dependencies into the
    vault's dependency tree.
 2. **Stand alone** — zero alknet crate dependencies. The vault defines its own
-   types, its own error enum, its own irpc protocol. Other crates depend on
+   types, its own error enum. Other crates depend on
    the vault; the vault depends on nothing in alknet.
 
 This is a one-way door. Once the vault depends on alknet-core, reversing it
@@ -51,22 +51,24 @@ The vault defines its own types and traits:
   derived key material
 - `DerivedKey`, `KeyType` — protocol-level key representation
 - `EncryptedData`, `EncryptionKey` — AES-256-GCM blobs
-- `VaultServiceHandle`, `VaultServiceActor` — runtime API
-- `VaultProtocol` — irpc message enum (in-process dispatch)
+- `VaultServiceHandle` — runtime API (direct method calls; no actor, no
+  message enum — see ADR-025)
 - `VaultServiceError` — its own error enum (string-wrapped sub-errors; the
   vault doesn't share an error type with alknet-core)
 
-The `VaultProtocol` uses irpc directly (see ADR-005), not through alknet-call.
-This is consistent: irpc is a lightweight framing library, not an alknet
-crate. The vault's irpc usage is an in-process dispatch mechanism, not a
-network-exposed service.
+The vault uses direct method calls on `VaultServiceHandle`, not irpc
+dispatch (ADR-025). The vault is local-only by construction — no remote
+dispatch capability, no `RemoteService` trait, no wire format for vault
+messages. If remote vault access is ever needed, it's a separate crate that
+wraps the vault (see ADR-025, OQ-021).
 
 ## Decision
 
 **alknet-vault has zero alknet crate dependencies.** It depends only on
 external crates (`bip39`, `ed25519-bip32`, `aes-gcm`, `sha2`, `hmac`,
-`secp256k1`, `irpc`, `tokio` for the actor's sync primitives, `serde`,
-`zeroize`, `thiserror`, `base64`, `rand`).
+`secp256k1`, `tokio` for `RwLock` sync primitives, `serde`,
+`zeroize`, `thiserror`, `base64`, `rand`). ADR-025 dropped `irpc`,
+`irpc-derive`, and `postcard` — the vault no longer uses irpc dispatch.
 
 The vault does not depend on:
 - `alknet-core` — no shared types, no `Identity`, no `AuthContext`
@@ -90,8 +92,9 @@ CLI binary is the sole integration point (ADR-008, ADR-019).
 
 The vault defines its own types and does not share types with alknet-core:
 
-- `VaultServiceError` is the vault's error enum. It is `Serialize`/`Deserialize`
-  (for irpc dispatch) and wraps sub-errors as strings. It does not implement
+- `VaultServiceError` is the vault's error enum. It is a plain
+  `thiserror::Error` (ADR-025 dropped irpc, so vault errors no longer need
+  `Serialize`/`Deserialize` for wire dispatch). It does not implement
   `From` for alknet-core error types — the CLI binary converts at the
   assembly boundary.
 - `DerivedKey` is the vault's key representation. It is not shared with
@@ -154,7 +157,10 @@ The vault defines its own types and does not share types with alknet-core:
 ## References
 
 - ADR-003: Crate decomposition (alknet-vault is standalone)
-- ADR-005: irpc as call protocol foundation (vault uses irpc directly)
+- ADR-005: irpc as call protocol foundation (irpc remains the foundation
+  for alknet-*call*; the vault no longer uses irpc — see ADR-025)
+- ADR-025: Vault local-only dispatch (dropped irpc from the vault; the
+  vault uses direct method calls, no actor, no remote capability)
 - ADR-008: Vault integration point (CLI-embedded, assembly-layer only)
 - ADR-014: Secret material flow and capability injection
 - ADR-019: Vault assembly-layer-only access
