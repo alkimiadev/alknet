@@ -319,8 +319,12 @@ fn build_root_context(
         handler_identity: registration.composition_authority,  // C1: from bundle, None for leaves
         capabilities: registration.capabilities.clone(),       // C3: from bundle
         metadata: HashMap::new(),
-        env: registration.scoped_env.clone()
+        // env/scoped_env split by ADR-024: scoped_env is the reachability
+        // data (from the bundle), env is the dispatch trait object (composed
+        // per-call by the CallAdapter from active overlays).
+        scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),       // C2: from bundle, empty for leaves
+        env: /* CallAdapter.compose_root_env(...) — see ADR-024 */,
         internal: false,                    // wire call — ACL against caller identity
     }
 }
@@ -339,7 +343,9 @@ async fn invoke(&self, namespace: &str, operation: &str, input: Value,
 
     // Reachability check (C2): is this op in the parent's scoped env?
     // If not, return NOT_FOUND. This is the reachability control.
-    if !parent.env.allows(&name) {
+    // (ADR-024: the reachability check consults parent.scoped_env, not
+    // parent.env — env is now the dispatch trait, scoped_env is the data.)
+    if !parent.scoped_env.allows(&name) {
         return ResponseEnvelope::not_found(name);
     }
 
@@ -351,8 +357,10 @@ async fn invoke(&self, namespace: &str, operation: &str, input: Value,
         handler_identity: registration.composition_authority.clone(),  // C1: child's own authority
         capabilities: parent.capabilities.clone(),       // C3: propagate through composition
         metadata: HashMap::new(),                        // fresh — does NOT propagate (ADR-014)
-        env: registration.scoped_env.clone()
+        // env/scoped_env split by ADR-024:
+        scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),   // C2: child's own scoped env
+        env: parent.env.clone(),                          // child inherits parent's composite env (Arc::clone)
         internal: true,                                    // composition — ACL against handler_identity
     };
     self.registry.invoke(&name, input, context).await
@@ -580,16 +588,27 @@ the fuzzer validates the implementation against the spec.
   cascade tree; `parent_request_id` indexes it)
 - ADR-017: Call protocol client and adapter contract (adapter-registered
   ops are `Internal` by default; this ADR's provenance makes that explicit)
+- ADR-024: Operation registry layering (amends this ADR's Decision 5: the
+  `env` field shown in `build_root_context` and `invoke()` is split into
+  `scoped_env: ScopedOperationEnv` (reachability data, populated from the
+  bundle's `scoped_env`) and `env: Arc<dyn OperationEnv + Send + Sync>`
+  (dispatch trait object). The split is required by ADR-024's overlay model
+  — the trait-object design is what enables connection and session overlays
+  to compose. The `HandlerRegistration` bundle shape, provenance model,
+  composition authority, and capability injection specified by this ADR
+  are unchanged.)
 - ADR-008: Vault integration point (assembly layer is the trust boundary)
 - OQ-19: Session-scoped operation registries (session ops are `Session`
   provenance, always `Internal`, compose under restricted authority)
 - docs/reviews/001-pre-implementation-architecture-sanity-check.md (findings
   C1–C4, which this ADR resolves)
+- docs/reviews/002-pre-implementation-architecture-sanity-check.md (finding
+  C6, resolved by ADR-024's `env`/`scoped_env` split)
 - `/workspace/@alkdev/flowgraph/README.md` — operation graph, call graph, and
   scoped subgraph concepts (the graph model this ADR uses as framing)
 - `/workspace/@alkdev/alknet-main/docs/architecture/flowgraph.md` — prior
   Rust speccing of flowgraph (incomplete; this ADR uses the model, not the
   crate)
 - Kernel/user mode analogy: `getaddrinfo` runs under kernel authority, not
-  the caller's `CAP_NET_RAW`; the curated entry point exists to do things the
-  user can't, on the user's behalf
+  the caller's `CAP_NET_RAW`; the curated entry point exists to do things
+  the user can't, on the user's behalf

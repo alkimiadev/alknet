@@ -175,7 +175,7 @@ The following types live in alknet-core and are used across handler crates:
 
 ### One-Way and Two-Way Doors
 
-Not all decisions carry the same reversal cost. One-way door decisions (BiStream type, crate independence, secret material flow) require ADRs and possibly POCs before commitment. Two-way door decisions (static vs dynamic registration, single vs multi-transport) can be decided during implementation — start simple, add complexity when needed. WASM compatibility is a design constraint within this framework, not a separate principle: decisions that would permanently close the WASM door require explicit justification. See [ADR-009](decisions/009-one-way-door-decision-framework.md).
+Not all decisions carry the same reversal cost. One-way door decisions (BiStream type, crate independence, secret material flow) require ADRs and possibly POCs before commitment. Two-way door decisions (single vs multi-transport) can be decided during implementation — start simple, add complexity when needed. The static-vs-dynamic registration question is now resolved: the `HandlerRegistry` (ALPN-level) is static at startup (ADR-010, OQ-04), while the `OperationRegistry` (call-protocol-level) is layered — curated ops static, session/imported ops dynamic at their trust-boundary scopes (ADR-024). WASM compatibility is a design constraint within this framework, not a separate principle: decisions that would permanently close the WASM door require explicit justification. See [ADR-009](decisions/009-one-way-door-decision-framework.md).
 
 ### One ALPN, One Connection, One Handler
 
@@ -214,6 +214,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Version-indexed derivation paths; `rotate` re-encrypts between versions |
 | [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
+| [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point |
 
 ## Open Questions
 
@@ -222,7 +223,7 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 - **OQ-01**: BiStream type definition (resolved: trait, Connection parameter — see ADR-007)
 - **OQ-02**: AuthContext resolution timing (resolved: hybrid — see ADR-004)
 - **OQ-03**: ALPN string naming convention (resolved: see ADR-006)
-- **OQ-04**: Dynamic handler registration (resolved: static at startup — see ADR-010)
+- **OQ-04**: Dynamic handler registration (resolved: static at startup for the `HandlerRegistry` — see ADR-010; the `OperationRegistry` is layered by ADR-024: curated ops static, session/imported ops dynamic at their trust-boundary scopes)
 - **OQ-08**: Vault integration point (resolved: CLI-embedded, assembly-layer only — see ADR-008, ADR-014, ADR-018, ADR-019)
 - **OQ-16**: Safe vault operations for call protocol exposure (resolved: none for now — see ADR-014)
 - **OQ-20**: Encryption key derivation (resolved: HD derivation, not PBKDF2 — see ADR-020)

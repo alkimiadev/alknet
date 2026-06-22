@@ -35,6 +35,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
 | [022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Registration bundle carries provenance, composition authority, scoped env, capabilities |
 | [023](../../decisions/023-operation-error-schemas.md) | Operation Error Schemas | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity |
+| [024](../../decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 
 ## Relevant Open Questions
 
@@ -44,14 +45,14 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-13 | Operation path format and routing scope | resolved | `/{service}/{op}` is the correct design; remote dispatch is a separate layer |
 | OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
-| OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait |
+| OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays. |
 
 ## Key Design Principles
 
 1. **One connection, full access**: An `alknet/call` connection gives access to the entire operation registry — calls, subscriptions, batch, schema.
 2. **Protocol is symmetric**: Both sides can initiate calls. The server calling a client uses the same EventEnvelope format and correlation.
 3. **Stream-agnostic correlation**: PendingRequestMap correlates by request ID, not by stream. The protocol works with any stream arrangement.
-4. **Operation registry is static**: Operations are registered at startup by the CLI binary. The registry supports JSON Schema discovery.
+4. **Operation registry is layered**: The curated layer (`Local` provenance) is static — registered at startup by the CLI binary, immutable for the process lifetime. Session (`Session`) and imported (`FromCall` etc.) ops are dynamic overlays at their respective scopes (per-session, per-connection). The registry supports JSON Schema discovery. See ADR-024.
 5. **irpc is one dispatch backend**: Local operations dispatch directly. irpc service calls (in-process, type-safe) are internal. The call protocol is the external interface.
 6. **Local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer, not a modification to alknet-call's path format.
 7. **No secret material on the wire**: The call protocol carries no private keys, API keys, mnemonics, or decrypted credentials. Handlers receive outbound credentials through `OperationContext.capabilities`, injected at the assembly layer. See ADR-014.

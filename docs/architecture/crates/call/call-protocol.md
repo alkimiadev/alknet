@@ -33,20 +33,25 @@ The `CallAdapter` implements `ProtocolHandler`:
 
 ```rust
 pub struct CallAdapter {
+    /// Layer 0 — the curated operation registry. Immutable after startup.
     registry: Arc<OperationRegistry>,
     identity_provider: Arc<dyn IdentityProvider>,
+    /// Layer 1 — optional session-overlay source (agent crate supplies this;
+    /// None for non-agent deployments). See ADR-024, OQ-19.
+    session_source: Option<Arc<dyn SessionOverlaySource + Send + Sync>>,
 }
 
-#[async_trait]
-impl ProtocolHandler for CallAdapter {
-    fn alpn(&self) -> &'static [u8] { b"alknet/call" }
-
-    async fn handle(&self, connection: Connection, auth: &AuthContext) -> Result<(), HandlerError> {
-        // Accept bidirectional streams, read EventEnvelopes,
-        // dispatch to registry, write responses
-    }
-}
+// The connection's imported-ops overlay (Layer 2) is built per CallConnection
+// as from_call discovery completes — it's not a field on CallAdapter but
+// rather state held by the CallConnection / dispatch context for incoming
+// calls on that connection. See ADR-024.
 ```
+
+The `CallAdapter` holds the static curated registry and an optional
+session-overlay source. Per-connection imported-ops overlays (Layer 2,
+ADR-024) are held with the connection and composed into the root
+`OperationContext.env` per incoming call. See ADR-024 for the layering
+model and `compose_root_env` below.
 
 The adapter:
 1. Accepts bidirectional streams on the connection
@@ -299,8 +304,15 @@ fn build_root_context(
         handler_identity: registration.composition_authority.clone(),
         capabilities: registration.capabilities.clone(),  // from the registration bundle
         metadata: HashMap::new(),        // fresh per request
-        env: registration.scoped_env.clone()
+        scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),  // from the bundle, empty for leaves
+        // Per-call env composition (ADR-024): the root env is a composite
+        // of the curated base + this connection's imported-ops overlay +
+        // the active session overlay (if any). The CallAdapter builds this
+        // composite per incoming call — same shape as per-call identity
+        // resolution via IdentityProvider. Handlers call env.invoke();
+        // the composite routes to the right overlay.
+        env: self.compose_root_env(/* connection, session */),
         abort_policy: AbortPolicy::default(),  // abort-dependents (ADR-016 Decision 6)
         internal: false,                 // external call — ACL against caller identity
     }
@@ -308,6 +320,8 @@ fn build_root_context(
 ```
 
 The `internal: false` here is what makes a wire call a wire call — ACL checks against the caller's resolved `identity`. When a handler subsequently calls `context.env.invoke(...)`, the `OperationEnv::invoke()` path (see [operation-registry.md](operation-registry.md#operationenv)) constructs a nested `OperationContext` with `internal: true`, switching authority to `handler_identity`. The two construction paths — `CallAdapter` for wire-originated, `OperationEnv::invoke()` for composition-originated — are the only places `internal` is set. Handlers cannot set it themselves (the field is module-private for writes — see [operation-registry.md](operation-registry.md#operationcontext) and ADR-015).
+
+The per-call `env` composition (ADR-024) is the operation-dispatch analogue of the per-call identity resolution the CallAdapter already does via `IdentityProvider`. Both are integration-point patterns: the trait object owns the routing, the CallAdapter supplies the right sources per call. A connection's imported-ops overlay is part of the root env only for calls arriving on that connection; a session overlay is part of the root env only when a session is active. See ADR-024.
 
 ### ResponseEnvelope
 

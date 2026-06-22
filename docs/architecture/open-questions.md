@@ -49,7 +49,22 @@ Door type classifications follow ADR-009:
 - **Door type**: Two-way
 - **Priority**: low
 - **Resolution**: Static registration at startup. `HandlerRegistry` is immutable after construction. ALPN strings in the TLS `ServerConfig` are derived from the registry at startup — adding a handler at runtime requires rebuilding the TLS config. The `ArcSwap<HandlerRegistry>` pattern can be applied later if needed (two-way door). See ADR-010.
-- **Cross-references**: ADR-001, ADR-010, [endpoint.md](crates/core/endpoint.md)
+
+  **Scope clarification (ADR-024)**: This resolution applies to the
+  **`HandlerRegistry`** (ALPN string → `ProtocolHandler`), which is what
+  ADR-010 governs. The call protocol's **`OperationRegistry`** (operation
+  name → `HandlerRegistration`) is a *separate* registry living inside the
+  `CallAdapter`, behind the single ALPN `alknet/call`. Its mutability
+  profile is governed by ADR-024, not by this OQ. ADR-024 layers the
+  operation registry by trust boundary: curated `Local` ops are immutable
+  (same rationale as here — composing ops are privileged, the startup trust
+  boundary is where their authority is granted); `Session` and imported
+  (`FromCall` etc.) ops are dynamic at their respective trust-boundary
+  scopes (session, connection). The pre-ADR-024 blanket immutability claim
+  in `operation-registry.md` was inherited by analogy from this OQ and did
+  not actually apply — the TLS-config argument that justifies
+  `HandlerRegistry` immutability does not touch the `OperationRegistry`.
+- **Cross-references**: ADR-001, ADR-010, ADR-024, [endpoint.md](crates/core/endpoint.md), [operation-registry.md](crates/call/operation-registry.md)
 
 ## Theme: Transport and Endpoint
 
@@ -231,12 +246,12 @@ These questions are acknowledged but not active. They will be promoted to open w
 
   Session-scoped operations are always `Internal` (ADR-015), run under the handler's identity (the agent handler that authorized the sandbox), can only compose operations in the handler's scoped env, and are ephemeral (gone when the session ends). Core operations are curated — reviewed before promotion. The promotion path is the curation checkpoint where autonomous (session-scoped) becomes curated (core). This is not auto-promotion.
 
-  **Implementation guard**: `OperationEnv` must remain a trait, not a concrete type. A session-scoped env wraps the global env (check session registry first, fall through to global). Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close this pattern. The static registration constraint (OQ-04) applies to the global registry only; session registries are dynamic by nature and are a different registry overlaying the global one.
+  **Implementation guard**: `OperationEnv` must remain a trait, not a concrete type. A session-scoped env wraps the global env (check session registry first, fall through to global). Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close this pattern. The static registration constraint (OQ-04) applies to the curated (Layer 0) registry only; session registries are dynamic by nature and are a different registry overlaying the curated one. **Generalized by ADR-024**: connection-scoped remote imports (`from_call`) use the same overlay mechanism as session-scoped ops. Both are per-scope dynamic overlays on the static curated base, composed into the per-call `OperationContext.env` by the `CallAdapter`. `OperationEnv` being a trait object (`Arc<dyn OperationEnv + Send + Sync>`) is what enables both overlay patterns.
 
   Session-scoped operations run in a locked-down sandbox (no direct net/fs/env access), can only reach operations in the handler's scoped env, and their output should be validated against their declared schema before returning. The promotion path requires review — an agent with a `promote` scope (the architect role) performs the promotion; the writing agent (lower-privileged role) requests it. This is the role-based escalation pattern (ADR-015): privileges escalate through a chain of command, not through direct authority.
 
   The agent-specific mechanism (quickjs sandbox, session registry lifecycle, promotion workflow) belongs to the agent crate spec. The call protocol's job is to keep the `OperationEnv` trait composable and the visibility/ACL model consistent across tiers.
-- **Cross-references**: OQ-04, ADR-014, ADR-015, ADR-016, [operation-registry.md](crates/call/operation-registry.md)
+- **Cross-references**: OQ-04, ADR-014, ADR-015, ADR-016, ADR-024, [operation-registry.md](crates/call/operation-registry.md)
 
 ## Theme: alknet-vault
 

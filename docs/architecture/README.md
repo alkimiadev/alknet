@@ -7,9 +7,9 @@ last_updated: 2026-06-22-20
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists) and research/reference material. Foundational ADRs (001–023) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), HD derivation for encryption keys (ADR-020), key rotation via version-indexed paths (ADR-021), handler registration, provenance, and composition authority (ADR-022), and operation error schemas (ADR-023). The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists) and research/reference material. Foundational ADRs (001–024) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), HD derivation for encryption keys (ADR-020), key rotation via version-indexed paths (ADR-021), handler registration, provenance, and composition authority (ADR-022), operation error schemas (ADR-023), and operation registry layering (ADR-024). ADR-024 resolves the registry mutability question that ADR-022/017 surfaced (`from_call` imports require a runtime-mutable home) and the `OperationContext.env` type identity crisis (review #002 C6), by layering the registry by trust boundary (curated static + session/connection dynamic overlays) and making `OperationEnv` a trait-object integration point. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
 
-**Next step**: Review the vault spec documents, then begin implementation. All open questions for the core and call crates are resolved; the vault crate has one deferred OQ (OQ-21, remote vault administration) that does not block implementation.
+**Next step**: Continue working through review #002's remaining Tier 4 findings (vault security decisions, guard clauses, ADR-writing exercises, smaller spec decisions). All open questions for the core and call crates are resolved; the vault crate has one deferred OQ (OQ-21, remote vault administration) that does not block implementation.
 
 ## Architecture Documents
 
@@ -58,6 +58,7 @@ last_updated: 2026-06-22-20
 | [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Accepted |
 | [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Accepted |
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Accepted |
+| [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Accepted |
 
 ## Open Questions
 
@@ -76,13 +77,13 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-15**: Call protocol client and adapter contract — `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction (ADR-017)
 
 **Resolved two-way doors:**
-- **OQ-04**: Dynamic handler registration — static at startup (ADR-010)
+- **OQ-04**: Dynamic handler registration — static at startup (ADR-010); scoped to the `HandlerRegistry` (ALPN-level) by ADR-024, which governs `OperationRegistry` mutability separately
 - **OQ-07**: Call protocol scope — bidirectional streams, EventEnvelope, ID-based correlation (ADR-012)
 - **OQ-11**: Handler-level auth resolution observability — handlers store resolved identity on Connection (Option B); two identity scopes: connection-level (observability) and per-request (ACL)
 - **OQ-12**: TLS identity provisioning — two use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME is a proven pattern.
 - **OQ-13**: Operation path format — `/{service}/{op}` is the correct design for alknet-call, not a simplification
 - **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
-- **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait
+- **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays as well.
 - **OQ-20**: Encryption key derivation — HD derivation from BIP39 seed, not PBKDF2; salt field unused in v2 (wire-format compat) (ADR-020)
 - **OQ-22**: Key rotation — version-indexed derivation paths; `rotate` method re-encrypts (ADR-021)
 - **OQ-23**: Handler identity registration path — registration bundle with provenance, composition authority, scoped env, capabilities (ADR-022)

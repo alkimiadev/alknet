@@ -132,7 +132,9 @@ pub struct OperationContext {
     pub handler_identity: Option<CompositionAuthority>,  // Handler's composition authority
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
-    pub env: OperationEnv,
+    // env/scoped_env split by ADR-024:
+    pub scoped_env: ScopedOperationEnv,        // Reachability data (ADR-022, ADR-024)
+    pub env: Arc<dyn OperationEnv + Send + Sync>,  // Dispatch trait (ADR-024)
     /// Module-private for writes; read via `is_internal()`. Set only by
     /// `OperationEnv::invoke()` (true) or `CallAdapter` dispatch (false).
     pub(crate) internal: bool,

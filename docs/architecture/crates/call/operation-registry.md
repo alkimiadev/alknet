@@ -11,7 +11,7 @@ OperationSpec, Handler, OperationRegistry, AccessControl, service discovery, and
 
 The operation registry maps operation names to specs and handlers. It is the dispatch core of the call protocol — when a `call.requested` event arrives, the registry looks up the operation by name, checks access control, invokes the handler, and returns the result.
 
-The registry is populated at startup by the CLI binary (or by the assembly layer in embedded contexts). Operations cannot be added or removed at runtime. This is consistent with OQ-04 (static registration at startup) and the `HandlerRegistry` model in alknet-core.
+The registry is **layered by trust boundary** (ADR-024): a static, immutable curated layer (`Local` provenance, registered at startup) plus dynamic overlays for session ops (`Session` provenance, per-session) and imported ops (`FromCall` etc., per-connection). The immutability claim that previously applied to the whole registry is now scoped to the curated layer — see ADR-024 for the layering model and the rationale for why immutability is the security control for composing ops but not for imported leaves.
 
 ## Why
 
@@ -115,7 +115,20 @@ pub struct OperationContext {
     pub handler_identity: Option<CompositionAuthority>,    // Handler's composition authority (ADR-022)
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
-    pub env: OperationEnv,
+    /// Reachability set — the operations this handler may compose.
+    /// Populated from the registration bundle's `scoped_env` (ADR-022).
+    /// The reachability check in `OperationEnv::invoke()` consults
+    /// `scoped_env.allows(&name)`. This is data, not a dispatch trait.
+    pub scoped_env: ScopedOperationEnv,
+    /// Composition dispatch trait. A handler calls `env.invoke(...)` to
+    /// compose child operations. This is `Arc<dyn OperationEnv>` (a trait
+    /// object), not a concrete struct — the trait-object design is what
+    /// enables registry layering (ADR-024): the CallAdapter composes the
+    /// root env per call from the active layers (curated base + connection
+    /// overlay + session overlay), and session/connection overlays wrap
+    /// the base via trait layering. Same pattern as `IdentityProvider`
+    /// (ADR-004). See ADR-024.
+    pub env: Arc<dyn OperationEnv + Send + Sync>,
     /// Abort policy for this call's descendants (ADR-016 Decision 6).
     /// Default `AbortDependents` — aborting this request aborts all
     /// non-terminal descendants. `ContinueRunning` is an opt-in for
@@ -157,7 +170,8 @@ impl OperationContext {
 - `handler_identity`: The composition authority of the handler processing this call. `None` for leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) — they don't compose. `Some(...)` for `Local` and `Session` ops that can compose children. For internal calls (`internal: true`), the ACL check runs against this authority (ADR-015, ADR-022). This is NOT a peer `Identity` — it's a declared authority bundle set at registration by the assembly layer
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
 - `metadata`: Request-scoped context (tracing IDs, connection info). **Must not hold secret material** — see ADR-014. **Does not propagate through `OperationEnv::invoke()`** — nested calls get fresh metadata. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`.
-- `env`: The operation environment for composing calls to other operations. Scoped — the handler can only invoke a declared set of operations (ADR-015). `None`/empty for leaves.
+- `scoped_env`: The reachability set — the operations this handler may compose. Populated from the registration bundle's `scoped_env` (ADR-022). The reachability check in `OperationEnv::invoke()` consults `scoped_env.allows(&name)`. This is *data* (a `ScopedOperationEnv` struct), not a dispatch trait. `None`/empty for leaves.
+- `env`: The composition dispatch trait (`Arc<dyn OperationEnv + Send + Sync>`). A handler calls `context.env.invoke(...)` to compose child operations. This is a trait object, not a concrete struct — the trait-object design enables registry layering (ADR-024): the CallAdapter composes the root env per call from the active layers (curated base + connection overlay + session overlay), and overlays wrap the base via trait layering. Same pattern as `IdentityProvider` (ADR-004). See ADR-024.
 - `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: ACL runs against `handler_identity`, not `identity`. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See ADR-015.
 
 `identity` and `capabilities` are orthogonal: identity is inbound (who is calling me), capabilities are outbound (what credentials I can use). `identity` and `handler_identity` are the principal/agent pair: `identity` is the principal (who delegated), `handler_identity` is the agent (who is acting). See ADR-014 for capabilities, ADR-015 for the privilege model, and ADR-022 for the composition authority type.
@@ -170,12 +184,12 @@ pub struct OperationRegistry {
 }
 ```
 
-The registry maps operation names to `HandlerRegistration` bundles. See ADR-022 for the full registration model. Key methods:
+The registry maps operation names to `HandlerRegistration` bundles. The curated layer (Layer 0) is a `HashMap<String, HandlerRegistration>`; session and connection overlays (Layers 1 and 2) are separate maps that the `CallAdapter` composes into the per-call `OperationContext.env` (ADR-024). See ADR-022 for the full registration model and ADR-024 for the layering model. Key methods:
 
-- `register(registration)`: Add an operation at startup
-- `registration(name)`: Find a registration by operation name (returns spec, handler, provenance, composition authority, scoped env, capabilities)
+- `register(registration)`: Add an operation to the curated layer at startup
+- `registration(name)`: Find a registration by operation name (checks active overlays first, then curated base — ADR-024). Returns spec, handler, provenance, composition authority, scoped env, capabilities.
 - `invoke(name, input, context)`: Look up, check ACL, invoke handler, return result
-- `list_operations()`: Return all registered specs (for `/services/list`)
+- `list_operations()`: Return all registered specs (for `/services/list` — returns curated + active overlay ops)
 
 ### HandlerRegistration
 
@@ -215,7 +229,7 @@ let registry = OperationRegistryBuilder::new()
     .build();
 ```
 
-The CLI binary (or assembly layer) constructs the registry and passes it to the `CallAdapter`. Once built, the registry is immutable.
+The CLI binary (or assembly layer) constructs the registry and passes it to the `CallAdapter`. Once built, the **curated layer** (Layer 0 — `Local` provenance ops) is immutable. Session and imported overlays are dynamic at their respective scopes (per-session, per-connection) per ADR-024. The `CallAdapter` composes the root `OperationContext.env` per incoming call from the active layers.
 
 ### OperationEnv
 
@@ -263,9 +277,15 @@ The `parent` parameter propagates the calling context: the nested call gets `par
 
 **Metadata does not propagate through composition.** Nested calls get fresh metadata (`HashMap::new()`), not the parent's metadata bag. This is a security constraint (ADR-014): `metadata: HashMap<String, Value>` accepts any `serde_json::Value`, including secret material. If metadata propagated through `env.invoke()`, a handler that accidentally placed a secret in metadata would leak it to every child operation — and if a child is a `from_call` operation (ADR-017), the metadata would cross the wire to the remote node. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`, not in ambient context.
 
-**Local dispatch only.** The initial `OperationEnv` implementation dispatches directly through the local `OperationRegistry`:
+**Local dispatch only.** The initial `OperationEnv` implementation for the
+curated layer (Layer 0) dispatches directly through the local
+`OperationRegistry`. The composite env (curated + session + connection
+overlays) is a separate type built by the `CallAdapter` per call — see
+ADR-024 and the `CompositeOperationEnv` sketch below.
 
 ```rust
+/// Layer 0 dispatch — the curated registry. This is the base env that
+/// overlays wrap. See ADR-024 for the layering model.
 pub struct LocalOperationEnv {
     registry: Arc<OperationRegistry>,
 }
@@ -278,8 +298,10 @@ impl OperationEnv for LocalOperationEnv {
         // Reachability check (ADR-015, ADR-022): is this op in the parent's
         // scoped env? If not, return NOT_FOUND. This bounds the
         // parameterized-dispatch attack surface — a handler (or an LLM
-        // picking tools) can only reach declared ops.
-        if !parent.env.allows(&name) {
+        // picking tools) can only reach declared ops. The reachability set
+        // is on `parent.scoped_env` (data), not on `parent.env` (dispatch
+        // trait) — see ADR-024 for the split.
+        if !parent.scoped_env.allows(&name) {
             return ResponseEnvelope::not_found(name);
         }
 
@@ -302,8 +324,11 @@ impl OperationEnv for LocalOperationEnv {
             handler_identity: registration.composition_authority.clone(),
             capabilities: parent.capabilities.clone(),       // Inherit caller's capabilities
             metadata: HashMap::new(),                         // Fresh — does NOT propagate parent metadata (ADR-014)
-            env: registration.scoped_env.clone()
+            scoped_env: registration.scoped_env.clone()
                 .unwrap_or_else(ScopedOperationEnv::empty),  // Child's own scoped env (empty for leaves)
+            // Dispatch trait: the child inherits the parent's env (the same
+            // composite of curated base + active overlays). See ADR-024.
+            env: parent.env.clone(),
             // Abort policy: inherit the parent's policy by default (ADR-016).
             // The parent handler can override via `invoke_with_policy()`.
             abort_policy: parent.abort_policy.clone(),
@@ -311,7 +336,54 @@ impl OperationEnv for LocalOperationEnv {
         };
         self.registry.invoke(&name, input, context).await
     }
+
+    // invoke_with_policy() delegates to invoke() with the policy set on the
+    // child context (ADR-016 Decision 6). See the trait definition above.
 }
+```
+
+The composite env (built by the `CallAdapter` per incoming call) wraps the
+curated base and any active overlays:
+
+```rust
+/// Per-call composite env (ADR-024). Built by the CallAdapter in
+/// build_root_context from the active layers. The child inherits this by
+/// Arc::clone through invoke().
+pub struct CompositeOperationEnv {
+    session: Option<Arc<dyn OperationEnv + Send + Sync>>,    // Layer 1 — active session, if any
+    connection: Option<Arc<dyn OperationEnv + Send + Sync>>, // Layer 2 — this connection's imported ops
+    base: Arc<dyn OperationEnv + Send + Sync>,               // Layer 0 — curated registry (LocalOperationEnv)
+}
+
+#[async_trait]
+impl OperationEnv for CompositeOperationEnv {
+    async fn invoke(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext) -> ResponseEnvelope {
+        let name = format!("{namespace}/{operation}");
+        // Reachability check against parent.scoped_env (same as LocalOperationEnv).
+        if !parent.scoped_env.allows(&name) {
+            return ResponseEnvelope::not_found(name);
+        }
+        // Dispatch in overlay order: session → connection → curated base.
+        // First match wins. Each overlay is an OperationEnv impl that knows
+        // its own registry; the composite routes to the right one.
+        if let Some(session) = &self.session {
+            // session impl checks its own registry; if not found, falls
+            // through (returns a sentinel or the composite continues).
+            // Implementation detail: the session impl's `invoke` either
+            // dispatches or returns a "not in this overlay" signal.
+        }
+        if let Some(connection) = &self.connection {
+            // same pattern
+        }
+        self.base.invoke(namespace, operation, input, parent).await
+    }
+}
+```
+
+The exact "first match wins" mechanism (sentinel return, a separate
+`contains` check, or a try/else pattern) is a two-way door for
+implementation — the structural decision (composite trait object, overlay
+order, `Arc::clone` inheritance) is what ADR-024 locks.
 ```
 
 Two things happen in `invoke()`:
@@ -321,7 +393,7 @@ Two things happen in `invoke()`:
 
 Future work may add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
 
-**`OperationEnv` must remain a trait.** This is a constraint, not a suggestion. The trait-based design enables session-scoped registries (OQ-19) — a session env wraps the global env (check session registry first, fall through to global). Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close the session-overlay pattern. See OQ-19.
+**`OperationEnv` must remain a trait.** This is a constraint, not a suggestion. The trait-based design enables registry layering (ADR-024): the CallAdapter composes the root env per call from the curated base + active connection/session overlays, and overlays wrap the base via trait layering. Session-scoped registries (OQ-19) and connection-scoped remote imports (ADR-017 `from_call`) are both overlays on the same base, using the same mechanism. Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close both the session-overlay and connection-overlay patterns. This is the same integration-point pattern as `IdentityProvider` (ADR-004). See OQ-19 and ADR-024.
 
 ### Service Discovery
 
@@ -409,7 +481,7 @@ let registry = OperationRegistryBuilder::new()
 let call_adapter = CallAdapter::new(Arc::new(registry), identity_provider);
 ```
 
-The vault is used at construction time to populate `capabilities` in the registration bundle, not registered as call protocol operations. The registry is immutable after construction. Adding operations requires restarting the process. This is consistent with OQ-04, ADR-008, ADR-014, and ADR-022.
+The vault is used at construction time to populate `capabilities` in the registration bundle, not registered as call protocol operations. The curated layer (Layer 0) is immutable after construction — adding a `Local` op requires restarting the process. Session and imported overlays are dynamic at their respective scopes (ADR-024). This is consistent with OQ-04 (scoped to the `HandlerRegistry` by ADR-024), ADR-008, ADR-014, and ADR-022.
 
 ### Capability Injection
 
@@ -452,7 +524,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 ## Constraints
 
-- The registry is immutable after construction. No runtime registration or deregistration. Two-way door — `ArcSwap<OperationRegistry>` can be added later.
+- The registry is **layered by trust boundary** (ADR-024). The curated layer (`Local` provenance) is immutable after construction — adding a `Local` op requires restarting the process, which re-enters the startup trust boundary. Session (`Session`) and imported (`FromCall` etc.) ops are dynamic at their respective scopes (per-session, per-connection). The pre-ADR-024 blanket immutability claim was inherited by analogy from ADR-010's `HandlerRegistry` (ALPN-level) and did not apply to the operation registry — the TLS-config argument that justifies `HandlerRegistry` immutability does not touch the operation registry, which lives behind the single ALPN `alknet/call`.
 - Operation specs use JSON Schema. The call protocol's external interface is always JSON. irpc's postcard serialization is internal only.
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths. irpc service dispatch is contracted but not built.
 - The call protocol does not depend on any database. Operation specs are in-memory, populated at startup.
@@ -470,11 +542,12 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 |----------|-----|---------|
 | irpc as call protocol foundation | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc provides framing and service dispatch |
 | Call protocol stream model | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | Bidirectional streams, EventEnvelope, ID-based correlation |
-| Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Registry is immutable after construction |
+| Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | `HandlerRegistry` (ALPN-level) immutable after construction; `OperationRegistry` layered by ADR-024 (curated immutable, session/imported dynamic) |
 | Vault integration via assembly layer | [ADR-008](../../decisions/008-secret-service-integration.md) | Vault is a capability source, accessed at assembly time |
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Capabilities carry outbound credentials; call protocol carries no secret material |
 | Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; composition authority + scoped env |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
+| Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Curated (static, immutable) + session and connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
 
 ## Open Questions
@@ -484,13 +557,14 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-13** (resolved): Operation path format is `/{service}/{op}`. Remote dispatch is a separate mechanism, not a path prefix.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
-- **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Session ops are `Session` provenance (ADR-022) — always `Internal`, compose under restricted authority scoped down at sandbox creation.
+- **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Session ops are `Session` provenance (ADR-022) — always `Internal`, compose under restricted authority scoped down at sandbox creation. Generalized by ADR-024 to cover connection-scoped overlays as well.
 
 ## References
 
 - [call-protocol.md](call-protocol.md) — CallAdapter, EventEnvelope, stream model, PendingRequestMap
 - ADR-005: irpc as call protocol foundation
 - ADR-008: Vault integration point
-- ADR-010: ALPN router and endpoint (static registration)
+- ADR-010: ALPN router and endpoint (static registration — applies to the `HandlerRegistry`, not the `OperationRegistry`; see ADR-024 for the distinction)
 - ADR-012: Call protocol stream model
+- ADR-024: Operation registry layering (curated + session/connection overlays; `OperationEnv` as trait-object integration point)
 - Reference implementation: `/workspace/@alkdev/alknet-main/crates/alknet-core/src/call/`
