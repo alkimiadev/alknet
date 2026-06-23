@@ -1,7 +1,7 @@
 ---
 id: vault/key-versioning-rotation
 name: Implement version-indexed encryption key paths, bump CURRENT_KEY_VERSION to 2, and add rotate method
-status: pending
+status: completed
 depends_on: [vault/irpc-removal]
 scope: moderate
 risk: medium
@@ -124,4 +124,11 @@ decrypt, rotate, derive_encryption_key_for_version), and possibly `derivation.rs
 
 ## Summary
 
-> To be filled on completion
+Bumped `CURRENT_KEY_VERSION` to 2 (HD-derived per ADR-020). Added
+`encryption_path_for_version` in derivation.rs (v2 → `m/74'/2'/0'/0'`, v3 →
+`m/74'/2'/0'/1'`, rejects version < 2). Added `derive_encryption_key_for_version`
++ version-aware `encrypt`/`decrypt` + `rotate` method on `VaultServiceHandle`
+(ADR-021). Each version maps to a distinct derivation path; the blob carries
+its own version. 68 lib + 14 integration tests pass; clippy clean. Merged to
+develop (resolved conflicts with remove-password-derivation and
+poisoned-lock-recovery).
