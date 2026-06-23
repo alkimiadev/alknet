@@ -1,7 +1,7 @@
 ---
 id: call/protocol/call-adapter
 name: Implement CallAdapter (ProtocolHandler for alknet/call) with stream handling, identity resolution, and root context construction
-status: pending
+status: completed
 depends_on: [call/protocol/call-connection, call/registry/operation-env, call/registry/service-discovery, core/endpoint]
 scope: broad
 risk: high
@@ -257,4 +257,13 @@ same `id`; `call.completed` is `{ type: "call.completed", id, payload: {} }`.
 
 ## Summary
 
-> To be filled on completion
+Implemented `CallAdapter` (`ProtocolHandler` for ALPN `alknet/call`) in
+`protocol/adapter.rs`: stream handling via `accept_bi` loop, per-request identity
+resolution (`auth_token` overrides connection identity, falls back on failure),
+root context construction (`internal: false`, deadline, capabilities + scoped_env
+from registration bundle), env composition (`CompositeOperationEnv` with Layer 0
+base + Layer 2 connection overlay + optional Layer 1 session overlay),
+`operationId` leading slash stripped, `ResponseEnvelope`→`EventEnvelope` conversion,
+`PendingRequestMap` sweeper every 10s, connection drop fails all pending.
+`SessionOverlaySource` trait. Added `pending()` accessor to `CallConnection`.
+22 unit tests (142 total in call crate). Clippy clean. Merged to develop.
