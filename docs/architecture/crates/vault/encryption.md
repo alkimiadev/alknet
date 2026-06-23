@@ -1,5 +1,5 @@
 ---
-status: draft
+status: stable
 last_updated: 2026-06-23
 ---
 
@@ -219,12 +219,6 @@ Rotation decrypts with the old version's key and re-encrypts with the new
 version's key. No new mnemonic needed — the same seed produces all version
 keys via different paths. See ADR-021 for the full mechanism.
 
-**The current source uses `CURRENT_KEY_VERSION = 1` with HD derivation and
-does not implement version-indexed paths or `rotate`.** These are drift
-items to be corrected during implementation sync. See ADR-020 (version
-bump to 2) and ADR-021 (rotation mechanism). See the [Known Source
-Drift](README.md#known-source-drift) table in the vault README.
-
 ## Errors
 
 ```rust
@@ -281,12 +275,10 @@ These are security-critical implementation requirements.
 - **OsRng for IVs**: The IV must be generated with `OsRng` (or an
   equivalent CSPRNG), never `rand::random()`. IV reuse under the same key
   is catastrophic for GCM — it breaks authenticity and creates a
-  two-time-pad on the plaintext. **The current source uses
-  `rand::random()` for IV generation (`encryption.rs` line 133) — this is a
-  known drift from the spec and must be corrected during implementation
-  sync.** `rand::random()` uses the thread-local RNG which may not be a
-  CSPRNG on all platforms; `OsRng` reads from the operating system's
-  entropy source and is the correct choice for cryptographic nonces.
+  two-time-pad on the plaintext. `rand::random()` uses the thread-local RNG
+  which may not be a CSPRNG on all platforms; `OsRng` reads from the
+  operating system's entropy source and is the correct choice for
+  cryptographic nonces.
 - **Zeroized drop**: `EncryptionKey` derives `Zeroize` and
   `ZeroizeOnDrop`. The key bytes are zeroized before deallocation. Do not
   store key material in types that don't zeroize.

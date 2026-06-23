@@ -1,5 +1,5 @@
 ---
-status: draft
+status: stable
 last_updated: 2026-06-23
 ---
 
@@ -236,9 +236,8 @@ ADR-025 and [open-questions.md](../../open-questions.md).
 
 ## References
 
-- Implementation: `crates/alknet-vault/src/protocol.rs` (to be updated
-  per ADR-025 — remove `VaultProtocol` enum and irpc usage)
+- Implementation: `crates/alknet-vault/src/protocol.rs`
 - Tests: `crates/alknet-vault/src/protocol.rs` (unit tests for redaction
-  and zeroize behavior; postcard tests to be removed)
+  and zeroize behavior)
 - [service.md](service.md) — `VaultServiceHandle` runtime API
 - [mnemonic-derivation.md](mnemonic-derivation.md) — what `KeyType` means

@@ -7,7 +7,7 @@ last_updated: 2026-06-23
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists, pending ADR-025/026 refactor to drop irpc and remove derive_password) and research/reference material. Foundational ADRs (001–026) are in place. ADR-024 resolves the registry mutability question and the `OperationContext.env` type identity crisis by layering the registry by trust boundary. ADR-025 drops irpc from the vault, making it local-only by construction. ADR-026 records the HD-derivation key model as a foundational decision. Review #003 (type/API surface completeness) resolved: `DerivedKey` derive contradiction, `encrypt` prose, return-type divergence, RwLock contradiction, drift table gaps, ADR-022 stale sketches, `Capabilities`/`SessionOverlaySource`/`CallConnection`/`CachedKey` definitions, `CompositeOperationEnv` dispatch contract, `with_local` signature, payload schemas, timeout propagation, and request ID generation. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation complete and verified, local-only by construction per ADR-025, HD-derivation key model per ADR-026) and research/reference material. Foundational ADRs (001–026) are in place. ADR-024 resolves the registry mutability question and the `OperationContext.env` type identity crisis by layering the registry by trust boundary. ADR-025 drops irpc from the vault, making it local-only by construction. ADR-026 records the HD-derivation key model as a foundational decision. Review #003 (type/API surface completeness) resolved: `DerivedKey` derive contradiction, `encrypt` prose, return-type divergence, RwLock contradiction, drift table gaps, ADR-022 stale sketches, `Capabilities`/`SessionOverlaySource`/`CallConnection`/`CachedKey` definitions, `CompositeOperationEnv` dispatch contract, `with_local` signature, payload schemas, timeout propagation, and request ID generation. The alknet-core and alknet-call crate specs are in draft; the alknet-vault crate specs are stable.
 
 **Next step**: Implementation. All open questions are resolved. The specs have passed three review passes (#001 governance/security model, #002 cross-document consistency/two-way-door audit, #003 type/API surface completeness).
 
@@ -25,11 +25,11 @@ last_updated: 2026-06-23
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, EventEnvelope framing, stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
 | [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery, irpc integration |
-| [crates/vault/README.md](crates/vault/README.md) | draft | alknet-vault crate index |
-| [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | draft | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
-| [crates/vault/encryption.md](crates/vault/encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
-| [crates/vault/service.md](crates/vault/service.md) | draft | VaultServiceHandle lifecycle, actor dispatch, cache, error model |
-| [crates/vault/protocol.md](crates/vault/protocol.md) | draft | DerivedKey redaction, KeyType, serialization behavior |
+| [crates/vault/README.md](crates/vault/README.md) | stable | alknet-vault crate index |
+| [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | stable | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
+| [crates/vault/encryption.md](crates/vault/encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
+| [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
+| [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 
 ## ADR Table
 
