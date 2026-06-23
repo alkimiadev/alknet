@@ -1,7 +1,7 @@
 ---
 id: core/core-types
 name: "Implement core types: ProtocolHandler, Connection, BiStream, SendStream, RecvStream, StreamError, HandlerError, Capabilities"
-status: pending
+status: completed
 depends_on: [core/crate-init]
 scope: broad
 risk: medium
@@ -221,4 +221,16 @@ Returned by `Connection::set_identity()` if called a second time.
 
 ## Summary
 
-> To be filled on completion
+Implemented all core types in `types.rs`: `ProtocolHandler` trait (`alpn` +
+`handle`), `HandlerError` (4 variants), `Connection` (quinn/iroh feature-gated
+enum dispatch, `OnceLock` write-once identity, `accept_bi`/`open_bi`/`close`/
+`remote_alpn`/`remote_addr`), `BiStream` trait, `SendStream`/`RecvStream`
+`AsyncWrite`/`AsyncRead` wrappers, `StreamError`, `From<StreamError>` for
+`HandlerError`, `Capabilities` (`Zeroize`+`ZeroizeOnDrop`, immutable builder API,
+`Secret<String>` wrapper, non-serializable), `IdentityAlreadySet`. Added minimal
+`Identity`/`AuthContext` in `auth.rs`. 13 unit tests pass; clippy clean across
+feature combos. Merged to develop.
+
+Notable: `quinn::Connection` has no `alpn()` accessor so ALPN is stored separately
+(`from_quinn_with_alpn`); iroh 0.35 types via `iroh::endpoint::*`; iroh Connection
+has no `remote_address` (returns None per spec).
