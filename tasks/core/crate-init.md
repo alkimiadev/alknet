@@ -1,7 +1,7 @@
 ---
 id: core/crate-init
 name: Initialize alknet-core crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: low
@@ -113,4 +113,8 @@ subsequent tasks (core-types, config, auth, endpoint) fill these in.
 
 ## Summary
 
-> To be filled on completion
+Created `crates/alknet-core/` with `Cargo.toml` (all 14 dependencies, quinn/iroh
+feature flags per ADR-010), `src/lib.rs` with module declarations, and 4 skeleton
+module files (`types.rs`, `auth.rs`, `config.rs`, `endpoint.rs`) with doc comments
+and TODO markers. Added to workspace `members`. `cargo check`/`clippy`/`fmt` clean.
+Merged to develop.
