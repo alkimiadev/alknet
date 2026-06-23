@@ -1,7 +1,7 @@
 ---
 id: vault/derivedkey-serialization
 name: Implement always-redact DerivedKey serialization and reject redacted payloads on deserialize
-status: pending
+status: completed
 depends_on: [vault/irpc-removal]
 scope: narrow
 risk: medium
@@ -137,4 +137,9 @@ the irpc removal task (drift #4) because both modify `protocol.rs`.
 
 ## Summary
 
-> To be filled on completion
+Replaced `DerivedKey`'s derived `Deserialize` with custom serde impls. `Serialize`
+now always redacts `private_key` as `"[REDACTED]"` (dropped the
+`is_human_readable()` branch that preserved bytes in binary formats). Custom
+`Deserialize` rejects `private_key == b"[REDACTED]"` with an explicit error
+message. Added tests for redacted-payload rejection and debug-no-leak. All tests
+pass; clippy clean. Merged to develop.
