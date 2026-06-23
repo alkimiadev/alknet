@@ -66,9 +66,11 @@ wraps the vault (see ADR-025, OQ-021).
 
 **alknet-vault has zero alknet crate dependencies.** It depends only on
 external crates (`bip39`, `ed25519-bip32`, `aes-gcm`, `sha2`, `hmac`,
-`secp256k1`, `tokio` for `RwLock` sync primitives, `serde`,
-`zeroize`, `thiserror`, `base64`, `rand`). ADR-025 dropped `irpc`,
-`irpc-derive`, and `postcard` — the vault no longer uses irpc dispatch.
+`secp256k1`, `serde`, `zeroize`, `thiserror`, `base64`, `rand`). ADR-025
+dropped `irpc`, `irpc-derive`, `postcard`, and `tokio` — the vault no longer
+uses irpc dispatch or async sync primitives. All vault methods are
+synchronous; `std::sync::RwLock` provides thread safety without a tokio
+dependency.
 
 The vault does not depend on:
 - `alknet-core` — no shared types, no `Identity`, no `AuthContext`
@@ -152,8 +154,8 @@ makes the freeze explicit and enforceable by review.
 
 **Positive:**
 - The vault compiles and runs without QUIC, quinn, iroh, rustls, or a tokio
-  runtime (the `VaultServiceHandle` works with just `std::sync::RwLock`; the
-  actor uses `tokio::sync::mpsc` but that's a lightweight dependency).
+  runtime (the `VaultServiceHandle` works with just `std::sync::RwLock`;
+  ADR-025 removed the actor and its `tokio::sync::mpsc` dependency entirely).
 - CLI tools, test harnesses, and future WASM targets can use the vault for key
   derivation without pulling in networking crates.
 - The vault's API surface is stable — changes to alknet-core types don't

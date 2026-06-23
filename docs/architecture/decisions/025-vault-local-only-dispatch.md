@@ -164,11 +164,12 @@ auth-wrapping handler, and the operation filtering (Unlock/Lock local-only).
 ### 5. The vault's dependency footprint shrinks
 
 The vault drops: `irpc`, `irpc-derive`, `postcard` (for remote), `noq`
-(via irpc), `iroh` (via irpc-iroh). It retains: `bip39`, `ed25519-bip32`,
-`aes-gcm`, `sha2`, `hmac`, `secp256k1` (feature-gated), `tokio` (for
-`RwLock` sync primitives, not for channels), `serde` (for `DerivedKey`
-redaction and `EncryptedData` wire format), `zeroize`, `thiserror`, `base64`,
-`rand`.
+(via irpc), `iroh` (via irpc-iroh), and `tokio` (the actor's
+`tokio::sync::mpsc` channels are gone; all vault methods are synchronous
+and use `std::sync::RwLock` for thread safety). It retains: `bip39`,
+`ed25519-bip32`, `aes-gcm`, `sha2`, `hmac`, `secp256k1` (feature-gated),
+`serde` (for `DerivedKey` redaction and `EncryptedData` wire format),
+`zeroize`, `thiserror`, `base64`, `rand`.
 
 ADR-018's "zero alknet crate dependencies" becomes "zero alknet crate
 dependencies and zero RPC framework dependencies." This is the cleanest

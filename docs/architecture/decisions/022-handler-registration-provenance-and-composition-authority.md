@@ -348,12 +348,13 @@ fn build_root_context(
         handler_identity: registration.composition_authority,  // C1: from bundle, None for leaves
         capabilities: registration.capabilities.clone(),       // C3: from bundle
         metadata: HashMap::new(),
+        abort_policy: AbortPolicy::default(),  // abort-dependents (ADR-016 Decision 6)
         // env/scoped_env split by ADR-024: scoped_env is the reachability
         // data (from the bundle), env is the dispatch trait object (composed
         // per-call by the CallAdapter from active overlays).
         scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),       // C2: from bundle, empty for leaves
-        env: /* CallAdapter.compose_root_env(...) — see ADR-024 */,
+        env: self.compose_root_env(/* connection, session */),  // Arc<dyn OperationEnv + Send + Sync> — see ADR-024
         internal: false,                    // wire call — ACL against caller identity
     }
 }
@@ -386,6 +387,7 @@ async fn invoke(&self, namespace: &str, operation: &str, input: Value,
         handler_identity: registration.composition_authority.clone(),  // C1: child's own authority
         capabilities: parent.capabilities.clone(),       // C3: propagate through composition
         metadata: HashMap::new(),                        // fresh — does NOT propagate (ADR-014)
+        abort_policy: parent.abort_policy.clone(),       // inherit parent's policy (ADR-016 Decision 6, W19)
         // env/scoped_env split by ADR-024:
         scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),   // C2: child's own scoped env

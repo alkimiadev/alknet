@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-25
+last_updated: 2026-06-23
 ---
 
 # alknet-vault
@@ -128,6 +128,8 @@ truth for drift tracking — if an item is fixed in source, update this table.
 | 6 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
 | 7 | `derive_password` / `site_password_path` | `derive_password`, `derive_password_string`, `site_password_path` methods exist | Remove entirely — password-manager pattern not relevant to RPC system's vault (ADR-025, resolves C9) | `service.rs`, `mnemonic-derivation.rs` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
 | 8 | `unlock_new` return type | Returns `String` (not zeroized on drop) | Return `Zeroizing<String>` — the mnemonic is the root of trust and must not linger in freed memory (resolves W7) | `service.rs` | [service.md → unlock_new](service.md#unlock_newword_count--phrase) |
+| 9 | `key_version` ignored in encrypt/decrypt | `encrypt`/`decrypt` always derive at `PATHS::ENCRYPTION` regardless of `key_version` | Derive at `encryption_path_for_version(key_version)` — encrypt stamps the passed version, decrypt selects the key by the blob's version (ADR-021) | `service.rs` | [service.md → encrypt](service.md#encryptplaintext-key_version--encrypteddata), [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) |
+| 10 | `rotate` not implemented | No `rotate` method exists | Implement `rotate(encrypted, to_version)` — decrypt with old version's key, re-encrypt with new version's key (ADR-021) | `service.rs` | [service.md → rotate](service.md#rotateencrypted-to_version--encrypteddata), [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) |
 
 ## Public API
 
@@ -139,9 +141,14 @@ pub use mnemonic::{Language, Mnemonic, Seed};
 
 // Derivation
 pub use derivation::{DerivationError, ExtendedPrivKey, PATHS};
+// Derivation helpers (derive_path_from_seed, parse_derivation_path,
+// device_path, encryption_path_for_version) are accessible as
+// alknet_vault::derivation::* — not re-exported at crate root to avoid
+// clutter, but fully public.
 
 // Encryption
-pub use encryption::{EncryptedData, EncryptionError};
+pub use encryption::{EncryptedData, EncryptionError, EncryptionKey};
+pub use encryption::CURRENT_KEY_VERSION;
 
 // Key types (DerivedKey, KeyType)
 pub use protocol::{DerivedKey, KeyType};

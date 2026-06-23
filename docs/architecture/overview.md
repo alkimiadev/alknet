@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-20
+last_updated: 2026-06-23
 ---
 
 # Alknet Overview
@@ -165,7 +165,7 @@ The following types live in alknet-core and are used across handler crates:
 | `Identity` | Authenticated peer identity (inbound) |
 | `IdentityProvider` | Trait for resolving credentials to identity |
 | `AuthToken` | Opaque authentication token |
-| `Capabilities` | Outbound credentials injected by the assembly layer (non-serializable, zeroized) |
+| `Capabilities` | Outbound credentials injected by the assembly layer (non-serializable, zeroized, immutable after construction) — defined in [core-types.md](crates/core/core-types.md#capabilities) |
 | `Visibility` | Operation visibility — External (wire-callable) or Internal (composition-only) |
 | `StaticConfig` | Immutable configuration loaded at startup |
 | `DynamicConfig` | Hot-reloadable configuration (`ArcSwap`) |

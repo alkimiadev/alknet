@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-25
+last_updated: 2026-06-23
 ---
 
 # Service
@@ -24,12 +24,16 @@ no remote dispatch.
 ## VaultServiceHandle
 
 The primary API for local (in-process) use. Thread-safe via
-`Arc<RwLock<VaultServiceInner>>`.
+`std::sync::RwLock` — all methods are **synchronous** (no `async`, no
+`.await`). The RwLock provides concurrent reads (derive operations) and
+exclusive writes (unlock/lock). `tokio` is not a dependency of the vault
+(ADR-025); `std::sync::RwLock` is sufficient because no method holds the
+lock across an await point.
 
 ```rust
 #[derive(Clone)]
 pub struct VaultServiceHandle {
-    inner: Arc<RwLock<VaultServiceInner>>,
+    inner: Arc<std::sync::RwLock<VaultServiceInner>>,
 }
 
 struct VaultServiceInner {
@@ -39,6 +43,11 @@ struct VaultServiceInner {
     cache: KeyCache,            // TTL + LRU, see Cache section
 }
 ```
+
+**Invariant**: `unlocked` is `true` iff `seed.is_some()`. The `unlocked`
+flag exists for cheap read-only checks (`is_unlocked`); the ground truth is
+`seed.is_some()`. `lock()` sets `unlocked = false` and clears `seed`/`mnemonic`
+to `None`; `unlock`/`unlock_new` set `unlocked = true` and populate `seed`.
 
 `VaultServiceHandle` is `Clone` — cloning shares the underlying state via
 `Arc`. This is how the actor and the assembly layer share the same vault.
@@ -84,6 +93,10 @@ memory. The caller should extract the phrase for secure storage (write
 down, display to user) and let the `Zeroizing<String>` drop when done.
 Do not clone the returned value or store it in a non-zeroizing container.
 Supported word counts: 12, 15, 18, 21, 24.
+
+Returns `VaultServiceError::AlreadyUnlocked` if the vault is already
+unlocked (matching `unlock`'s behavior — `unlock_new` is a "first run"
+operation and should not silently replace an existing mnemonic).
 
 This is the "first run" path — a new node generates its mnemonic, writes
 it down, and the vault is unlocked for the process lifetime. The
@@ -137,22 +150,27 @@ Derive an AES-256-GCM encryption key at the given path. Same cache
 behavior as `derive_ed25519`. Returns a `DerivedKey` with
 `KeyType::Aes256Gcm`.
 
-### derive_encryption_key_for_version(version) → EncryptionKey
+### derive_encryption_key_for_version(version) → DerivedKey
 
 ```rust
-pub fn derive_encryption_key_for_version(&self, version: u32) -> Result<EncryptionKey, VaultServiceError>;
+pub fn derive_encryption_key_for_version(&self, version: u32) -> Result<DerivedKey, VaultServiceError>;
 ```
 
 Derive the encryption key for a specific key version. Maps the version to
 its derivation path via `encryption_path_for_version(version)` (ADR-021):
 v2 → `m/74'/2'/0'/0'`, v3 → `m/74'/2'/0'/1'`, etc. Cached by path. This is
-the version-aware method that `decrypt` uses to select the correct key for
-each blob — see [encryption.md](encryption.md) and ADR-021.
+the version-aware method that `encrypt` and `decrypt` use to select the
+correct key for each blob — see [encryption.md](encryption.md) and ADR-021.
+Returns `VaultServiceError::InvalidPath` for `version < 2` (v1 is TS PBKDF2
+legacy — the vault cannot derive it; v0 is meaningless).
 
 `derive_encryption_key(path)` (above) remains as the path-based API for
 deriving at arbitrary paths. `derive_encryption_key_for_version(version)`
-is the version-aware API used by `encrypt` and `decrypt`. The two share
-the same cache (keyed by derivation path).
+is the version-aware API used by `encrypt` and `decrypt`. Both return
+`DerivedKey` with `KeyType::Aes256Gcm` and share the same cache (keyed by
+derivation path). `encrypt` and `decrypt` extract the `EncryptionKey` from
+the `DerivedKey` via `EncryptionKey::from_derived_bytes` (see
+[encryption.md](encryption.md#encryption-key)).
 
 ### derive_ethereum_key(path) → DerivedKey (feature-gated)
 
@@ -172,10 +190,11 @@ Derive a secp256k1 keypair at the given BIP-0032 path. Returns
 pub fn encrypt(&self, plaintext: &str, key_version: u32) -> Result<EncryptedData, VaultServiceError>;
 ```
 
-Encrypt plaintext using the encryption key derived at `PATHS::ENCRYPTION`.
-Derives (and caches) the encryption key on first call, then uses the cache
-for subsequent calls. See [encryption.md](encryption.md) for the
-cryptographic details.
+Encrypt plaintext using the encryption key derived at
+`encryption_path_for_version(key_version)` (ADR-021). The same `key_version`
+is stamped on the resulting `EncryptedData`. Derives (and caches) the
+encryption key on first call, then uses the cache for subsequent calls. See
+[encryption.md](encryption.md) for the cryptographic details.
 
 ### decrypt(encrypted) → String
 
@@ -218,6 +237,15 @@ pub struct KeyCache {
     config: CacheConfig,
 }
 
+/// A cached derived key. Wraps a `DerivedKey` with cache metadata.
+/// Derives `Zeroize` and `ZeroizeOnDrop` — the private key is zeroized
+/// when the entry is evicted (LRU/TTL) or the cache is cleared.
+pub struct CachedKey {
+    key: DerivedKey,            // the derived key (zeroized on drop)
+    cached_at: Instant,         // when the entry was inserted (for TTL)
+    last_accessed: Instant,     // for LRU ordering
+}
+
 pub struct CacheConfig {
     pub ttl: Duration,          // default: 1 hour
     pub max_entries: usize,     // default: 64
@@ -228,9 +256,10 @@ pub struct CacheConfig {
   evicted lazily on access (`get` checks expiry) or via `evict_expired()`.
 - **LRU**: when the cache exceeds `max_entries` (default 64), the least
   recently used entry is evicted. Access (`get`) updates the LRU order.
-- **Zeroized**: `CachedKey` derives `Zeroize` and `ZeroizeOnDrop`. Evicted
-  and cleared entries are zeroized — derived private keys do not linger in
-  freed heap memory.
+- **Zeroized**: `CachedKey` derives `Zeroize` and `ZeroizeOnDrop` (via the
+  `DerivedKey` it holds, which is `#[zeroize(drop)]`). Evicted and cleared
+  entries are zeroized — derived private keys do not linger in freed heap
+  memory.
 - **Cleared on lock**: `lock()` calls `cache.clear()`, which removes and
   zeroizes all entries.
 
@@ -241,15 +270,18 @@ pub struct CacheConfig {
 | `derive_ed25519` | Yes | Derivation is expensive; keys are reused |
 | `derive_encryption_key` | Yes | Same — encryption key reused across calls |
 | `derive_ethereum_key` | Yes | Same |
-| `encrypt` / `decrypt` | Key cached | The encryption key (at `PATHS::ENCRYPTION`) is cached; the plaintext is not |
+| `encrypt` / `decrypt` | Key cached | The encryption `DerivedKey` (at `encryption_path_for_version(key_version)`) is cached; the plaintext is not |
 
 ## Dispatch
 
 The vault uses **direct method calls** on `VaultServiceHandle` — no actor,
 no message enum, no channels, no serialization (ADR-025). The handle is
-`Arc<RwLock<VaultServiceInner>>` — clone it, share it, call methods
-directly. The RwLock provides concurrent reads (derive operations) and
-exclusive writes (unlock/lock).
+`Arc<std::sync::RwLock<VaultServiceInner>>` — clone it, share it, call
+methods directly. The `std::sync::RwLock` provides concurrent reads (derive
+operations) and exclusive writes (unlock/lock). All methods are synchronous
+(no `async`), so `std::sync::RwLock` is correct — a `tokio::sync::RwLock`
+would require async methods or risk blocking a tokio runtime when held
+across an await point. The vault does not depend on `tokio` (ADR-025).
 
 ```
 Assembly layer (CLI binary):

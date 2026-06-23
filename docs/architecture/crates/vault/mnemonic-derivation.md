@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-19
+last_updated: 2026-06-23
 ---
 
 # Mnemonic and Key Derivation
@@ -91,6 +91,12 @@ pub struct Seed {
 The 64-byte seed from which all HD keys are derived. Zeroized on drop.
 This is the input to SLIP-0010 / BIP-0032 master key derivation.
 
+`Seed` derives `Clone` for convenience (derivation functions take `&[u8]`,
+and the cache rebuild may need to reference the seed multiple times).
+Callers should prefer `&Seed` and avoid cloning — the seed is the root of
+trust, and each clone duplicates it into heap memory that lingers until
+zeroized.
+
 ## SLIP-0010 Ed25519 Derivation
 
 The default derivation scheme. SLIP-0010 specifies Ed25519 HD key
@@ -149,6 +155,15 @@ pub struct ExtendedPrivKey {
 The result of SLIP-0010 derivation. Zeroized on drop. Accessors return
 slices — the caller copies what it needs.
 
+```rust
+impl ExtendedPrivKey {
+    pub fn private_key(&self) -> &[u8];   // 32 bytes
+    pub fn public_key(&self) -> &[u8];    // 32 bytes
+    pub fn chain_code(&self) -> &[u8];    // 32 bytes
+    pub fn path(&self) -> &str;
+}
+```
+
 ## BIP-0032 secp256k1 Derivation (Ethereum)
 
 Feature-gated behind `secp256k1`. Implements BIP-0032 HD key derivation for
@@ -162,6 +177,33 @@ pub fn derive_secp256k1_path(seed: &[u8], path: &str) -> Result<Secp256k1Extende
 Unlike SLIP-0010 (Ed25519), BIP-0032 supports both hardened and
 unhardened child derivation. The standard Ethereum path
 `m/44'/60'/0'/0/0` uses unhardened indices for the last two levels.
+
+```rust
+#[derive(Clone, Zeroize)]
+#[zeroize(drop)]
+#[cfg(feature = "secp256k1")]
+pub struct Secp256k1ExtendedPrivKey {
+    private_key: Vec<u8>,   // 32 bytes
+    public_key: Vec<u8>,    // 33 bytes (compressed)
+    chain_code: Vec<u8>,   // 32 bytes
+    path: String,           // the path that produced this key
+}
+
+#[cfg(feature = "secp256k1")]
+impl Secp256k1ExtendedPrivKey {
+    pub fn private_key(&self) -> &[u8];
+    pub fn public_key(&self) -> &[u8];
+    pub fn chain_code(&self) -> &[u8];
+    pub fn path(&self) -> &str;
+}
+```
+
+The `VaultServiceHandle::derive_ethereum_key` method calls
+`derive_secp256k1_path` and wraps the result into a `DerivedKey`:
+`DerivedKey { key_type: KeyType::Secp256k1, private_key:
+extended.private_key().to_vec(), public_key:
+extended.public_key().to_vec() }`. The `Secp256k1ExtendedPrivKey` is then
+dropped and zeroized; the `DerivedKey` is the caller-facing type.
 
 ### Why a separate module
 
@@ -200,8 +242,16 @@ Helper functions construct parameterized paths:
 
 ```rust
 pub fn device_path(index: u32) -> String;                      // m/74'/0'/0'/{index}'
-pub fn encryption_path_for_version(version: u32) -> String;    // m/74'/2'/0'/{version-2}'
+pub fn encryption_path_for_version(version: u32) -> Result<String, DerivationError>;
+// m/74'/2'/0'/{version-2}' — returns InvalidPath for version < 2
 ```
+
+`encryption_path_for_version` returns `DerivationError::InvalidPath` for
+`version < 2`. v1 is reserved for the TS PBKDF2 legacy (ADR-020) — the vault
+cannot derive it, and silently mapping v1 to the v2 path would produce the
+wrong key (making v1 blobs appear to "decrypt" with a corrupted key). v0 is
+meaningless. `derive_encryption_key_for_version` propagates this error
+(`VaultServiceError::InvalidPath`).
 
 ### Path semantics
 
@@ -216,7 +266,9 @@ pub fn encryption_path_for_version(version: u32) -> String;    // m/74'/2'/0'/{v
 `encryption_path_for_version` maps a key version to its derivation path
 (ADR-021). v2 (current) maps to `m/74'/2'/0'/0'` (which is `PATHS::ENCRYPTION`);
 v3 maps to `m/74'/2'/0'/1'`; etc. This is the rotation mechanism — each
-version gets a cryptographically independent key from the same seed.
+version gets a cryptographically independent key from the same seed. Returns
+`InvalidPath` for `version < 2` (v1 is TS PBKDF2 legacy — undecryptable by
+the vault by design).
 
 `KeyType` tags `DerivedKey` (see [protocol.md](protocol.md)) and
 `CachedKey` (see [service.md](service.md)) so consumers know what they

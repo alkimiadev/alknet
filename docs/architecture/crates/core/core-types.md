@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-16
+last_updated: 2026-06-23
 ---
 
 # Core Types
@@ -178,6 +178,67 @@ in `StreamError`, but once a handler propagates via `HandlerError`, the
 endpoint treats all variants as "close the connection" (one-ALPN-per-
 connection, ADR-006).
 
+## Capabilities
+
+Outbound credentials injected by the assembly layer at registration time.
+A handler uses `Capabilities` to make authenticated outbound calls (LLM
+provider API keys, HTTP service tokens, signing keys). See ADR-014 for the
+secret-material flow and ADR-022 for the registration-bundle wiring.
+
+```rust
+/// Outbound credentials for a handler. Non-serializable, zeroized,
+/// immutable after construction. `Clone` is required by the composition
+/// model (`parent.capabilities.clone()` in `OperationEnv::invoke()`).
+///
+/// The concrete internal shape (a typed map, a struct with named fields)
+/// is a two-way door, but the public API is fixed: `new()`, `with_api_key()`,
+/// `with_http_token()`, and `get()`. Fields are private — callers cannot
+/// mutate the credentials after construction. This makes the clone-semantics
+/// two-way door genuinely two-way: Arc-based clone (shared immutable state)
+/// and deep-copy clone (isolated state) are behaviorally identical when
+/// neither supports mutation. See ADR-014, ADR-022, review #002 W2.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct Capabilities {
+    // Private — no interior mutability. The builder API (new, with_*) is
+    // the only construction path. Immutability after construction is the
+    // security guard that makes clone semantics safe.
+    entries: HashMap<String, Secret<String>>,
+}
+
+impl Capabilities {
+    /// Empty capabilities — for handlers that make no outbound calls.
+    pub fn new() -> Self;
+
+    /// Add an API key (e.g., "google", "openai") to the capabilities.
+    pub fn with_api_key(mut self, service: &str, key: String) -> Self;
+
+    /// Add an HTTP bearer token (e.g., "vastai", "github") to the capabilities.
+    pub fn with_http_token(mut self, service: &str, token: String) -> Self;
+
+    /// Retrieve a credential by service name, if present.
+    pub fn get(&self, service: &str) -> Option<&Secret<String>>;
+}
+```
+
+- **Non-serializable**: `Capabilities` does **not** derive `Serialize`. It
+  cannot appear in `EventEnvelope` payloads even by accident. This is a
+  type-level enforcement of ADR-014's "call protocol carries no secret material."
+- **Zeroized**: derives `Zeroize` and `ZeroizeOnDrop`. Secret material does
+  not linger in freed heap memory.
+- **`Clone` + `Send + Sync`**: required by the composition model —
+  `OperationEnv::invoke()` clones the parent's capabilities for each child.
+  `Send + Sync` is required because the context is held across async task
+  boundaries.
+- **Immutable after construction**: no `set`, no `insert`, no `mut` accessors.
+  This is the guard from review #002 W2 — it makes the Arc-vs-deep-copy clone
+  semantics genuinely two-way (shared immutable state is safe).
+- **Module location**: `Capabilities` lives in alknet-core (it's a shared type
+  — see overview.md's Shared Types table). alknet-call imports it.
+
+See [operation-registry.md → Capability Injection](../call/operation-registry.md#capability-injection)
+for how the dispatch path populates `OperationContext.capabilities` from the
+registration bundle.
+
 ## Design Decisions
 
 | Decision | ADR | Summary |
@@ -187,6 +248,7 @@ connection, ADR-006).
 | HandlerError is non-fatal | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Handler errors close the connection, not the endpoint |
 | SendStream/RecvStream wrap quinn + iroh | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Internal enum dispatch for both QUIC sources |
 | Connection stores handler-resolved identity | OQ-11 (resolved) | `set_identity` via `OnceLock` — write-once-read-many; read by handler-side logging, not by the endpoint (C13 resolved) |
+| Capabilities type | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Non-serializable, zeroized, immutable after construction; `Clone` for composition propagation |
 
 ## Open Questions
 

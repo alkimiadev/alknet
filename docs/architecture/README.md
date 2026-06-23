@@ -1,15 +1,15 @@
 ---
 status: draft
-last_updated: 2026-06-22-20
+last_updated: 2026-06-23
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists, pending ADR-025/026 refactor to drop irpc and remove derive_password) and research/reference material. Foundational ADRs (001–026) are in place. ADR-024 resolves the registry mutability question and the `OperationContext.env` type identity crisis by layering the registry by trust boundary. ADR-025 drops irpc from the vault, making it local-only by construction. ADR-026 records the HD-derivation key model as a foundational decision. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists, pending ADR-025/026 refactor to drop irpc and remove derive_password) and research/reference material. Foundational ADRs (001–026) are in place. ADR-024 resolves the registry mutability question and the `OperationContext.env` type identity crisis by layering the registry by trust boundary. ADR-025 drops irpc from the vault, making it local-only by construction. ADR-026 records the HD-derivation key model as a foundational decision. Review #003 (type/API surface completeness) resolved: `DerivedKey` derive contradiction, `encrypt` prose, return-type divergence, RwLock contradiction, drift table gaps, ADR-022 stale sketches, `Capabilities`/`SessionOverlaySource`/`CallConnection`/`CachedKey` definitions, `CompositeOperationEnv` dispatch contract, `with_local` signature, payload schemas, timeout propagation, and request ID generation. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
 
-**Next step**: Continue working through review #002's remaining Tier 4 findings (vault security decisions, guard clauses, ADR-writing exercises, smaller spec decisions). All open questions for the core and call crates are resolved; the vault crate's OQ-21 (remote vault) is now resolved (ADR-025 — vault is local-only by construction).
+**Next step**: Implementation. All open questions are resolved. The specs have passed three review passes (#001 governance/security model, #002 cross-document consistency/two-way-door audit, #003 type/API surface completeness).
 
 ## Architecture Documents
 

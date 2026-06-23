@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-22
+last_updated: 2026-06-23
 ---
 
 # Call Protocol
@@ -39,19 +39,122 @@ pub struct CallAdapter {
     /// Layer 1 — optional session-overlay source (agent crate supplies this;
     /// None for non-agent deployments). See ADR-024, OQ-19.
     session_source: Option<Arc<dyn SessionOverlaySource + Send + Sync>>,
+    /// Default timeout for wire calls (30s). Composed calls inherit the
+    /// parent's remaining deadline via `OperationContext.deadline`.
+    default_timeout: Duration,
 }
 
-// The connection's imported-ops overlay (Layer 2) is built per CallConnection
-// as from_call discovery completes — it's not a field on CallAdapter but
-// rather state held by the CallConnection / dispatch context for incoming
-// calls on that connection. See ADR-024.
-```
+impl CallAdapter {
+    /// Non-agent deployment: no session overlay, default timeout.
+    pub fn new(
+        registry: Arc<OperationRegistry>,
+        identity_provider: Arc<dyn IdentityProvider>,
+    ) -> Self {
+        Self { registry, identity_provider, session_source: None,
+               default_timeout: Duration::from_secs(30) }
+    }
+
+    /// Agent deployment: supply a session-overlay source. The agent crate
+    /// implements `SessionOverlaySource`; alknet-call defines the trait.
+    pub fn with_session_source(mut self, source: Arc<dyn SessionOverlaySource + Send + Sync>) -> Self {
+        self.session_source = Some(source);
+        self
+    }
+
+    /// Override the default timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.default_timeout = timeout;
+        self
+    }
+}
+
+/// Session overlay integration point (ADR-024). Defined in alknet-call
+/// because `CallAdapter` must name the type — alknet-call cannot depend on
+/// alknet-agent (agent depends on call, not reverse). The agent crate
+/// implements this trait; alknet-call defines it. This is the same pattern
+/// as `IdentityProvider` (ADR-004: core defines the trait, handlers impl it).
+///
+/// The session overlay is an `OperationEnv` impl that wraps the curated base
+/// (Layer 0). The `CallAdapter` composes it into the root
+/// `OperationContext.env` per incoming call when a session is active. The
+/// lookup mechanism (session ID in metadata, payload field, connection-bound
+/// session state) belongs to the agent crate — this trait is the integration
+/// point, not the lookup policy.
+pub trait SessionOverlaySource: Send + Sync {
+    /// Returns the session overlay env for the given call, if a session is
+    /// active. `None` means no session is active for this call — the root
+    /// env is `curated base + connection overlay` (no session layer).
+    /// The agent crate determines how to map a call to its session.
+    fn overlay_for(&self, context: &OperationContext) -> Option<Arc<dyn OperationEnv + Send + Sync>>;
+}
 
 The `CallAdapter` holds the static curated registry and an optional
 session-overlay source. Per-connection imported-ops overlays (Layer 2,
 ADR-024) are held with the connection and composed into the root
 `OperationContext.env` per incoming call. See ADR-024 for the layering
 model and `compose_root_env` below.
+
+### CallConnection
+
+A `CallConnection` represents an established `alknet/call` connection,
+regardless of which side opened it (ADR-017). It holds the connection's
+imported-ops overlay (Layer 2, ADR-024) — the set of `from_call`-imported
+operations discovered when the connection was established.
+
+```rust
+/// An established alknet/call connection (either direction — accepted or
+/// opened). Holds the connection's Layer 2 overlay (imported ops).
+pub struct CallConnection {
+    /// The underlying QUIC connection (from endpoint.accept or CallClient.connect).
+    connection: Connection,
+    /// Layer 2 — this connection's imported-ops overlay. Populated by
+    /// `from_call` discovery when the connection is established. Each
+    /// imported op is a `HandlerRegistration` with `provenance: FromCall`.
+    /// This overlay is an `OperationEnv` impl that the `CallAdapter`
+    /// composes into the root `OperationContext.env` per incoming call.
+    imported_operations: Arc<RwLock<HashMap<String, HandlerRegistration>>>,
+}
+
+impl CallConnection {
+    /// Register an imported operation into this connection's overlay
+    /// (Layer 2, ADR-024). Called by `from_call` after discovery.
+    pub fn register_imported(&self, registration: HandlerRegistration) {
+        let name = registration.spec.name.clone();
+        self.imported_operations.write().insert(name, registration);
+    }
+
+    /// Register multiple imported operations (bulk variant for `from_call`).
+    pub fn register_imported_all(&self, registrations: Vec<HandlerRegistration>) {
+        let mut overlay = self.imported_operations.write();
+        for reg in registrations {
+            overlay.insert(reg.spec.name.clone(), reg);
+        }
+    }
+
+    /// Build an `OperationEnv` impl for this connection's overlay. Used by
+    /// the `CallAdapter` when composing the root `OperationContext.env`.
+    /// Returns an `OperationEnv` that dispatches to this connection's
+    /// imported ops (and reports `contains` only for ops in the overlay).
+    pub fn overlay_env(&self) -> Arc<dyn OperationEnv + Send + Sync>;
+
+    /// Call an operation on the remote peer (sends `call.requested`).
+    pub async fn call(&self, operation_id: &str, input: Value) -> ResponseEnvelope;
+
+    /// Subscribe to a streaming operation on the remote peer.
+    pub async fn subscribe(&self, operation_id: &str, input: Value) -> impl Stream<Item = ResponseEnvelope>;
+
+    /// Abort an in-flight request (sends `call.aborted`, cascades per ADR-016).
+    pub async fn abort(&self, request_id: &str);
+}
+```
+
+**Layer 0 vs Layer 2 registration API** (ADR-024): `OperationRegistryBuilder`
+builds Layer 0 (curated, immutable after startup) via `.with_local()` /
+`.with_leaf()` / `.with()`. Layer 2 (per-connection) registration uses
+`CallConnection::register_imported()` at runtime — the builder is
+Layer-0-only; runtime overlay registration uses `CallConnection` methods.
+When the connection drops, the overlay (and all imported ops) is dropped —
+no explicit deregistration needed.
 
 The adapter:
 1. Accepts bidirectional streams on the connection
@@ -161,6 +264,29 @@ Fields:
 - `details` — optional. When the code matches a declared `ErrorDefinition`, `details` conforms to that definition's schema. This is the typed error payload — it makes errors structured instead of string-matched. See ADR-023.
 
 New error codes may be added in future versions. Clients should treat unknown error codes as `INTERNAL` with `retryable: false`.
+
+### Wire Payload Schemas
+
+The `payload` field of `EventEnvelope` has a different shape per event type:
+
+| Event | `payload` shape |
+|-------|----------------|
+| `call.requested` | `{ "operationId": "/fs/readFile", "input": {...}, "auth_token": "alk_..." (optional) }` |
+| `call.responded` | `{ "output": <Value> }` — the operation's output, matching `output_schema` |
+| `call.completed` | `{}` — empty object (subscription stream end signal) |
+| `call.aborted` | `{}` — empty object (cancellation signal; the `id` identifies which request) |
+| `call.error` | `{ "code": "...", "message": "...", "retryable": bool, "details": {...} (optional) }` |
+
+### `ResponseEnvelope` → `EventEnvelope` Conversion
+
+Local dispatch produces `ResponseEnvelope { request_id, result: Result<Value, CallError> }`. The `CallAdapter` converts it to `EventEnvelope` for the wire:
+
+| `ResponseEnvelope` | `EventEnvelope` |
+|--------------------|-----------------|
+| `Ok(value)` | `{ type: "call.responded", id: request_id, payload: { output: value } }` |
+| `Err(call_error)` | `{ type: "call.error", id: request_id, payload: <serialized CallError> }` |
+
+The `request_id` becomes the `id` field. For subscriptions, each `call.responded` is a separate `EventEnvelope` with the same `id`; `call.completed` is `{ type: "call.completed", id, payload: {} }`.
 
 ### Protocol Operations
 
@@ -304,6 +430,7 @@ fn build_root_context(
         handler_identity: registration.composition_authority.clone(),
         capabilities: registration.capabilities.clone(),  // from the registration bundle
         metadata: HashMap::new(),        // fresh per request
+        deadline: Some(Instant::now() + self.default_timeout),  // root deadline (W7)
         scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),  // from the bundle, empty for leaves
         // Per-call env composition (ADR-024): the root env is a composite
@@ -349,7 +476,17 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 
 **Stream reset**: When a QUIC stream is reset mid-operation, the `FrameFramedReader` returns an error. If the stream was carrying a subscription, the `PendingRequestMap` entry is removed and the mpsc channel is closed. If the stream was carrying a call, the oneshot is resolved with an error. No `call.aborted` is sent — the stream is gone.
 
-**Timeouts**: Default timeout for calls is 30 seconds. Default timeout for subscriptions is optional (the client can specify a timeout in the `call.requested` payload, or leave it open-ended). The `PendingRequestMap` sweeper runs every 10 seconds and removes expired entries. Timeouts are configurable at the `CallAdapter` level, not per-operation.
+**Timeouts**: Default timeout for wire calls is 30 seconds, configurable via
+`CallAdapter::with_timeout()`. The `build_root_context` sets
+`OperationContext.deadline` to `now + default_timeout`. Composed calls
+inherit the parent's deadline (children do **not** get a fresh 30s — the
+root call's deadline bounds the entire call tree, preventing a depth-5
+composition from running 150s). A composed call that exceeds the deadline
+is cancelled (future dropped, `Drop` guards release resources) and returns
+`CallError { code: "TIMEOUT", retryable: true }`. Subscriptions default to
+no deadline (`deadline: None` — unbounded); the client can specify a
+timeout in the `call.requested` payload. The `PendingRequestMap` sweeper
+runs every 10 seconds and removes expired wire entries.
 
 **Error handling in `CallAdapter::handle()`**: If a handler panics, the stream is closed and the `PendingRequestMap` entry (if any) is cleaned up by the next sweeper pass. Other streams and the connection are unaffected.
 

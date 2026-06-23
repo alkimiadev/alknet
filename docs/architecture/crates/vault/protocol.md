@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-25
+last_updated: 2026-06-23
 ---
 
 # Protocol
@@ -26,7 +26,7 @@ The result of key derivation. Holds the key type, private key, and public
 key.
 
 ```rust
-#[derive(Zeroize, Deserialize)]
+#[derive(Zeroize)]
 #[zeroize(drop)]
 pub struct DerivedKey {
     #[zeroize(skip)]
@@ -37,6 +37,12 @@ pub struct DerivedKey {
     pub public_key: Vec<u8>,        // not secret — public by definition
 }
 ```
+
+`DerivedKey` does **not** derive `Deserialize` via `#[derive]`. It has a **custom
+`Deserialize` impl** that rejects redacted payloads — see
+[Serialization Redaction](#serialization-redaction) below. (A derived
+`Deserialize` would generate a default impl that conflicts with the manual one,
+and would not produce the explicit redaction-rejection error the spec requires.)
 
 The `#[zeroize(skip)]` attributes on `key_type` and `public_key` mean only
 the `private_key` is zeroized when the `DerivedKey` is dropped. The public
@@ -65,16 +71,62 @@ private key, regardless of format:
   `"[REDACTED]"`. This is defense-in-depth — if a `DerivedKey` accidentally
   ends up in a log, a JSON config, or debug output, the private key is not
   exposed.
-- **Deserialization**: rejects `private_key == "[REDACTED]"` with an error.
-  A JSON-deserialized `DerivedKey` with a redacted private key is invalid
-  and produces a deserialization error, not a corrupted key. This resolves
-  review #002 W8 (silent corruption on JSON-deserialized `DerivedKey`).
+- **Deserialization**: a custom `Deserialize` impl rejects
+  `private_key == "[REDACTED]"` with a deserialization error (not a corrupted
+  key). This resolves review #002 W8 (silent corruption on JSON-deserialized
+  `DerivedKey`). The custom impl is required because `#[derive(Deserialize)]`
+  would generate a default impl that conflicts and would only fail incidentally
+  (serde type mismatch: string vs sequence), not with the explicit
+  redaction-rejection error the spec requires.
 - **No binary-format preservation path.** ADR-025 dropped the postcard/remote
   dispatch path that previously preserved private key bytes in binary
   formats. `DerivedKey` is always used in-process (ADR-014: never appears
   in call protocol payloads). If a future remote-vault crate needs to send
   `DerivedKey` over the wire, it defines its own serialization for that
   context — the vault's `DerivedKey` stays redact-always.
+
+```rust
+// Custom Serialize — always redacts private_key
+impl serde::Serialize for DerivedKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        use serde::SerializeStruct;
+        let mut s = serializer.serialize_struct("DerivedKey", 3)?;
+        s.serialize_field("key_type", &self.key_type)?;
+        s.serialize_field("private_key", "[REDACTED]")?;  // never the real bytes
+        s.serialize_field("public_key", &self.public_key)?;
+        s.end()
+    }
+}
+
+// Custom Deserialize — rejects "[REDACTED]" with an error
+impl<'de> serde::Deserialize<'de> for DerivedKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        #[derive(serde::Deserialize)]
+        struct DerivedKeyHelper {
+            key_type: KeyType,
+            private_key: Vec<u8>,
+            public_key: Vec<u8>,
+        }
+        let helper = DerivedKeyHelper::deserialize(deserializer)?;
+        // Reject redacted payloads — a JSON-deserialized DerivedKey with a
+        // redacted private key is invalid, not a corrupted key.
+        if helper.private_key == b"[REDACTED]" {
+            return Err(serde::de::Error::custom(
+                "DerivedKey.private_key is \"[REDACTED]\" — redacted payloads \
+                 cannot be deserialized. JSON round-tripping a DerivedKey is \
+                 not supported (the private key is gone)."
+            ));
+        }
+        Ok(DerivedKey {
+            key_type: helper.key_type,
+            private_key: helper.private_key,
+            public_key: helper.public_key,
+        })
+    }
+}
+```
 
 The redaction is **not the primary control** for keeping private keys off
 the wire. The primary control is architectural: `DerivedKey` never appears
@@ -112,8 +164,10 @@ pub enum KeyType {
 ```
 
 Tags `DerivedKey` and `CachedKey` so consumers know what they received.
-`KeyType` is `Serialize`/`Deserialize` (it's part of the irpc protocol) and
-`Clone` (it's not secret material — it's a tag).
+`KeyType` is `Serialize`/`Deserialize` (retained for `EncryptedData` interop
+and future use — ADR-025 removed the irpc dispatch path that previously
+justified these derives, but the type remains serializable for structured
+storage scenarios) and `Clone` (it's not secret material — it's a tag).
 
 ## Wire Format
 

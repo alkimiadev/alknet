@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-23
 ---
 
 # Encryption
@@ -59,27 +59,58 @@ equals the mnemonic. Migration is a one-time re-encryption (see ADR-020).
 
 ## Encryption Key
 
-The encryption key is derived from the seed at path `m/74'/2'/0'/0'`
-(`PATHS::ENCRYPTION`):
+The encryption key is derived from the seed at a version-indexed path
+(`m/74'/2'/0'/{version-2}'` per ADR-021; v2 is `PATHS::ENCRYPTION`):
 
 ```rust
+/// AES-256-GCM encryption key. Not `Clone` — move-only, like `DerivedKey`.
+/// Implements a custom redacting `Debug` (never prints key bytes).
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct EncryptionKey {
     key_bytes: [u8; 32],   // 32-byte AES-256 key
     key_version: u32,      // for rotation tracking
 }
+
+impl EncryptionKey {
+    /// Construct from raw 32 bytes. Private — for internal use.
+    fn new(key_bytes: [u8; 32], key_version: u32) -> Self;
+
+    /// Take the first 32 bytes of derived key material (the private key
+    /// bytes from SLIP-0010 derivation) and construct an `EncryptionKey`.
+    /// This is the bridge from `DerivedKey` (SLIP-0010 output) to
+    /// `EncryptionKey` (AES-256-GCM input). `VaultServiceHandle::encrypt`
+    /// and `decrypt` call this on the cached `DerivedKey` to obtain the
+    /// `EncryptionKey` for the crypto layer.
+    pub fn from_derived_bytes(derived: &[u8], key_version: u32) -> Self;
+
+    /// Return the key version (for rotation tracking).
+    pub fn version(&self) -> u32;
+
+    /// Return the key bytes (crate-internal — for `encrypt`/`decrypt`).
+    pub(crate) fn key_bytes(&self) -> &[u8; 32];
+}
+
+impl fmt::Debug for EncryptionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptionKey")
+            .field("key_version", &self.key_version)
+            .field("key_bytes", &"[REDACTED]")
+            .finish()
+    }
+}
 ```
 
-- `new(key_bytes, key_version)`: Construct from raw bytes.
-- `from_derived_bytes(bytes, key_version)`: Take the first 32 bytes of
-  derived key material (the private key bytes from SLIP-0010 derivation).
-- `version()`: Return the key version (for rotation).
-
 `EncryptionKey` implements `Zeroize` and `ZeroizeOnDrop` — the key bytes
-are zeroized before deallocation.
+are zeroized before deallocation. It does **not** derive `Clone` (move-only,
+like `DerivedKey`) and does **not** derive `Serialize` (never crosses a
+wire). The `Debug` impl is custom and redacts `key_bytes`.
 
-The key is derived once (at unlock time or on first encrypt/decrypt) and
-cached in the `KeyCache` (see [service.md](service.md)). Subsequent
-encrypt/decrypt operations use the cached key.
+The key is derived once (on first encrypt/decrypt) and cached in the
+`KeyCache` as a `CachedKey` wrapping a `DerivedKey` (see
+[service.md](service.md)). `encrypt`/`decrypt` extract the `EncryptionKey`
+from the cached `DerivedKey` via `EncryptionKey::from_derived_bytes` on each
+call (the `DerivedKey` is the cached form; the `EncryptionKey` is a
+short-lived per-call value derived from it).
 
 ## EncryptedData
 
@@ -129,9 +160,18 @@ existing v2 data. This is additive — see OQ-22 (key rotation) and ADR-020
 
 ## Encrypt and Decrypt
 
+These are **module-internal crypto helpers** (in `encryption.rs`), not the
+public API. The public API is `VaultServiceHandle::encrypt` /
+`VaultServiceHandle::decrypt` (see [service.md](service.md)), which derive
+the key (from the cache or via `derive_encryption_key_for_version`), extract
+the `EncryptionKey` via `EncryptionKey::from_derived_bytes`, and call these
+helpers.
+
 ```rust
-pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, EncryptionError>;
-pub fn decrypt(encrypted: &EncryptedData, key: &EncryptionKey) -> Result<String, EncryptionError>;
+// Module-internal (encryption.rs). Not re-exported from the crate root.
+// VaultServiceHandle::encrypt/decrypt call through to these.
+pub(crate) fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, EncryptionError>;
+pub(crate) fn decrypt(encrypted: &EncryptedData, key: &EncryptionKey) -> Result<String, EncryptionError>;
 ```
 
 `encrypt`:
@@ -152,9 +192,10 @@ constraint — see below.
 
 ## Key Versioning
 
-`CURRENT_KEY_VERSION` is `2`. Version `1` is reserved for the TypeScript
-predecessor's PBKDF2-encrypted data (see ADR-020). Each version maps to a
-unique derivation path — the last hardened index is the version offset
+`CURRENT_KEY_VERSION` is `2` (defined in `encryption.rs`, re-exported from
+the crate root). Version `1` is reserved for the TypeScript predecessor's
+PBKDF2-encrypted data (see ADR-020). Each version maps to a unique
+derivation path — the last hardened index is the version offset
 (see ADR-021):
 
 ```
@@ -171,13 +212,9 @@ seed doesn't change), so partial rotation is safe.
 ### Rotation
 
 Key rotation re-encrypts a blob from one version to another. The vault
-provides a `rotate` method; the caller (assembly layer or migration tool)
-handles replacing the blob in storage:
-
-```rust
-pub fn rotate(&self, encrypted: &EncryptedData, to_version: u32) -> Result<EncryptedData, VaultServiceError>;
-```
-
+provides a `VaultServiceHandle::rotate` method (see [service.md →
+rotate](service.md#rotateencrypted-to_version--encrypteddata)); the caller
+(assembly layer or migration tool) handles replacing the blob in storage.
 Rotation decrypts with the old version's key and re-encrypts with the new
 version's key. No new mnemonic needed — the same seed produces all version
 keys via different paths. See ADR-021 for the full mechanism.
@@ -185,7 +222,8 @@ keys via different paths. See ADR-021 for the full mechanism.
 **The current source uses `CURRENT_KEY_VERSION = 1` with HD derivation and
 does not implement version-indexed paths or `rotate`.** These are drift
 items to be corrected during implementation sync. See ADR-020 (version
-bump to 2) and ADR-021 (rotation mechanism).
+bump to 2) and ADR-021 (rotation mechanism). See the [Known Source
+Drift](README.md#known-source-drift) table in the vault README.
 
 ## Errors
 
