@@ -1,7 +1,7 @@
 ---
 id: call/registry/handler-registration
 name: Implement Handler, HandlerRegistration, OperationProvenance, OperationRegistry, and OperationRegistryBuilder
-status: pending
+status: completed
 depends_on: [call/registry/operation-context]
 scope: broad
 risk: medium
@@ -199,4 +199,10 @@ imported overlays are dynamic at their respective scopes (ADR-024). The
 
 ## Summary
 
-> To be filled on completion
+Implemented `Handler`, `HandlerRegistration`, `OperationProvenance`,
+`OperationRegistry` (register/registration/invoke/list_operations), and
+`OperationRegistryBuilder` (new/with_local/with_leaf/with_leaf_provenance/with/build)
+in `registry/registration.rs`. `invoke` enforces visibility (Internal from wire →
+NOT_FOUND), ACL with authority switch (internal: true → handler_identity.as_identity(),
+internal: false → caller identity), and handler dispatch. 21 unit tests pass; clippy
+clean. Merged to develop.
