@@ -47,6 +47,7 @@ use crate::derivation::{self, DerivationError, PATHS};
 use crate::encryption::{self, EncryptedData, EncryptionKey};
 use crate::mnemonic::{Language, Mnemonic, Seed};
 use crate::protocol::{DerivedKey, KeyType};
+use zeroize::Zeroizing;
 
 /// Handle to a running VaultService for local (in-process) use.
 ///
@@ -147,7 +148,7 @@ impl VaultServiceHandle {
     ///
     /// Returns the generated mnemonic phrase. Store this phrase securely —
     /// it is the root of trust for all derived keys.
-    pub fn unlock_new(&self, word_count: usize) -> Result<String, VaultServiceError> {
+    pub fn unlock_new(&self, word_count: usize) -> Result<Zeroizing<String>, VaultServiceError> {
         let mut inner = self.inner.write().unwrap();
         if inner.unlocked {
             return Err(VaultServiceError::AlreadyUnlocked);
@@ -155,7 +156,7 @@ impl VaultServiceHandle {
 
         let mnemonic = Mnemonic::generate(word_count)?;
         let seed = mnemonic.to_seed(None);
-        let phrase = mnemonic.phrase().to_string();
+        let phrase = Zeroizing::new(mnemonic.phrase().to_string());
 
         inner.mnemonic = Some(mnemonic);
         inner.seed = Some(seed);
