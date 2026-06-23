@@ -1,6 +1,7 @@
 ---
 status: draft
-last_updated: 2026-06-22-22
+last_updated: 2026-06-23
+review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean.
 ---
 
 # alknet-call
