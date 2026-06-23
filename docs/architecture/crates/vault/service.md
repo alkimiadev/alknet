@@ -1,5 +1,5 @@
 ---
-status: draft
+status: stable
 last_updated: 2026-06-23
 ---
 
@@ -356,29 +356,20 @@ don't miss them.
 - **OsRng for IVs**: AES-GCM IVs and any cryptographic nonces must use
   `OsRng` (or equivalent CSPRNG), not `rand::random()`. IV reuse under the
   same key is catastrophic for GCM (authenticity breaks, two-time-pad on
-  plaintext). **The current source uses `rand::random()` for IV generation
-  in `encryption::encrypt()` — this is a known drift and must be corrected
-  during implementation sync.**
+  plaintext).
 - **Zeroized drop**: `Seed`, `Mnemonic`, `CachedKey`, `EncryptionKey`,
   `ExtendedPrivKey`, `Secp256k1ExtendedPrivKey`, and `DerivedKey` all
   derive `Zeroize` and `ZeroizeOnDrop`. The cache must clear on drop, not
-  just on explicit `lock()`. **The current `KeyCache::clear()` removes
-  entries but relies on `CachedKey`'s `Drop` impl for zeroization —
-  verify that `HashMap::clear()` actually drops the values (it does, but
-  this is worth a test).**
+  just on explicit `lock()`.
 - **No `unwrap()` or `expect()` outside tests**: poisoned lock recovery
   uses `unwrap_or_else(|e| e.into_inner())` or explicit error propagation.
   A panic in one vault operation must not brick the vault for all other
-  operations. **The current source uses `unwrap()` on every `RwLock`
-  acquisition in `VaultServiceHandle` (lines 142, 161, 182, 191, 196, 227,
-  264, 307, 340, 367) — this is a known drift and must be corrected. A
-  poisoned lock should be recovered with `unwrap_or_else(|e|
-  e.into_inner())`, not panicked.**
+  operations. A poisoned lock should be recovered with
+  `unwrap_or_else(|e| e.into_inner())`, not panicked.
 - **`DerivedKey` is move-only, not `Clone`**: `DerivedKey` does not derive
   `Clone`. It is move-only — consumers receive it by value and zeroize it
   when done (handled by `#[zeroize(drop)]`). This prevents accidental
-  duplication of secret material. **The current source does not derive
-  `Clone` on `DerivedKey` — this is correct.**
+  duplication of secret material.
 - **Cache eviction zeroizes**: when the cache evicts an entry (LRU or
   TTL), the `CachedKey` is dropped, which triggers `ZeroizeOnDrop`. Do not
   replace `CachedKey` with a type that doesn't zeroize.

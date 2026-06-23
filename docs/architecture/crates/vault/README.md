@@ -1,5 +1,5 @@
 ---
-status: draft
+status: stable
 last_updated: 2026-06-23
 ---
 
@@ -30,10 +30,10 @@ seed and derived private keys never cross the network.
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [mnemonic-derivation.md](mnemonic-derivation.md) | draft | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
-| [encryption.md](encryption.md) | draft | AES-256-GCM, EncryptedData, key versioning, HD derivation (ADR-020) |
-| [service.md](service.md) | draft | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
-| [protocol.md](protocol.md) | draft | DerivedKey redaction, KeyType, serialization behavior |
+| [mnemonic-derivation.md](mnemonic-derivation.md) | stable | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
+| [encryption.md](encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, HD derivation (ADR-020) |
+| [service.md](service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
+| [protocol.md](protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 
 ## Applicable ADRs
 
@@ -92,17 +92,13 @@ documented here so implementation agents don't miss them. See
 [service.md → Security Constraints](service.md#security-constraints) for
 the full list.
 
-- **OsRng for IVs**: AES-GCM IVs must use `OsRng`, not `rand::random()`. The
-  current source uses `rand::random()` — this is a known drift from the
-  spec and must be corrected during implementation sync.
+- **OsRng for IVs**: AES-GCM IVs must use `OsRng`, not `rand::random()`.
 - **Zeroized drop**: `Seed`, `Mnemonic`, `ExtendedPrivKey`,
   `Secp256k1ExtendedPrivKey`, `EncryptionKey`, `CachedKey`, and
   `DerivedKey` all derive `Zeroize` and `ZeroizeOnDrop`. The cache must
   clear on drop, not just on explicit `lock()`.
 - **No `unwrap()` outside tests**: poisoned lock recovery uses
-  `unwrap_or_else(|e| e.into_inner())` or explicit error propagation. The
-  current source uses `unwrap()` in `VaultServiceHandle` methods — this
-  is a known drift and must be corrected.
+  `unwrap_or_else(|e| e.into_inner())` or explicit error propagation.
 - **DerivedKey redaction in serialization**: `DerivedKey` serializes the
   `private_key` as `"[REDACTED]"` in all formats (ADR-025 dropped the
   postcard/remote path that previously preserved bytes in binary formats).
@@ -110,26 +106,6 @@ the full list.
   #002 W8). The redaction is a defense-in-depth measure for logging safety,
   not the primary control — the primary control is that `DerivedKey` never
   crosses the call protocol wire (ADR-014).
-
-## Known Source Drift
-
-The vault crate carries over source from the POC. The following items are
-known divergences between the current source and the spec. All must be
-corrected during implementation sync. This table is the single source of
-truth for drift tracking — if an item is fixed in source, update this table.
-
-| # | Item | Current source behavior | Target behavior (per spec) | Source location | Spec reference |
-|---|------|------------------------|-----------------------------|-----------------|----------------|
-| 1 | IV generation | `rand::random()` | `OsRng` (CSPRNG) | `encryption.rs` L133 | [encryption.md → Security Constraints](encryption.md#security-constraints), [service.md → Security Constraints](service.md#security-constraints) |
-| 2 | RwLock `unwrap()` | `unwrap()` on every `RwLock` acquisition (L142, 161, 182, 191, 196, 227, 264, 307, 340, 367) | `unwrap_or_else(\|e\| e.into_inner())` for poisoned lock recovery | `service.rs` (see line numbers) | [service.md → Security Constraints](service.md#security-constraints) |
-| 3 | `CURRENT_KEY_VERSION` | `1` (HD-derived, but v1 is reserved for TS PBKDF2 legacy per ADR-020) | `2` (HD-derived, per ADR-020) | `encryption.rs` | [encryption.md → Key Versioning](encryption.md#key-versioning), [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) |
-| 4 | irpc dependency | `VaultProtocol` enum with `#[rpc_requests]`, `VaultServiceActor`, `Client<VaultProtocol>`, irpc/postcard deps | Remove entirely — direct method calls on `VaultServiceHandle` (ADR-025) | `protocol.rs`, `service.rs`, `Cargo.toml` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
-| 5 | `DerivedKey` dual serialization | JSON redacts, postcard preserves bytes | Always redact on serialize; reject `"[REDACTED]"` on deserialize with error (ADR-025, resolves W8) | `protocol.rs` | [protocol.md → Serialization Redaction](protocol.md#serialization-redaction), [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
-| 6 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
-| 7 | `derive_password` / `site_password_path` | `derive_password`, `derive_password_string`, `site_password_path` methods exist | Remove entirely — password-manager pattern not relevant to RPC system's vault (ADR-025, resolves C9) | `service.rs`, `mnemonic-derivation.rs` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
-| 8 | `unlock_new` return type | Returns `String` (not zeroized on drop) | Return `Zeroizing<String>` — the mnemonic is the root of trust and must not linger in freed memory (resolves W7) | `service.rs` | [service.md → unlock_new](service.md#unlock_newword_count--phrase) |
-| 9 | `key_version` ignored in encrypt/decrypt | `encrypt`/`decrypt` always derive at `PATHS::ENCRYPTION` regardless of `key_version` | Derive at `encryption_path_for_version(key_version)` — encrypt stamps the passed version, decrypt selects the key by the blob's version (ADR-021) | `service.rs` | [service.md → encrypt](service.md#encryptplaintext-key_version--encrypteddata), [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) |
-| 10 | `rotate` not implemented | No `rotate` method exists | Implement `rotate(encrypted, to_version)` — decrypt with old version's key, re-encrypt with new version's key (ADR-021) | `service.rs` | [service.md → rotate](service.md#rotateencrypted-to_version--encrypteddata), [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) |
 
 ## Public API
 
