@@ -1,7 +1,7 @@
 ---
 id: call/registry/operation-env
 name: Implement OperationEnv trait, LocalOperationEnv, and CompositeOperationEnv
-status: pending
+status: completed
 depends_on: [call/registry/handler-registration]
 scope: broad
 risk: high
@@ -222,4 +222,9 @@ pattern as `IdentityProvider` (ADR-004).
 
 ## Summary
 
-> To be filled on completion
+Implemented `LocalOperationEnv` (Layer 0 — `Arc<OperationRegistry>`, reachability
+check, authority switch, fresh metadata, inherited deadline/env) and
+`CompositeOperationEnv` (session → connection → base overlay dispatch via
+`contains()` probe per ADR-024). `ScopedOperationEnv` checked before overlay
+dispatch. 13 new env tests (93 total in call crate). Clippy clean. Merged to
+develop.
