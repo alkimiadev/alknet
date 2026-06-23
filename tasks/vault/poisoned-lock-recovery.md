@@ -1,7 +1,7 @@
 ---
 id: vault/poisoned-lock-recovery
 name: Replace unwrap() on RwLock acquisition with poisoned-lock recovery via unwrap_or_else
-status: pending
+status: completed
 depends_on: [vault/irpc-removal]
 scope: narrow
 risk: low
@@ -83,4 +83,9 @@ merge conflicts.
 
 ## Summary
 
-> To be filled on completion
+Replaced all 10 `.read().unwrap()`/`.write().unwrap()` calls in
+`VaultServiceHandle` methods with `.unwrap_or_else(|e| e.into_inner())` for
+poisoned-lock recovery. Added `test_poisoned_lock_recovery` that poisons the
+lock via a panicking thread and verifies the vault remains usable. No
+`unwrap()`/`expect()` remain outside test code. Merged to develop (resolved
+conflicts with remove-password-derivation and unlock-new-zeroizing-return).

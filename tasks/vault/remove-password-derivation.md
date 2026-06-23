@@ -1,7 +1,7 @@
 ---
 id: vault/remove-password-derivation
 name: Remove derive_password and site_password_path methods (password-manager pattern not relevant)
-status: pending
+status: completed
 depends_on: [vault/irpc-removal]
 scope: single
 risk: trivial
@@ -66,4 +66,7 @@ both modify `service.rs`.
 
 ## Summary
 
-> To be filled on completion
+Removed `derive_password`, `derive_password_string` from `VaultServiceHandle`
+(service.rs), `site_password_path` from derivation.rs, the doc-table row, all 5
+password-derivation tests, and the now-unused `base64` URL_SAFE_NO_PAD import.
+109 lines deleted. All tests pass; clippy clean. Merged to develop.

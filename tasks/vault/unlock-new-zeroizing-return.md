@@ -1,7 +1,7 @@
 ---
 id: vault/unlock-new-zeroizing-return
 name: Change unlock_new return type from String to Zeroizing<String>
-status: pending
+status: completed
 depends_on: [vault/irpc-removal]
 scope: single
 risk: low
@@ -76,4 +76,7 @@ It depends on the irpc removal task (drift #4) because both modify `service.rs`.
 
 ## Summary
 
-> To be filled on completion
+Changed `unlock_new` return type from `Result<String, ...>` to
+`Result<Zeroizing<String>, ...>`. The generated mnemonic phrase is wrapped in
+`Zeroizing::new()` so it is zeroized on drop. Existing tests work via Deref
+coercion. All tests pass; clippy clean. Merged to develop.
