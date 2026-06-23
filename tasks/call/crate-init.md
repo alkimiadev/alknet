@@ -1,7 +1,7 @@
 ---
 id: call/crate-init
 name: Initialize alknet-call crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: [core/core-types]
 scope: moderate
 risk: low
@@ -100,4 +100,10 @@ Each module file gets a doc comment and `// TODO: implement` marker.
 
 ## Summary
 
-> To be filled on completion
+Created `crates/alknet-call/` with `Cargo.toml` (deps: alknet-core path, irpc
+workspace, tokio, serde, serde_json, async-trait, tracing, thiserror, uuid v4,
+futures), `src/lib.rs` with `pub mod registry` / `pub mod protocol`, and 11
+module skeleton files (registry: spec, context, registration, env, discovery;
+protocol: wire, pending, connection, adapter, abort) with doc comments and TODO
+markers. Added to workspace members. `cargo check`/`clippy`/`fmt` clean.
+Merged to develop.
