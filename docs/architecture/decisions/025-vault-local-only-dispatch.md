@@ -203,6 +203,19 @@ version of ADR-018's intent.
   exclusive writes (unlock/lock). The actor's sequential processing was
   actually *worse* for throughput than the RwLock. Removing the actor
   makes the concurrency model visible and correct.
+- `derive_password` and `site_password_path` are removed from the vault's
+  API and path model. The password-manager pattern (deterministic per-site
+  passwords from HD derivation) is not relevant to an RPC system's vault —
+  handlers call APIs (using API keys, OAuth tokens, mTLS), not websites
+  with passwords. The vault is for cryptographic key derivation and
+  credential encryption. This resolves review #002 C9 (site_password_path
+  hash mapping underspecified) by removing the feature rather than
+  specifying the non-standard string→u32 mapping and Ed25519-as-password-
+  entropy construction. If deterministic password generation is ever needed
+  (browser-automation edge case), it can be re-added or implemented as a
+  separate concern — the cost is near-zero, and removing it now eliminates
+  permanent API surface that was inherited from a prior project's
+  password-manager pattern.
 
 **Negative:**
 
@@ -247,6 +260,11 @@ version of ADR-018's intent.
   in protocol.md goes away. If a future vault-server crate exposes some
   operations remotely, *that crate* defines the access policy in its own
   ADR.
+- **C9 (site_password_path hash mapping underspecified)**: resolved. The
+  `derive_password` / `derive_password_string` / `site_password_path`
+  methods are removed from the vault's API. The password-manager pattern
+  is not relevant to an RPC system's vault. No hash mapping to specify,
+  no Ed25519-as-password-entropy question to answer.
 
 ## Assumptions
 

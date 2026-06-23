@@ -156,23 +156,6 @@ Derive a secp256k1 keypair at the given BIP-0032 path. Returns
 `UnsupportedKeyType` when the `secp256k1` feature is disabled. Returns a
 `DerivedKey` with `KeyType::Secp256k1` (33-byte compressed public key).
 
-### derive_password(path, length) → Vec<u8>
-
-```rust
-pub fn derive_password(&self, path: &str, length: usize) -> Result<Vec<u8>, VaultServiceError>;
-pub fn derive_password_string(&self, path: &str, length: usize) -> Result<String, VaultServiceError>;
-```
-
-Derive deterministic password bytes at the given path, truncated to
-`length`. This is **not cached** — password derivation is cheap and
-passwords are typically one-shot (derive, use, discard). The string
-variant base64url-encodes the bytes (URL-safe, no padding).
-
-`derive_password` is the mechanism for per-site deterministic passwords:
-the same seed + path always produces the same password. The path includes
-a site hash (`site_password_path(site_hash)`) so different sites get
-different passwords.
-
 ## Encrypt and Decrypt
 
 ### encrypt(plaintext, key_version) → EncryptedData
@@ -250,12 +233,7 @@ pub struct CacheConfig {
 | `derive_ed25519` | Yes | Derivation is expensive; keys are reused |
 | `derive_encryption_key` | Yes | Same — encryption key reused across calls |
 | `derive_ethereum_key` | Yes | Same |
-| `derive_password` | No | Cheap derivation; passwords are one-shot |
 | `encrypt` / `decrypt` | Key cached | The encryption key (at `PATHS::ENCRYPTION`) is cached; the plaintext is not |
-
-`derive_password` does not cache because it's a truncation of derived
-bytes, not a keypair that's reused. Caching it would grow the cache with
-unique paths (one per site hash) for no reuse benefit.
 
 ## Dispatch
 
@@ -316,7 +294,7 @@ alknet-core error types at the assembly boundary (ADR-018).
 | RwLock for thread safety | — | Multiple readers (derive), exclusive writer (unlock/lock) |
 | TTL + LRU cache | — | Bounded memory, fresh keys, zeroized eviction |
 | Direct method calls (no actor) | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) | No irpc, no message enum, no remote dispatch capability |
-| `derive_password` not cached | — | One-shot; caching grows cache with no reuse |
+| `derive_password` removed | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) | Password-manager pattern not relevant to RPC system's vault; resolves C9 |
 
 ## Open Questions
 

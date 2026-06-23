@@ -20,8 +20,8 @@ perspective?**
 
 The vault provides a `VaultServiceHandle` with `unlock`, `lock`,
 `derive_ed25519`, `derive_encryption_key`, `derive_ethereum_key`,
-`derive_password`, `encrypt`, and `decrypt` methods. Who is allowed to call
-these, and through what path?
+`encrypt`, and `decrypt` methods. Who is allowed to call these, and
+through what path?
 
 The candidates:
 

@@ -199,9 +199,8 @@ pub mod PATHS {
 Helper functions construct parameterized paths:
 
 ```rust
-pub fn device_path(index: u32) -> String;           // m/74'/0'/0'/{index}'
-pub fn site_password_path(site_hash: &str) -> String; // m/74'/1'/0'/{site_hash}'
-pub fn encryption_path_for_version(version: u32) -> String; // m/74'/2'/0'/{version-2}'
+pub fn device_path(index: u32) -> String;                      // m/74'/0'/0'/{index}'
+pub fn encryption_path_for_version(version: u32) -> String;    // m/74'/2'/0'/{version-2}'
 ```
 
 ### Path semantics
@@ -211,7 +210,6 @@ pub fn encryption_path_for_version(version: u32) -> String; // m/74'/2'/0'/{vers
 | `m/74'/0'/0'/0'` | Primary node identity (Ed25519) | Ed25519 | TLS raw key (ADR-010), node identity |
 | `m/74'/0'/0'/{n}'` | Worker/device identity | Ed25519 | Multi-device nodes, workers |
 | `m/74'/0'/1'/0'` | SSH host key | Ed25519 | SSH handler |
-| `m/74'/1'/0'/{hash}'` | Site-specific deterministic password | Ed25519 bytes | Per-site passwords (not cached) |
 | `m/74'/2'/0'/0'` | Encryption key for external credentials | AES-256-GCM | Credential encryption (v2, see [encryption.md](encryption.md)) |
 | `m/44'/60'/0'/0/0` | Ethereum signing key | secp256k1 | Ethereum signing (feature-gated) |
 

@@ -125,6 +125,7 @@ truth for drift tracking — if an item is fixed in source, update this table.
 | 4 | irpc dependency | `VaultProtocol` enum with `#[rpc_requests]`, `VaultServiceActor`, `Client<VaultProtocol>`, irpc/postcard deps | Remove entirely — direct method calls on `VaultServiceHandle` (ADR-025) | `protocol.rs`, `service.rs`, `Cargo.toml` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
 | 5 | `DerivedKey` dual serialization | JSON redacts, postcard preserves bytes | Always redact on serialize; reject `"[REDACTED]"` on deserialize with error (ADR-025, resolves W8) | `protocol.rs` | [protocol.md → Serialization Redaction](protocol.md#serialization-redaction), [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
 | 6 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
+| 7 | `derive_password` / `site_password_path` | `derive_password`, `derive_password_string`, `site_password_path` methods exist | Remove entirely — password-manager pattern not relevant to RPC system's vault (ADR-025, resolves C9) | `service.rs`, `mnemonic-derivation.rs` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
 
 ## Public API
 
