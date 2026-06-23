@@ -368,7 +368,7 @@ enum ConnectionKind {
 }
 
 #[allow(dead_code)]
-pub(crate) trait MockConnection: Send + Sync {
+pub trait MockConnection: Send + Sync {
     fn remote_alpn(&self) -> &[u8];
     fn remote_addr(&self) -> Option<SocketAddr>;
     fn close(&self, code: u32, reason: &str);
@@ -406,7 +406,7 @@ impl Connection {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn from_mock(mock: Arc<dyn MockConnection + Send + Sync>) -> Self {
+    pub fn from_mock(mock: Arc<dyn MockConnection + Send + Sync>) -> Self {
         let alpn = mock.remote_alpn().to_vec();
         Self {
             kind: ConnectionKind::Mock(mock),
@@ -523,6 +523,7 @@ mod tests {
         closed: std::sync::Mutex<Option<(u32, String)>>,
     }
 
+    #[allow(dead_code)]
     impl MockConnection for MockConn {
         fn remote_alpn(&self) -> &[u8] {
             self.alpn
