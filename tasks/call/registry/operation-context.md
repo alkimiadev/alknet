@@ -1,7 +1,7 @@
 ---
 id: call/registry/operation-context
 name: Implement OperationContext, AbortPolicy, CompositionAuthority, and ScopedOperationEnv
-status: pending
+status: completed
 depends_on: [call/registry/operation-spec, core/core-types]
 scope: broad
 risk: high
@@ -201,4 +201,10 @@ by `OperationEnv::invoke()` for composed calls.
 
 ## Summary
 
-> To be filled on completion
+Implemented `OperationContext` (10 fields, `internal` pub(crate) + `is_internal()`),
+`AbortPolicy` (AbortDependents default), `CompositionAuthority` (none/new/as_identity
+for ACL), `ScopedOperationEnv` (empty/new/allows), and `generate_request_id` (UUID v4)
+in `registry/context.rs`. Added minimal `OperationEnv` trait in `registry/env.rs`
+(invoke/invoke_with_policy/contains) so the `env` field compiles — the operation-env
+task will expand with `LocalOperationEnv` and `CompositeOperationEnv`. 37 unit tests
+pass; clippy clean. Merged to develop.
