@@ -1,7 +1,7 @@
 ---
 id: vault/irpc-removal
 name: Remove irpc dependency and actor dispatch from vault, convert to direct method calls on VaultServiceHandle
-status: pending
+status: completed
 depends_on: []
 scope: broad
 risk: high
@@ -103,4 +103,11 @@ The vault should have **zero** async runtime dependency after this task.
 
 ## Summary
 
-> To be filled on completion
+Removed the irpc-based actor dispatch from the vault crate. `VaultServiceHandle`
+(`Arc<std::sync::RwLock<VaultServiceInner>>`) is now the sole synchronous API.
+Removed: `VaultProtocol` enum + `#[rpc_requests]` derive, `VaultServiceActor`,
+`VaultService` wrapper, `Client<VaultProtocol>` usage, `irpc`/`irpc-derive`/
+`tokio` deps, `postcard` dev-dep, `Serialize`/`Deserialize` on `VaultServiceError`.
+`lib.rs` re-exports match the vault README Public API. The vault is now local-only
+by construction with zero async runtime dependency. All 58 lib + 14 integration
+tests pass; clippy clean. Merged to develop.
