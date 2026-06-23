@@ -37,6 +37,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
@@ -129,12 +130,14 @@ pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, En
     let cipher = Aes256Gcm::new_from_slice(&key.key_bytes)
         .map_err(|e| EncryptionError::Encryption(format!("invalid key length: {e}")))?;
 
-    // Generate random IV (12 bytes for AES-GCM)
-    let iv_bytes: [u8; 12] = rand::random();
+    // Generate random IV (12 bytes for AES-GCM) using OsRng CSPRNG
+    let mut iv_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut iv_bytes);
     let nonce = Nonce::from_slice(&iv_bytes);
 
     // TODO(Phase B): Use salt in HKDF-based key derivation
-    let salt_bytes: [u8; 32] = rand::random();
+    let mut salt_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut salt_bytes);
 
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
