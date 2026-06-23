@@ -32,26 +32,17 @@ pub enum KeyType {
 /// `DerivedKey` by value and must zeroize it when done (handled automatically
 /// by `#[zeroize(drop)]`).
 ///
-/// Serialization redacts the `private_key` field for human-readable formats
-/// (JSON) for safety, showing `"[REDACTED]"` instead of the key bytes.
-/// Deserialization always reads the full bytes.
-#[derive(Zeroize, Deserialize)]
+/// Serialization **always** redacts `private_key` as `"[REDACTED]"`, regardless
+/// of format. Deserialization rejects redacted payloads with an explicit error.
+#[derive(Zeroize)]
 #[zeroize(drop)]
 pub struct DerivedKey {
-    /// The type of key that was derived.
     #[zeroize(skip)]
     pub key_type: KeyType,
-    /// The private key bytes (sensitive — zeroized on drop).
     #[zeroize]
-    #[serde(deserialize_with = "deserialize_private_key")]
     pub private_key: Vec<u8>,
-    /// The public key bytes.
     #[zeroize(skip)]
     pub public_key: Vec<u8>,
-}
-
-fn deserialize_private_key<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-    Vec::<u8>::deserialize(d)
 }
 
 impl fmt::Debug for DerivedKey {
@@ -67,19 +58,35 @@ impl fmt::Debug for DerivedKey {
 impl Serialize for DerivedKey {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        if s.is_human_readable() {
-            let mut state = s.serialize_struct("DerivedKey", 3)?;
-            state.serialize_field("key_type", &self.key_type)?;
-            state.serialize_field("private_key", "[REDACTED]")?;
-            state.serialize_field("public_key", &self.public_key)?;
-            state.end()
-        } else {
-            let mut state = s.serialize_struct("DerivedKey", 3)?;
-            state.serialize_field("key_type", &self.key_type)?;
-            state.serialize_field("private_key", &self.private_key)?;
-            state.serialize_field("public_key", &self.public_key)?;
-            state.end()
+        let mut state = s.serialize_struct("DerivedKey", 3)?;
+        state.serialize_field("key_type", &self.key_type)?;
+        state.serialize_field("private_key", "[REDACTED]")?;
+        state.serialize_field("public_key", &self.public_key)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DerivedKey {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct DerivedKeyHelper {
+            key_type: KeyType,
+            private_key: Vec<u8>,
+            public_key: Vec<u8>,
         }
+        let helper = DerivedKeyHelper::deserialize(d)?;
+        if helper.private_key == b"[REDACTED]" {
+            return Err(serde::de::Error::custom(
+                "DerivedKey.private_key is \"[REDACTED]\" — redacted payloads \
+                 cannot be deserialized. JSON round-tripping a DerivedKey is \
+                 not supported (the private key is gone).",
+            ));
+        }
+        Ok(DerivedKey {
+            key_type: helper.key_type,
+            private_key: helper.private_key,
+            public_key: helper.public_key,
+        })
     }
 }
 
@@ -123,6 +130,32 @@ mod tests {
             "JSON must show [REDACTED] for private_key"
         );
         assert!(json.contains("Ed25519"), "JSON must contain key_type");
+    }
+
+    #[test]
+    fn test_derived_key_deserialize_rejects_redacted_payload() {
+        let redacted_json = r#"{"key_type":"Ed25519","private_key":"[REDACTED]","public_key":[205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205,205]}"#;
+        let result: Result<DerivedKey, _> = serde_json::from_str(redacted_json);
+        let err = result.expect_err("deserializing a redacted payload must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[REDACTED]"),
+            "error must mention the redacted marker, got: {msg}"
+        );
+        assert!(
+            !msg.contains("AB"),
+            "error must not leak private key bytes, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_derived_key_debug_does_not_leak_private_key_bytes() {
+        let key = make_test_key();
+        let debug_output = format!("{:?}", key);
+        assert!(
+            !debug_output.contains("ab") && !debug_output.contains("AB"),
+            "Debug must not leak private_key bytes"
+        );
     }
 
     #[test]
