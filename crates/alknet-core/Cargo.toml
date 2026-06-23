@@ -1,0 +1,32 @@
+[package]
+name = "alknet-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core library for ALPN-based protocol dispatch: ProtocolHandler trait, Connection, auth, config, and multi-connectivity endpoint"
+repository.workspace = true
+
+[lib]
+name = "alknet_core"
+
+[features]
+default = ["quinn"]
+quinn = ["dep:quinn"]
+iroh = ["dep:iroh"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+quinn = { version = "0.11", optional = true }
+iroh = { version = "0.35", optional = true }
+rustls = "0.23"
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+arc-swap = "1"
+async-trait = "0.1"
+tracing = "0.1"
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+bytes = "1"
+futures = "0.3"

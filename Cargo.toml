@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/alknet-vault",
+    "crates/alknet-core",
 ]
 resolver = "2"
 
