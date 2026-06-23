@@ -194,9 +194,9 @@ impl VaultServiceHandle {
 
         if let Some(cached) = inner.cache.get(path) {
             return Ok(DerivedKey {
-                key_type: cached.key_type.clone(),
-                private_key: cached.private_key.clone(),
-                public_key: cached.public_key.clone(),
+                key_type: cached.key_type().clone(),
+                private_key: cached.private_key().to_vec(),
+                public_key: cached.public_key().to_vec(),
             });
         }
 
@@ -204,8 +204,12 @@ impl VaultServiceHandle {
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key().to_vec();
         let public_key = key.public_key().to_vec();
-        let cached = CachedKey::new(KeyType::Ed25519, private_key.clone(), public_key.clone());
-        inner.cache.insert(path, cached);
+        let derived = DerivedKey {
+            key_type: KeyType::Ed25519,
+            private_key: private_key.clone(),
+            public_key: public_key.clone(),
+        };
+        inner.cache.insert(path, CachedKey::new(derived));
         Ok(DerivedKey {
             key_type: KeyType::Ed25519,
             private_key,
@@ -222,9 +226,9 @@ impl VaultServiceHandle {
 
         if let Some(cached) = inner.cache.get(path) {
             return Ok(DerivedKey {
-                key_type: cached.key_type.clone(),
-                private_key: cached.private_key.clone(),
-                public_key: cached.public_key.clone(),
+                key_type: cached.key_type().clone(),
+                private_key: cached.private_key().to_vec(),
+                public_key: cached.public_key().to_vec(),
             });
         }
 
@@ -232,8 +236,12 @@ impl VaultServiceHandle {
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key().to_vec();
         let public_key = key.public_key().to_vec();
-        let cached = CachedKey::new(KeyType::Aes256Gcm, private_key.clone(), public_key.clone());
-        inner.cache.insert(path, cached);
+        let derived = DerivedKey {
+            key_type: KeyType::Aes256Gcm,
+            private_key: private_key.clone(),
+            public_key: public_key.clone(),
+        };
+        inner.cache.insert(path, CachedKey::new(derived));
         Ok(DerivedKey {
             key_type: KeyType::Aes256Gcm,
             private_key,
@@ -273,9 +281,9 @@ impl VaultServiceHandle {
 
             if let Some(cached) = inner.cache.get(path) {
                 return Ok(DerivedKey {
-                    key_type: cached.key_type.clone(),
-                    private_key: cached.private_key.clone(),
-                    public_key: cached.public_key.clone(),
+                    key_type: cached.key_type().clone(),
+                    private_key: cached.private_key().to_vec(),
+                    public_key: cached.public_key().to_vec(),
                 });
             }
 
@@ -284,9 +292,12 @@ impl VaultServiceHandle {
             let key = crate::ethereum::derive_secp256k1_path(seed.as_bytes(), path)?;
             let private_key = key.private_key().to_vec();
             let public_key = key.public_key().to_vec();
-            let cached =
-                CachedKey::new(KeyType::Secp256k1, private_key.clone(), public_key.clone());
-            inner.cache.insert(path, cached);
+            let derived = DerivedKey {
+                key_type: KeyType::Secp256k1,
+                private_key: private_key.clone(),
+                public_key: public_key.clone(),
+            };
+            inner.cache.insert(path, CachedKey::new(derived));
             Ok(DerivedKey {
                 key_type: KeyType::Secp256k1,
                 private_key,

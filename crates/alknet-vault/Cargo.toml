@@ -14,7 +14,7 @@ default = []
 secp256k1 = ["dep:secp256k1"]
 
 [dependencies]
-bip39 = { version = "2", features = ["rand"] }
+bip39 = { version = "2", features = ["rand", "zeroize"] }
 ed25519-bip32 = "0.4"
 aes-gcm = "0.10"
 sha2 = "0.10"

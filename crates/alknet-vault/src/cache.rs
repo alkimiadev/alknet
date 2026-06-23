@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroize;
 
-use crate::protocol::KeyType;
+use crate::protocol::{DerivedKey, KeyType};
 
 /// Default TTL for cached keys (1 hour).
 pub const DEFAULT_TTL: Duration = Duration::from_secs(3600);
@@ -18,47 +18,53 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(3600);
 /// Default maximum number of cache entries.
 pub const DEFAULT_MAX_ENTRIES: usize = 64;
 
-/// A cached derived key with metadata for TTL and LRU tracking.
+/// A cached derived key. Wraps a `DerivedKey` with cache metadata.
 ///
-/// The `private_key` field is zeroized on drop via `#[zeroize(drop)]`.
-/// This is a separate internal type from `DerivedKey` — it holds the same
-/// data but is managed within the cache lifecycle.
+/// Derives `Zeroize` and `ZeroizeOnDrop` — the private key is zeroized
+/// when the entry is evicted (LRU/TTL) or the cache is cleared.
 #[derive(Zeroize)]
 #[zeroize(drop)]
 pub struct CachedKey {
-    /// When this key was derived (for TTL checking).
+    /// The derived key (zeroized on drop).
     #[zeroize(skip)]
-    pub derived_at: Instant,
-    /// The type of key that was derived.
+    pub key: DerivedKey,
+    /// When the entry was inserted (for TTL).
     #[zeroize(skip)]
-    pub key_type: KeyType,
-    /// The private key bytes (sensitive — zeroized on drop).
-    #[zeroize]
-    pub private_key: Vec<u8>,
-    /// The public key bytes.
-    #[zeroize(skip)]
-    pub public_key: Vec<u8>,
+    pub cached_at: Instant,
     /// Last access time for LRU ordering.
     #[zeroize(skip)]
     last_accessed: Instant,
 }
 
 impl CachedKey {
-    /// Create a new `CachedKey` from derived key material.
-    pub fn new(key_type: KeyType, private_key: Vec<u8>, public_key: Vec<u8>) -> Self {
+    /// Create a new `CachedKey` from a `DerivedKey`.
+    pub fn new(key: DerivedKey) -> Self {
         let now = Instant::now();
         Self {
-            derived_at: now,
-            key_type,
-            private_key,
-            public_key,
+            key,
+            cached_at: now,
             last_accessed: now,
         }
     }
 
+    /// The key type of the cached derived key.
+    pub fn key_type(&self) -> &KeyType {
+        &self.key.key_type
+    }
+
+    /// The private key bytes of the cached derived key.
+    pub fn private_key(&self) -> &[u8] {
+        &self.key.private_key
+    }
+
+    /// The public key bytes of the cached derived key.
+    pub fn public_key(&self) -> &[u8] {
+        &self.key.public_key
+    }
+
     /// Check whether this cached entry has expired.
     pub fn is_expired(&self, ttl: Duration) -> bool {
-        Instant::now().duration_since(self.derived_at) > ttl
+        Instant::now().duration_since(self.cached_at) > ttl
     }
 
     /// Touch the entry to update its last-accessed time (for LRU).
@@ -212,8 +218,6 @@ mod drop_tracker {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    use super::*;
-
     struct DropTrackedKey {
         flag: Arc<AtomicBool>,
         bytes: Vec<u8>,
@@ -289,7 +293,11 @@ mod tests {
     use super::*;
 
     fn make_cached_key(key_type: KeyType) -> CachedKey {
-        CachedKey::new(key_type, vec![0xABu8; 32], vec![0xCDu8; 32])
+        CachedKey::new(DerivedKey {
+            key_type,
+            private_key: vec![0xABu8; 32],
+            public_key: vec![0xCDu8; 32],
+        })
     }
 
     #[test]
@@ -298,7 +306,7 @@ mod tests {
         cache.insert("m/74'/0'/0'/0'", make_cached_key(KeyType::Ed25519));
 
         let entry = cache.get("m/74'/0'/0'/0'").unwrap();
-        assert_eq!(entry.key_type, KeyType::Ed25519);
+        assert_eq!(*entry.key_type(), KeyType::Ed25519);
     }
 
     #[test]
@@ -410,23 +418,33 @@ mod tests {
         let mut cache = KeyCache::with_defaults();
         cache.insert(
             "path1",
-            CachedKey::new(KeyType::Ed25519, vec![1u8; 32], vec![2u8; 32]),
+            CachedKey::new(DerivedKey {
+                key_type: KeyType::Ed25519,
+                private_key: vec![1u8; 32],
+                public_key: vec![2u8; 32],
+            }),
         );
         cache.insert(
             "path1",
-            CachedKey::new(KeyType::Aes256Gcm, vec![3u8; 32], vec![4u8; 32]),
+            CachedKey::new(DerivedKey {
+                key_type: KeyType::Aes256Gcm,
+                private_key: vec![3u8; 32],
+                public_key: vec![4u8; 32],
+            }),
         );
 
         let entry = cache.get("path1").unwrap();
-        assert_eq!(entry.key_type, KeyType::Aes256Gcm);
-        assert_eq!(entry.private_key, vec![3u8; 32]);
+        assert_eq!(*entry.key_type(), KeyType::Aes256Gcm);
+        assert_eq!(entry.private_key(), vec![3u8; 32]);
         assert_eq!(cache.len(), 1);
     }
 
     #[test]
     fn test_lru_eviction_drops_evicted_cached_key() {
-        let mut config = CacheConfig::default();
-        config.max_entries = 2;
+        let config = CacheConfig {
+            max_entries: 2,
+            ..Default::default()
+        };
 
         let mut cache = KeyCache::new(config);
 
@@ -444,8 +462,10 @@ mod tests {
 
     #[test]
     fn test_ttl_expiry_evicts_entry_on_access() {
-        let mut config = CacheConfig::default();
-        config.ttl = Duration::from_millis(1);
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1),
+            ..Default::default()
+        };
 
         let mut cache = KeyCache::new(config);
         cache.insert("path1", make_cached_key(KeyType::Ed25519));

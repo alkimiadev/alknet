@@ -34,6 +34,7 @@ impl From<Language> for bip39::Language {
 /// The internal phrase is zeroized on drop.
 #[derive(Debug)]
 pub struct Mnemonic {
+    inner: Bip39Mnemonic,
     phrase: String,
 }
 
@@ -44,9 +45,7 @@ impl Mnemonic {
     pub fn generate(word_count: usize) -> Result<Self, MnemonicError> {
         let mnemonic: Bip39Mnemonic = Bip39Mnemonic::generate(word_count)
             .map_err(|e: bip39::Error| MnemonicError::Generation(e.to_string()))?;
-        Ok(Self {
-            phrase: mnemonic.to_string(),
-        })
+        Ok(Self::from_bip39(mnemonic))
     }
 
     /// Create a mnemonic from an existing phrase string.
@@ -55,9 +54,15 @@ impl Mnemonic {
     pub fn from_phrase(phrase: &str, _language: Language) -> Result<Self, MnemonicError> {
         let mnemonic: Bip39Mnemonic = Bip39Mnemonic::parse_normalized(phrase)
             .map_err(|e: bip39::Error| MnemonicError::InvalidPhrase(e.to_string()))?;
-        Ok(Self {
-            phrase: mnemonic.to_string(),
-        })
+        Ok(Self::from_bip39(mnemonic))
+    }
+
+    fn from_bip39(mnemonic: Bip39Mnemonic) -> Self {
+        let phrase = mnemonic.to_string();
+        Self {
+            inner: mnemonic,
+            phrase,
+        }
     }
 
     /// Derive the master seed from this mnemonic.
@@ -65,9 +70,8 @@ impl Mnemonic {
     /// The optional passphrase is used as the BIP39 password for PBKDF2
     /// key derivation (BIP39 standard). An empty string means no passphrase.
     pub fn to_seed(&self, passphrase: Option<&str>) -> Seed {
-        let mnemonic = Bip39Mnemonic::parse_normalized(&self.phrase).unwrap();
         let normalized_passphrase = passphrase.unwrap_or("");
-        let seed_bytes = mnemonic.to_seed_normalized(normalized_passphrase);
+        let seed_bytes = self.inner.to_seed_normalized(normalized_passphrase);
         Seed {
             bytes: seed_bytes.to_vec(),
         }
@@ -84,6 +88,7 @@ impl Mnemonic {
 impl Zeroize for Mnemonic {
     fn zeroize(&mut self) {
         self.phrase.zeroize();
+        self.inner.zeroize();
     }
 }
 
