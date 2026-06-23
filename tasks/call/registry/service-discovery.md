@@ -1,7 +1,7 @@
 ---
 id: call/registry/service-discovery
 name: Implement services/list and services/schema built-in operations
-status: pending
+status: completed
 depends_on: [call/registry/handler-registration]
 scope: narrow
 risk: low
@@ -178,4 +178,10 @@ fn services_list_handler(registry: Arc<OperationRegistry>) -> Handler {
 
 ## Summary
 
-> To be filled on completion
+Implemented `services/list` and `services/schema` built-in operations in
+`registry/discovery.rs`: spec constructors, factory handlers taking
+`Arc<OperationRegistry>`, JSON serialization of `OperationSpec` (incl.
+`error_schemas` per ADR-023), leading-slash normalization for `services/schema`,
+NOT_FOUND for unknown ops, INVALID_INPUT for missing name. Both registered as
+Local provenance with empty authority/env/caps and empty `AccessControl`. 13 new
+tests (106 total in call crate). Clippy clean. Merged to develop.
