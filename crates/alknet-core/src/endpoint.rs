@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io;
 #[cfg(any(feature = "quinn", feature = "iroh"))]
 use std::net::SocketAddr;
-#[cfg(any(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 use std::path::Path;
 use std::sync::Arc;
 #[cfg(any(feature = "quinn", feature = "iroh"))]
@@ -562,12 +562,12 @@ fn generate_self_signed_cert() -> Result<SelfSignedCert, EndpointError> {
     })
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 struct RawKeyCertResolver {
     key: Arc<rustls::sign::CertifiedKey>,
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl RawKeyCertResolver {
     fn new(secret_key: &iroh::SecretKey) -> Self {
         let signing_key = Arc::new(Ed25519SigningKey::new(secret_key.clone()));
@@ -580,7 +580,7 @@ impl RawKeyCertResolver {
     }
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl rustls::server::ResolvesServerCert for RawKeyCertResolver {
     fn resolve(
         &self,
@@ -594,27 +594,27 @@ impl rustls::server::ResolvesServerCert for RawKeyCertResolver {
     }
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl std::fmt::Debug for RawKeyCertResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RawKeyCertResolver").finish()
     }
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 #[derive(Clone)]
 struct Ed25519SigningKey {
     key: iroh::SecretKey,
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl std::fmt::Debug for Ed25519SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ed25519SigningKey").finish()
     }
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl Ed25519SigningKey {
     fn new(key: iroh::SecretKey) -> Self {
         Self { key }
@@ -628,7 +628,7 @@ impl Ed25519SigningKey {
     }
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl rustls::sign::SigningKey for Ed25519SigningKey {
     fn choose_scheme(
         &self,
@@ -650,7 +650,7 @@ impl rustls::sign::SigningKey for Ed25519SigningKey {
     }
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(all(feature = "quinn", feature = "iroh"))]
 impl rustls::sign::Signer for Ed25519SigningKey {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
         Ok(self.key.sign(message).to_bytes().to_vec())
@@ -823,7 +823,7 @@ mod tests {
         assert!(auth.tls_client_fingerprint.is_some());
     }
 
-    #[cfg(feature = "iroh")]
+    #[cfg(all(feature = "quinn", feature = "iroh"))]
     #[test]
     fn raw_key_cert_resolver_only_raw_public_keys() {
         use rustls::server::ResolvesServerCert;
