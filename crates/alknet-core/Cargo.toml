@@ -20,6 +20,7 @@ quinn = { version = "0.11", optional = true }
 iroh = { version = "0.35", optional = true }
 rustls = "0.23"
 rustls-pki-types = "1"
+rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -32,3 +33,5 @@ bytes = "1"
 futures = "0.3"
 sha2 = "0.10"
 hex = "0.4"
+rand = "0.8"
+rcgen = "0.13"
