@@ -50,6 +50,10 @@ impl CallConnection {
         &self.connection
     }
 
+    pub(crate) fn pending(&self) -> &Arc<Mutex<PendingRequestMap>> {
+        &self.pending
+    }
+
     pub fn register_imported(&self, registration: HandlerRegistration) {
         let name = registration.spec.name.clone();
         self.imported_operations.write().insert(name, registration);
