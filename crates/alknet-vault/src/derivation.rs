@@ -59,6 +59,22 @@ pub fn site_password_path(site_hash: &str) -> String {
     format!("m/74'/1'/0'/{}'", site_hash)
 }
 
+/// Construct the version-indexed encryption key derivation path (ADR-021).
+///
+/// Maps a key version to its derivation path: v2 → `m/74'/2'/0'/0'`
+/// (which is `PATHS::ENCRYPTION`), v3 → `m/74'/2'/0'/1'`, etc. Returns
+/// `DerivationError::InvalidPath` for `version < 2` — v1 is reserved for
+/// the TypeScript PBKDF2 legacy (ADR-020), which the vault cannot derive,
+/// and v0 is meaningless.
+pub fn encryption_path_for_version(version: u32) -> Result<String, DerivationError> {
+    if version < 2 {
+        return Err(DerivationError::InvalidPath(format!(
+            "key version {version} has no derivable path (v1 is TS PBKDF2 legacy)"
+        )));
+    }
+    Ok(format!("m/74'/2'/0'/{}'", version - 2))
+}
+
 /// A derived extended private key with its public key.
 ///
 /// Contains the private key bytes and public key bytes from
@@ -251,6 +267,37 @@ mod tests {
     #[test]
     fn test_site_password_path() {
         assert_eq!(site_password_path("abc123"), "m/74'/1'/0'/abc123'");
+    }
+
+    #[test]
+    fn test_encryption_path_for_version_v2() {
+        assert_eq!(encryption_path_for_version(2).unwrap(), PATHS::ENCRYPTION);
+    }
+
+    #[test]
+    fn test_encryption_path_for_version_v3() {
+        assert_eq!(encryption_path_for_version(3).unwrap(), "m/74'/2'/0'/1'");
+    }
+
+    #[test]
+    fn test_encryption_path_for_version_v4() {
+        assert_eq!(encryption_path_for_version(4).unwrap(), "m/74'/2'/0'/2'");
+    }
+
+    #[test]
+    fn test_encryption_path_for_version_rejects_v1() {
+        assert!(matches!(
+            encryption_path_for_version(1),
+            Err(DerivationError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn test_encryption_path_for_version_rejects_v0() {
+        assert!(matches!(
+            encryption_path_for_version(0),
+            Err(DerivationError::InvalidPath(_))
+        ));
     }
 
     #[test]
