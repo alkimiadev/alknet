@@ -1,7 +1,7 @@
 ---
 id: vault/osrng-iv-generation
 name: Replace rand::random() IV generation with OsRng in AES-GCM encryption
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: medium
@@ -80,4 +80,7 @@ This task touches only `encryption.rs`. It does not depend on the irpc removal
 
 ## Summary
 
-> To be filled on completion
+Replaced `rand::random()` with `rand::rngs::OsRng` (`RngCore::fill_bytes`) for
+both the 12-byte AES-GCM IV and the 32-byte salt in `encryption::encrypt()`.
+Existing tests cover IV-freshness (`test_encrypted_data_has_different_iv_each_time`)
+and round-trip (`test_encrypt_decrypt_round_trip`). Merged to develop as f43246b.
