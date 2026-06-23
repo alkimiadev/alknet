@@ -199,30 +199,6 @@ mod tests {
         }
     }
 
-    fn external_spec(name: &str, acl: AccessControl) -> OperationSpec {
-        OperationSpec::new(
-            name,
-            OperationType::Query,
-            Visibility::External,
-            serde_json::json!({}),
-            serde_json::json!({}),
-            vec![],
-            acl,
-        )
-    }
-
-    fn internal_spec(name: &str, acl: AccessControl) -> OperationSpec {
-        OperationSpec::new(
-            name,
-            OperationType::Query,
-            Visibility::Internal,
-            serde_json::json!({}),
-            serde_json::json!({}),
-            vec![],
-            acl,
-        )
-    }
-
     fn echo_handler() -> crate::registry::registration::Handler {
         make_handler(
             |input, context| async move { ResponseEnvelope::ok(context.request_id, input) },
