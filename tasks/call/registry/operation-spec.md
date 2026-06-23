@@ -1,7 +1,7 @@
 ---
 id: call/registry/operation-spec
 name: Implement OperationSpec, OperationType, Visibility, ErrorDefinition, and AccessControl
-status: pending
+status: completed
 depends_on: [call/crate-init]
 scope: moderate
 risk: medium
@@ -165,4 +165,10 @@ The check logic:
 
 ## Summary
 
-> To be filled on completion
+Implemented operation specification types in `registry/spec.rs`: `OperationSpec`
+(with `path()` returning `/{name}`, namespace derived from name split on `/`),
+`OperationType` (Query, Mutation, Subscription), `Visibility` (External, Internal),
+`ErrorDefinition` (ADR-023), `AccessControl::check` returning `AccessResult`
+(AND-scopes, OR-scopes, resource_type/resource_action checks, None identity →
+"authentication required", empty ACL → Allowed). 9 unit tests pass; clippy clean.
+Merged to develop.
