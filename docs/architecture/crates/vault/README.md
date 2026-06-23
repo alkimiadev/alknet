@@ -48,6 +48,7 @@ seed and derived private keys never cross the network.
 | [020](../../decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation, not PBKDF2; salt unused in v2 |
 | [021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Version-indexed paths; `rotate` re-encrypts |
 | [025](../../decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Dropped irpc; direct method calls; local-only by construction |
+| [026](../../decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | HD derivation from BIP39 seed; `74'` coin type; AES-256-GCM |
 
 ## Relevant Open Questions
 
@@ -126,6 +127,7 @@ truth for drift tracking — if an item is fixed in source, update this table.
 | 5 | `DerivedKey` dual serialization | JSON redacts, postcard preserves bytes | Always redact on serialize; reject `"[REDACTED]"` on deserialize with error (ADR-025, resolves W8) | `protocol.rs` | [protocol.md → Serialization Redaction](protocol.md#serialization-redaction), [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
 | 6 | `HashMap::clear` zeroization | `KeyCache::clear()` removes entries and relies on `CachedKey`'s `Drop` impl for zeroization | Verify `HashMap::clear()` actually drops values (it does, but worth a test) | `cache.rs` | [service.md → Security Constraints](service.md#security-constraints) |
 | 7 | `derive_password` / `site_password_path` | `derive_password`, `derive_password_string`, `site_password_path` methods exist | Remove entirely — password-manager pattern not relevant to RPC system's vault (ADR-025, resolves C9) | `service.rs`, `mnemonic-derivation.rs` | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) |
+| 8 | `unlock_new` return type | Returns `String` (not zeroized on drop) | Return `Zeroizing<String>` — the mnemonic is the root of trust and must not linger in freed memory (resolves W7) | `service.rs` | [service.md → unlock_new](service.md#unlock_newword_count--phrase) |
 
 ## Public API
 

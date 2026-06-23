@@ -41,7 +41,11 @@ pub enum TlsIdentity {
     /// RFC 7250 raw Ed25519 public key.
     /// No domain, no CA, no cert renewal. Key = identity.
     /// Same model as iroh's NodeId, but for direct QUIC connections.
-    RawKey(SecretKey),
+    /// `SecretKey` is `iroh::SecretKey` (Ed25519) — re-exported from iroh,
+    /// which alknet-core already depends on (feature-gated, ADR-010). The
+    /// key can be derived from alknet-vault at the assembly layer
+    /// (endpoint.md) or generated fresh. See OQ-12, W14.
+    RawKey(iroh::SecretKey),
 
     /// Self-signed X.509 cert for development.
     /// Generated on startup, not validated by external clients.
@@ -76,7 +80,7 @@ The reference `StaticConfig` (in `alknet-main/crates/alknet-core/src/config/stat
 // P2P / key-based identity (default for most nodes)
 let p2p_config = StaticConfig {
     listen_addr: Some("0.0.0.0:4433".parse()?),
-    tls_identity: Some(TlsIdentity::RawKey(SecretKey::generate())),
+    tls_identity: Some(TlsIdentity::RawKey(iroh::SecretKey::generate())),
     iroh_relay: None,
     drain_timeout: Duration::from_secs(2),
 };

@@ -7,7 +7,7 @@ last_updated: 2026-06-22-20
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists, pending ADR-025 refactor to drop irpc) and research/reference material. Foundational ADRs (001–025) are in place, including the BiStream type definition (ADR-007), vault integration (ADR-008), ALPN router/endpoint (ADR-010), AuthContext structure (ADR-011), call protocol stream model (ADR-012), Rust as canonical implementation language (ADR-013), secret material flow with capability injection (ADR-014), privilege model with authority context (ADR-015), abort cascade for nested calls (ADR-016), call protocol client and adapter contract (ADR-017), vault standalone crate (ADR-018), vault assembly-layer-only access (ADR-019), HD derivation for encryption keys (ADR-020), key rotation via version-indexed paths (ADR-021), handler registration, provenance, and composition authority (ADR-022), operation error schemas (ADR-023), operation registry layering (ADR-024), and vault local-only dispatch (ADR-025). ADR-024 resolves the registry mutability question (`from_call` imports require a runtime-mutable home) and the `OperationContext.env` type identity crisis (review #002 C6), by layering the registry by trust boundary and making `OperationEnv` a trait-object integration point. ADR-025 drops irpc from the vault, making it local-only by construction (inverting the security default from remote-capable-by-default to local-only-by-default) and resolving OQ-21, C7, C8, and W8. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
+**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation exists, pending ADR-025/026 refactor to drop irpc and remove derive_password) and research/reference material. Foundational ADRs (001–026) are in place. ADR-024 resolves the registry mutability question and the `OperationContext.env` type identity crisis by layering the registry by trust boundary. ADR-025 drops irpc from the vault, making it local-only by construction. ADR-026 records the HD-derivation key model as a foundational decision. The alknet-core, alknet-call, and alknet-vault crate specs are in draft.
 
 **Next step**: Continue working through review #002's remaining Tier 4 findings (vault security decisions, guard clauses, ADR-writing exercises, smaller spec decisions). All open questions for the core and call crates are resolved; the vault crate's OQ-21 (remote vault) is now resolved (ADR-025 — vault is local-only by construction).
 
@@ -60,6 +60,7 @@ last_updated: 2026-06-22-20
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Accepted |
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Accepted |
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Accepted |
+| [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | Accepted |
 
 ## Open Questions
 

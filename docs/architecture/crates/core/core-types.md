@@ -80,8 +80,7 @@ impl Connection {
 - `remote_alpn()`: The ALPN negotiated for this connection. Always present.
 - `remote_addr()`: The peer's address, if available. Informational (NAT/proxy).
 - `close()`: Close the connection with an error code and reason.
-- `set_identity()`: Store the handler-resolved identity for observability (OQ-11). Write-once-read-many — a second call returns an error. Handlers that resolve identity inside `handle()` call this; the endpoint and observability layers read it via `identity()`.
-- `identity()`: Read the handler-resolved identity, if set. Returns `None` until `set_identity()` is called.
+- `set_identity()`: Store the handler-resolved identity for observability (OQ-11). Write-once-read-many — a second call returns an error. Handlers that resolve identity inside `handle()` call this; the identity is read by handler-side logging (the handler logs which identity it resolved) and is available on the `Connection` for any code that holds a reference to it. The endpoint does **not** read `identity()` after `handle()` returns — the `Connection` is moved into the spawned handler task (endpoint.md), so the endpoint no longer has a reference. Connection-level observability (remote addr, ALPN, connection ID) is logged by the endpoint before the move; identity-level observability is logged by the handler. See OQ-11 for the full resolution.
 
 The `Connection` type does not expose quinn types in its public API. It wraps `quinn::Connection` internally, but the wrapper allows test implementations.
 
@@ -187,7 +186,7 @@ connection, ADR-006).
 | BiStream is a trait | [ADR-007](../../decisions/007-bistream-type-definition.md) | WASM door preserved, test mocks possible |
 | HandlerError is non-fatal | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Handler errors close the connection, not the endpoint |
 | SendStream/RecvStream wrap quinn + iroh | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Internal enum dispatch for both QUIC sources |
-| Connection stores handler-resolved identity | OQ-11 (resolved) | `set_identity` via `OnceLock` — write-once-read-many for observability |
+| Connection stores handler-resolved identity | OQ-11 (resolved) | `set_identity` via `OnceLock` — write-once-read-many; read by handler-side logging, not by the endpoint (C13 resolved) |
 
 ## Open Questions
 

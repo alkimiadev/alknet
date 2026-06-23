@@ -153,8 +153,20 @@ not a bug. The migration tool handles the TS→vault transition.
 If a future use case requires KDF-based key derivation (e.g., stretching a
 key derived from a non-seed source, or using a salt for additional domain
 separation), it would be a new key_version with its own derivation method.
-The `salt` field is available for this. This is additive — it doesn't
-change v2 data. See OQ-22 (key rotation).
+The `salt` field is available for this.
+
+**Clarification (review #002 W6)**: the salt field is reserved for *future
+versions'* use. v2 data's salt is permanently unused — it was random, never
+participated in key derivation, and cannot be retroactively made
+load-bearing for v2 data. Introducing a KDF in v3 is a new derivation
+method (not a version-indexed path), requiring its own design and a v2→v3
+migration (re-encrypt with the new KDF, using a newly-generated v3 salt —
+the v2 salt is not reused). The field's presence saves a wire-format struct
+change only (ADR-018 locks the wire format); it does not make the KDF
+design or migration trivial. A KDF doesn't fit the rotation scheme
+(version-indexed paths, ADR-021) — it's a different derivation *family*,
+not another version index. See OQ-22 (key rotation) and ADR-018
+(`EncryptedData` wire format lock).
 
 ## Consequences
 

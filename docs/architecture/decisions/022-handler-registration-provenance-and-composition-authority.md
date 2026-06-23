@@ -196,6 +196,30 @@ impl CompositionAuthority {
             resources: HashMap::new(),
         }
     }
+
+    /// Convert to a synthetic `Identity` for ACL matching on child calls.
+    ///
+    /// When a handler composes a child via `env.invoke()`, the child's
+    /// `identity` (the caller identity for ACL) is set to the parent's
+    /// composition authority converted to an `Identity`. This constructs
+    /// a synthetic `Identity { id: label, scopes, resources }` that is
+    /// **not** resolvable via `IdentityProvider` — it's not a peer
+    /// identity, it's a declared authority bundle used directly for ACL
+    /// matching. This creates a second `Identity` construction path (the
+    /// first is `IdentityProvider::resolve_*`), which is acknowledged and
+    /// intentional: the composition authority is a declared authority, not
+    /// a resolved credential.
+    ///
+    /// Returns `None` when the authority is `None` (leaf case — leaves
+    /// don't compose, so `as_identity()` is never called on them in
+    /// practice, but the `Option` makes the types line up).
+    pub fn as_identity(&self) -> Option<Identity> {
+        Some(Identity {
+            id: self.label.clone(),
+            scopes: self.scopes.clone(),
+            resources: self.resources.clone(),
+        })
+    }
 }
 ```
 
@@ -224,12 +248,17 @@ as a subgraph of the operation graph.
 /// set of operation names — the *model* is a subgraph (which nodes this
 /// handler can reach), but type-compatibility edges between those nodes are
 /// a future enhancement for static validation, not a v1 requirement.
+///
+/// The `allowed_operations` field is **private** (not `pub`). Construction
+/// is via `ScopedOperationEnv::new(ops)` or `ScopedOperationEnv::empty()`.
+/// Reachability is queried via `allows(&name)`. This encapsulation makes the
+/// future subgraph refactor (from `HashSet<String>` to a typed subgraph) a
+/// non-breaking change to construction sites (review #002 W21). The
+/// `HashSet<String>` representation does not support type-compatibility
+/// validation — session-scoped ops (OQ-19, untrusted code) compose without
+/// static type checking until a flowgraph crate is built.
 pub struct ScopedOperationEnv {
-    /// Operation names this handler may compose (e.g., {"fs/readFile",
-    /// "vastai/listMachines"}). `env.invoke()` for any name not in this set
-    /// returns NOT_FOUND. This is the reachability boundary — it bounds the
-    /// parameterized-dispatch attack surface.
-    pub allowed_operations: HashSet<String>,
+    allowed_operations: HashSet<String>,
 }
 
 impl ScopedOperationEnv {
@@ -353,7 +382,7 @@ async fn invoke(&self, namespace: &str, operation: &str, input: Value,
     let context = OperationContext {
         request_id: generate_request_id(),
         parent_request_id: Some(parent.request_id.clone()),
-        identity: parent.handler_identity_as_identity(),  // parent's authority becomes the caller
+        identity: parent.handler_identity.as_identity(),  // parent's authority becomes the caller
         handler_identity: registration.composition_authority.clone(),  // C1: child's own authority
         capabilities: parent.capabilities.clone(),       // C3: propagate through composition
         metadata: HashMap::new(),                        // fresh — does NOT propagate (ADR-014)
@@ -409,10 +438,8 @@ let agent_registration = HandlerRegistration {
         scopes: vec!["llm:call".into(), "fs:read".into(), "vastai:query".into()],
         resources: HashMap::new(),
     }),
-    scoped_env: Some(ScopedOperationEnv {
-        allowed_operations: HashSet::from(["fs/readFile".into(), "vastai/listMachines".into(),
-                                           "llm/generate".into()]),
-    }),
+    scoped_env: Some(ScopedOperationEnv::new(
+        ["fs/readFile", "vastai/listMachines", "llm/generate"])),
     capabilities: Capabilities::new()
         .with_api_key("google", google_api_key),  // C3: in the bundle, not the closure
 };

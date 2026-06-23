@@ -152,10 +152,25 @@ context.env.invoke_with_policy(
 ```
 
 The child's `OperationContext` carries the policy. If the child itself
-composes grandchildren, the policy propagates unless the child explicitly
-overrides it. This is consistent with the composition authority and scoped
-env propagation in ADR-022 — the parent handler decides the child's
-runtime context, including abort policy.
+composes grandchildren, the policy **propagates by inheritance** — the
+grandchild inherits the child's policy (which was the parent's policy,
+unless the parent overrode it for the child via `invoke_with_policy`).
+`ContinueRunning` does auto-propagate to grandchildren: if a parent opts
+its child into `ContinueRunning`, and the child composes grandchildren
+without explicitly overriding, the grandchildren also get
+`ContinueRunning`. This is consistent with the composition authority and
+scoped env propagation in ADR-022 — the parent handler decides the
+child's runtime context, including abort policy, and that decision
+propagates through the composition tree by default.
+
+**Review #002 W19 resolution**: `invoke()` with no explicit policy
+argument inherits the parent's current policy (option a). It does **not**
+reset to `AbortDependents`. A handler that wants a child to reset to the
+default must explicitly call `invoke_with_policy(...,
+AbortPolicy::AbortDependents)`. This makes the propagation predictable:
+the policy I set for my child applies to my child's children unless they
+re-decide. The `invoke()` default in operation-registry.md
+(`abort_policy: parent.abort_policy.clone()`) is correct.
 
 The `OperationEnv` trait gains an optional policy parameter. The specific
 API shape (a separate `invoke_with_policy` method, a policy field on an

@@ -218,13 +218,14 @@ not part of ADR-021's rotation scheme.
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| AES-256-GCM for credential encryption | — | Authenticated encryption, hardware-accelerated |
+| AES-256-GCM for credential encryption | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | Authenticated encryption, hardware-accelerated |
 | HD derivation, not PBKDF2 | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Seed-derived key; no password; deterministic |
 | Salt unused in v2 (wire-format compat) | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Kept for TS compat; not used in key derivation |
-| Key derived at `m/74'/2'/0'/0'` | — | Dedicated account for encryption keys |
+| Key derived at `m/74'/2'/0'/0'` | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | Dedicated account for encryption keys |
 | Version-indexed paths for rotation | [ADR-021](../../decisions/021-key-rotation-via-version-indexed-paths.md) | `m/74'/2'/0'/{version-2}'` |
 | Key versioning (v1=TS PBKDF2, v2=vault HD) | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Distinguishes derivation methods |
 | All fields base64-encoded | — | JSON serialization compatibility |
+| `EncryptedData` wire format frozen | [ADR-018](../../decisions/018-vault-standalone-crate.md) | Fields, encoding, semantics locked; no removal without migration |
 
 ## Open Questions
 

@@ -241,10 +241,11 @@ assembly-layer concern.
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | Vault is standalone | [ADR-018](../../decisions/018-vault-standalone-crate.md) | Zero alknet crate dependencies |
-| HD derivation (not stored keys) | — | One seed, many keys, no key storage |
-| `74'` coin type reserved for alknet | — | SLIP-0044 unallocated; alknet namespace |
-| secp256k1 feature-gated | — | Heavy dep; only needed for Ethereum |
+| HD derivation (not stored keys) | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | One seed, many keys, no key storage; reproducible across nodes |
+| `74'` coin type reserved for alknet | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | SLIP-0044 unallocated; alknet namespace |
+| secp256k1 feature-gated | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | Heavy dep; only needed for Ethereum |
 | Hardened-only for Ed25519 | SLIP-0010 | Ed25519 cannot do public derivation |
+| Vault is local-only | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) | Direct method calls, no irpc, no remote dispatch |
 
 ## Open Questions
 

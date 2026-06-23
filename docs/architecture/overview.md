@@ -216,6 +216,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point |
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Dropped irpc from vault; direct method calls; local-only by construction |
+| [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | HD derivation from BIP39 seed; `74'` coin type; SLIP-0010/Ed25519 default; AES-256-GCM for credentials |
 
 ## Open Questions
 

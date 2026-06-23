@@ -238,8 +238,22 @@ accordingly.
 
 ```rust
 // OpenAPI: 404: { schema: NotFoundError }
-// → ErrorDefinition { code: "NOT_FOUND", http_status: Some(404), schema: NotFoundError }
+// → ErrorDefinition { code: "HTTP_404", http_status: Some(404), schema: NotFoundError }
 ```
+
+**Normative rule (review #002 W20)**: `from_openapi` must not produce error
+codes that collide with the five protocol-level codes (`NOT_FOUND`,
+`FORBIDDEN`, `INVALID_INPUT`, `INTERNAL`, `TIMEOUT`). The adapter prefixes
+imported error codes with `HTTP_` and the status number (e.g., `HTTP_404`,
+`HTTP_429`) to avoid collision. This is a requirement for the adapter, not
+a naming convention — the `from_openapi` example above was previously shown
+producing `NOT_FOUND` from a 404, which collided with the protocol-level
+`NOT_FOUND` (operation not registered). The `details` field disambiguates
+in practice (present for operation-level, absent for protocol-level), but
+ADR-023 says "clients should switch on `code`, not parse `message`" — so
+the `code` alone must be unambiguous. Operations that hand-write their own
+`ErrorDefinition`s should use domain-specific codes (`FILE_NOT_FOUND`,
+`RATE_LIMITED`) rather than reusing protocol codes.
 
 The adapter maps the OpenAPI error schema to alknet's JSON Schema format
 (same conversion as input/output schemas). The `http_status` field records

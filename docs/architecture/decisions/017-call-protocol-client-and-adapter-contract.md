@@ -107,7 +107,7 @@ forwarding handlers.
 pub async fn from_call(
     connection: &CallConnection,
     config: FromCallConfig,
-) -> Vec<(OperationSpec, Handler)>
+) -> Vec<HandlerRegistration>
 ```
 
 The adapter:
@@ -115,12 +115,15 @@ The adapter:
    operations
 2. Calls `services/schema` for each → gets the input/output JSON Schemas and
    declared error_schemas (ADR-023)
-3. For each discovered operation, constructs an `(OperationSpec, Handler)` pair:
+3. For each discovered operation, constructs a `HandlerRegistration` bundle:
    - The spec mirrors the remote operation's name, namespace, type, schemas
      (input, output, and error_schemas — ADR-023), and access control
    - The handler sends `call.requested` through the `CallConnection` and awaits
      `call.responded` (or streams for subscriptions)
-4. The caller registers these pairs in their local registry
+   - `provenance: FromCall`, `composition_authority: None`, `scoped_env: None`
+     (leaves — ADR-022)
+4. The caller registers these bundles in their local registry (into the
+   connection's overlay — ADR-024)
 
 `from_call`-registered operations are `Internal` by default (ADR-015) — they
 are composition material, not directly callable from the wire. The handler
@@ -149,14 +152,30 @@ registry; they project it.
 
 ### 5. The adapter contract trait
 
-The adapter patterns share a common shape: they produce `(OperationSpec,
-Handler)` pairs that register in the local registry. The trait:
+The adapter patterns share a common shape: they produce
+`HandlerRegistration` bundles that register in the local registry. The
+trait:
 
 ```rust
+#[async_trait]
 pub trait OperationAdapter: Send + Sync {
-    fn import(&self) -> Vec<(OperationSpec, Handler)>;
+    async fn import(&self) -> Vec<HandlerRegistration>;
 }
 ```
+
+The return type is `Vec<HandlerRegistration>` (not `(OperationSpec,
+Handler)` pairs) — ADR-022 changed the registration API to the bundle
+shape, and adapters must produce bundles. Adapter convenience methods
+construct bundles with `composition_authority: None` and `scoped_env: None`
+for the leaf ops they produce.
+
+The trait is **async** because `from_call` requires async discovery
+(`services/list` + `services/schema` over a QUIC connection). A synchronous
+trait cannot accommodate `from_call` without a separate async pre-step that
+populates a cache. The sync adapters (`from_openapi`, `from_mcp` reading a
+static spec) trivially satisfy an async trait — their `import()` bodies
+contain no `.await` points. The async/sync question is decided: the trait
+is async.
 
 Implementations:
 - `FromOpenAPI` — imports from an OpenAPI spec (HTTP-backed handlers)
@@ -169,10 +188,10 @@ Implementations:
 The `to_*` adapters are outbound projections, not `OperationAdapter`
 implementations — they consume the registry, they don't produce entries for it.
 
-The specific trait signatures (async vs sync, error types, configuration
-parameters) are two-way doors for implementation. The one-way door is the
-architectural commitment that adapters produce `(OperationSpec, Handler)`
-pairs and live in alknet-call.
+The specific trait signatures (error types, configuration parameters) are
+two-way doors for implementation. The one-way doors are the architectural
+commitments: adapters produce `HandlerRegistration` bundles (ADR-022), the
+trait is async (required by `from_call`), and adapters live in alknet-call.
 
 ### 6. Cross-node call tree and abort cascade
 
@@ -245,6 +264,29 @@ same as `from_openapi` receives HTTP credentials.
   (OpenAPI paths, MCP tools). Some semantics don't map cleanly (e.g.,
   subscriptions in OpenAPI, bidirectional calls in MCP). The adapters handle
   these with best-effort mappings and document the gaps.
+- **Published `to_*` specs are compatibility contracts.** The "best-effort"
+  mapping label is internal framing. Once a generated spec is published and
+  external clients build against it, the mapping semantics (e.g.,
+  subscriptions → SSE long-poll) become a de facto contract. Changing the
+  mapping later breaks every client. `to_*` mapping choices are two-way
+  *before* first publication but one-way *after*. Version the generated
+  specs (e.g., OpenAPI spec version tied to the registry's External
+  operation set version) and emit a spec version marker so consumers can
+  detect mapping changes. This is the "published artifact is a contract"
+  blind spot in ADR-009's framework: it classifies doors by reversal cost
+  in the codebase, not by compatibility cost for external consumers.
+- **Sharing the global registry with a `CallClient` exposes local
+  capabilities to the remote peer.** Each `HandlerRegistration` carries
+  `Capabilities` with secret material. If the `CallClient` shares the
+  global registry, a remote peer calling an External operation triggers
+  dispatch that populates `OperationContext.capabilities` from the local
+  registration bundle — meaning the local node's API keys and signing keys
+  are used for the remote peer's call. A peer-scoped subset must filter by
+  capability remote-safety (is this operation's capability safe to expose
+  to this peer?), not just operation name. The registry-mechanism choice
+  (share global vs subset vs separate) is two-way mechanically but has a
+  security dimension post-ADR-022: the "share global" option is a
+  capability-exposure decision, not just a dispatch decision.
 - The `CallConnection` abstraction adds a layer between the handler and the
   raw QUIC stream. This is necessary for the `from_call` handler to be
   transparent — it shouldn't know about QUIC streams, only about call/request

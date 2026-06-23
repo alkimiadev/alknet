@@ -104,7 +104,49 @@ The vault defines its own types and does not share types with alknet-core:
 - `EncryptedData` is the vault's encrypted blob format. It is shared with
   `alknet-storage` (a future crate) by type-level agreement, not by a crate
   dependency — both crates must agree on the serialization format (see
-  [encryption.md](../crates/vault/encryption.md)).
+  [encryption.md](../crates/vault/encryption.md)). The format is **frozen**
+  (see Decision below).
+
+## `EncryptedData` Wire Format Lock
+
+The `EncryptedData` struct is a **stable wire format** shared with
+`alknet-storage` (a future crate) and the TypeScript consumer
+(`@alkdev/storage`) by type-level agreement, not by a crate dependency.
+Both crates and the TypeScript consumer must agree on the serialization
+format. The format is now explicitly **frozen**:
+
+```rust
+pub struct EncryptedData {
+    pub key_version: u32,  // rotation tracking
+    pub salt: String,      // base64, 32 bytes — unused in v2 (wire-format compat)
+    pub iv: String,        // base64, 12 bytes — AES-GCM nonce
+    pub data: String,      // base64 — ciphertext + auth tag
+}
+```
+
+The frozen compatibility surface:
+
+- **Fields**: `key_version`, `salt`, `iv`, `data` — no fields may be
+  removed or renamed. New fields may be added only if they are optional
+  (default on deserialization) and do not change the meaning of existing
+  fields.
+- **Encoding**: all binary fields are base64-encoded as strings for JSON
+  serialization. This is the cross-language wire format.
+- **Field semantics**: `key_version` selects the derivation path
+  (ADR-021). `salt` is unused in v2 but is part of the frozen format —
+  it cannot be removed without a format-version migration (a future KDF
+  in v3 would use the salt for *new* data, not retroactively for v2 data
+  — see ADR-020, W6). `iv` is the 12-byte GCM nonce. `data` is the
+  ciphertext with the GCM auth tag appended.
+
+**Why this needs an explicit lock**: the "type-level agreement, not a
+crate dependency" approach means there is no compiler enforcement of the
+format across crates. The stability contract existed only in prose. An
+implementer modifying `EncryptedData` (e.g., removing the unused `salt`
+field) would find no ADR saying "this format is frozen." This decision
+makes the freeze explicit and enforceable by review.
+
+**This resolves review #002 W10.**
 
 ## Consequences
 

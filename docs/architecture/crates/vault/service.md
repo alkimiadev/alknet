@@ -74,15 +74,23 @@ produce different seeds.
 ### unlock_new(word_count) → phrase
 
 ```rust
-pub fn unlock_new(&self, word_count: usize) -> Result<String, VaultServiceError>;
+pub fn unlock_new(&self, word_count: usize) -> Result<Zeroizing<String>, VaultServiceError>;
 ```
 
-Generate a new random mnemonic, unlock with it, and return the phrase.
-Store the returned phrase securely — it is the root of trust. Supported
-word counts: 12, 15, 18, 21, 24.
+Generate a new random mnemonic, unlock with it, and return the phrase as
+a `Zeroizing<String>`. The returned phrase is the root of trust — it is
+heap-allocated and zeroized on drop, so it does not linger in freed
+memory. The caller should extract the phrase for secure storage (write
+down, display to user) and let the `Zeroizing<String>` drop when done.
+Do not clone the returned value or store it in a non-zeroizing container.
+Supported word counts: 12, 15, 18, 21, 24.
 
 This is the "first run" path — a new node generates its mnemonic, writes
-it down, and the vault is unlocked for the process lifetime.
+it down, and the vault is unlocked for the process lifetime. The
+`Zeroizing<String>` wrapper (from the `zeroize` crate) ensures the
+mnemonic is wiped from memory once the caller is done with it, matching
+the `Mnemonic` type's own `ZeroizeOnDrop` behavior. This resolves review
+#002 W7.
 
 ### lock()
 

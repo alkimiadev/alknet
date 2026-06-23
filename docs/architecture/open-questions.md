@@ -118,7 +118,7 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: deferred
 - **Door type**: One-way (when applicable)
 - **Priority**: low
-- **Resolution**: Not an active question — WASM compatibility is a design constraint (see ADR-009, overview.md design principles), not a deliverable. Specific WASM targeting decisions will be made when individual crates are implemented. The BiStream trait decision (ADR-007) has already preserved the most important WASM door.
+- **Resolution**: Not an active question — WASM compatibility is a design constraint (see ADR-009, overview.md design principles), not a deliverable. Specific WASM targeting decisions will be made when individual crates are implemented. **BiStream being a trait preserves the *client-side* stream door** — a browser can implement BiStream over WebTransport streams. **The *server-side* dispatch door is NOT preserved by ADR-007 and is a known, accepted closure**: `Connection` is a concrete quinn-bound struct (not a trait), the accept loop uses `tokio::spawn` (tokio does not run on WASM), and the call-protocol dispatch internals (`PendingRequestMap`, `CallAdapter`) use tokio `oneshot`/`mpsc` channels. A WASM server-side peer would require a `Connection` trait and a runtime-abstracted accept loop — not planned. The browser path is client-side via a JS SDK, not server-side Rust-to-WASM. This is an explicit one-way door, not an oversight.
 - **Cross-references**: ADR-007, ADR-009
 
 ### OQ-10: Git Adapter Scope — Smart Protocol Only or Full Server?
@@ -127,7 +127,7 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: deferred
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: Deferred per the cleanup plan. Start with git smart protocol over QUIC streams. ERC721 integration and full server capabilities are additive. Resolve when speccing alknet-git.
+- **Resolution**: Deferred per the cleanup plan. Start with git smart protocol over QUIC streams. ERC721 integration and full server capabilities are additive. **Composability fork (review #002 W18)**: whether git operations are registered in the `OperationRegistry` and callable via `env.invoke()`, or only available as raw smart protocol on `alknet/git`, is a separate decision from ERC721 scope. The path of least resistance (raw smart protocol only) forecloses agent composition of git operations — an agent handler that wants to compose `git/clone` cannot, because there's no `OperationSpec`, no `Handler`, no registration. To make git composable, a call-protocol projection (a set of `HandlerRegistration` bundles wrapping git operations behind the registry) must be built alongside or instead of the raw handler. Resolve this when speccing alknet-git, not deferred past it.
 - **Cross-references**: ADR-001
 
 ## Theme: alknet-core
@@ -150,7 +150,18 @@ These questions are acknowledged but not active. They will be promoted to open w
 
   Both exist. The connection-level identity is the stable "who is this connection from"; the per-request identity is the dynamic "who is this specific call from." The call protocol's per-request resolution (which may produce a different identity than the connection-level resolution) takes precedence for ACL on `OperationContext` — the connection-level identity is for observability only, not for ACL.
 
-  `Connection` exposes `set_identity` via interior mutability (`OnceLock<Identity>` or `RwLock<Option<Identity>>` — the handler sets it once when resolved, the endpoint and observability layers read it). `handle()` receives `Connection` by value (owned), but the endpoint may also hold a reference for logging. The identity is write-once-read-many.
+  **C13 resolution (review #002)**: the endpoint does **not** read
+  `identity()` after `handle()` returns. The `Connection` is moved into the
+  spawned handler task (endpoint.md), so the endpoint no longer has a
+  reference to it. Connection-level observability (remote addr, ALPN,
+  connection ID) is logged by the endpoint *before* the move. Identity-level
+  observability is logged by the handler (the handler knows which identity
+  it resolved and can log it). There is no `Arc<Connection>` sharing or
+  channel-based identity-reporting mechanism — the simplest honest answer
+  that avoids over-engineering the observability path before there's a
+  demonstrated need. If a future use case requires the endpoint to
+  correlate connections to identities, an `Arc<Connection>` or a
+  side-channel can be added then.
 - **Cross-references**: ADR-004, ADR-011, ADR-015 (per-request identity on OperationContext), [auth.md](crates/core/auth.md)
 
 ### OQ-12: TLS Identity Provisioning in AlknetEndpoint
