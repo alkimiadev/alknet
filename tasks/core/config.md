@@ -1,7 +1,7 @@
 ---
 id: core/config
 name: Implement StaticConfig, DynamicConfig, AuthPolicy, ApiKeyEntry, ConfigReloadHandle, TlsIdentity
-status: pending
+status: completed
 depends_on: [core/core-types]
 scope: moderate
 risk: low
@@ -187,4 +187,13 @@ the new model (ALPN dispatch replaces them — see config.md Key Differences).
 
 ## Summary
 
-> To be filled on completion
+Implemented all configuration types in `config.rs`: `StaticConfig`
+(`drain_timeout=2s` default), `TlsIdentity` (X509/RawKey[iroh-gated]/SelfSigned),
+`DynamicConfig` (Clone/Debug/Default, ArcSwap-reloadable), `AuthPolicy` (String
+fingerprints, no russh), `ApiKeyEntry` (5 fields), `RateLimitConfig` (100/5
+defaults), `ConfigReloadHandle` (reload/dynamic via ArcSwap), `ConfigError`
+(thiserror, all variants). `iroh_relay` and `RawKey` feature-gated to `iroh`.
+Preserved `AuthPolicy::resolve_identity_from_fingerprint`/`resolve_api_key`
+methods from the parallel `core/auth` task. 41 total tests pass; clippy clean on
+default + iroh features. Merged to develop (resolved config.rs conflicts with
+core/auth).
