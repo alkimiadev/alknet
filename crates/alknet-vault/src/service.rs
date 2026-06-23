@@ -1,8 +1,8 @@
-//! VaultService implementation with Unlock/Lock lifecycle.
+//! VaultServiceHandle — the sole runtime API for the vault.
 //!
-//! The `VaultService` is the primary runtime interface for key management.
-//! It holds the master seed in `Zeroize`-protected memory and provides methods
-//! for the Unlock/Lock lifecycle, key derivation, and encryption/decryption.
+//! The `VaultServiceHandle` wraps the vault's state in an
+//! `Arc<std::sync::RwLock<>>` and provides direct, synchronous method calls
+//! for the unlock/lock lifecycle, key derivation, and encryption/decryption.
 //!
 //! # Lifecycle
 //!
@@ -25,37 +25,30 @@
 //!   → vault returns to locked state
 //! ```
 //!
-//! # Dispatch Paths
+//! # Dispatch
 //!
-//! There are two ways to interact with the vault:
-//!
-//! 1. **Local (in-process)**: `VaultServiceHandle` wraps `VaultServiceInner`
-//!    behind `Arc<RwLock<>>` and provides direct method calls without serialization.
-//! 2. **Remote (in-cluster)**: `VaultServiceActor` processes `VaultMessage`
-//!    variants from an mpsc channel and dispatches to the handle methods.
+//! The vault uses **direct method calls** on `VaultServiceHandle` — no actor,
+//! no message enum, no channels, no serialization (ADR-025). The handle is
+//! `Arc<std::sync::RwLock<VaultServiceInner>>` — clone it, share it, call
+//! methods directly. All methods are synchronous (no `async`, no `.await`).
+//! The vault does not depend on `tokio` (ADR-025).
 //!
 //! # Assembly
 //!
-//! The `VaultService` is assembled by the CLI binary. The CLI unlocks the vault
-//! at startup and injects derived/decrypted material into operation contexts.
-//! No handler crate accesses the vault directly — they receive keys through
-//! their operation context or via the call protocol.
+//! The `VaultServiceHandle` is assembled by the CLI binary. The CLI unlocks
+//! the vault at startup and injects derived/decrypted material into operation
+//! contexts. No handler crate accesses the vault directly — they receive keys
+//! through their operation context or via the call protocol.
 
 use std::sync::{Arc, RwLock};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use irpc::WithChannels;
-use serde::{Deserialize, Serialize};
 
 use crate::cache::{CacheConfig, CachedKey, KeyCache};
 use crate::derivation::{self, DerivationError, PATHS};
 use crate::encryption::{self, EncryptedData, EncryptionKey};
 use crate::mnemonic::{Language, Mnemonic, Seed};
-use crate::protocol::{
-    Decrypt, DeriveEd25519, DeriveEncryptionKey, DeriveEthereumKey, DerivePassword, Encrypt,
-    VaultMessage, VaultProtocol, Unlock,
-};
 use crate::protocol::{DerivedKey, KeyType};
 
 /// Handle to a running VaultService for local (in-process) use.
@@ -80,7 +73,7 @@ struct VaultServiceInner {
 }
 
 /// Errors that can occur during vault operations.
-#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
+#[derive(Debug, thiserror::Error)]
 pub enum VaultServiceError {
     #[error("vault is locked; call Unlock first")]
     VaultLocked,
@@ -206,10 +199,7 @@ impl VaultServiceHandle {
             });
         }
 
-        let seed = inner
-            .seed
-            .as_ref()
-            .ok_or(VaultServiceError::VaultLocked)?;
+        let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key().to_vec();
         let public_key = key.public_key().to_vec();
@@ -237,10 +227,7 @@ impl VaultServiceHandle {
             });
         }
 
-        let seed = inner
-            .seed
-            .as_ref()
-            .ok_or(VaultServiceError::VaultLocked)?;
+        let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key().to_vec();
         let public_key = key.public_key().to_vec();
@@ -274,10 +261,7 @@ impl VaultServiceHandle {
                 });
             }
 
-            let seed = inner
-                .seed
-                .as_ref()
-                .ok_or(VaultServiceError::VaultLocked)?;
+            let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
 
             let key = crate::ethereum::derive_secp256k1_path(seed.as_bytes(), path)?;
             let private_key = key.private_key().to_vec();
@@ -299,19 +283,12 @@ impl VaultServiceHandle {
         }
     }
 
-    pub fn derive_password(
-        &self,
-        path: &str,
-        length: usize,
-    ) -> Result<Vec<u8>, VaultServiceError> {
+    pub fn derive_password(&self, path: &str, length: usize) -> Result<Vec<u8>, VaultServiceError> {
         let inner = self.inner.read().unwrap();
         if !inner.unlocked {
             return Err(VaultServiceError::VaultLocked);
         }
-        let seed = inner
-            .seed
-            .as_ref()
-            .ok_or(VaultServiceError::VaultLocked)?;
+        let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
 
         let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
         let private_key = key.private_key();
@@ -345,10 +322,7 @@ impl VaultServiceHandle {
         let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
             cached.private_key.clone()
         } else {
-            let seed = inner
-                .seed
-                .as_ref()
-                .ok_or(VaultServiceError::VaultLocked)?;
+            let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
             let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
             let pk = derived.private_key().to_vec();
             let pubk = derived.public_key().to_vec();
@@ -372,10 +346,7 @@ impl VaultServiceHandle {
         let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
             cached.private_key.clone()
         } else {
-            let seed = inner
-                .seed
-                .as_ref()
-                .ok_or(VaultServiceError::VaultLocked)?;
+            let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
             let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
             let pk = derived.private_key().to_vec();
             let pubk = derived.public_key().to_vec();
@@ -396,166 +367,9 @@ impl Default for VaultServiceHandle {
     }
 }
 
-/// The VaultService manages the lifecycle of the master seed and provides
-/// secret operations. This is the type used by the irpc service handler.
-///
-/// For local (in-process) use, prefer `VaultServiceHandle` which wraps
-/// this in thread-safe locks.
-pub struct VaultService {
-    handle: VaultServiceHandle,
-}
-
-impl VaultService {
-    /// Create a new VaultService in the locked state.
-    pub fn new() -> Self {
-        Self {
-            handle: VaultServiceHandle::new(),
-        }
-    }
-
-    /// Get a handle for local (in-process) use.
-    pub fn handle(&self) -> &VaultServiceHandle {
-        &self.handle
-    }
-}
-
-impl Default for VaultService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Actor that processes `VaultMessage` variants and dispatches to `VaultServiceHandle`.
-///
-/// The actor runs as a `tokio::task`, receives messages from an mpsc channel,
-/// dispatches to the handle methods, and sends responses through oneshot channels.
-///
-/// # Usage
-///
-/// ```ignore
-/// let handle = VaultServiceHandle::new();
-/// let (client, actor) = VaultServiceActor::spawn(handle);
-/// tokio::task::spawn(actor.run(rx));
-/// // Use client to send messages
-/// ```
-pub struct VaultServiceActor {
-    handle: VaultServiceHandle,
-}
-
-impl VaultServiceActor {
-    /// Create a new actor wrapping the given handle.
-    pub fn new(handle: VaultServiceHandle) -> Self {
-        Self { handle }
-    }
-
-    /// Run the actor message loop, processing `VaultMessage` variants.
-    ///
-    /// This method runs until the receiver channel is closed. Each message
-    /// variant is dispatched to the corresponding `VaultServiceHandle` method
-    /// and the response is sent through the oneshot channel embedded in the message.
-    pub async fn run(mut self, mut rx: tokio::sync::mpsc::Receiver<VaultMessage>) {
-        while let Some(msg) = rx.recv().await {
-            self.handle_message(msg);
-        }
-    }
-
-    /// Spawn the actor as a `tokio::task` and return a `Client<VaultProtocol>` for sending messages.
-    ///
-    /// The actor runs on a tokio task and processes messages from the mpsc channel.
-    /// The returned `Client<VaultProtocol>` can be used to send `VaultMessage` variants
-    /// to the actor.
-    pub fn spawn(
-        handle: VaultServiceHandle,
-    ) -> (irpc::Client<VaultProtocol>, VaultServiceActor) {
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let client = irpc::Client::local(tx);
-        let actor = Self::new(handle.clone());
-        tokio::task::spawn(actor.run(rx));
-        (client, Self::new(handle))
-    }
-
-    /// Handle a single `VaultMessage` by dispatching to the appropriate handle method.
-    fn handle_message(&mut self, msg: VaultMessage) {
-        match msg {
-            VaultMessage::DeriveEd25519(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let DeriveEd25519 { path } = inner;
-                let result = self.handle.derive_ed25519(&path);
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-            VaultMessage::DeriveEncryptionKey(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let DeriveEncryptionKey { path } = inner;
-                let result = self.handle.derive_encryption_key(&path);
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-            VaultMessage::DeriveEthereumKey(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let DeriveEthereumKey { path } = inner;
-                let result = self.handle.derive_ethereum_key(&path);
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-            VaultMessage::DerivePassword(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let DerivePassword { path, length } = inner;
-                let result = self.handle.derive_password(&path, length);
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-            VaultMessage::Encrypt(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let Encrypt {
-                    plaintext,
-                    key_version,
-                } = inner;
-                let result = self.handle.encrypt(&plaintext, key_version);
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-            VaultMessage::Decrypt(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let Decrypt { encrypted } = inner;
-                let result = self.handle.decrypt(&encrypted);
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-            VaultMessage::Lock(msg) => {
-                let WithChannels { inner: _, tx, .. } = msg;
-                self.handle.lock();
-                tokio::spawn(async move {
-                    let _ = tx.send(Ok(())).await;
-                });
-            }
-            VaultMessage::Unlock(msg) => {
-                let WithChannels { inner, tx, .. } = msg;
-                let Unlock {
-                    mnemonic,
-                    passphrase,
-                } = inner;
-                let result = self.handle.unlock(&mnemonic, passphrase.as_deref());
-                tokio::spawn(async move {
-                    let _ = tx.send(result).await;
-                });
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::Lock;
-    use irpc::channel::oneshot;
-    use irpc::WithChannels;
 
     #[test]
     fn test_service_starts_locked() {
@@ -750,10 +564,7 @@ mod tests {
         service.unlock_new(24).unwrap();
 
         let result = service.derive_ethereum_key(PATHS::ETHEREUM);
-        assert!(matches!(
-            result,
-            Err(VaultServiceError::UnsupportedKeyType)
-        ));
+        assert!(matches!(result, Err(VaultServiceError::UnsupportedKeyType)));
     }
 
     #[test]
@@ -847,72 +658,6 @@ mod tests {
         assert_eq!(service.inner.read().unwrap().cache.len(), 1);
     }
 
-    #[tokio::test]
-    async fn test_actor_unlock_responds_successfully() {
-        let handle = VaultServiceHandle::new();
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = VaultServiceActor::new(handle);
-        tokio::task::spawn(actor.run(rx));
-
-        let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = VaultMessage::Unlock(WithChannels::from((
-            Unlock {
-                mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
-                passphrase: None,
-            },
-            resp_tx,
-        )));
-        tx.send(msg).await.unwrap();
-
-        let result = resp_rx.await.unwrap();
-        assert!(result.is_ok(), "Unlock via actor must succeed");
-    }
-
-    #[tokio::test]
-    async fn test_actor_derive_ed25519_returns_key() {
-        let handle = VaultServiceHandle::new();
-        handle.unlock_new(24).unwrap();
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = VaultServiceActor::new(handle);
-        tokio::task::spawn(actor.run(rx));
-
-        let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = VaultMessage::DeriveEd25519(WithChannels::from((
-            DeriveEd25519 {
-                path: PATHS::IDENTITY.to_string(),
-            },
-            resp_tx,
-        )));
-        tx.send(msg).await.unwrap();
-
-        let result = resp_rx.await.unwrap();
-        assert!(result.is_ok(), "DeriveEd25519 via actor must succeed");
-        let key = result.unwrap();
-        assert!(
-            !key.private_key.is_empty(),
-            "DerivedKey must have private_key"
-        );
-        assert_eq!(key.key_type, KeyType::Ed25519);
-    }
-
-    #[tokio::test]
-    async fn test_actor_lock_clears_state() {
-        let handle = VaultServiceHandle::new();
-        handle.unlock_new(24).unwrap();
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = VaultServiceActor::new(handle.clone());
-        tokio::task::spawn(actor.run(rx));
-
-        let (resp_tx, resp_rx): (oneshot::Sender<Result<(), VaultServiceError>>, _) =
-            oneshot::channel();
-        let msg = VaultMessage::Lock(WithChannels::from((Lock, resp_tx)));
-        tx.send(msg).await.unwrap();
-
-        let result = resp_rx.await.unwrap();
-        assert!(result.is_ok(), "Lock via actor must succeed");
-        assert!(!handle.is_unlocked(), "Handle must be locked after Lock");
-    }
-
     #[test]
     fn test_unlock_with_passphrase_produces_different_seed() {
         let service_a = VaultServiceHandle::new();
@@ -941,32 +686,6 @@ mod tests {
         assert_eq!(
             key_a.private_key, key_c.private_key,
             "Unlock with None passphrase must produce same seed as another None passphrase unlock"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_actor_unlock_with_passphrase() {
-        let handle = VaultServiceHandle::new();
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let actor = VaultServiceActor::new(handle);
-        tokio::task::spawn(actor.run(rx));
-
-        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
-        let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = VaultMessage::Unlock(WithChannels::from((
-            Unlock {
-                mnemonic: mnemonic.to_string(),
-                passphrase: Some("TREZOR".to_string()),
-            },
-            resp_tx,
-        )));
-        tx.send(msg).await.unwrap();
-
-        let result = resp_rx.await.unwrap();
-        assert!(
-            result.is_ok(),
-            "Unlock with passphrase via actor must succeed"
         );
     }
 }
