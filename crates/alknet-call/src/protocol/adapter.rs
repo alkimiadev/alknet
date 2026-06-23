@@ -363,6 +363,7 @@ mod tests {
         )
     }
 
+    #[allow(dead_code)]
     fn internal_spec(name: &str) -> OperationSpec {
         OperationSpec::new(
             name,

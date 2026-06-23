@@ -89,7 +89,11 @@ impl CallConnection {
 
         let receiver = {
             let mut pending = self.pending.lock();
-            pending.register_call(request_id.clone(), Instant::now() + DEFAULT_CALL_TIMEOUT)
+            pending.register_call(
+                request_id.clone(),
+                Instant::now() + DEFAULT_CALL_TIMEOUT,
+                None,
+            )
         };
 
         if let Err(err) = self.write_request(send, &request_id, payload).await {
@@ -133,7 +137,7 @@ impl CallConnection {
 
         let receiver = {
             let mut pending = self.pending.lock();
-            pending.register_subscribe(request_id.clone(), None)
+            pending.register_subscribe(request_id.clone(), None, None)
         };
 
         if let Err(err) = self.write_request(send, &request_id, payload).await {
