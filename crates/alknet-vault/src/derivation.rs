@@ -11,7 +11,6 @@
 //! | `m/74'/0'/0'/0'` | Primary identity keypair | Ed25519 (alknet auth) |
 //! | `m/74'/0'/0'/{n}'` | Worker/device identity | Ed25519 |
 //! | `m/74'/0'/1'/0'` | SSH host key | Ed25519 |
-//! | `m/74'/1'/0'/{hash}'` | Site-specific password | Deterministic |
 //! | `m/74'/2'/0'/0'` | Encryption key for external credentials | AES-256-GCM |
 //! | `m/44'/60'/0'/0/0` | Ethereum signing key | secp256k1 |
 
@@ -50,13 +49,6 @@ pub mod PATHS {
 /// Path: `m/74'/0'/0'/{n}'`
 pub fn device_path(index: u32) -> String {
     format!("m/74'/0'/0'/{}'", index)
-}
-
-/// Construct a site-specific password derivation path with the given hash.
-///
-/// Path: `m/74'/1'/0'/{hash}'`
-pub fn site_password_path(site_hash: &str) -> String {
-    format!("m/74'/1'/0'/{}'", site_hash)
 }
 
 /// A derived extended private key with its public key.
@@ -246,11 +238,6 @@ mod tests {
     fn test_device_path() {
         assert_eq!(device_path(0), "m/74'/0'/0'/0'");
         assert_eq!(device_path(1), "m/74'/0'/0'/1'");
-    }
-
-    #[test]
-    fn test_site_password_path() {
-        assert_eq!(site_password_path("abc123"), "m/74'/1'/0'/abc123'");
     }
 
     #[test]

@@ -42,9 +42,6 @@
 
 use std::sync::{Arc, RwLock};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
-
 use crate::cache::{CacheConfig, CachedKey, KeyCache};
 use crate::derivation::{self, DerivationError, PATHS};
 use crate::encryption::{self, EncryptedData, EncryptionKey};
@@ -283,29 +280,6 @@ impl VaultServiceHandle {
         }
     }
 
-    pub fn derive_password(&self, path: &str, length: usize) -> Result<Vec<u8>, VaultServiceError> {
-        let inner = self.inner.read().unwrap();
-        if !inner.unlocked {
-            return Err(VaultServiceError::VaultLocked);
-        }
-        let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
-
-        let key = derivation::derive_path_from_seed(seed.as_bytes(), path)?;
-        let private_key = key.private_key();
-        let truncated_len = length.min(private_key.len());
-        let result = private_key[..truncated_len].to_vec();
-        Ok(result)
-    }
-
-    pub fn derive_password_string(
-        &self,
-        path: &str,
-        length: usize,
-    ) -> Result<String, VaultServiceError> {
-        let bytes = self.derive_password(path, length)?;
-        Ok(URL_SAFE_NO_PAD.encode(&bytes))
-    }
-
     /// Encrypt plaintext using the derived encryption key.
     ///
     /// Uses the key at path `m/74'/2'/0'/0'` (PATHS::ENCRYPTION) by default.
@@ -461,76 +435,6 @@ mod tests {
 
         service.lock();
         assert!(service.decrypt(&encrypted).is_err());
-    }
-
-    #[test]
-    fn test_derive_password_deterministic() {
-        let service = VaultServiceHandle::new();
-        service.unlock_new(24).unwrap();
-
-        let path = "m/74'/1'/0'/12345'";
-        let pw1 = service.derive_password(path, 16).unwrap();
-        let pw2 = service.derive_password(path, 16).unwrap();
-        assert_eq!(pw1, pw2, "derive_password must be deterministic");
-    }
-
-    #[test]
-    fn test_derive_password_different_paths() {
-        let service = VaultServiceHandle::new();
-        service.unlock_new(24).unwrap();
-
-        let pw_a = service.derive_password("m/74'/1'/0'/100'", 16).unwrap();
-        let pw_b = service.derive_password("m/74'/1'/0'/200'", 16).unwrap();
-        assert_ne!(
-            pw_a, pw_b,
-            "different paths must produce different passwords"
-        );
-    }
-
-    #[test]
-    fn test_derive_password_length_truncation() {
-        let service = VaultServiceHandle::new();
-        service.unlock_new(24).unwrap();
-
-        let path = "m/74'/1'/0'/999'";
-        let pw_full = service.derive_password(path, 32).unwrap();
-        let pw_short = service.derive_password(path, 16).unwrap();
-
-        assert_eq!(pw_short.len(), 16);
-        assert_eq!(pw_full.len(), 32);
-        assert_eq!(
-            &pw_full[..16],
-            &pw_short[..],
-            "truncated bytes must match prefix of full key"
-        );
-    }
-
-    #[test]
-    fn test_derive_password_locked_error() {
-        let service = VaultServiceHandle::new();
-        let result = service.derive_password("m/74'/1'/0'/1'", 16);
-        assert!(matches!(result, Err(VaultServiceError::VaultLocked)));
-    }
-
-    #[test]
-    fn test_derive_password_string_base64url() {
-        let service = VaultServiceHandle::new();
-        service.unlock_new(24).unwrap();
-
-        let path = "m/74'/1'/0'/42'";
-        let encoded = service.derive_password_string(path, 16).unwrap();
-
-        assert!(!encoded.contains('='), "Base64url must not contain padding");
-        assert!(
-            encoded
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-            "Base64url must only contain URL-safe characters"
-        );
-
-        let raw_bytes = service.derive_password(path, 16).unwrap();
-        let decoded = URL_SAFE_NO_PAD.decode(&encoded).unwrap();
-        assert_eq!(raw_bytes, decoded);
     }
 
     #[cfg(feature = "secp256k1")]
