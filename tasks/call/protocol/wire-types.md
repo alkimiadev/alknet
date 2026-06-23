@@ -1,7 +1,7 @@
 ---
 id: call/protocol/wire-types
 name: Implement EventEnvelope, ResponseEnvelope, CallError, and length-prefixed JSON framing
-status: pending
+status: completed
 depends_on: [call/crate-init]
 scope: moderate
 risk: medium
@@ -216,4 +216,8 @@ pub enum FrameError {
 
 ## Summary
 
-> To be filled on completion
+Implemented `EventEnvelope`, `ResponseEnvelope`, `CallError`, `FrameError`, and
+`FrameFramedReader`/`FrameFramedWriter` with 4-byte big-endian length-prefixed
+JSON framing in `protocol/wire.rs`. Added `ResponseEnvelope` helpers (ok/error/
+not_found/forbidden) and `ResponseEnvelope`→`EventEnvelope` conversion. 20 unit
+tests pass; clippy clean. Merged to develop.
