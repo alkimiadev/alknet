@@ -1,0 +1,25 @@
+[package]
+name = "alknet-call"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Structured RPC over QUIC on ALPN `alknet/call`: operations, streaming subscriptions, service discovery"
+repository.workspace = true
+
+[lib]
+name = "alknet_call"
+
+[features]
+default = []
+
+[dependencies]
+alknet-core = { path = "../alknet-core" }
+irpc = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tracing = "0.1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
