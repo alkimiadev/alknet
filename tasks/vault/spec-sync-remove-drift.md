@@ -1,7 +1,7 @@
 ---
 id: vault/spec-sync-remove-drift
 name: Update vault specs to remove drift table and security-constraint drift prose, bump doc status
-status: pending
+status: completed
 depends_on: [vault/review-vault-sync]
 scope: narrow
 risk: low
@@ -104,4 +104,11 @@ depends on the review task (which depends on all drift fixes).
 
 ## Summary
 
-> To be filled on completion
+Removed the Known Source Drift table from vault/README.md, removed all "known
+drift"/"current source uses X" prose from Security Constraints in README,
+encryption.md, and service.md (constraint statements preserved), removed the
+drift paragraph in encryption.md Key Versioning, removed stale ADR-025/postcard
+notes in protocol.md References. Bumped all 5 vault doc frontmatter to
+`status: stable`. Updated architecture/README.md vault doc statuses to stable
+and Current State to remove "pending ADR-025/026 refactor" language. Merged to
+develop.
