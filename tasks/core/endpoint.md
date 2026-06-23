@@ -1,7 +1,7 @@
 ---
 id: core/endpoint
 name: Implement AlknetEndpoint, HandlerRegistry, accept loops (quinn + iroh), TLS identity, and graceful shutdown
-status: pending
+status: completed
 depends_on: [core/core-types, core/config, core/auth]
 scope: broad
 risk: high
@@ -246,4 +246,16 @@ handler-specific, not core endpoint.
 
 ## Summary
 
-> To be filled on completion
+Implemented `AlknetEndpoint` with quinn+iroh accept loops (both feature-gated,
+both `Option`), `HandlerRegistry` (new/register/get/alpn_strings with
+panic-on-duplicate), dispatch via `tokio::spawn` by ALPN, `AuthContext`
+construction from connection (alpn/remote_addr/fingerprint/identity), TLS
+identity modes (RawKey RFC 7250 via on-the-fly cert resolver, X509 from files,
+SelfSigned via rcgen), `EndpointError` enum, graceful shutdown with drain
+timeout + force close. ACME deferred as TODO per task spec. 55 tests
+(--all-features), 52 (default), 47 (no-default); clippy clean across all 3
+feature combos. Merged to develop.
+
+Note: The agent initially worked in the main worktree (incomplete/broken code
+was stashed and dropped). The final work was properly pushed to the feat branch
+and merged from there.
