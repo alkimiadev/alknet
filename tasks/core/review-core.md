@@ -1,7 +1,7 @@
 ---
 id: core/review-core
 name: Review alknet-core implementation for spec conformance and pattern consistency
-status: pending
+status: completed
 depends_on: [core/endpoint]
 scope: moderate
 risk: low
@@ -119,4 +119,9 @@ phase.
 
 ## Summary
 
-> To be filled on completion
+Reviewed alknet-core against all spec docs — implementation is spec-conformant.
+Found and fixed one issue: `RawKeyCertResolver`/`Ed25519SigningKey`/`std::path::Path`
+were gated on `#[cfg(feature = "iroh")]` but only used in the quinn TLS path,
+causing clippy failures on iroh-only builds. Re-gated to
+`#[cfg(all(feature = "quinn", feature = "iroh"))]`. All 4 feature combinations
+now pass clippy -D warnings; 55 tests pass. Merged to develop.
