@@ -1,7 +1,7 @@
 ---
 id: call/review-call
 name: Review alknet-call implementation for spec conformance and pattern consistency
-status: pending
+status: completed
 depends_on: [call/protocol/abort-cascade]
 scope: broad
 risk: low
@@ -134,4 +134,15 @@ call phase — the most complex crate in this batch.
 
 ## Summary
 
-> To be filled on completion
+Reviewed the entire alknet-call crate against operation-registry.md,
+call-protocol.md, and ADRs 005/012/014/015/016/017/022/023/024. All registry
+types (OperationSpec 8 fields, AccessControl AND/OR + resource checks,
+HandlerRegistration 6 fields, OperationProvenance 6 variants, CompositionAuthority,
+ScopedOperationEnv, AbortPolicy), protocol types (EventEnvelope, ResponseEnvelope,
+CallError, 5 event types, framing), security constraints (Capabilities
+non-serializable/zeroized/immutable, metadata fresh on composition, internal ops
+→ NOT_FOUND from wire, reachability bounds composition, UUID v4 request IDs),
+and pattern consistency (OperationEnv trait, CompositeOperationEnv contains()
+probe, authority switch on internal: true, deadline inheritance) are conformant.
+No source deviations found. 159 tests pass; build/clippy/fmt/test clean.
+Merged to develop.
