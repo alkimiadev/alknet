@@ -1,7 +1,7 @@
 ---
 id: vault/cache-zeroization-test
 name: Verify and test that HashMap::clear() drops CachedKey values triggering zeroization
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low
@@ -82,4 +82,10 @@ file. It can run in parallel with drift #4.
 
 ## Summary
 
-> To be filled on completion
+Added a `drop_tracker` test module proving `HashMap::clear()`/`remove()`/`insert`
+(replace) drop values triggering their `Drop` impls, plus explicit tests for LRU
+eviction (`test_lru_eviction_drops_evicted_cached_key`), TTL expiry
+(`test_ttl_expiry_evicts_entry_on_access`), and `clear()`
+(`test_clear_removes_all_entries_and_empties_cache`). The lock()-clears-cache
+criterion is covered by existing `test_lock_clears_all_cache_entries` in
+service.rs. All lib + integration tests pass; clippy clean. Merged to develop.
