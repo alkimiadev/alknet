@@ -76,7 +76,7 @@ fn test_encrypt_decrypt_lifecycle() {
     service.unlock_new(24).unwrap();
 
     let plaintext = "my-api-key-12345";
-    let encrypted = service.encrypt(plaintext, 1).unwrap();
+    let encrypted = service.encrypt(plaintext, 2).unwrap();
     let decrypted = service.decrypt(&encrypted).unwrap();
     assert_eq!(decrypted, plaintext);
 

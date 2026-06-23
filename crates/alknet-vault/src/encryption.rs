@@ -7,10 +7,10 @@
 //! # Salt Field (Reserved for Future KDF-Based Key Derivation)
 //!
 //! The `salt` field in `EncryptedData` is **reserved for future KDF-based key
-//! derivation** (Phase B). In v1, the encryption key is derived directly from the
+//! derivation** (Phase B). In v2, the encryption key is derived directly from the
 //! seed at path `m/74'/2'/0'/0'` without using the salt. The salt is generated
 //! randomly (32 bytes) and stored in `EncryptedData.salt` for forward
-//! compatibility, but it plays no role in the v1 key derivation process.
+//! compatibility, but it plays no role in the v2 key derivation process.
 //!
 //! When key rotation is implemented in Phase B, the salt will be used as input to
 //! HKDF or PBKDF2 for stretch-based key derivation, allowing the same seed to
@@ -27,11 +27,14 @@
 //! # Key Versioning
 //!
 //! Key versioning allows re-encryption when the encryption key is rotated. The
-//! current key version is `1`. To rotate:
-//! 1. Derive a new key from a new derivation path or new seed
-//! 2. Decrypt all existing `EncryptedData` with key version 1
-//! 3. Re-encrypt with key version 2
-//! 4. Update storage
+//! current key version is `2` (HD-derived at `m/74'/2'/0'/0'`). Version `1` is
+//! reserved for the TypeScript predecessor's PBKDF2-encrypted data, which the
+//! vault cannot decrypt (different key derivation) — migration is a one-time
+//! re-encryption. Each version maps to a unique derivation path
+//! (`m/74'/2'/0'/{version-2}'`, see ADR-021). To rotate:
+//! 1. Decrypt all existing `EncryptedData` with the old key version
+//! 2. Re-encrypt with the new key version (via `VaultServiceHandle::rotate`)
+//! 3. Update storage
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -42,7 +45,11 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 /// Current default key version for encryption.
-pub const CURRENT_KEY_VERSION: u32 = 1;
+///
+/// Version `2` is HD-derived at `m/74'/2'/0'/0'` (`PATHS::ENCRYPTION`) per
+/// ADR-020. Version `1` is reserved for the TypeScript predecessor's
+/// PBKDF2-encrypted data, which the vault cannot decrypt.
+pub const CURRENT_KEY_VERSION: u32 = 2;
 
 /// Encrypted data blob stored in the metagraph.
 ///
@@ -62,7 +69,7 @@ pub struct EncryptedData {
     pub key_version: u32,
     /// Base64-encoded random salt.
     ///
-    /// **Reserved for future KDF-based key derivation (Phase B).** In v1, the
+    /// **Reserved for future KDF-based key derivation (Phase B).** In v2, the
     /// encryption key is derived directly from the seed at path `m/74'/2'/0'/0'`
     /// without using the salt. The salt is generated and stored for forward
     /// compatibility but does not participate in key derivation.

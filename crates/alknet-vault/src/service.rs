@@ -43,7 +43,7 @@
 use std::sync::{Arc, RwLock};
 
 use crate::cache::{CacheConfig, CachedKey, KeyCache};
-use crate::derivation::{self, DerivationError, PATHS};
+use crate::derivation::{self, DerivationError};
 use crate::encryption::{self, EncryptedData, EncryptionKey};
 use crate::mnemonic::{Language, Mnemonic, Seed};
 use crate::protocol::{DerivedKey, KeyType};
@@ -241,6 +241,23 @@ impl VaultServiceHandle {
         })
     }
 
+    /// Derive the encryption key for a specific key version (ADR-021).
+    ///
+    /// Maps `version` to its derivation path via
+    /// `derivation::encryption_path_for_version` (v2 → `m/74'/2'/0'/0'`,
+    /// v3 → `m/74'/2'/0'/1'`, etc.) and derives the key. Cached by path
+    /// (same cache as `derive_encryption_key`). Returns
+    /// `VaultServiceError::InvalidPath` for `version < 2` (v1 is the TS
+    /// PBKDF2 legacy, which the vault cannot derive; v0 is meaningless).
+    pub fn derive_encryption_key_for_version(
+        &self,
+        version: u32,
+    ) -> Result<DerivedKey, VaultServiceError> {
+        let path = derivation::encryption_path_for_version(version)
+            .map_err(|e| VaultServiceError::InvalidPath(e.to_string()))?;
+        self.derive_encryption_key(&path)
+    }
+
     /// Derive a secp256k1 (Ethereum) keypair at the given path.
     ///
     /// Uses BIP-0032 derivation (HMAC-SHA512 with "Bitcoin seed") when the
@@ -284,58 +301,48 @@ impl VaultServiceHandle {
         }
     }
 
-    /// Encrypt plaintext using the derived encryption key.
+    /// Encrypt plaintext using the encryption key derived for `key_version`.
     ///
-    /// Uses the key at path `m/74'/2'/0'/0'` (PATHS::ENCRYPTION) by default.
+    /// Derives the key at `encryption_path_for_version(key_version)` (ADR-021)
+    /// and stamps the same `key_version` on the resulting `EncryptedData`.
+    /// Returns `VaultServiceError::InvalidPath` for `version < 2`.
     pub fn encrypt(
         &self,
         plaintext: &str,
         key_version: u32,
     ) -> Result<EncryptedData, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        if !inner.unlocked {
-            return Err(VaultServiceError::VaultLocked);
-        }
-
-        let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
-            cached.private_key.clone()
-        } else {
-            let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
-            let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
-            let pk = derived.private_key().to_vec();
-            let pubk = derived.public_key().to_vec();
-            let cached = CachedKey::new(KeyType::Aes256Gcm, pk.clone(), pubk);
-            inner.cache.insert(PATHS::ENCRYPTION, cached);
-            pk
-        };
-
-        let enc_key = EncryptionKey::from_derived_bytes(&private_key, key_version);
-
+        let derived = self.derive_encryption_key_for_version(key_version)?;
+        let enc_key = EncryptionKey::from_derived_bytes(&derived.private_key, key_version);
         encryption::encrypt(plaintext, &enc_key).map_err(|e| e.into())
     }
 
-    /// Decrypt an EncryptedData blob using the derived encryption key.
+    /// Decrypt an `EncryptedData` blob using the key for its `key_version`.
+    ///
+    /// Derives the key at `encryption_path_for_version(encrypted.key_version)`
+    /// (ADR-021). Each version maps to a distinct derivation path, so old and
+    /// new keys can coexist during partial rotation.
     pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        if !inner.unlocked {
-            return Err(VaultServiceError::VaultLocked);
-        }
-
-        let private_key = if let Some(cached) = inner.cache.get(PATHS::ENCRYPTION) {
-            cached.private_key.clone()
-        } else {
-            let seed = inner.seed.as_ref().ok_or(VaultServiceError::VaultLocked)?;
-            let derived = derivation::derive_path_from_seed(seed.as_bytes(), PATHS::ENCRYPTION)?;
-            let pk = derived.private_key().to_vec();
-            let pubk = derived.public_key().to_vec();
-            let cached = CachedKey::new(KeyType::Aes256Gcm, pk.clone(), pubk);
-            inner.cache.insert(PATHS::ENCRYPTION, cached);
-            pk
-        };
-
-        let enc_key = EncryptionKey::from_derived_bytes(&private_key, encrypted.key_version);
-
+        let derived = self.derive_encryption_key_for_version(encrypted.key_version)?;
+        let enc_key =
+            EncryptionKey::from_derived_bytes(&derived.private_key, encrypted.key_version);
         encryption::decrypt(encrypted, &enc_key).map_err(|e| e.into())
+    }
+
+    /// Re-encrypt an `EncryptedData` blob from its current version to
+    /// `to_version` (ADR-021).
+    ///
+    /// Decrypts with the old version's key (`encrypted.key_version`) and
+    /// re-encrypts with the new version's key (`to_version`). Returns the new
+    /// `EncryptedData` with `key_version = to_version` — the caller replaces
+    /// the blob in storage. No new mnemonic is needed; the same seed produces
+    /// all version keys via different derivation paths.
+    pub fn rotate(
+        &self,
+        encrypted: &EncryptedData,
+        to_version: u32,
+    ) -> Result<EncryptedData, VaultServiceError> {
+        let plaintext = self.decrypt(encrypted)?;
+        self.encrypt(&plaintext, to_version)
     }
 }
 
@@ -348,6 +355,7 @@ impl Default for VaultServiceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::derivation::PATHS;
 
     #[test]
     fn test_service_starts_locked() {
@@ -455,7 +463,7 @@ mod tests {
         service.unlock_new(24).unwrap();
 
         let plaintext = "my-api-key-12345";
-        let encrypted = service.encrypt(plaintext, 1).unwrap();
+        let encrypted = service.encrypt(plaintext, 2).unwrap();
         let decrypted = service.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
 
@@ -579,13 +587,106 @@ mod tests {
         service.unlock_new(24).unwrap();
 
         let plaintext = "cached-encryption-test";
-        let encrypted = service.encrypt(plaintext, 1).unwrap();
+        let encrypted = service.encrypt(plaintext, 2).unwrap();
         assert_eq!(service.inner.read().unwrap().cache.len(), 1);
 
         let decrypted = service.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
 
         assert_eq!(service.inner.read().unwrap().cache.len(), 1);
+    }
+
+    #[test]
+    fn test_encrypt_v2_round_trip() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let plaintext = "v2 round trip secret";
+        let encrypted = service.encrypt(plaintext, 2).unwrap();
+        assert_eq!(encrypted.key_version, 2);
+
+        let decrypted = service.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_rotate_v2_to_v3_round_trip() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let plaintext = "rotated secret";
+        let encrypted_v2 = service.encrypt(plaintext, 2).unwrap();
+        assert_eq!(encrypted_v2.key_version, 2);
+
+        let encrypted_v3 = service.rotate(&encrypted_v2, 3).unwrap();
+        assert_eq!(encrypted_v3.key_version, 3);
+        assert_ne!(encrypted_v3.data, encrypted_v2.data);
+
+        let decrypted_v3 = service.decrypt(&encrypted_v3).unwrap();
+        assert_eq!(decrypted_v3, plaintext);
+    }
+
+    #[test]
+    fn test_rotate_old_key_still_derivable_after_rotation() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let plaintext = "partial rotation safe";
+        let encrypted_v2 = service.encrypt(plaintext, 2).unwrap();
+
+        let _encrypted_v3 = service.rotate(&encrypted_v2, 3).unwrap();
+
+        let decrypted_v2 = service.decrypt(&encrypted_v2).unwrap();
+        assert_eq!(decrypted_v2, plaintext);
+    }
+
+    #[test]
+    fn test_derive_encryption_key_for_version_rejects_v1() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let result = service.derive_encryption_key_for_version(1);
+        assert!(matches!(result, Err(VaultServiceError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_derive_encryption_key_for_version_rejects_v0() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let result = service.derive_encryption_key_for_version(0);
+        assert!(matches!(result, Err(VaultServiceError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_encrypt_rejects_v1() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let result = service.encrypt("secret", 1);
+        assert!(matches!(result, Err(VaultServiceError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_derive_encryption_key_for_version_v2_matches_path() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let by_version = service.derive_encryption_key_for_version(2).unwrap();
+        let by_path = service
+            .derive_encryption_key(crate::derivation::PATHS::ENCRYPTION)
+            .unwrap();
+        assert_eq!(by_version.private_key, by_path.private_key);
+    }
+
+    #[test]
+    fn test_derive_encryption_key_for_version_v3_distinct_from_v2() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let v2 = service.derive_encryption_key_for_version(2).unwrap();
+        let v3 = service.derive_encryption_key_for_version(3).unwrap();
+        assert_ne!(v2.private_key, v3.private_key);
     }
 
     #[test]
