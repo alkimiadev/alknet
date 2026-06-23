@@ -309,8 +309,10 @@ mod tests {
 
     #[test]
     fn test_cache_expired_entry_evicted_on_access() {
-        let mut config = CacheConfig::default();
-        config.ttl = Duration::from_millis(1);
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1),
+            ..Default::default()
+        };
 
         let mut cache = KeyCache::new(config);
         cache.insert("m/74'/0'/0'/0'", make_cached_key(KeyType::Ed25519));
@@ -323,8 +325,10 @@ mod tests {
 
     #[test]
     fn test_cache_lru_eviction() {
-        let mut config = CacheConfig::default();
-        config.max_entries = 3;
+        let config = CacheConfig {
+            max_entries: 3,
+            ..Default::default()
+        };
 
         let mut cache = KeyCache::new(config);
 
@@ -345,8 +349,10 @@ mod tests {
 
     #[test]
     fn test_cache_lru_access_reorders() {
-        let mut config = CacheConfig::default();
-        config.max_entries = 3;
+        let config = CacheConfig {
+            max_entries: 3,
+            ..Default::default()
+        };
 
         let mut cache = KeyCache::new(config);
 
@@ -381,8 +387,10 @@ mod tests {
 
     #[test]
     fn test_evict_expired_removes_only_expired() {
-        let mut config = CacheConfig::default();
-        config.ttl = Duration::from_millis(10);
+        let config = CacheConfig {
+            ttl: Duration::from_millis(10),
+            ..Default::default()
+        };
 
         let mut cache = KeyCache::new(config);
         cache.insert("path1", make_cached_key(KeyType::Ed25519));

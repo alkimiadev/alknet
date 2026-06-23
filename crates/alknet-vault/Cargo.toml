@@ -25,11 +25,7 @@ zeroize = { version = "1", features = ["derive"] }
 hmac = "0.12"
 rand = "0.8"
 base64 = "0.22"
-irpc = { workspace = true }
-irpc-derive = { workspace = true }
-tokio = { version = "1", features = ["sync", "rt", "macros"] }
 secp256k1 = { version = "0.29", optional = true }
 
 [dev-dependencies]
 hex = "0.4"
-postcard = { version = "1", features = ["alloc"] }

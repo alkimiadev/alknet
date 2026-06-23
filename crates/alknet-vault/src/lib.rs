@@ -25,8 +25,8 @@
 //! - [`mnemonic`] — BIP39 mnemonic generation, validation, and seed derivation
 //! - [`derivation`] — SLIP-0010 Ed25519 HD key derivation and path constants
 //! - [`encryption`] — AES-256-GCM encrypt/decrypt and `EncryptedData` type
-//! - [`protocol`] — `VaultProtocol` irpc message enum, `DerivedKey`, `KeyType`
-//! - [`service`] — `VaultService` implementation with Unlock/Lock lifecycle
+//! - [`protocol`] — `DerivedKey` and `KeyType` (return types from vault methods)
+//! - [`service`] — `VaultServiceHandle` runtime API with Unlock/Lock lifecycle
 //! - [`ethereum`] — BIP-0032 secp256k1 HD key derivation (behind `secp256k1` feature)
 
 pub mod cache;
@@ -42,7 +42,8 @@ pub mod ethereum;
 // Re-export primary public API
 pub use cache::CacheConfig;
 pub use derivation::{DerivationError, ExtendedPrivKey, PATHS};
-pub use encryption::{EncryptedData, EncryptionError};
+pub use encryption::CURRENT_KEY_VERSION;
+pub use encryption::{EncryptedData, EncryptionError, EncryptionKey};
 pub use mnemonic::{Language, Mnemonic, Seed};
-pub use protocol::{DerivedKey, KeyType, VaultMessage, VaultProtocol};
-pub use service::{VaultService, VaultServiceActor, VaultServiceError, VaultServiceHandle};
+pub use protocol::{DerivedKey, KeyType};
+pub use service::{VaultServiceError, VaultServiceHandle};

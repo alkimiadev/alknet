@@ -1,31 +1,18 @@
-//! VaultProtocol irpc message definition and associated types.
+//! Vault key types: `DerivedKey` and `KeyType`.
 //!
-//! This module defines the `VaultProtocol` enum for irpc-based message dispatch.
-//! The protocol supports unlock/lock lifecycle, key derivation,
-//! and encryption/decryption operations.
+//! The vault's dispatch is direct method calls on `VaultServiceHandle`
+//! (ADR-025). The types defined here — `DerivedKey`, `KeyType` — are the
+//! return types from those methods. There is no `VaultProtocol` enum, no
+//! `VaultMessage`, no `VaultServiceActor`, and no remote dispatch capability.
 //!
-//! # Protocol Operation
-//!
-//! The VaultProtocol follows a lifecycle: the vault starts in a **locked**
-//! state where no derivation or encryption operations are possible. The `Unlock`
-//! call loads the seed into memory (derived from the mnemonic passphrase). After
-//! that, derive and encrypt/decrypt operations are available. The `Lock` call
-//! purges the seed and all cached keys.
-//!
-//! # Wire Format
-//!
-//! For local (in-process) calls, the protocol uses tokio channels directly.
-//! For remote (in-cluster) calls, the protocol is serialized with postcard.
-//! For cross-node (call protocol) exposure, the vault is wrapped in an
-//! operation that serializes to JSON.
+//! The vault is **local-only by construction**. If remote vault access is
+//! ever needed, it requires a separate crate that wraps the vault and adds
+//! remote transport + auth (ADR-025, OQ-021).
 
 use std::fmt;
 
-use irpc::rpc_requests;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroize;
-
-use crate::encryption::EncryptedData;
 
 /// The type of a derived key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,10 +33,8 @@ pub enum KeyType {
 /// by `#[zeroize(drop)]`).
 ///
 /// Serialization redacts the `private_key` field for human-readable formats
-/// (JSON) for safety, showing `"[REDACTED]"` instead of the key bytes. For
-/// binary formats (postcard, used by irpc), the actual bytes are serialized
-/// so that remote communication works correctly. Deserialization always reads
-/// the full bytes.
+/// (JSON) for safety, showing `"[REDACTED]"` instead of the key bytes.
+/// Deserialization always reads the full bytes.
 #[derive(Zeroize, Deserialize)]
 #[zeroize(drop)]
 pub struct DerivedKey {
@@ -98,115 +83,6 @@ impl Serialize for DerivedKey {
     }
 }
 
-/// VaultProtocol message definition.
-///
-/// This is the irpc protocol enum that defines all vault operations.
-/// The `#[rpc_requests]` macro generates:
-/// - **`VaultMessage`**: message enum with `WithChannels` wrappers for each variant
-/// - **`Channels<VaultProtocol>`** impls for each wrapper type
-/// - **`From`** impls for protocol enum and message enum conversions
-/// - **`Service`** and **`RemoteService`** trait impls for remote dispatch
-///
-/// # State Requirements
-///
-/// All operations except `Unlock` require the vault to be in an **unlocked**
-/// state. Calling derive/encrypt/decrypt on a locked vault returns an error.
-#[rpc_requests(message = VaultMessage, no_spans)]
-#[derive(Debug, Serialize, Deserialize)]
-pub enum VaultProtocol {
-    /// Derive an Ed25519 keypair at the given path.
-    ///
-    /// Path format: `m/74'/0'/0'/0'` (SLIP-0010 hardened-only notation).
-    /// Returns a `DerivedKey` with `KeyType::Ed25519`.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::VaultServiceError>>)]
-    #[wrap(DeriveEd25519)]
-    DeriveEd25519 {
-        /// SLIP-0010 derivation path (e.g., "m/74'/0'/0'/0'").
-        path: String,
-    },
-
-    /// Derive an AES-256-GCM encryption key at the given path.
-    ///
-    /// The default encryption path is `m/74'/2'/0'/0'`.
-    /// Returns a `DerivedKey` with `KeyType::Aes256Gcm`.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::VaultServiceError>>)]
-    #[wrap(DeriveEncryptionKey)]
-    DeriveEncryptionKey {
-        /// SLIP-0010 derivation path for the encryption key.
-        path: String,
-    },
-
-    /// Derive a secp256k1 (Ethereum) keypair at the given path.
-    ///
-    /// The default Ethereum path is `m/44'/60'/0'/0/0`.
-    /// Returns a `DerivedKey` with `KeyType::Secp256k1`.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<DerivedKey, crate::service::VaultServiceError>>)]
-    #[wrap(DeriveEthereumKey)]
-    DeriveEthereumKey {
-        /// BIP-0032 derivation path (e.g., "m/44'/60'/0'/0/0").
-        path: String,
-    },
-
-    /// Derive a deterministic password at the given path.
-    ///
-    /// Path format: `m/74'/1'/0'/{hash}'` (SLIP-0010 hardened notation).
-    /// The `length` parameter controls the output length.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<Vec<u8>, crate::service::VaultServiceError>>)]
-    #[wrap(DerivePassword)]
-    DerivePassword {
-        /// SLIP-0010 derivation path for the password.
-        path: String,
-        /// Desired password length in bytes.
-        length: usize,
-    },
-
-    /// Encrypt plaintext using a derived encryption key.
-    ///
-    /// The key is derived at the path `m/74'/2'/0'/0'` with the given version.
-    /// Returns an `EncryptedData` blob suitable for storage.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<EncryptedData, crate::service::VaultServiceError>>)]
-    #[wrap(Encrypt)]
-    Encrypt {
-        /// The plaintext string to encrypt.
-        plaintext: String,
-        /// The key version for rotation tracking.
-        key_version: u32,
-    },
-
-    /// Decrypt an `EncryptedData` blob back to plaintext.
-    ///
-    /// The key is derived from the seed at the path indicated by the key version.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<String, crate::service::VaultServiceError>>)]
-    #[wrap(Decrypt)]
-    Decrypt {
-        /// The encrypted data blob to decrypt.
-        encrypted: EncryptedData,
-    },
-
-    /// Lock the service, purging the seed and all cached derived keys.
-    ///
-    /// After locking, no derive/encrypt/decrypt operations are possible
-    /// until `Unlock` is called again. Calls `zeroize()` on all sensitive
-    /// material (ADR-038).
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::VaultServiceError>>)]
-    #[wrap(Lock)]
-    Lock,
-
-    /// Unlock the service with a BIP39 mnemonic and optional passphrase.
-    ///
-    /// The mnemonic is the space-separated BIP39 word list. The passphrase is
-    /// the optional BIP39 password extension (the "25th word"). After unlocking,
-    /// derive and encrypt/decrypt operations are available.
-    #[rpc(tx = irpc::channel::oneshot::Sender<Result<(), crate::service::VaultServiceError>>)]
-    #[wrap(Unlock)]
-    Unlock {
-        /// The BIP39 mnemonic phrase (space-separated word list).
-        mnemonic: String,
-        /// Optional BIP39 passphrase (the "25th word" password extension).
-        passphrase: Option<String>,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,35 +123,6 @@ mod tests {
             "JSON must show [REDACTED] for private_key"
         );
         assert!(json.contains("Ed25519"), "JSON must contain key_type");
-    }
-
-    #[test]
-    fn test_derived_key_serialize_preserves_bytes_postcard() {
-        let key = make_test_key();
-        let bytes = postcard::to_allocvec(&key).unwrap();
-        let restored: DerivedKey = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(
-            restored.private_key,
-            vec![0xABu8; 32],
-            "postcard must preserve private_key bytes"
-        );
-        assert_eq!(
-            restored.public_key,
-            vec![0xCDu8; 32],
-            "postcard must preserve public_key bytes"
-        );
-    }
-
-    #[test]
-    fn test_derived_key_deserialize_preserves_bytes() {
-        let key = make_test_key();
-        let bytes = postcard::to_allocvec(&key.private_key).unwrap();
-        let restored: Vec<u8> = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(
-            restored,
-            vec![0xABu8; 32],
-            "Deserialization must preserve private_key bytes"
-        );
     }
 
     #[test]
