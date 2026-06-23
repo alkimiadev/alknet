@@ -130,7 +130,7 @@ impl VaultServiceHandle {
     /// The passphrase is the BIP39 password (may be empty string for none).
     /// After unlocking, derive and encrypt/decrypt operations are available.
     pub fn unlock(&self, phrase: &str, passphrase: Option<&str>) -> Result<(), VaultServiceError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if inner.unlocked {
             return Err(VaultServiceError::AlreadyUnlocked);
         }
@@ -149,7 +149,7 @@ impl VaultServiceHandle {
     /// Returns the generated mnemonic phrase. Store this phrase securely —
     /// it is the root of trust for all derived keys.
     pub fn unlock_new(&self, word_count: usize) -> Result<Zeroizing<String>, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if inner.unlocked {
             return Err(VaultServiceError::AlreadyUnlocked);
         }
@@ -170,7 +170,7 @@ impl VaultServiceHandle {
     /// until `unlock` is called again. Calls `zeroize()` on all sensitive
     /// material per ADR-038.
     pub fn lock(&self) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         inner.cache.clear();
         inner.seed = None;
         inner.mnemonic = None;
@@ -179,12 +179,15 @@ impl VaultServiceHandle {
 
     /// Check whether the service is currently unlocked.
     pub fn is_unlocked(&self) -> bool {
-        self.inner.read().unwrap().unlocked
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .unlocked
     }
 
     /// Derive an Ed25519 keypair at the given path.
     pub fn derive_ed25519(&self, path: &str) -> Result<DerivedKey, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if !inner.unlocked {
             return Err(VaultServiceError::VaultLocked);
         }
@@ -212,7 +215,7 @@ impl VaultServiceHandle {
 
     /// Derive an AES-256-GCM encryption key at the given path.
     pub fn derive_encryption_key(&self, path: &str) -> Result<DerivedKey, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if !inner.unlocked {
             return Err(VaultServiceError::VaultLocked);
         }
@@ -246,7 +249,7 @@ impl VaultServiceHandle {
     pub fn derive_ethereum_key(&self, path: &str) -> Result<DerivedKey, VaultServiceError> {
         #[cfg(feature = "secp256k1")]
         {
-            let mut inner = self.inner.write().unwrap();
+            let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
             if !inner.unlocked {
                 return Err(VaultServiceError::VaultLocked);
             }
@@ -289,7 +292,7 @@ impl VaultServiceHandle {
         plaintext: &str,
         key_version: u32,
     ) -> Result<EncryptedData, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if !inner.unlocked {
             return Err(VaultServiceError::VaultLocked);
         }
@@ -313,7 +316,7 @@ impl VaultServiceHandle {
 
     /// Decrypt an EncryptedData blob using the derived encryption key.
     pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<String, VaultServiceError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         if !inner.unlocked {
             return Err(VaultServiceError::VaultLocked);
         }
@@ -402,6 +405,28 @@ mod tests {
         assert!(!service.is_unlocked());
 
         assert!(service.derive_ed25519(PATHS::IDENTITY).is_err());
+    }
+
+    #[test]
+    fn test_poisoned_lock_recovery() {
+        let service = VaultServiceHandle::new();
+        service.unlock_new(24).unwrap();
+
+        let inner_arc = service.inner.clone();
+        std::thread::spawn(move || {
+            let _guard = inner_arc.write().unwrap();
+            panic!("simulated panic while holding write lock");
+        })
+        .join()
+        .expect_err("thread must panic to poison the lock");
+
+        assert!(
+            service.is_unlocked(),
+            "vault must remain usable after a poisoned lock"
+        );
+
+        let key = service.derive_ed25519(PATHS::IDENTITY).unwrap();
+        assert!(!key.private_key.is_empty());
     }
 
     #[test]
