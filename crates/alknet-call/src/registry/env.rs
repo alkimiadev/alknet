@@ -1,8 +1,32 @@
-//! Operation environment: the `OperationEnv` trait, `LocalOperationEnv`, and
-//! `CompositeOperationEnv`.
-//!
-//! The composition dispatch trait — handlers compose child operations through
-//! `OperationContext.env`. See
-//! `docs/architecture/crates/call/operation-registry.md` and ADR-024.
+use serde_json::Value;
 
-// TODO: implement
+use super::context::{AbortPolicy, OperationContext};
+use crate::protocol::wire::ResponseEnvelope;
+
+#[async_trait::async_trait]
+pub trait OperationEnv: Send + Sync {
+    async fn invoke(
+        &self,
+        namespace: &str,
+        operation: &str,
+        input: Value,
+        parent: &OperationContext,
+    ) -> ResponseEnvelope {
+        self.invoke_with_policy(namespace, operation, input, parent, parent.abort_policy)
+            .await
+    }
+
+    async fn invoke_with_policy(
+        &self,
+        namespace: &str,
+        operation: &str,
+        input: Value,
+        parent: &OperationContext,
+        policy: AbortPolicy,
+    ) -> ResponseEnvelope;
+
+    fn contains(&self, name: &str) -> bool {
+        let _ = name;
+        true
+    }
+}
