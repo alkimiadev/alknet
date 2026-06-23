@@ -1,7 +1,7 @@
 ---
 id: call/protocol/pending-request-map
 name: Implement PendingRequestMap for correlating call.requested and call.responded events
-status: pending
+status: completed
 depends_on: [call/protocol/wire-types]
 scope: moderate
 risk: medium
@@ -161,4 +161,7 @@ correlation property from ADR-012.
 
 ## Summary
 
-> To be filled on completion
+Implemented `PendingRequestMap` in `protocol/pending.rs` with `Call` (oneshot)
+and `Subscribe` (mpsc) entries, ID-based correlation (ADR-012), timeout-based
+eviction, `fail_all` for connection close, and silent discard of unknown request
+IDs. 17 unit tests pass; clippy clean. Merged to develop.
