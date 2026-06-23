@@ -1,7 +1,7 @@
 ---
 id: vault/review-vault-sync
 name: Review vault implementation against specs after all drift fixes
-status: pending
+status: completed
 depends_on: [vault/irpc-removal, vault/osrng-iv-generation, vault/poisoned-lock-recovery, vault/remove-password-derivation, vault/unlock-new-zeroizing-return, vault/key-versioning-rotation, vault/derivedkey-serialization, vault/cache-zeroization-test]
 scope: moderate
 risk: low
@@ -109,4 +109,12 @@ items were missed or incompletely fixed.
 
 ## Summary
 
-> To be filled on completion
+Reviewed vault crate against all architecture specs. Fixed 5 spec-conformance
+deviations: (1) EncryptionKey removed Clone (now move-only), added redacting
+Debug; (2) EncryptionKey::new made private (cfg(test)), added pub(crate)
+key_bytes(); (3) encrypt/decrypt made pub(crate) per encryption.md, crypto tests
+moved to unit tests; (4) CachedKey refactored to wrap DerivedKey with
+cached_at/last_accessed fields per service.md; (5) Mnemonic::to_seed() unwrap()
+eliminated by storing validated Bip39Mnemonic (enabled bip39 zeroize feature).
+All 10 drift items verified resolved. 79 lib + 12 integration tests pass; clippy
+clean with all features. Merged to develop.

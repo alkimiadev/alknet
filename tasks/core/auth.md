@@ -1,7 +1,7 @@
 ---
 id: core/auth
 name: Implement AuthContext, Identity, AuthToken, IdentityProvider trait, and ConfigIdentityProvider
-status: pending
+status: completed
 depends_on: [core/core-types]
 scope: moderate
 risk: medium
@@ -159,4 +159,12 @@ per-request identity takes precedence for ACL.
 
 ## Summary
 
-> To be filled on completion
+Implemented `AuthContext`, `Identity`, `AuthToken`, `IdentityProvider` trait,
+and `ConfigIdentityProvider` in `auth.rs`. ConfigIdentityProvider reads from
+`ArcSwap<DynamicConfig>` on every call (hot-reloadable): fingerprint resolution
+via `authorized_fingerprints` HashSet, token resolution via `alk_` prefix +
+SHA-256 hash + expiry check. Also implemented minimal `config.rs` types
+(`DynamicConfig`, `AuthPolicy`, `ApiKeyEntry`, `RateLimitConfig`,
+`ConfigReloadHandle`) needed by auth — aligned with architecture docs for the
+parallel `core/config` task to extend. 27 unit tests pass; clippy clean.
+Merged to develop.
