@@ -207,6 +207,84 @@ impl Default for KeyCache {
 }
 
 #[cfg(test)]
+mod drop_tracker {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+
+    struct DropTrackedKey {
+        flag: Arc<AtomicBool>,
+        bytes: Vec<u8>,
+    }
+
+    impl DropTrackedKey {
+        fn new(flag: &Arc<AtomicBool>) -> Self {
+            Self {
+                flag: flag.clone(),
+                bytes: vec![0xABu8; 32],
+            }
+        }
+    }
+
+    impl Drop for DropTrackedKey {
+        fn drop(&mut self) {
+            for b in self.bytes.iter_mut() {
+                *b = 0;
+            }
+            self.flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_hashmap_clear_drops_values_triggering_drop_impls() {
+        let flag1 = Arc::new(AtomicBool::new(false));
+        let flag2 = Arc::new(AtomicBool::new(false));
+        let mut map: HashMap<String, DropTrackedKey> = HashMap::new();
+        map.insert("path1".to_string(), DropTrackedKey::new(&flag1));
+        map.insert("path2".to_string(), DropTrackedKey::new(&flag2));
+
+        assert!(!flag1.load(Ordering::SeqCst));
+        assert!(!flag2.load(Ordering::SeqCst));
+
+        map.clear();
+
+        assert!(flag1.load(Ordering::SeqCst));
+        assert!(flag2.load(Ordering::SeqCst));
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_hashmap_remove_drops_value_triggering_drop_impl() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut map: HashMap<String, DropTrackedKey> = HashMap::new();
+        map.insert("path1".to_string(), DropTrackedKey::new(&flag));
+
+        assert!(!flag.load(Ordering::SeqCst));
+
+        map.remove("path1");
+
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_hashmap_insert_replace_drops_old_value() {
+        let flag_old = Arc::new(AtomicBool::new(false));
+        let mut map: HashMap<String, DropTrackedKey> = HashMap::new();
+        map.insert("path1".to_string(), DropTrackedKey::new(&flag_old));
+
+        assert!(!flag_old.load(Ordering::SeqCst));
+
+        let flag_new = Arc::new(AtomicBool::new(false));
+        map.insert("path1".to_string(), DropTrackedKey::new(&flag_new));
+
+        assert!(flag_old.load(Ordering::SeqCst));
+        assert!(!flag_new.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -335,5 +413,57 @@ mod tests {
         assert_eq!(entry.key_type, KeyType::Aes256Gcm);
         assert_eq!(entry.private_key, vec![3u8; 32]);
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_lru_eviction_drops_evicted_cached_key() {
+        let mut config = CacheConfig::default();
+        config.max_entries = 2;
+
+        let mut cache = KeyCache::new(config);
+
+        cache.insert("path1", make_cached_key(KeyType::Ed25519));
+        cache.insert("path2", make_cached_key(KeyType::Aes256Gcm));
+        assert_eq!(cache.len(), 2);
+
+        cache.insert("path3", make_cached_key(KeyType::Secp256k1));
+
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get("path1").is_none());
+        assert!(cache.get("path2").is_some());
+        assert!(cache.get("path3").is_some());
+    }
+
+    #[test]
+    fn test_ttl_expiry_evicts_entry_on_access() {
+        let mut config = CacheConfig::default();
+        config.ttl = Duration::from_millis(1);
+
+        let mut cache = KeyCache::new(config);
+        cache.insert("path1", make_cached_key(KeyType::Ed25519));
+        assert_eq!(cache.len(), 1);
+
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert!(cache.get("path1").is_none());
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_clear_removes_all_entries_and_empties_cache() {
+        let mut cache = KeyCache::with_defaults();
+        cache.insert("path1", make_cached_key(KeyType::Ed25519));
+        cache.insert("path2", make_cached_key(KeyType::Aes256Gcm));
+        cache.insert("path3", make_cached_key(KeyType::Secp256k1));
+        assert_eq!(cache.len(), 3);
+
+        cache.clear();
+
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+        assert!(cache.get("path1").is_none());
+        assert!(cache.get("path2").is_none());
+        assert!(cache.get("path3").is_none());
     }
 }
