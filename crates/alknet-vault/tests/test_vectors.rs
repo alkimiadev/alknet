@@ -18,7 +18,6 @@
 //! representation handles clamping differently.
 
 use alknet_vault::derivation::{derive_path_from_seed, PATHS};
-use alknet_vault::encryption::{decrypt, encrypt, EncryptionKey, CURRENT_KEY_VERSION};
 use alknet_vault::mnemonic::{Language, Mnemonic};
 use alknet_vault::protocol::KeyType;
 
@@ -303,36 +302,6 @@ fn test_aes256gcm_known_key_encrypt_decrypt() {
         decrypted, plaintext,
         "Decrypted plaintext must match original"
     );
-}
-
-/// AES-256-GCM: encrypt/decrypt round-trip through our EncryptionKey API.
-#[test]
-fn test_aes256gcm_encryption_key_round_trip() {
-    let key_bytes: [u8; 32] = [0x42u8; 32];
-    let key = EncryptionKey::new(key_bytes, CURRENT_KEY_VERSION);
-
-    let plaintext = "known-plaintext-for-aes-256-gcm-test";
-
-    let encrypted = encrypt(plaintext, &key).unwrap();
-    let decrypted = decrypt(&encrypted, &key).unwrap();
-
-    assert_eq!(
-        decrypted, plaintext,
-        "Round-trip through our API must preserve plaintext"
-    );
-}
-
-/// AES-256-GCM: wrong key produces decryption failure.
-#[test]
-fn test_aes256gcm_wrong_key_fails() {
-    let key1 = EncryptionKey::new([0x01u8; 32], CURRENT_KEY_VERSION);
-    let key2 = EncryptionKey::new([0x02u8; 32], CURRENT_KEY_VERSION);
-
-    let plaintext = "test-data-for-wrong-key";
-    let encrypted = encrypt(plaintext, &key1).unwrap();
-
-    let result = decrypt(&encrypted, &key2);
-    assert!(result.is_err(), "Decryption with wrong key must fail");
 }
 
 // ---------------------------------------------------------------------------

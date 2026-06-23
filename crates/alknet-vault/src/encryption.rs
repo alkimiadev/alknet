@@ -42,6 +42,7 @@ use aes_gcm::{
 };
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use zeroize::Zeroize;
 
 /// Current default key version for encryption.
@@ -83,8 +84,9 @@ pub struct EncryptedData {
 /// Encryption key material derived from the seed.
 ///
 /// Holds the 32-byte AES-256-GCM key and its derivation metadata.
-/// Zeroized on drop per ADR-038.
-#[derive(Clone, Zeroize)]
+/// Zeroized on drop per ADR-038. Not `Clone` — move-only, like `DerivedKey`.
+/// Implements a custom redacting `Debug` (never prints key bytes).
+#[derive(Zeroize)]
 #[zeroize(drop)]
 pub struct EncryptionKey {
     key_bytes: [u8; 32],
@@ -92,18 +94,21 @@ pub struct EncryptionKey {
 }
 
 impl EncryptionKey {
-    /// Create a new encryption key from raw bytes and a version number.
-    pub fn new(key_bytes: [u8; 32], key_version: u32) -> Self {
+    /// Construct from raw 32 bytes. Private — for internal use (tests).
+    #[cfg(test)]
+    fn new(key_bytes: [u8; 32], key_version: u32) -> Self {
         Self {
             key_bytes,
             key_version,
         }
     }
 
-    /// Create a new encryption key from the first 32 bytes of derived key material.
-    ///
-    /// The input is typically the private key bytes from derivation at path
-    /// `m/74'/2'/0'/0'`.
+    /// Take the first 32 bytes of derived key material (the private key
+    /// bytes from SLIP-0010 derivation) and construct an `EncryptionKey`.
+    /// This is the bridge from `DerivedKey` (SLIP-0010 output) to
+    /// `EncryptionKey` (AES-256-GCM input). `VaultServiceHandle::encrypt`
+    /// and `decrypt` call this on the cached `DerivedKey` to obtain the
+    /// `EncryptionKey` for the crypto layer.
     pub fn from_derived_bytes(bytes: &[u8], key_version: u32) -> Self {
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes[..32]);
@@ -113,9 +118,23 @@ impl EncryptionKey {
         }
     }
 
-    /// Returns the key version.
+    /// Return the key version (for rotation tracking).
     pub fn version(&self) -> u32 {
         self.key_version
+    }
+
+    /// Return the key bytes (crate-internal — for `encrypt`/`decrypt`).
+    pub(crate) fn key_bytes(&self) -> &[u8; 32] {
+        &self.key_bytes
+    }
+}
+
+impl fmt::Debug for EncryptionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptionKey")
+            .field("key_version", &self.key_version)
+            .field("key_bytes", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -133,8 +152,11 @@ impl EncryptionKey {
 /// # Returns
 ///
 /// An `EncryptedData` struct suitable for storage in the metagraph.
-pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, EncryptionError> {
-    let cipher = Aes256Gcm::new_from_slice(&key.key_bytes)
+pub(crate) fn encrypt(
+    plaintext: &str,
+    key: &EncryptionKey,
+) -> Result<EncryptedData, EncryptionError> {
+    let cipher = Aes256Gcm::new_from_slice(key.key_bytes())
         .map_err(|e| EncryptionError::Encryption(format!("invalid key length: {e}")))?;
 
     // Generate random IV (12 bytes for AES-GCM) using OsRng CSPRNG
@@ -168,8 +190,11 @@ pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<EncryptedData, En
 /// # Returns
 ///
 /// The decrypted plaintext string.
-pub fn decrypt(encrypted: &EncryptedData, key: &EncryptionKey) -> Result<String, EncryptionError> {
-    let cipher = Aes256Gcm::new_from_slice(&key.key_bytes)
+pub(crate) fn decrypt(
+    encrypted: &EncryptedData,
+    key: &EncryptionKey,
+) -> Result<String, EncryptionError> {
+    let cipher = Aes256Gcm::new_from_slice(key.key_bytes())
         .map_err(|e| EncryptionError::Decryption(format!("invalid key length: {e}")))?;
 
     let iv_bytes =
@@ -254,5 +279,43 @@ mod tests {
         let encrypted = encrypt("secret stuff", &key1).unwrap();
         let result = decrypt(&encrypted, &key2);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encryption_key_debug_redacts_key_bytes() {
+        let key = EncryptionKey::new([0xABu8; 32], 2);
+        let debug_output = format!("{:?}", key);
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug must redact key_bytes, got: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("AB"),
+            "Debug must not leak key bytes, got: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("key_version"),
+            "Debug must show key_version, got: {debug_output}"
+        );
+    }
+
+    #[test]
+    fn test_encryption_key_version_accessor() {
+        let key = EncryptionKey::new([0u8; 32], 7);
+        assert_eq!(key.version(), 7);
+    }
+
+    #[test]
+    fn test_encryption_key_key_bytes_accessor() {
+        let key = EncryptionKey::new([0x42u8; 32], 2);
+        assert_eq!(key.key_bytes(), &[0x42u8; 32]);
+    }
+
+    #[test]
+    fn test_encryption_key_from_derived_bytes_takes_first_32() {
+        let derived = [0xAAu8; 64];
+        let key = EncryptionKey::from_derived_bytes(&derived, 3);
+        assert_eq!(key.key_bytes(), &[0xAAu8; 32]);
+        assert_eq!(key.version(), 3);
     }
 }
