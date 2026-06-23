@@ -5,6 +5,11 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+
+use crate::config::DynamicConfig;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
@@ -13,10 +18,271 @@ pub struct Identity {
     pub resources: HashMap<String, Vec<String>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuthToken {
+    pub raw: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub struct AuthContext {
     pub identity: Option<Identity>,
     pub alpn: Vec<u8>,
     pub remote_addr: Option<SocketAddr>,
     pub tls_client_fingerprint: Option<String>,
+}
+
+pub trait IdentityProvider: Send + Sync + 'static {
+    fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity>;
+    fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity>;
+}
+
+pub struct ConfigIdentityProvider {
+    dynamic: Arc<ArcSwap<DynamicConfig>>,
+}
+
+impl ConfigIdentityProvider {
+    pub fn new(dynamic: Arc<ArcSwap<DynamicConfig>>) -> Self {
+        Self { dynamic }
+    }
+}
+
+impl IdentityProvider for ConfigIdentityProvider {
+    fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity> {
+        let config = self.dynamic.load();
+        config.auth.resolve_identity_from_fingerprint(fingerprint)
+    }
+
+    fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity> {
+        let config = self.dynamic.load();
+        let token_str = String::from_utf8_lossy(&token.raw);
+        config.auth.resolve_api_key(&token_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ApiKeyEntry, AuthPolicy, DynamicConfig, RateLimitConfig};
+
+    fn compute_api_key_hash(token: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let result = hasher.finalize();
+        format!("sha256:{}", hex::encode(result))
+    }
+
+    fn make_provider(
+        config: DynamicConfig,
+    ) -> (ConfigIdentityProvider, Arc<ArcSwap<DynamicConfig>>) {
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(config)));
+        let provider = ConfigIdentityProvider::new(Arc::clone(&arc_swap));
+        (provider, arc_swap)
+    }
+
+    fn config_with_fingerprint(fingerprint: &str) -> DynamicConfig {
+        let mut fingerprints = std::collections::HashSet::new();
+        fingerprints.insert(fingerprint.to_string());
+        DynamicConfig {
+            auth: AuthPolicy {
+                authorized_fingerprints: fingerprints,
+                api_keys: Vec::new(),
+            },
+            rate_limits: RateLimitConfig::default(),
+        }
+    }
+
+    fn config_with_api_key(entry: ApiKeyEntry) -> DynamicConfig {
+        DynamicConfig {
+            auth: AuthPolicy {
+                authorized_fingerprints: std::collections::HashSet::new(),
+                api_keys: vec![entry],
+            },
+            rate_limits: RateLimitConfig::default(),
+        }
+    }
+
+    #[test]
+    fn identity_fields_and_equality() {
+        let mut resources = HashMap::new();
+        resources.insert(
+            "service".to_string(),
+            vec!["gitea".to_string(), "registry".to_string()],
+        );
+        let id = Identity {
+            id: "SHA256:abc123".to_string(),
+            scopes: vec!["relay:connect".to_string()],
+            resources,
+        };
+        let id2 = id.clone();
+        assert_eq!(id, id2);
+        assert_eq!(id.id, "SHA256:abc123");
+    }
+
+    #[test]
+    fn auth_token_is_clone() {
+        let token = AuthToken {
+            raw: b"alk_test".to_vec(),
+        };
+        let cloned = token.clone();
+        assert_eq!(token.raw, cloned.raw);
+    }
+
+    #[test]
+    fn auth_context_is_clone() {
+        let ctx = AuthContext {
+            identity: None,
+            alpn: b"alknet/test".to_vec(),
+            remote_addr: None,
+            tls_client_fingerprint: None,
+        };
+        let cloned = ctx.clone();
+        assert_eq!(cloned.alpn, b"alknet/test");
+        assert!(cloned.identity.is_none());
+    }
+
+    #[test]
+    fn fingerprint_resolution_known_returns_some() {
+        let (provider, _) = make_provider(config_with_fingerprint("SHA256:abc123"));
+        let identity = provider
+            .resolve_from_fingerprint("SHA256:abc123")
+            .expect("known fingerprint resolves");
+        assert_eq!(identity.id, "SHA256:abc123");
+        assert_eq!(identity.scopes, vec!["relay:connect".to_string()]);
+        assert!(identity.resources.is_empty());
+    }
+
+    #[test]
+    fn fingerprint_resolution_unknown_returns_none() {
+        let (provider, _) = make_provider(config_with_fingerprint("SHA256:abc123"));
+        assert!(provider
+            .resolve_from_fingerprint("SHA256:unknown")
+            .is_none());
+    }
+
+    #[test]
+    fn fingerprint_resolution_empty_config_returns_none() {
+        let (provider, _) = make_provider(DynamicConfig::default());
+        assert!(provider
+            .resolve_from_fingerprint("SHA256:anything")
+            .is_none());
+    }
+
+    #[test]
+    fn token_resolution_valid_non_expired_returns_some() {
+        let token_str = "alk_testsecret123";
+        let hash = compute_api_key_hash(token_str);
+        let entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "test key".to_string(),
+            expires_at: None,
+        };
+        let (provider, _) = make_provider(config_with_api_key(entry));
+        let token = AuthToken {
+            raw: token_str.as_bytes().to_vec(),
+        };
+        let identity = provider
+            .resolve_from_token(&token)
+            .expect("valid non-expired token resolves");
+        assert_eq!(identity.id, "alk_test");
+        assert_eq!(identity.scopes, vec!["relay:connect".to_string()]);
+    }
+
+    #[test]
+    fn token_resolution_expired_returns_none() {
+        let token_str = "alk_testsecret123";
+        let hash = compute_api_key_hash(token_str);
+        let entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "expired key".to_string(),
+            expires_at: Some(1),
+        };
+        let (provider, _) = make_provider(config_with_api_key(entry));
+        let token = AuthToken {
+            raw: token_str.as_bytes().to_vec(),
+        };
+        assert!(provider.resolve_from_token(&token).is_none());
+    }
+
+    #[test]
+    fn token_resolution_unknown_returns_none() {
+        let token_str = "alk_testsecret123";
+        let hash = compute_api_key_hash(token_str);
+        let entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash,
+            scopes: vec!["relay:connect".to_string()],
+            description: "test key".to_string(),
+            expires_at: None,
+        };
+        let (provider, _) = make_provider(config_with_api_key(entry));
+        let token = AuthToken {
+            raw: b"alk_unknown".to_vec(),
+        };
+        assert!(provider.resolve_from_token(&token).is_none());
+    }
+
+    #[test]
+    fn token_resolution_wrong_hash_returns_none() {
+        let entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash: "sha256:deadbeef".to_string(),
+            scopes: vec!["relay:connect".to_string()],
+            description: "wrong hash".to_string(),
+            expires_at: None,
+        };
+        let (provider, _) = make_provider(config_with_api_key(entry));
+        let token = AuthToken {
+            raw: b"alk_testsecret123".to_vec(),
+        };
+        assert!(provider.resolve_from_token(&token).is_none());
+    }
+
+    #[test]
+    fn token_resolution_non_alk_prefix_returns_none() {
+        let (provider, _) = make_provider(DynamicConfig::default());
+        let token = AuthToken {
+            raw: b"bearer_token".to_vec(),
+        };
+        assert!(provider.resolve_from_token(&token).is_none());
+    }
+
+    #[test]
+    fn config_reload_changes_resolution_immediately() {
+        let (provider, arc_swap) = make_provider(DynamicConfig::default());
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
+
+        let new_config = config_with_fingerprint("SHA256:abc123");
+        arc_swap.store(Arc::new(new_config));
+
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
+    }
+
+    #[test]
+    fn config_reload_removes_fingerprint_access_immediately() {
+        let (provider, arc_swap) = make_provider(config_with_fingerprint("SHA256:abc123"));
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
+
+        arc_swap.store(Arc::new(DynamicConfig::default()));
+
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
+    }
+
+    #[test]
+    fn config_reload_handle_reloads_config() {
+        use crate::config::ConfigReloadHandle;
+        let arc_swap = Arc::new(ArcSwap::new(Arc::new(DynamicConfig::default())));
+        let provider = ConfigIdentityProvider::new(Arc::clone(&arc_swap));
+        let handle = ConfigReloadHandle::new(arc_swap);
+
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
+
+        handle.reload(config_with_fingerprint("SHA256:abc123"));
+
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
+    }
 }
