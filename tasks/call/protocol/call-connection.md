@@ -1,7 +1,7 @@
 ---
 id: call/protocol/call-connection
 name: Implement CallConnection with imported-ops overlay (Layer 2) and call/subscribe/abort methods
-status: pending
+status: completed
 depends_on: [call/protocol/pending-request-map, call/registry/operation-env]
 scope: moderate
 risk: medium
@@ -155,4 +155,12 @@ will use.
 
 ## Summary
 
-> To be filled on completion
+Implemented `CallConnection` in `protocol/connection.rs` with Layer 2 imported-ops
+overlay (`Arc<RwLock<HashMap>>`), `register_imported`/`register_imported_all`,
+`overlay_env()` returning an `OperationEnv` that dispatches to imported ops
+(`contains()` returns true only for overlay ops), and `call()`/`subscribe()`/`abort()`
+methods that open a stream, send `call.requested`, register in `PendingRequestMap`,
+spawn a stream reader, and correlate responses by ID. Connection drop drops the
+overlay. Exposed `MockConnection` + `Connection::from_mock` in alknet-core for
+cross-crate testing. Added `parking_lot` dep. 9 new connection tests (115 total in
+call crate). Clippy clean. Merged to develop.
