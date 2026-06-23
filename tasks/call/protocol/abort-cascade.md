@@ -1,7 +1,7 @@
 ---
 id: call/protocol/abort-cascade
 name: Implement abort cascade logic for nested calls (ADR-016)
-status: pending
+status: completed
 depends_on: [call/protocol/call-adapter]
 scope: moderate
 risk: high
@@ -190,4 +190,11 @@ abort. See ADR-016.
 
 ## Summary
 
-> To be filled on completion
+Implemented `AbortCascade` in `protocol/abort.rs` per ADR-016: `PendingEntry`
+now stores `parent_request_id` (Call & Subscribe) and a `started` flag for tree
+indexing. `AbortCascade::cascade_abort` walks the call tree by `parent_request_id`
+and aborts descendants per `AbortPolicy` (`AbortDependents` aborts all;
+`ContinueRunning` aborts only unstarted via `mark_started()`). Returns sorted
+list of aborted IDs; unknown root silently discarded. 20 unit tests covering
+depth-3 cascade, mixed Call/Subscribe, determinism, both policies (159 total in
+call crate, 290+ workspace-wide). Clippy clean. Merged to develop.
