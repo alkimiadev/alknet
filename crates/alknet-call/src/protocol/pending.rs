@@ -12,15 +12,39 @@ pub struct PendingRequestMap {
     pending: HashMap<String, PendingEntry>,
 }
 
-enum PendingEntry {
+pub(crate) enum PendingEntry {
     Call {
         tx: oneshot::Sender<Result<Value, CallError>>,
         timeout: Instant,
+        parent_request_id: Option<String>,
+        started: bool,
     },
     Subscribe {
         tx: mpsc::Sender<Result<Value, CallError>>,
         timeout: Option<Instant>,
+        parent_request_id: Option<String>,
+        started: bool,
     },
+}
+
+impl PendingEntry {
+    pub(crate) fn parent_request_id(&self) -> Option<&str> {
+        match self {
+            PendingEntry::Call {
+                parent_request_id, ..
+            } => parent_request_id.as_deref(),
+            PendingEntry::Subscribe {
+                parent_request_id, ..
+            } => parent_request_id.as_deref(),
+        }
+    }
+
+    pub(crate) fn started(&self) -> bool {
+        match self {
+            PendingEntry::Call { started, .. } => *started,
+            PendingEntry::Subscribe { started, .. } => *started,
+        }
+    }
 }
 
 impl PendingRequestMap {
@@ -34,10 +58,18 @@ impl PendingRequestMap {
         &mut self,
         request_id: String,
         timeout: Instant,
+        parent_request_id: Option<String>,
     ) -> oneshot::Receiver<Result<Value, CallError>> {
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .insert(request_id, PendingEntry::Call { tx, timeout });
+        self.pending.insert(
+            request_id,
+            PendingEntry::Call {
+                tx,
+                timeout,
+                parent_request_id,
+                started: false,
+            },
+        );
         rx
     }
 
@@ -45,11 +77,30 @@ impl PendingRequestMap {
         &mut self,
         request_id: String,
         timeout: Option<Instant>,
+        parent_request_id: Option<String>,
     ) -> mpsc::Receiver<Result<Value, CallError>> {
         let (tx, rx) = mpsc::channel(SUBSCRIBE_CHANNEL_CAPACITY);
-        self.pending
-            .insert(request_id, PendingEntry::Subscribe { tx, timeout });
+        self.pending.insert(
+            request_id,
+            PendingEntry::Subscribe {
+                tx,
+                timeout,
+                parent_request_id,
+                started: false,
+            },
+        );
         rx
+    }
+
+    pub fn mark_started(&mut self, request_id: &str) -> bool {
+        let Some(entry) = self.pending.get_mut(request_id) else {
+            return false;
+        };
+        match entry {
+            PendingEntry::Call { started, .. } => *started = true,
+            PendingEntry::Subscribe { started, .. } => *started = true,
+        }
+        true
     }
 
     pub fn handle_responded(&mut self, request_id: &str, output: Value) -> bool {
@@ -61,13 +112,23 @@ impl PendingRequestMap {
                 let _ = tx.send(Ok(output));
                 true
             }
-            PendingEntry::Subscribe { tx, timeout } => {
+            PendingEntry::Subscribe {
+                tx,
+                timeout,
+                parent_request_id,
+                started,
+            } => {
                 let send_result = tx.try_send(Ok(output));
                 match send_result {
                     Ok(()) => {
                         self.pending.insert(
                             request_id.to_string(),
-                            PendingEntry::Subscribe { tx, timeout },
+                            PendingEntry::Subscribe {
+                                tx,
+                                timeout,
+                                parent_request_id,
+                                started,
+                            },
                         );
                         true
                     }
@@ -163,6 +224,20 @@ impl PendingRequestMap {
         self.pending.contains_key(request_id)
     }
 
+    pub(crate) fn parent_of(&self, request_id: &str) -> Option<Option<String>> {
+        self.pending
+            .get(request_id)
+            .map(|e| e.parent_request_id().map(|s| s.to_string()))
+    }
+
+    pub(crate) fn is_started(&self, request_id: &str) -> Option<bool> {
+        self.pending.get(request_id).map(|e| e.started())
+    }
+
+    pub(crate) fn request_ids(&self) -> Vec<String> {
+        self.pending.keys().cloned().collect()
+    }
+
     pub fn len(&self) -> usize {
         self.pending.len()
     }
@@ -199,6 +274,7 @@ mod tests {
         let rx = map.register_call(
             "req-1".to_string(),
             Instant::now() + Duration::from_secs(30),
+            None,
         );
 
         assert!(map.contains("req-1"));
@@ -218,7 +294,7 @@ mod tests {
     #[tokio::test]
     async fn register_subscribe_then_handle_responded_pushes_to_channel() {
         let mut map = PendingRequestMap::new();
-        let mut rx = map.register_subscribe("sub-1".to_string(), None);
+        let mut rx = map.register_subscribe("sub-1".to_string(), None, None);
 
         assert!(map.handle_responded("sub-1", json!("first")));
         assert!(map.handle_responded("sub-1", json!("second")));
@@ -238,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn subscribe_handle_completed_closes_channel_and_deletes_entry() {
         let mut map = PendingRequestMap::new();
-        let mut rx = map.register_subscribe("sub-2".to_string(), None);
+        let mut rx = map.register_subscribe("sub-2".to_string(), None, None);
 
         assert!(map.handle_responded("sub-2", json!("a")));
         assert!(map.handle_completed("sub-2"));
@@ -258,6 +334,7 @@ mod tests {
         let rx = map.register_call(
             "req-2".to_string(),
             Instant::now() - Duration::from_millis(1),
+            None,
         );
 
         let evicted = map.evict_expired();
@@ -280,6 +357,7 @@ mod tests {
         let mut rx = map.register_subscribe(
             "sub-3".to_string(),
             Some(Instant::now() - Duration::from_millis(1)),
+            None,
         );
 
         let evicted = map.evict_expired();
@@ -298,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn unbounded_subscribe_is_not_evicted() {
         let mut map = PendingRequestMap::new();
-        let _rx = map.register_subscribe("sub-4".to_string(), None);
+        let _rx = map.register_subscribe("sub-4".to_string(), None, None);
 
         let evicted = map.evict_expired();
         assert!(evicted.is_empty());
@@ -308,11 +386,15 @@ mod tests {
     #[tokio::test]
     async fn fail_all_resolves_all_pending_with_internal_error() {
         let mut map = PendingRequestMap::new();
-        let rx_call =
-            map.register_call("c-1".to_string(), Instant::now() + Duration::from_secs(30));
+        let rx_call = map.register_call(
+            "c-1".to_string(),
+            Instant::now() + Duration::from_secs(30),
+            None,
+        );
         let mut rx_sub = map.register_subscribe(
             "s-1".to_string(),
             Some(Instant::now() + Duration::from_secs(30)),
+            None,
         );
 
         let failed = map.fail_all(internal_error("connection closed"));
@@ -371,6 +453,7 @@ mod tests {
         let rx = map.register_call(
             "req-3".to_string(),
             Instant::now() + Duration::from_secs(30),
+            None,
         );
 
         assert!(map.handle_aborted("req-3"));
@@ -389,6 +472,7 @@ mod tests {
         let rx = map.register_call(
             "req-4".to_string(),
             Instant::now() + Duration::from_secs(30),
+            None,
         );
 
         let err = CallError::new("FILE_NOT_FOUND", "missing", false);
@@ -408,7 +492,7 @@ mod tests {
     #[tokio::test]
     async fn handle_error_pushes_to_subscribe_channel() {
         let mut map = PendingRequestMap::new();
-        let mut rx = map.register_subscribe("sub-5".to_string(), None);
+        let mut rx = map.register_subscribe("sub-5".to_string(), None, None);
 
         let err = CallError::new("RATE_LIMITED", "too fast", true);
         assert!(map.handle_error("sub-5", err.clone()));
@@ -430,6 +514,7 @@ mod tests {
         let rx = map.register_call(
             "req-stream-3".to_string(),
             Instant::now() + Duration::from_secs(30),
+            None,
         );
 
         assert!(map.handle_responded("req-stream-3", json!("response-from-stream-7")));
@@ -446,10 +531,12 @@ mod tests {
         let _rx_old = map.register_call(
             "req-5".to_string(),
             Instant::now() + Duration::from_secs(30),
+            None,
         );
         let rx_new = map.register_call(
             "req-5".to_string(),
             Instant::now() + Duration::from_secs(30),
+            None,
         );
         assert_eq!(map.len(), 1);
 
@@ -467,10 +554,12 @@ mod tests {
         let _rx_expired = map.register_call(
             "expired".to_string(),
             Instant::now() - Duration::from_millis(1),
+            None,
         );
         let _rx_alive = map.register_call(
             "alive".to_string(),
             Instant::now() + Duration::from_secs(60),
+            None,
         );
 
         let evicted = map.evict_expired();
