@@ -1,7 +1,7 @@
 ---
 id: core/acme-integration
 name: Add ACME auto-provisioning via rustls-acme (ADR-027)
-status: pending
+status: completed
 depends_on: [core/rawkey-decouple-from-iroh]
 scope: moderate
 risk: medium

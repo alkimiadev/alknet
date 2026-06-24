@@ -1,7 +1,7 @@
 ---
 id: core/rawkey-decouple-from-iroh
 name: Decouple TlsIdentity::RawKey from the iroh feature (ADR-027)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium

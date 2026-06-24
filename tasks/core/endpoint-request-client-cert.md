@@ -1,7 +1,7 @@
 ---
 id: core/endpoint-request-client-cert
 name: Switch rustls ServerConfig from with_no_client_auth to request-but-don't-require client certs
-status: pending
+status: completed
 depends_on: [core/endpoint-client-fingerprint]
 scope: narrow
 risk: medium

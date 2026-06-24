@@ -103,6 +103,8 @@ pub struct AlknetEndpoint {
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
     drain_timeout: Duration,
+    #[cfg(feature = "acme")]
+    acme_state_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[cfg(any(feature = "quinn", feature = "iroh"))]
@@ -129,19 +131,29 @@ impl AlknetEndpoint {
         let drain_timeout = static_config.drain_timeout;
 
         #[cfg(feature = "quinn")]
-        let quinn = if let Some(listen_addr) = static_config.listen_addr {
+        #[cfg_attr(not(feature = "acme"), allow(unused_variables))]
+        let (quinn, acme_state_handle) = if let Some(listen_addr) = static_config.listen_addr {
             let tls_identity = static_config.tls_identity.as_ref().ok_or_else(|| {
                 EndpointError::TlsConfig(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "quinn endpoint requires tls_identity in static config",
                 ))
             })?;
-            let server_config = build_quinn_server_config(tls_identity, &alpns)?;
+            let tls_setup = TlsSetup::new(tls_identity, &alpns).await?;
+            let server_config =
+                build_quinn_server_config_from_rustls(tls_setup.server_config)?;
             let endpoint = quinn::Endpoint::server(server_config, listen_addr)
                 .map_err(EndpointError::BindFailed)?;
-            Some(endpoint)
+            #[cfg(feature = "acme")]
+            {
+                (Some(endpoint), tls_setup.acme_state_handle)
+            }
+            #[cfg(not(feature = "acme"))]
+            {
+                (Some(endpoint), None::<tokio::task::JoinHandle<()>>)
+            }
         } else {
-            None
+            (None, None)
         };
 
         #[cfg(not(feature = "quinn"))]
@@ -170,6 +182,8 @@ impl AlknetEndpoint {
             shutdown_tx,
             shutdown_rx,
             drain_timeout,
+            #[cfg(feature = "acme")]
+            acme_state_handle,
         })
     }
 
@@ -188,6 +202,11 @@ impl AlknetEndpoint {
         #[cfg(feature = "iroh")]
         if let Some(iroh) = &self.iroh {
             iroh.close().await;
+        }
+
+        #[cfg(feature = "acme")]
+        if let Some(handle) = &self.acme_state_handle {
+            handle.abort();
         }
 
         tokio::time::sleep(self.drain_timeout).await;
@@ -290,6 +309,14 @@ fn dispatch_quinn(
     identity_provider: &Arc<dyn IdentityProvider>,
 ) {
     let alpn = extract_quinn_alpn(&connection);
+
+    #[cfg(feature = "acme")]
+    if alpn == b"acme-tls/1" {
+        debug!("acme-tls/1 challenge connection completed at TLS layer; closing");
+        connection.close(0u32.into(), b"acme done");
+        return;
+    }
+
     let handler = match handlers.get(&alpn) {
         Some(h) => h.clone(),
         None => {
@@ -448,12 +475,135 @@ fn build_auth_context(
 }
 
 #[cfg(feature = "quinn")]
-fn build_quinn_server_config(
-    tls_identity: &TlsIdentity,
-    alpns: &[Vec<u8>],
+struct TlsSetup {
+    server_config: rustls::ServerConfig,
+    #[cfg(feature = "acme")]
+    acme_state_handle: Option<tokio::task::JoinHandle<()>>,
+}
+#[cfg(feature = "quinn")]
+impl TlsSetup {
+    async fn new(
+        tls_identity: &TlsIdentity,
+        alpns: &[Vec<u8>],
+    ) -> Result<Self, EndpointError> {
+        match tls_identity {
+            TlsIdentity::Acme {
+                domains,
+                cache_dir,
+                directory,
+                contact,
+            } => {
+                #[cfg(feature = "acme")]
+                {
+                    Self::new_acme(domains, cache_dir, directory, contact, alpns).await
+                }
+                #[cfg(not(feature = "acme"))]
+                {
+                    let _ = (domains, cache_dir, directory, contact, alpns);
+                    Err(EndpointError::TlsConfig(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "ACME feature not enabled but TlsIdentity::Acme configured",
+                    )))
+                }
+            }
+            _ => {
+                let server_config = build_rustls_server_config(tls_identity, alpns)?;
+                Ok(Self {
+                    server_config,
+                    #[cfg(feature = "acme")]
+                    acme_state_handle: None,
+                })
+            }
+        }
+    }
+
+    #[cfg(feature = "acme")]
+    async fn new_acme(
+        domains: &[String],
+        cache_dir: &std::path::Path,
+        directory: &crate::config::AcmeDirectory,
+        contact: &[String],
+        alpns: &[Vec<u8>],
+    ) -> Result<Self, EndpointError> {
+        use rustls_acme::caches::DirCache;
+        use rustls_acme::{AcmeConfig, EventError, EventOk};
+
+        let acme_config = AcmeConfig::new(domains.to_vec())
+            .cache(DirCache::new(cache_dir.to_path_buf()))
+            .directory(directory.url())
+            .contact(contact.iter().map(|c| c.as_str()));
+
+        let state = acme_config.state();
+        let resolver = state.resolver();
+
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?
+            .with_client_cert_verifier(Arc::new(AcceptAnyCertVerifier))
+            .with_cert_resolver(resolver);
+        config.max_early_data_size = u32::MAX;
+
+        let mut alpn = alpns.to_vec();
+        alpn.push(b"acme-tls/1".to_vec());
+        config.alpn_protocols = alpn;
+
+        let domains_owned: Vec<String> = domains.to_vec();
+        let handle = tokio::spawn(async move {
+            use futures::StreamExt;
+            let mut state = state;
+            while let Some(event) = state.next().await {
+                match event {
+                    Ok(EventOk::DeployedCachedCert) => {
+                        debug!(domains = ?domains_owned, "ACME: deployed cached certificate");
+                    }
+                    Ok(EventOk::DeployedNewCert) => {
+                        debug!(domains = ?domains_owned, "ACME: deployed new certificate");
+                    }
+                    Ok(EventOk::CertCacheStore) => {
+                        debug!(domains = ?domains_owned, "ACME: certificate stored to cache");
+                    }
+                    Ok(EventOk::AccountCacheStore) => {
+                        debug!(domains = ?domains_owned, "ACME: account stored to cache");
+                    }
+                    Err(EventError::CertCacheLoad(e)) => {
+                        error!(domains = ?domains_owned, error = ?e, "ACME: certificate cache load failed");
+                    }
+                    Err(EventError::AccountCacheLoad(e)) => {
+                        error!(domains = ?domains_owned, error = ?e, "ACME: account cache load failed");
+                    }
+                    Err(EventError::CertCacheStore(e)) => {
+                        warn!(domains = ?domains_owned, error = ?e, "ACME: certificate cache store failed");
+                    }
+                    Err(EventError::AccountCacheStore(e)) => {
+                        warn!(domains = ?domains_owned, error = ?e, "ACME: account cache store failed");
+                    }
+                    Err(EventError::CachedCertParse(e)) => {
+                        error!(domains = ?domains_owned, error = ?e, "ACME: cached certificate parse failed");
+                    }
+                    Err(EventError::Order(e)) => {
+                        warn!(domains = ?domains_owned, error = ?e, "ACME: certificate order failed, will retry");
+                    }
+                    Err(EventError::NewCertParse(e)) => {
+                        error!(domains = ?domains_owned, error = ?e, "ACME: new certificate parse failed");
+                    }
+                }
+            }
+            debug!(domains = ?domains_owned, "ACME: state machine ended");
+        });
+
+        Ok(Self {
+            server_config: config,
+            acme_state_handle: Some(handle),
+        })
+    }
+}
+
+#[cfg(feature = "quinn")]
+fn build_quinn_server_config_from_rustls(
+    rustls_config: rustls::ServerConfig,
 ) -> Result<quinn::ServerConfig, EndpointError> {
     use quinn::crypto::rustls::QuicServerConfig;
-    let rustls_config = build_rustls_server_config(tls_identity, alpns)?;
     let quic_server_config = QuicServerConfig::try_from(rustls_config)
         .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?;
     Ok(quinn::ServerConfig::with_crypto(Arc::new(
@@ -467,6 +617,7 @@ fn build_rustls_server_config(
     alpns: &[Vec<u8>],
 ) -> Result<rustls::ServerConfig, EndpointError> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let client_verifier = Arc::new(AcceptAnyCertVerifier);
     match tls_identity {
         TlsIdentity::X509 { cert, key } => {
             let cert_chain = load_cert_chain(cert)?;
@@ -474,20 +625,19 @@ fn build_rustls_server_config(
             let mut config = rustls::ServerConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
                 .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?
-                .with_no_client_auth()
+                .with_client_cert_verifier(client_verifier)
                 .with_single_cert(cert_chain, private_key)
                 .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?;
             config.alpn_protocols = alpns.to_vec();
             config.max_early_data_size = u32::MAX;
             Ok(config)
         }
-        #[cfg(feature = "iroh")]
         TlsIdentity::RawKey(secret_key) => {
             let resolver = Arc::new(RawKeyCertResolver::new(secret_key));
             let mut config = rustls::ServerConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
                 .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?
-                .with_no_client_auth()
+                .with_client_cert_verifier(client_verifier)
                 .with_cert_resolver(resolver);
             config.alpn_protocols = alpns.to_vec();
             config.max_early_data_size = u32::MAX;
@@ -498,12 +648,15 @@ fn build_rustls_server_config(
             let mut config = rustls::ServerConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
                 .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?
-                .with_no_client_auth()
+                .with_client_cert_verifier(client_verifier)
                 .with_single_cert(cert.cert_chain, cert.private_key)
                 .map_err(|e| EndpointError::TlsConfig(io::Error::other(e)))?;
             config.alpn_protocols = alpns.to_vec();
             config.max_early_data_size = u32::MAX;
             Ok(config)
+        }
+        TlsIdentity::Acme { .. } => {
+            unreachable!("TlsIdentity::Acme is handled by TlsSetup::new_acme, not build_rustls_server_config")
         }
     }
 }
@@ -516,7 +669,8 @@ async fn build_iroh_endpoint(
     let mut builder = iroh::Endpoint::builder();
 
     if let Some(TlsIdentity::RawKey(secret_key)) = static_config.tls_identity.as_ref() {
-        builder = builder.secret_key(secret_key.clone());
+        let iroh_key = iroh::SecretKey::from_bytes(&secret_key.as_bytes());
+        builder = builder.secret_key(iroh_key);
     } else {
         let mut csprng = rand::rngs::OsRng;
         builder = builder.secret_key(iroh::SecretKey::generate(&mut csprng));
@@ -589,14 +743,80 @@ fn generate_self_signed_cert() -> Result<SelfSignedCert, EndpointError> {
     })
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
+struct AcceptAnyCertVerifier;
+
+#[cfg(feature = "quinn")]
+impl std::fmt::Debug for AcceptAnyCertVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcceptAnyCertVerifier").finish()
+    }
+}
+
+#[cfg(feature = "quinn")]
+impl rustls::server::danger::ClientCertVerifier for AcceptAnyCertVerifier {
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+        ]
+    }
+}
+
+#[cfg(feature = "quinn")]
 struct RawKeyCertResolver {
     key: Arc<rustls::sign::CertifiedKey>,
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl RawKeyCertResolver {
-    fn new(secret_key: &iroh::SecretKey) -> Self {
+    fn new(secret_key: &crate::config::Ed25519SecretKey) -> Self {
         let signing_key = Arc::new(Ed25519SigningKey::new(secret_key.clone()));
         let public_key = signing_key.spki_public_key();
         let cert = rustls::pki_types::CertificateDer::from(public_key.to_vec());
@@ -607,7 +827,7 @@ impl RawKeyCertResolver {
     }
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl rustls::server::ResolvesServerCert for RawKeyCertResolver {
     fn resolve(
         &self,
@@ -621,29 +841,29 @@ impl rustls::server::ResolvesServerCert for RawKeyCertResolver {
     }
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl std::fmt::Debug for RawKeyCertResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RawKeyCertResolver").finish()
     }
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 #[derive(Clone)]
 struct Ed25519SigningKey {
-    key: iroh::SecretKey,
+    key: crate::config::Ed25519SecretKey,
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl std::fmt::Debug for Ed25519SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ed25519SigningKey").finish()
     }
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl Ed25519SigningKey {
-    fn new(key: iroh::SecretKey) -> Self {
+    fn new(key: crate::config::Ed25519SecretKey) -> Self {
         Self { key }
     }
 
@@ -655,7 +875,7 @@ impl Ed25519SigningKey {
     }
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl rustls::sign::SigningKey for Ed25519SigningKey {
     fn choose_scheme(
         &self,
@@ -677,7 +897,7 @@ impl rustls::sign::SigningKey for Ed25519SigningKey {
     }
 }
 
-#[cfg(all(feature = "quinn", feature = "iroh"))]
+#[cfg(feature = "quinn")]
 impl rustls::sign::Signer for Ed25519SigningKey {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
         Ok(self.key.sign(message).to_bytes().to_vec())
@@ -850,12 +1070,11 @@ mod tests {
         assert!(auth.tls_client_fingerprint.is_some());
     }
 
-    #[cfg(all(feature = "quinn", feature = "iroh"))]
+    #[cfg(feature = "quinn")]
     #[test]
     fn raw_key_cert_resolver_only_raw_public_keys() {
         use rustls::server::ResolvesServerCert;
-        let mut csprng = rand::rngs::OsRng;
-        let sk = iroh::SecretKey::generate(&mut csprng);
+        let sk = crate::config::Ed25519SecretKey::generate();
         let resolver = RawKeyCertResolver::new(&sk);
         assert!(resolver.only_raw_public_keys());
     }
@@ -863,10 +1082,9 @@ mod tests {
     #[cfg(feature = "iroh")]
     #[tokio::test]
     async fn endpoint_constructs_with_iroh_raw_key_identity() {
-        let mut csprng = rand::rngs::OsRng;
         let static_config = StaticConfig {
             listen_addr: None,
-            tls_identity: Some(TlsIdentity::RawKey(iroh::SecretKey::generate(&mut csprng))),
+            tls_identity: Some(TlsIdentity::RawKey(crate::config::Ed25519SecretKey::generate())),
             iroh_relay: None,
             drain_timeout: Duration::from_millis(10),
         };
@@ -894,7 +1112,7 @@ mod tests {
     #[tokio::test]
     async fn iroh_endpoint_runs_accept_loop_and_shutdown() {
         use std::sync::Mutex;
-        let server_sk = iroh::SecretKey::generate(&mut rand::rngs::OsRng);
+        let server_sk = crate::config::Ed25519SecretKey::generate();
         let static_config = StaticConfig {
             listen_addr: None,
             tls_identity: Some(TlsIdentity::RawKey(server_sk)),
@@ -1041,5 +1259,61 @@ mod tests {
         let a = fingerprint_from_cert_der(cert).unwrap();
         let b = fingerprint_from_cert_der(cert).unwrap();
         assert_eq!(a, b, "same cert DER must produce same fingerprint");
+    }
+
+    #[test]
+    fn acme_directory_production_url() {
+        use crate::config::AcmeDirectory;
+        let dir = AcmeDirectory::Production;
+        assert_eq!(
+            dir.url(),
+            "https://acme-v02.api.letsencrypt.org/directory"
+        );
+    }
+
+    #[test]
+    fn acme_directory_staging_url() {
+        use crate::config::AcmeDirectory;
+        let dir = AcmeDirectory::Staging;
+        assert_eq!(
+            dir.url(),
+            "https://acme-staging-v02.api.letsencrypt.org/directory"
+        );
+    }
+
+    #[test]
+    fn acme_directory_custom_url() {
+        use crate::config::AcmeDirectory;
+        let url = "https://custom-acme.example.com/directory";
+        let dir = AcmeDirectory::Custom(url.to_string());
+        assert_eq!(dir.url(), url);
+    }
+
+    #[cfg(feature = "quinn")]
+    #[tokio::test]
+    async fn tls_setup_x509_returns_no_acme_state() {
+        use rcgen::{CertificateParams, KeyPair};
+        let key_pair = KeyPair::generate().unwrap();
+        let params = CertificateParams::default();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        let tls_identity = TlsIdentity::X509 {
+            cert: cert_path,
+            key: key_path,
+        };
+        let setup = TlsSetup::new(&tls_identity, &[b"alknet/test".to_vec()])
+            .await
+            .expect("X509 tls setup should succeed");
+        let _ = setup.server_config;
+        #[cfg(feature = "acme")]
+        assert!(setup.acme_state_handle.is_none());
     }
 }

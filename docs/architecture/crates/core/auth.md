@@ -185,6 +185,22 @@ unresolved at the endpoint layer. A follow-up task will switch the server
 config to request-but-not-require client certs so fingerprints flow for
 peers that present them.
 
+### Server-side client cert request
+
+The quinn `rustls::ServerConfig` uses a custom `AcceptAnyCertVerifier`
+that requests client certs but does not require them and does not verify
+them against a CA. This is the "request-but-don't-require" mode: peers
+that present a cert (X.509 or RFC 7250 raw key) have their fingerprint
+extracted via `peer_identity()`; peers that don't present a cert connect
+normally with `tls_client_fingerprint: None`.
+
+The verifier accepts any presented cert without CA verification because
+alknet's identity model is fingerprint-based, not PKI-based — the
+`AuthPolicy::authorized_fingerprints` set is the trust anchor, not a
+root CA store. The cert bytes are extracted at the TLS layer and hashed
+to a fingerprint string; the fingerprint is then matched against the
+configured set by `IdentityProvider::resolve_from_fingerprint()`.
+
 ## Resolution Flow
 
 ### Endpoint-level (before `handle()`)

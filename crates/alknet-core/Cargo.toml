@@ -13,6 +13,7 @@ name = "alknet_core"
 default = ["quinn"]
 quinn = ["dep:quinn"]
 iroh = ["dep:iroh"]
+acme = ["dep:rustls-acme"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -35,3 +36,8 @@ sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
 rcgen = "0.13"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rustls-acme = { version = "0.12", optional = true, features = ["aws-lc-rs"] }
+
+[dev-dependencies]
+tempfile = "3"

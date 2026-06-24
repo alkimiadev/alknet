@@ -29,15 +29,72 @@ pub struct StaticConfig {
     pub drain_timeout: Duration,
 }
 
+#[derive(Clone)]
+pub struct Ed25519SecretKey(ed25519_dalek::SigningKey);
+
+impl Ed25519SecretKey {
+    pub fn generate() -> Self {
+        let mut csprng = rand::rngs::OsRng;
+        Self(ed25519_dalek::SigningKey::generate(&mut csprng))
+    }
+
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        Self(ed25519_dalek::SigningKey::from_bytes(bytes))
+    }
+
+    pub fn as_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+
+    pub fn public(&self) -> ed25519_dalek::VerifyingKey {
+        self.0.verifying_key()
+    }
+
+    pub fn sign(&self, message: &[u8]) -> ed25519_dalek::Signature {
+        use ed25519_dalek::Signer;
+        self.0.sign(message)
+    }
+}
+
+impl std::fmt::Debug for Ed25519SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ed25519SecretKey").finish_non_exhaustive()
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for Ed25519SecretKey {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcmeDirectory {
+    Production,
+    Staging,
+    Custom(String),
+}
+
+impl AcmeDirectory {
+    pub fn url(&self) -> &str {
+        match self {
+            AcmeDirectory::Production => "https://acme-v02.api.letsencrypt.org/directory",
+            AcmeDirectory::Staging => "https://acme-staging-v02.api.letsencrypt.org/directory",
+            AcmeDirectory::Custom(url) => url,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TlsIdentity {
     X509 {
         cert: PathBuf,
         key: PathBuf,
     },
-    #[cfg(feature = "iroh")]
-    RawKey(iroh::SecretKey),
+    RawKey(Ed25519SecretKey),
     SelfSigned,
+    Acme {
+        domains: Vec<String>,
+        cache_dir: PathBuf,
+        directory: AcmeDirectory,
+        contact: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
