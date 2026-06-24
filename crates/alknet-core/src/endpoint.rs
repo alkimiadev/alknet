@@ -303,7 +303,8 @@ fn dispatch_quinn(
     };
 
     let remote_addr = Some(connection.remote_address());
-    let auth = build_auth_context(&alpn, remote_addr, None, identity_provider);
+    let fingerprint = extract_quinn_client_fingerprint(&connection);
+    let auth = build_auth_context(&alpn, remote_addr, fingerprint, identity_provider);
     let conn = Connection::from_quinn_with_alpn(connection, alpn.clone());
     tokio::spawn(async move {
         if let Err(e) = handler.handle(conn, &auth).await {
@@ -323,6 +324,25 @@ fn extract_quinn_alpn(connection: &quinn::Connection) -> Vec<u8> {
         }
     }
     Vec::new()
+}
+
+#[cfg(feature = "quinn")]
+fn extract_quinn_client_fingerprint(connection: &quinn::Connection) -> Option<String> {
+    let identity = connection.peer_identity()?;
+    let certs = identity
+        .downcast::<Vec<rustls::pki_types::CertificateDer>>()
+        .ok()?;
+    let leaf = certs.first()?;
+    fingerprint_from_cert_der(leaf.as_ref())
+}
+
+#[cfg(any(feature = "quinn", feature = "iroh"))]
+fn fingerprint_from_cert_der(cert_der: &[u8]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(cert_der);
+    let digest = hasher.finalize();
+    Some(format!("SHA256:{}", hex::encode(digest)))
 }
 
 #[cfg(feature = "iroh")]
@@ -393,13 +413,20 @@ fn dispatch_iroh(
         }
     };
 
-    let auth = build_auth_context(&alpn, None, None, identity_provider);
+    let fingerprint = extract_iroh_client_fingerprint(&connection);
+    let auth = build_auth_context(&alpn, None, fingerprint, identity_provider);
     let conn = Connection::from_iroh(connection);
     tokio::spawn(async move {
         if let Err(e) = handler.handle(conn, &auth).await {
             error!("handler returned error: {e}");
         }
     });
+}
+
+#[cfg(feature = "iroh")]
+fn extract_iroh_client_fingerprint(connection: &iroh::endpoint::Connection) -> Option<String> {
+    let node_id = connection.remote_node_id().ok()?;
+    Some(format!("ed25519:{}", node_id))
 }
 
 #[cfg(any(feature = "quinn", feature = "iroh"))]
@@ -978,5 +1005,41 @@ mod tests {
 
         let unknown = registry.get(b"alknet/unknown");
         assert!(unknown.is_none(), "unknown ALPN has no handler");
+    }
+
+    #[cfg(any(feature = "quinn", feature = "iroh"))]
+    #[test]
+    fn fingerprint_from_cert_der_produces_sha256_hex_format() {
+        let cert_der = b"fake-leaf-cert-der-bytes";
+        let fp = fingerprint_from_cert_der(cert_der).expect("non-empty cert produces fingerprint");
+        assert!(
+            fp.starts_with("SHA256:"),
+            "fingerprint must be SHA256-prefixed, got: {fp}"
+        );
+        let hex_part = &fp["SHA256:".len()..];
+        assert_eq!(
+            hex_part.len(),
+            64,
+            "hex digest must be 64 chars (32 bytes), got: {fp}"
+        );
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "hex part must be lowercase hex, got: {fp}"
+        );
+
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(cert_der);
+        let expected = format!("SHA256:{}", hex::encode(hasher.finalize()));
+        assert_eq!(fp, expected, "fingerprint must match SHA-256 of cert DER");
+    }
+
+    #[cfg(any(feature = "quinn", feature = "iroh"))]
+    #[test]
+    fn fingerprint_from_cert_der_deterministic() {
+        let cert = b"some-cert";
+        let a = fingerprint_from_cert_der(cert).unwrap();
+        let b = fingerprint_from_cert_der(cert).unwrap();
+        assert_eq!(a, b, "same cert DER must produce same fingerprint");
     }
 }

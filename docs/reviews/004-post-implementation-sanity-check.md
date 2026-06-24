@@ -1,6 +1,6 @@
 ---
-status: open
-last_updated: 2026-06-23
+status: resolved
+last_updated: 2026-06-24
 reviewed_artifacts:
   - crates/alknet-vault/src/{lib,cache,derivation,encryption,ethereum,mnemonic,protocol,service}.rs
   - crates/alknet-core/src/{lib,auth,config,endpoint,types}.rs
@@ -567,3 +567,43 @@ Review #004 is open. Zero critical findings; four warnings, all local; five
 suggestions. The implementation is sound, the spec drift is bounded, and the
 one wiring gap (W1) has all the hard logic already written and tested — it
 just needs to be called.
+
+---
+
+## Resolution (2026-06-24)
+
+All four warnings (W1–W4) resolved. Workspace green:
+`cargo build --workspace --all-features`, `cargo test --workspace
+--all-features` (326 tests, 0 failures), `cargo clippy --workspace
+--all-features --all-targets` (0 warnings).
+
+- **W1 (abort cascade wiring)**: `CallAdapter::handle_stream` now
+  matches `EVENT_ABORTED`, invokes `AbortCascade::cascade_abort` with
+  `AbortPolicy::AbortDependents`, and aborts the root. No descendant
+  `call.aborted` frames sent on the wire (ADR-016 Decision 2). Two
+  integration tests cover the cascade + unknown-id no-op paths.
+  (`tasks/call/protocol/abort-cascade-wiring.md` → completed)
+
+- **W2 (fingerprint extraction)**: `dispatch_quinn` extracts the leaf
+  client cert DER via `peer_identity()` → `SHA256:<hex>`; `dispatch_iroh`
+  extracts the peer `NodeId` → `ed25519:<hex>`. Fingerprint format
+  documented in `auth.md`. Server config still uses
+  `with_no_client_auth()` — extraction is a safe no-op until the
+  follow-up task `core/endpoint-request-client-cert` switches to
+  request-but-don't-require. Two unit tests cover fingerprint format +
+  determinism.
+  (`tasks/core/endpoint-client-fingerprint.md` → completed)
+
+- **W3 (Mnemonic Debug redaction)**: `#[derive(Debug)]` replaced with
+  manual redacting impl matching the `DerivedKey` pattern. `Seed`
+  confirmed to have no `Debug` impl. Test asserts no phrase word leaks.
+  (`tasks/vault/mnemonic-debug-redaction.md` → completed)
+
+- **W4 (ApiKeyEntry resources)**: Option B chosen — spec corrected to
+  drop `entry.resources`; `auth.md` now documents that external
+  identities (token/fingerprint) grant scopes only, resource-scoped
+  ACLs are a composition-internal concern (ADR-015/022). Two tests
+  confirm both resolvers return empty resources.
+  (`tasks/core/auth-apikey-resources.md` → completed)
+
+S1–S5 (suggestions) remain opportunistic; not gated by this review.

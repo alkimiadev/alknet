@@ -1,7 +1,7 @@
 ---
 id: call/protocol/abort-cascade-wiring
 name: Wire AbortCascade into CallAdapter inbound event path (ADR-016)
-status: pending
+status: completed
 depends_on: [call/protocol/abort-cascade]
 scope: narrow
 risk: medium
@@ -128,3 +128,13 @@ frame actually reaches `cascade_abort`.
 > This task closes that integration gap — all the hard logic already
 > exists and is tested; this task adds the ~30-line bolt and the one
 > integration test that would have caught the gap.
+
+## Summary
+
+`handle_stream` now matches `EVENT_ABORTED` → invokes
+`AbortCascade::cascade_abort` with `AbortPolicy::AbortDependents`, then
+aborts the root. Non-requested/non-aborted events still log at `debug!`.
+No descendant `call.aborted` frames sent on the wire. Two integration
+tests: cascade removes parent + child from `PendingRequestMap`; unknown
+request_id is a no-op. `cargo test -p alknet-call` (161 tests) and
+clippy clean.

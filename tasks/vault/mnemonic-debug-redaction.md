@@ -1,7 +1,7 @@
 ---
 id: vault/mnemonic-debug-redaction
 name: Replace Mnemonic derive(Debug) with redacting impl to prevent seed phrase leak
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low
@@ -108,3 +108,11 @@ fn test_mnemonic_debug_redacts_phrase() {
 > Small fix, but eliminates a latent root-of-trust leak. The same
 > pattern (custom redacting `Debug`) is already established in three
 > other places in this codebase — this task brings `Mnemonic` in line.
+
+## Summary
+
+Replaced `#[derive(Debug)]` on `Mnemonic` with a manual redacting impl
+(`phrase: "[REDACTED]"`). Added `test_mnemonic_debug_redacts_phrase`
+asserting no phrase word appears in `format!("{:?}", mnemonic)`.
+Confirmed `Seed` has no `Debug` impl (derives only `Clone, Zeroize`).
+`cargo test -p alknet-vault` and clippy clean.

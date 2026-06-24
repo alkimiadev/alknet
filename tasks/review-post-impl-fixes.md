@@ -1,7 +1,7 @@
 ---
 id: review-post-impl-fixes
 name: Review the four post-implementation sanity-check #004 fixes for spec conformance
-status: pending
+status: completed
 depends_on: [call/protocol/abort-cascade-wiring, core/endpoint-client-fingerprint, vault/mnemonic-debug-redaction, core/auth-apikey-resources]
 scope: moderate
 risk: low
@@ -94,3 +94,22 @@ check.md`, does not introduce new spec drift, and is adequately tested.
 > `impact: phase`. It does not need to re-derive the findings — review
 > #004 already did that work. It only needs to confirm the fixes land
 > correctly and the workspace stays green.
+
+## Summary
+
+All four fixes verified against acceptance criteria:
+- W1: `handle_stream` handles `EVENT_ABORTED`, cascades with
+  `AbortDependents`, no descendant frames on wire, root removed, two
+  integration tests pass.
+- W2: both dispatch paths extract fingerprints, format documented in
+  `auth.md`, no-cert case returns `None` (no regression), server-config
+  change deferred to `core/endpoint-request-client-cert`.
+- W3: `Mnemonic` has manual redacting `Debug`, `Seed` has no `Debug`,
+  redaction test passes.
+- W4: Option B — spec corrected, limitation documented, both resolvers
+  return empty resources, tests pass.
+
+Workspace green: `cargo build --workspace --all-features` ✓, `cargo test
+--workspace --all-features` (326 tests, 0 failures) ✓, `cargo clippy
+--workspace --all-features --all-targets` (0 warnings) ✓. Review #004
+status updated to `resolved`.

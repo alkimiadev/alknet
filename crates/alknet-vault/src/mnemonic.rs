@@ -32,10 +32,17 @@ impl From<Language> for bip39::Language {
 ///
 /// Wraps the `bip39` crate's `Mnemonic` type and provides seed derivation.
 /// The internal phrase is zeroized on drop.
-#[derive(Debug)]
 pub struct Mnemonic {
     inner: Bip39Mnemonic,
     phrase: String,
+}
+
+impl std::fmt::Debug for Mnemonic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mnemonic")
+            .field("phrase", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl Mnemonic {
@@ -162,5 +169,21 @@ mod tests {
         let seed = mnemonic.to_seed(None);
         assert_eq!(seed.len(), 64);
         assert!(!seed.is_empty());
+    }
+
+    #[test]
+    fn test_mnemonic_debug_redacts_phrase() {
+        let mnemonic = Mnemonic::generate(24).unwrap();
+        let debug_output = format!("{:?}", mnemonic);
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug must show [REDACTED] for phrase, got: {debug_output}"
+        );
+        for word in mnemonic.phrase().split_whitespace() {
+            assert!(
+                !debug_output.contains(word),
+                "Debug must not leak phrase word '{word}', got: {debug_output}"
+            );
+        }
     }
 }

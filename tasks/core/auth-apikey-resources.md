@@ -1,7 +1,7 @@
 ---
 id: core/auth-apikey-resources
 name: Reconcile ApiKeyEntry.resources — add field to type and populate in resolve_api_key, or drop from spec
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
@@ -115,3 +115,16 @@ applied to handler-internal composition identities
 > implementation is more than ~30 lines, split a follow-up
 > `level: implementation` task (`core/auth-apikey-resources-impl`)
 > depending on this one.
+
+## Summary
+
+Decision: **Option B** — dropped `entry.resources` from the spec.
+Rationale: `Identity.resources` is populated only by
+`CompositionAuthority::as_identity` (the composition path, ADR-015/022).
+All architecture examples use scope-based ACLs for external identities
+(`fs:read`, `vastai:query`, `llm:call`). Adding a second
+resource-population path for API keys would muddy the external/internal
+separation without a demonstrated downstream need. `auth.md:153`
+corrected to `resources: {}`; documented limitation added. Two tests
+confirm both `resolve_api_key` and `resolve_identity_from_fingerprint`
+return empty resources. `cargo test -p alknet-core` and clippy clean.

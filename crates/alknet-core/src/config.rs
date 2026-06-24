@@ -318,4 +318,52 @@ mod tests {
         let s = format!("{e}");
         assert!(s.starts_with("tls config error:"));
     }
+
+    #[test]
+    fn resolve_api_key_returns_empty_resources() {
+        use sha2::{Digest, Sha256};
+        let token = "alk_test_secret";
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let hash = format!("sha256:{}", hex::encode(hasher.finalize()));
+
+        let entry = ApiKeyEntry {
+            prefix: "alk_tes".to_string(),
+            hash,
+            scopes: vec!["admin".to_string()],
+            description: "test key".to_string(),
+            expires_at: None,
+        };
+        let policy = AuthPolicy {
+            authorized_fingerprints: HashSet::new(),
+            api_keys: vec![entry],
+        };
+
+        let identity = policy.resolve_api_key(token);
+        assert!(identity.is_some(), "api key with matching prefix and hash should resolve");
+        let identity = identity.unwrap();
+        assert_eq!(identity.id, "alk_tes");
+        assert_eq!(identity.scopes, vec!["admin"]);
+        assert!(
+            identity.resources.is_empty(),
+            "token-resolved identities must have empty resources (Option B — scopes only)"
+        );
+    }
+
+    #[test]
+    fn resolve_identity_from_fingerprint_returns_empty_resources() {
+        let policy = AuthPolicy {
+            authorized_fingerprints: HashSet::from(["SHA256:known".to_string()]),
+            api_keys: vec![],
+        };
+
+        let identity = policy
+            .resolve_identity_from_fingerprint("SHA256:known")
+            .expect("known fingerprint should resolve");
+        assert_eq!(identity.id, "SHA256:known");
+        assert!(
+            identity.resources.is_empty(),
+            "fingerprint-resolved identities must have empty resources (Option B — scopes only)"
+        );
+    }
 }

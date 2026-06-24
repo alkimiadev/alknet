@@ -150,9 +150,40 @@ The "Config" prefix indicates that identities are resolved from configuration (a
 
 How it resolves:
 - **Fingerprint**: Look up in `DynamicConfig::auth::authorized_keys_fingerprints`. If found, return `Identity { id: fingerprint, scopes: ["relay:connect"], resources: {} }`.
-- **Token**: Parse as UTF-8. If it starts with `alk_`, look up in `DynamicConfig::auth::api_keys` by prefix match + SHA-256 hash. If found and not expired, return `Identity { id: prefix, scopes: entry.scopes, resources: entry.resources }`.
+- **Token**: Parse as UTF-8. If it starts with `alk_`, look up in `DynamicConfig::auth::api_keys` by prefix match + SHA-256 hash. If found and not expired, return `Identity { id: prefix, scopes: entry.scopes, resources: {} }`.
+
+> **Resource-scoped ACLs and external identities.** `Identity.resources` is
+> populated only by the composition path (`CompositionAuthority::as_identity`,
+> ADR-015/022) — never by token or fingerprint resolvers. API keys and
+> fingerprints grant **scopes only**; resource-scoped access is an
+> internal-composition concern. An `OperationSpec` that declares
+> `resource_type`/`resource_action` will return `FORBIDDEN` when the caller
+> authenticated via token or fingerprint, because `Identity.resources` is
+> empty. This is a documented limitation, not a bug: if a future crate needs
+> per-key resource binding, it must earn a dedicated ADR that adds a
+> `resources` field to `ApiKeyEntry` and the fingerprint config path, rather
+> than silently widening the external-auth contract.
 
 Changes to `DynamicConfig` via `ConfigReloadHandle` are reflected immediately — `ConfigIdentityProvider` reads from `ArcSwap` on every call.
+
+### Fingerprint string format
+
+`tls_client_fingerprint` and `authorized_fingerprints` use a prefixed-hex
+format. The prefix identifies the key type; the body is the hex-encoded
+hash or raw key bytes. `AuthPolicy::resolve_identity_from_fingerprint`
+does a literal `HashSet::contains()` — no normalization — so the extractor
+and the operator config must use the same format.
+
+| Transport | Source | Format |
+|-----------|--------|--------|
+| quinn (X.509) | leaf client cert DER | `SHA256:<hex of SHA-256(cert_der)>` |
+| iroh (raw Ed25519) | peer `NodeId` | `ed25519:<lowercase hex of 32-byte pub key>` |
+
+When no client cert is presented (the current default — server uses
+`with_no_client_auth()`), the fingerprint is `None` and identity remains
+unresolved at the endpoint layer. A follow-up task will switch the server
+config to request-but-not-require client certs so fingerprints flow for
+peers that present them.
 
 ## Resolution Flow
 

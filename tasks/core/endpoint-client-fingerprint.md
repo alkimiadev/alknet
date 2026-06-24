@@ -1,7 +1,7 @@
 ---
 id: core/endpoint-client-fingerprint
 name: Extract TLS client certificate fingerprint in endpoint dispatch (ADR-004)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium
@@ -116,3 +116,16 @@ in the codebase before committing.
 > `None` when no cert was presented, which is the current behavior, so
 > landing extraction first is a safe no-op until the server config
 > changes.
+
+## Summary
+
+Added `extract_quinn_client_fingerprint` (leaf cert DER → `SHA256:<hex>`
+via `peer_identity()` downcast) and `extract_iroh_client_fingerprint`
+(peer `NodeId` → `ed25519:<hex>`). Both dispatch functions now pass the
+extracted fingerprint to `build_auth_context`. Fingerprint format
+documented in `auth.md` (table: quinn X.509 vs iroh raw Ed25519).
+Server config still uses `with_no_client_auth()` — extraction is a safe
+no-op. Follow-up task `core/endpoint-request-client-cert` created for the
+server config change. Two unit tests cover fingerprint format +
+determinism. `cargo test -p alknet-core --all-features` (59 tests) and
+clippy clean.
