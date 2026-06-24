@@ -41,15 +41,24 @@ pub enum TlsIdentity {
     /// RFC 7250 raw Ed25519 public key.
     /// No domain, no CA, no cert renewal. Key = identity.
     /// Same model as iroh's NodeId, but for direct QUIC connections.
-    /// `SecretKey` is `iroh::SecretKey` (Ed25519) — re-exported from iroh,
-    /// which alknet-core already depends on (feature-gated, ADR-010). The
-    /// key can be derived from alknet-vault at the assembly layer
-    /// (endpoint.md) or generated fresh. See OQ-12, W14.
-    RawKey(iroh::SecretKey),
+    /// Uses `Ed25519SecretKey` (alknet-core-owned wrapper over
+    /// `ed25519_dalek::SigningKey`) — not coupled to the `iroh` feature.
+    /// Available in quinn-only builds. See ADR-027.
+    RawKey(Ed25519SecretKey),
 
     /// Self-signed X.509 cert for development.
     /// Generated on startup, not validated by external clients.
     SelfSigned,
+
+    /// ACME auto-provisioning via Let's Encrypt (rustls-acme).
+    /// Produces X.509 certs at runtime; handles TLS-ALPN-01 challenges
+    /// and automatic renewal. Feature-gated behind `acme`. See ADR-027.
+    Acme {
+        domains: Vec<String>,
+        cache_dir: PathBuf,
+        directory: AcmeDirectory,  // Production, Staging, Custom(url)
+        contact: Vec<String>,      // e.g. ["mailto:admin@example.com"]
+    },
 }
 ```
 
@@ -57,7 +66,52 @@ pub enum TlsIdentity {
 
 TLS identity in alknet has two distinct use cases, not one. The original `tls_cert: Option<PathBuf>` / `tls_key: Option<PathBuf>` assumed X.509 was the only TLS identity model. RFC 7250 raw public keys (used by iroh, supported by rustls) provide a fundamentally different mode: Ed25519 key as identity, no X.509, no CA, no domain. This is the default for most alknet nodes — it works natively with SSH auth and git. X.509 certs are for domain-hosted services and browser/WebTransport clients, which don't support RFC 7250.
 
-The `TlsIdentity` enum captures both use cases plus a development mode. See OQ-12 for the full rationale.
+The `TlsIdentity` enum captures all four modes. See OQ-12 for the use-case
+rationale and [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md)
+for the ACME + RawKey decoupling design.
+
+### `Ed25519SecretKey`
+
+A thin alknet-core-owned wrapper over `ed25519_dalek::SigningKey`. Not
+feature-gated — available in all builds. Used by `TlsIdentity::RawKey`
+for RFC 7250 raw public key TLS identity. When the `iroh` transport is
+configured, `build_iroh_endpoint` converts to `iroh::SecretKey::from_bytes`
+(see ADR-027, Decision 4).
+
+### `AcmeDirectory`
+
+```rust
+pub enum AcmeDirectory {
+    Production,   // Let's Encrypt production
+    Staging,      // Let's Encrypt staging
+    Custom(String), // custom ACME directory URL
+}
+```
+
+### Construction examples (updated)
+
+```rust
+// P2P / key-based identity (default for most nodes) — no iroh dep needed
+let p2p_config = StaticConfig {
+    listen_addr: Some("0.0.0.0:4433".parse()?),
+    tls_identity: Some(TlsIdentity::RawKey(Ed25519SecretKey::generate())),
+    iroh_relay: None,
+    drain_timeout: Duration::from_secs(2),
+};
+
+// Domain-hosted service with ACME auto-provisioning
+let acme_config = StaticConfig {
+    listen_addr: Some("0.0.0.0:443".parse()?),
+    tls_identity: Some(TlsIdentity::Acme {
+        domains: vec!["relay.alk.dev".to_string()],
+        cache_dir: "/var/lib/alknet/acme".into(),
+        directory: AcmeDirectory::Production,
+        contact: vec!["mailto:admin@alk.dev".to_string()],
+    }),
+    iroh_relay: None,
+    drain_timeout: Duration::from_secs(2),
+};
+```
 
 ### Key differences from reference implementation
 
@@ -80,12 +134,12 @@ The reference `StaticConfig` (in `alknet-main/crates/alknet-core/src/config/stat
 // P2P / key-based identity (default for most nodes)
 let p2p_config = StaticConfig {
     listen_addr: Some("0.0.0.0:4433".parse()?),
-    tls_identity: Some(TlsIdentity::RawKey(iroh::SecretKey::generate())),
+    tls_identity: Some(TlsIdentity::RawKey(Ed25519SecretKey::generate())),
     iroh_relay: None,
     drain_timeout: Duration::from_secs(2),
 };
 
-// Domain-hosted service (relays, public services, browsers)
+// Domain-hosted service (relays, public services, browsers) — manual certs
 let domain_config = StaticConfig {
     listen_addr: Some("0.0.0.0:4433".parse()?),
     tls_identity: Some(TlsIdentity::X509 {

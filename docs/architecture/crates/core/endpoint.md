@@ -206,7 +206,7 @@ This mode works natively with SSH auth (same key type) and git (SSH key-based au
 Nodes that serve browser/WebTransport clients, or nodes with public domain names, use X.509 certificates. This has two sub-cases:
 
 - **Manual**: Provide cert/key file paths via `TlsIdentity::X509`. The endpoint loads them at startup and builds a standard `rustls::ServerConfig`.
-- **ACME auto-provisioning**: Let's Encrypt via `rustls-acme`. The reverse-proxy project (`/workspace/@alkdev/reverse-proxy`) demonstrates the complete pattern: per-listener ACME state machine, `ResolvesServerCertAcme` rustls integration, TLS-ALPN-01 challenge handling, automatic renewal. This is a proven, solved implementation pattern. It will be adapted to alknet's `AlknetEndpoint` context as an additional `TlsIdentity` variant or `ResolvesServerCert` implementation.
+- **ACME auto-provisioning**: Let's Encrypt via `rustls-acme`. `TlsIdentity::Acme { domains, cache_dir, directory, contact }` carries the static config; the endpoint constructs the `AcmeState` async state machine and `ResolvesServerCertAcme` at setup time (ADR-027). The `acme` feature gate keeps `rustls-acme` out of non-ACME builds. See [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) for the full design.
 
 `TlsIdentity::SelfSigned` is for development only — the endpoint generates a self-signed cert on startup. External clients will not trust it.
 
@@ -219,9 +219,16 @@ The iroh endpoint does not need TLS certificate configuration — it uses `NodeI
 | Path | Identity model | Client compatibility | Use case |
 |------|---------------|---------------------|----------|
 | quinn + `TlsIdentity::RawKey` | RFC 7250 Ed25519 raw key | alknet-native, SSH, git | Personal nodes, P2P, most deployments |
-| quinn + `TlsIdentity::X509` | X.509 domain certificate | All clients including browsers | Relays, public services, WebTransport |
+| quinn + `TlsIdentity::X509` | X.509 domain certificate (manual) | All clients including browsers | Relays, public services, WebTransport |
+| quinn + `TlsIdentity::Acme` | X.509 via ACME auto-provisioning | All clients including browsers | Public relays, domain-hosted services |
 | quinn + `TlsIdentity::SelfSigned` | X.509 self-signed cert | None (dev only) | Local development |
 | iroh | NodeId (Ed25519, RFC 7250 built-in) | alknet-native, iroh clients | NAT traversal, home servers |
+
+Note: `TlsIdentity::RawKey` uses `Ed25519SecretKey` (alknet-core-owned,
+backed by `ed25519-dalek`), not `iroh::SecretKey`. It is available in
+quinn-only builds without the `iroh` feature. When the iroh transport is
+also configured, `build_iroh_endpoint` converts the key to
+`iroh::SecretKey::from_bytes` (ADR-027).
 
 ## Graceful Shutdown
 
@@ -294,4 +301,4 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-04**: Resolved — HandlerRegistry is static at startup.
 - **OQ-05**: Resolved — multi-connectivity endpoint with quinn + iroh, both feature-gated.
-- **OQ-12**: Resolved — two distinct TLS identity use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME is a proven pattern from the reverse-proxy project, not speculative future work.
+- **OQ-12**: Resolved — two distinct TLS identity use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME auto-provisioning designed in [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md); RawKey decoupled from the `iroh` feature (available in quinn-only builds).

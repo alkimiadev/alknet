@@ -61,6 +61,7 @@ last_updated: 2026-06-23
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Accepted |
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Accepted |
 | [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | Accepted |
+| [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | Accepted |
 
 ## Open Questions
 
@@ -82,7 +83,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-04**: Dynamic handler registration — static at startup (ADR-010); scoped to the `HandlerRegistry` (ALPN-level) by ADR-024, which governs `OperationRegistry` mutability separately
 - **OQ-07**: Call protocol scope — bidirectional streams, EventEnvelope, ID-based correlation (ADR-012)
 - **OQ-11**: Handler-level auth resolution observability — handlers store resolved identity on Connection (Option B); two identity scopes: connection-level (observability) and per-request (ACL)
-- **OQ-12**: TLS identity provisioning — two use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME is a proven pattern.
+- **OQ-12**: TLS identity provisioning — two use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME designed in ADR-027; RawKey decoupled from iroh feature.
 - **OQ-13**: Operation path format — `/{service}/{op}` is the correct design for alknet-call, not a simplification
 - **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
 - **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays as well.

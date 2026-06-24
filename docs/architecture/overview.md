@@ -217,6 +217,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point |
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Dropped irpc from vault; direct method calls; local-only by construction |
 | [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | HD derivation from BIP39 seed; `74'` coin type; SLIP-0010/Ed25519 default; AES-256-GCM for credentials |
+| [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | `TlsIdentity::Acme` variant + two-phase server config; `RawKey` uses `ed25519-dalek` (not `iroh::SecretKey`); `acme` feature gate |
 
 ## Open Questions
 

@@ -172,16 +172,16 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Priority**: high
 - **Resolution**: TLS identity in alknet has two distinct use cases, not one:
 
-  **Use case 1 — P2P / key-based identity (default for most alknet nodes):** RFC 7250 raw Ed25519 public keys. No domain, no CA, no cert renewal. The Ed25519 public key IS the node's identity. This is the same model iroh uses with its `NodeId`. It works natively with SSH auth (same key type) and git (SSH key-based auth). `TlsIdentity::RawKey` in `StaticConfig` covers this. This is the primary identity mode for alknet-native clients — most nodes will use this.
+  **Use case 1 — P2P / key-based identity (default for most alknet nodes):** RFC 7250 raw Ed25519 public keys. No domain, no CA, no cert renewal. The Ed25519 public key IS the node's identity. This is the same model iroh uses with its `NodeId`. It works natively with SSH auth (same key type) and git (SSH key-based auth). `TlsIdentity::RawKey(Ed25519SecretKey)` in `StaticConfig` covers this. As of [ADR-027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md), `RawKey` uses `ed25519_dalek::SigningKey` (via an alknet-core wrapper), **not** `iroh::SecretKey` — so raw-key TLS identity is available in quinn-only builds without the `iroh` feature.
 
   **Use case 2 — Domain-hosted services (relays, public-facing nodes):** X.509 certificates with domain names. Required for browser/WebTransport clients, which don't support RFC 7250. This has two sub-cases:
   - **Manual**: Provide cert/key file paths via `TlsIdentity::X509`. Already specified in `StaticConfig`.
-  - **ACME auto-provisioning**: Let's Encrypt via rustls-acme. The reverse-proxy project (`/workspace/@alkdev/reverse-proxy`) demonstrates the complete pattern: per-listener ACME state machine, `ResolvesServerCertAcme` rustls integration, TLS-ALPN-01 challenge handling, automatic renewal. This is a proven, solved implementation pattern — not speculative future work. It will be adapted to alknet's `AlknetEndpoint` context when domain-hosted nodes need it.
+  - **ACME auto-provisioning**: Let's Encrypt via `rustls-acme`. `TlsIdentity::Acme { domains, cache_dir, directory, contact }` carries static config; the endpoint constructs the `AcmeState` async state machine at setup time. Feature-gated behind `acme`. Designed in [ADR-027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md). The reverse-proxy project (`/workspace/@alkdev/reverse-proxy`) demonstrates the proven pattern: `AcmeConfig`, `ResolvesServerCertAcme`, TLS-ALPN-01 challenge handling, automatic renewal.
 
   **Browser constraint**: Browsers require X.509 and don't support RFC 7250. For browser/WebTransport clients, domain-hosted nodes with X.509 certs are mandatory. All other clients (SSH, git, alknet-native) work with raw keys by default.
 
-  The `TlsIdentity` enum in `StaticConfig` already captures all three modes (`X509`, `RawKey`, `SelfSigned`). ACME auto-provisioning is additive — it produces an X.509 cert at runtime rather than from files, and fits naturally as an additional `TlsIdentity` variant or as a `rustls::ResolvesServerCert` implementation behind the existing `X509` path.
-- **Cross-references**: ADR-010, [config.md](crates/core/config.md), [endpoint.md](crates/core/endpoint.md)
+  The `TlsIdentity` enum in `StaticConfig` captures all four modes (`X509`, `RawKey`, `SelfSigned`, `Acme`). [ADR-027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) records the design decisions for ACME integration and RawKey decoupling.
+- **Cross-references**: ADR-010, ADR-027, [config.md](crates/core/config.md), [endpoint.md](crates/core/endpoint.md)
 
 ### OQ-13: Operation Path Format and Routing Scope
 
