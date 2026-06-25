@@ -226,7 +226,7 @@ russh. Phase 1 should note this and *not* spend an ADR on it unless the
 duplicate-backend concern turns out to matter for binary size.
 
 ### DP-4: Client side — full `russh::client` vs SSH-only-server
-*(Recommended: one-way door — needs an ADR)*
+*(Recommended: one-way door — needs an ADR; user-clarified)*
 
 alknet-ssh as described in the README is the *SSH handler* (server side of the
 `alknet/ssh` ALPN). But the reference implementation also ships a substantial
@@ -237,47 +237,105 @@ endpoint* clients can dial. The README lists alknet-ssh's purpose as "SSH
 handler (russh), SOCKS5, port forwarding" — so the client/proxy functionality is
 intended.
 
-Questions:
-- Does alknet-ssh own *both* the SSH server (handling `alknet/ssh` connections)
-  *and* the SSH/SOCKS5 *client* (for the node to dial *out* via SSH to other
-  hosts)? Or does the client live elsewhere?
-- Is the SOCKS5 server a feature of alknet-ssh, or a separate crate? The SOCKS5
-  protocol itself is independent of SSH (it just needs a byte stream), so it
-  could be its own reusable crate that alknet-ssh composes with.
+**User clarification (necessary context)**: SOCKS5 and port forwarding in
+*both* directions are **core, non-negotiable features** for v1 — they are "the
+basic features that made the first version gain interest" (3.5k clones/14 days).
+The user runs an actual VPN-like topology (WireGuard + Postgres + Redis today)
+over this, and explicitly wants the port-forwarding-in-both-directions
+capability to unlock the VPN-like functionality in the new stack. The growing
+world-wide trend of banning/blocking "VPNs" (most users use it as a proxy /
+location-hiding tool) makes a self-hostable, stream-agnostic SSH-with-forwarding
+stack strategically valuable beyond alknet itself.
 
-**Recommendation**: Phase 1 should clarify scope with an ADR. My tentative
-recommendation: alknet-ssh owns the SSH *server* (the `ProtocolHandler`) plus
-the SSH *client* (for outbound SSH dialing, needed for port forwarding and
-SOCKS-via-SSH). SOCKS5 itself becomes a small, self-contained, reusable crate
-(e.g., `alknet-socks5`) that consumes a byte stream — keeping it decoupled from
-SSH matches the "stream-agnostic" philosophy and unlocks SOCKS5 reuse over
-non-SSH transports. This is a real architectural choice that deserves an ADR
-rather than an implicit decision.
+A concrete downstream consumer that the user wants to *replace* with this stack
+is `/workspace/@alkdev/dispatch` — a single-crate axum service that uses
+`russh = "0.60"` as an SSH **client** to act as a "reverse git runner" for
+Docker containers and remote GPU instances (vast.ai, and eventually runpod /
+ubicloud / others). Dispatch's `src/ssh.rs` is a textbook russh client wrapper
+(connect + auth + `channel_open_session().exec()` + `disconnect`), and its
+`src/handlers.rs::start_forward` does `channel_open_direct_tcpip` local→remote
+forwarding (the VPN-like pattern). Dispatch has no SOCKS5 — that's the
+alknet-original feature the user wants preserved. Dispatch also factors into a
+future "abstract container service" — both it and alknet-ssh share the SSH
+client + forwarding primitives, which argues strongly for those primitives living
+in alknet-ssh (not duplicated in each consumer).
+
+This reframes the questions:
+- Does alknet-ssh own *both* the SSH server (handling `alknet/ssh` connections)
+  *and* the SSH *client* (for outbound SSH dialing)? — **Yes** (recommended
+  strongly; dispatch and the VPN-like use case both need it, and factoring it
+  into alknet-ssh avoids primitive duplication).
+- Is the SOCKS5 *server* (what an SSH connection's client dials *through* the
+  alknet node) a feature of alknet-ssh, or a separate crate? The SOCKS5 protocol
+  itself is transport-independent (it just needs a byte stream), so it *could*
+  factor out — but it's tightly coupled to the SSH-forwarding feature and to the
+  VPN-like use case. The user explicitly abstracts *some* things out to optional
+  crates but stresses that "some is pretty foundational stuff to ssh."
+
+**Recommendation**: alknet-ssh owns **both** the SSH server (`ProtocolHandler`
+for `alknet/ssh`) **and** the SSH client (outbound dialing, the primitives
+dispatch and the VPN-like topology both consume). Port forwarding in both
+directions (`direct-tcpip` local→remote, `forwarded-tcpip`/`tcpip_forward`
+remote→local) is **in v1 scope**, not deferred. SOCKS5 is **in v1 scope within
+alknet-ssh** (the VPN-like use case needs the node to expose a SOCKS5 *server*
+that forwards over the SSH connection); the question of whether the SOCKS5
+*protocol codec* factors into a tiny reusable `alknet-socks5` crate (consuming a
+byte stream, reusable over other transports) is left as a two-way-door
+implementation detail — recommend starting with the codec inside alknet-ssh and
+extracting only if a second consumer appears (the "stream-agnostic" philosophy
+says this extraction, if done, is cheap). Phase 1 writes an ADR recording this
+scope: server + client + bidirectional forwarding + SOCKS5-server-all-in-v1.
 
 ### DP-5: Channel-policy surface — which SSH services does alknet-ssh expose?
-*(Recommended: one-way door — needs an ADR, at least the default policy)*
+*(Recommended: one-way door — needs an ADR, at least the default policy;
+user-clarified)*
 
 russh's `server::Handler` defaults every channel-request method to reject/no-op
 (or, for `auth_publickey_offered`, accept the offer through to signature
-verification). alknet-ssh must decide its default channel policy:
+verification). alknet-ssh must decide its default channel policy. The user's
+clarification sharpens this:
 
-- **session channels** (`shell`, `exec`, `subsystem`): does alknet-ssh run a
-  real shell? A restricted command set? Nothing (exec-only)? This is a major
-  behavioral choice. The reference implementation (per overview.md's "what
-  stays") had a 974-line `server/handler.rs` and a 555-line
-  `server/channel_proxy.rs` — it clearly did substantial channel work
-  (proxying channels to upstream connections).
-- **port forwarding** (`direct-tcpip` in, `tcpip-forward` / `forwarded-tcpip`
-  out): the README explicitly lists "port forwarding" as an alknet-ssh feature,
-  so this is in scope. But the *policy* (which destinations are allowed, whether
-  to restrict by ACL/scope) needs specifying.
-- **PTY/X11/agent forwarding**: almost certainly disabled by default for
-  security; explicit opt-in.
+- **session channels**: the dispatch use case uses `channel_open_session().exec()`
+  heavily — that's the "reverse git runner" pattern (run a command on the remote
+  instance, capture stdout/stderr/exit). For the **server side** of
+  `alknet/ssh`, though, the question is whether alknet-ssh *runs a real shell*
+  on its own node. Given the VPN-like / forwarding use case is primary and the
+  "shell server" use case is secondary, the default should be **exec-only**:
+  `shell_request` and `pty_request` default-reject; `exec_request` permitted
+  (gated by ACL — see forwarding below). This keeps alknet-ssh a focused
+  forwarding/exec appliance rather than a general-purpose interactive login
+  server. Interactive shell can be an explicit opt-in later (two-way door).
+- **port forwarding in both directions** (`direct-tcpip` in, `tcpip_forward` /
+  `forwarded-tcpip` out): **in v1 scope, both directions**, per user
+  clarification. The *policy* (which destinations are allowed, whether to
+  restrict by ACL/scope) still needs specifying.
+- **PTY/X11/agent forwarding**: default-reject for security; explicit opt-in.
+  (Consistent with the exec-only session stance.)
 
-**Recommendation**: Phase 1 should write an ADR defining the v1 channel-policy
-surface — likely "exec + port-forwarding in scope; shell/PTY/X11/agent
-deferred; channel destinations gated by ACL scopes." The exact scope set is a
-design choice the Architect makes with the user.
+**Default-deny baseline**: the user explicitly called out that "the configuration
+needs to be such that it's kind of 'default deny', which russh does by default."
+russh's `server::Handler` already defaults every channel/auth/forwarding callback
+to reject or no-op — so alknet-ssh gets default-deny for free by overriding
+only the methods it wants to enable. Phase 1 must record this as the explicit
+baseline: every forwarding destination, every exec command, every channel type
+must be *explicitly permitted* by config + ACL, never implicitly allowed.
+
+**ACL gating**: forwarding destinations and exec commands are gated by scopes on
+the resolved `Identity`. The exact scope vocabulary (e.g., `ssh:forward:*`,
+`ssh:forward:127.0.0.1:5432`, `ssh:exec:git-upload-pack`) is a design choice the
+Architect makes — likely a small, capability-shaped scope set with wildcards,
+consistent with `Identity.scopes` / `Identity.resources` (auth.md). The
+"resources" field on `Identity` (populated only by composition per
+`CompositionAuthority::as_identity`, ADR-022) is *not* available to
+fingerprint/token-resolved external identities, so per-destination ACLs for
+inbound SSH must live in `scopes`, not `resources`.
+
+**Recommendation**: Phase 1 writes an ADR defining the v1 channel-policy
+surface: exec (gated) + bidirectional port forwarding (gated), with
+shell/PTY/X11/agent forwarding default-rejected. Default-deny baseline is
+inherited from russh. Forwarding destinations + exec commands gated by ACL
+scopes. The exact scope vocabulary is an OQ for Phase 1 (it interacts with how
+operators express "allow forwarding to 127.0.0.1:5432" in `DynamicConfig`).
 
 ### DP-6: Auth method coverage — publickey-only vs password/kbdint too
 *(Recommended: two-way door — start publickey-only, extend later)*
@@ -345,13 +403,61 @@ architecture docs should reference the POC's outcome. If the POC surfaces
 issues (half-open stream handling, `poll_shutdown` semantics, etc.), they feed
 back into the spec as constraints.
 
+### DP-10: Bare-TCP SSH listener — in-v1 for git-over-SSH forward-compat
+*(Recommended: one-way door on the *config shape*, two-way door on the *listener
+itself* — user-clarified)*
+
+ADR-010 already establishes that bare-TCP SSH is a handler concern, not an
+endpoint concern — the SSH handler can listen on a TCP socket independently of
+the `alknet/ssh` ALPN path. The user added a forward-looking constraint: **"We
+need to be able to have that TCP handler so we can later support git over ssh."**
+
+Standard git-over-SSH (`ssh git@host ...`) runs on TCP port 22, not over QUIC,
+not over the `alknet/ssh` ALPN — git clients (`git`, libgit2, `gix`) dial a TCP
+socket and expect the SSH-2 protocol directly. To make alknet-ssh a viable
+git-over-SSH target, the bare-TCP listener must be a first-class path, not just
+a future two-way-door add-on.
+
+The two paths (ALPN/QUIC vs bare-TCP) share the same `russh::server::Config` and
+the same `server::Handler` implementation; they differ only in how the duplex
+stream is obtained:
+
+- **ALPN path**: `handle()` receives the QUIC `Connection`, calls
+  `accept_bi()`, `tokio::io::join`s the halves, hands to `run_stream`.
+- **TCP path**: a `tokio::net::TcpListener` accept loop hands each accepted
+  `TcpStream` directly to `run_stream` (russh accepts `TcpStream` natively via
+  `run_on_socket`, or we use `run_stream` with the raw stream to keep config/
+  handler identical across both paths).
+
+**Default-deny baseline (user-stated)**: "the configuration needs to be consider
+such that it's kind of 'default deny', which russh does by default." This
+applies to *both* paths — the same ACL gating, the same channel policy, the
+same default-reject for forwarding destinations. A TCP-listener client gets
+*exactly* the same policy treatment as an ALPN client; the only difference is
+the transport. The TCP listener is **off by default** (must be explicitly
+configured to bind), consistent with the default-deny posture — an operator
+who doesn't configure a TCP bind address gets no TCP listener, only the ALPN
+path.
+
+**Recommendation**: Phase 1 records the dual-path model in the ssh spec —
+ALPN/QUIC primary, bare-TCP as a co-equal first-class path (off by default,
+explicit config to enable) — so that the **configuration shape** accommodates
+both from v1 even if the TCP listener implementation lands slightly later.
+Crucially, the **config schema** should reserve the TCP-listener fields now
+(one-way door — adding a config field later is non-breaking but designing the
+config *around* only-ALPN-then-retrofitting-TCP is messier than reserving the
+shape up front). The listener implementation itself is a two-way door. This
+avoids the trap where git-over-SSH becomes a painful retrofit because the
+config only modeled the ALPN path.
+
 ## Tentative Recommended Approach (Convergence)
 
 Based on the above, the recommended approach to take into Phase 1:
 
 1. **Crate**: `alknet-ssh`, depends on `alknet-core` and `russh = "0.60"`
    (default features, i.e. `aws-lc-rs`). Implements `ProtocolHandler` for
-   `b"alknet/ssh"`.
+   `b"alknet/ssh"`. **Owns both the SSH server and the SSH client** (the client
+   is the shared primitive dispatch and the VPN-like topology both consume).
 
 2. **Stream wiring**: `handle()` accepts the QUIC `Connection`, calls
    `connection.accept_bi()` once to get `(SendStream, RecvStream)`, joins them
@@ -371,25 +477,46 @@ Based on the above, the recommended approach to take into Phase 1:
    config), with an optional config-supplied key file override. Symmetric with
    `TlsIdentity::RawKey` (ADR-027). Needs an ADR.
 
-5. **Channel policy** (DP-5): v1 supports `exec` + port forwarding
-   (`direct-tcpip` / `forwarded-tcpip`); `shell`/PTY/X11/agent forwarding
-   deferred (default-reject). Forwarding destinations gated by ACL scopes on the
-   resolved `Identity`. Needs an ADR defining the v1 surface.
+5. **Channel policy — default-deny, exec + bidirectional forwarding in v1**
+   (DP-5): v1 supports `exec` (gated) + port forwarding in **both** directions
+   (`direct-tcpip` local→remote, `forwarded-tcpip`/`tcpip_forward`
+   remote→local, both gated). `shell`/PTY/X11/agent forwarding default-reject
+   (opt-in later, two-way door). **Default-deny baseline inherited from
+   russh** — every channel type, every forwarding destination, every exec
+   command must be explicitly permitted by config + ACL scopes; never
+   implicitly allowed. Forwarding destinations + exec commands gated by scopes
+   on the resolved `Identity` (the `resources` field is composition-only per
+   ADR-022, so inbound-SSH per-destination ACLs live in `scopes`). Needs an ADR
+   defining the v1 surface + the scope vocabulary (latter likely stays an OQ).
 
-6. **Client + SOCKS5** (DP-4): alknet-ssh also owns the SSH *client* (outbound
-   dialing, needed for forwarding). SOCKS5 protocol factors out into a small
-   reusable `alknet-socks5` crate that consumes a byte stream — decoupled from
-   SSH, reusable over other transports. Needs an ADR confirming the scope
-   split.
+6. **Client + SOCKS5 — in v1, both in alknet-ssh** (DP-4): alknet-ssh owns the
+   SSH *server* (the `ProtocolHandler`) **and** the SSH *client* (outbound
+   dialing, the primitives dispatch and the VPN-like topology both consume).
+   Port forwarding in both directions is a *client-side* feature too (the
+   client opens `direct-tcpip` channels; dispatch does exactly this). SOCKS5
+   *server* (what an SSH connection's client dials *through* the alknet node)
+   is **in v1 within alknet-ssh** — the VPN-like use case requires it. The
+   SOCKS5 protocol codec may or may not factor into a tiny reusable
+   `alknet-socks5` crate (consuming a byte stream); recommend starting with the
+   codec inside alknet-ssh and extracting only if a second consumer appears
+   (two-way door — the stream-agnostic philosophy makes extraction cheap).
+   Needs an ADR confirming this scope.
 
 7. **De-risk POC** (DP-9): a Phase 0 POC validating `connect_stream` ↔
    `run_stream` over `tokio::io::duplex()` before Phase 1 finalizes the stream
    wiring spec. Strong empirical evidence from the reference implementation
    suggests it will pass, but the upstream test gap is real.
 
-8. **TCP listener** (DP-7/ADR-010): optional, additive, deferred past v1 — the
-   `alknet/ssh` ALPN path is the primary surface; a bare-TCP SSH listener can be
-   added later sharing the same `server::Config` and `Handler`.
+8. **Bare-TCP SSH listener — first-class path, config shape reserved in v1,
+   listener off-by-default** (DP-10): the `alknet/ssh` ALPN/QUIC path is
+   primary; a bare-TCP listener is a co-equal first-class path needed for
+   future git-over-SSH support. **Reserve the TCP-listener config fields in v1**
+   (one-way door on the config schema — retrofitting is messier than reserving
+   the shape up front). The listener is **off by default** (explicit config to
+   bind), consistent with the default-deny posture. Both paths share the same
+   `server::Config` + `Handler` + ACL policy — only the stream source differs.
+   The listener implementation itself is a two-way door, but the config shape is
+   locked in v1.
 
 ## Open Questions to Carry into Phase 1
 
@@ -399,11 +526,16 @@ OQ-01–OQ-24 exist):
 
 - **OQ-SSH-01 (host key sourcing)**: vault-derived default + config override —
   resolved by the DP-1 ADR.
-- **OQ-SSH-02 (channel policy v1 surface)**: the exact set of allowed channel
-  types / request types — resolved by the DP-5 ADR; some sub-questions (e.g.,
-  default forwarding ACL) may stay open.
-- **OQ-SSH-03 (client + SOCKS5 split)**: confirm alknet-ssh owns the client and
-  `alknet-socks5` is a separate crate — resolved by the DP-4 ADR.
+- **OQ-SSH-02 (channel policy v1 surface + default-deny scope vocabulary)**:
+  the set of allowed channel types / request types is resolved by the DP-5
+  ADR; the exact scope vocabulary for forwarding destinations + exec commands
+  (e.g., `ssh:forward:127.0.0.1:5432` vs a resources-style shape) stays open —
+  it interacts with how operators express allow-lists in `DynamicConfig` and
+  with the fact that `Identity.resources` is composition-only (ADR-022).
+- **OQ-SSH-03 (client + SOCKS5 scope)**: confirm alknet-ssh owns both server +
+  client + SOCKS5-server in v1, and whether the SOCKS5 codec extracts to a
+  separate crate now or later — resolved (in favor of in-alknet-ssh-now,
+  extract-later) by the DP-4 ADR.
 - **OQ-SSH-04 (POC outcome)**: did the `duplex()`-based round-trip POC pass, and
   did it surface any stream-handling constraints (half-open, `poll_shutdown`,
   maximum packet size) that constrain the spec? Resolved by POC Specialist
@@ -411,22 +543,31 @@ OQ-01–OQ-24 exist):
 - **OQ-SSH-05 (crypto backend)**: confirm `aws-lc-rs` default aligns with the
   rest of the workspace; defer flipping to `ring` unless binary-size pressure
   arises. Two-way door.
+- **OQ-SSH-06 (bare-TCP listener enablement timeline)**: the config shape is
+  reserved in v1 (DP-10); whether the TCP listener *implementation* lands in v1
+  or as a fast-follow is a two-way door. Git-over-SSH is the forcing function —
+  decide based on whether v1 needs to be a git-over-SSH target out of the box.
 
 ## Next Steps (Phase 0 → Phase 1)
 
-1. **You decide** on the DP-1, DP-4, DP-5 recommendations (or amend them) —
-   these are the load-bearing architectural choices. DP-3, DP-6, DP-7, DP-8 are
-   defaults I recommend accepting as-is; DP-9 is a POC task.
+1. **You decide** on the DP-1, DP-4, DP-5, DP-10 recommendations (or amend
+   them) — these are the load-bearing architectural choices, and DP-4/DP-5/DP-10
+   now reflect your clarifications (SOCKS5 + bidirectional forwarding + TCP
+   listener for git-over-SSH are all in-scope; default-deny baseline). DP-2,
+   DP-3, DP-6, DP-7, DP-8 are defaults I recommend accepting as-is; DP-9 is a
+   POC task.
 2. **Optional POC** (DP-9): spawn a POC Specialist to validate
    `connect_stream` ↔ `run_stream` over `tokio::io::duplex()`. Timeboxed; if it
    passes, the stream-wiring spec is straightforward; if it surfaces
    constraints, they fold into the spec.
 3. **Phase 1 (Architect)**: produce `docs/architecture/crates/ssh/README.md` +
    component specs (e.g., `ssh-handler.md`, `ssh-stream.md`, `ssh-channels.md`,
-   `ssh-auth.md`), ADRs for the accepted DPs (likely ADR-028 host-key sourcing,
-   ADR-029 channel policy, ADR-030 ssh client + socks5 split), and the OQs above
-   in `open-questions.md`. Update `docs/architecture/README.md` index and
-   ADR table.
+   `ssh-auth.md`, `ssh-forwarding.md`, `ssh-socks5.md`, `ssh-client.md`,
+   `ssh-tcp-listener.md`), ADRs for the accepted DPs (likely ADR-028 host-key
+   sourcing, ADR-029 channel policy + default-deny, ADR-030 ssh server+client+
+   socks5+forwarding scope, ADR-031 bare-TCP listener config shape), and the
+   OQs above in `open-questions.md`. Update `docs/architecture/README.md` index
+   and ADR table.
 
 ## References
 
@@ -448,3 +589,12 @@ OQ-01–OQ-24 exist):
 - `/workspace/@alkdev/alknet-main/crates/alknet-core/src/` — reference implementation
   (`transport/iroh_transport.rs:94` shows the `tokio::io::join` adapter; `server/`,
   `interface/ssh.rs`, `client/`, `socks5/` for prior art)
+- `/workspace/@alkdev/dispatch/` — concrete downstream consumer the user wants to
+  replace with this stack: axum + `russh = "0.60"` SSH **client** for "reverse git
+  runner" over Docker/vast.ai. `src/ssh.rs` (russh client wrapper, 143 lines),
+  `src/handlers.rs::start_forward` (`channel_open_direct_tcpip` local→remote
+  forwarding), `src/sftp.rs` (russh-sftp client). AGENTS.md and
+  `docs/architecture.md` describe the architecture. No SOCKS5 — that's the
+  alknet-original feature preserved here. Dispatch is a textbook consumer of the
+  alknet-ssh **client** + **forwarding** primitives, which is why those live in
+  alknet-ssh rather than being duplicated per-consumer.
