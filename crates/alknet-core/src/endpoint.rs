@@ -1316,4 +1316,291 @@ mod tests {
         #[cfg(feature = "acme")]
         assert!(setup.acme_state_handle.is_none());
     }
+
+    // --- Tier A: directly-callable TLS / rustls helpers -------------------
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn handler_registry_default_is_empty() {
+        let reg = HandlerRegistry::default();
+        assert!(reg.alpn_strings().is_empty());
+        assert!(reg.get(b"alknet/test").is_none());
+    }
+
+    #[cfg(any(feature = "quinn", feature = "iroh"))]
+    #[test]
+    fn handler_registry_debug_lists_alpns_via_default() {
+        let reg = HandlerRegistry::default();
+        let s = format!("{reg:?}");
+        assert!(s.contains("HandlerRegistry"));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn has_iroh_identity_true_for_raw_key() {
+        let cfg = StaticConfig {
+            listen_addr: None,
+            tls_identity: Some(TlsIdentity::RawKey(crate::config::Ed25519SecretKey::generate())),
+            iroh_relay: None,
+            drain_timeout: Duration::from_millis(10),
+        };
+        assert!(has_iroh_identity(&cfg));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn has_iroh_identity_false_for_x509() {
+        let cfg = StaticConfig {
+            listen_addr: None,
+            tls_identity: Some(TlsIdentity::X509 {
+                cert: std::path::PathBuf::from("/x.pem"),
+                key: std::path::PathBuf::from("/x.pem"),
+            }),
+            iroh_relay: None,
+            drain_timeout: Duration::from_millis(10),
+        };
+        assert!(!has_iroh_identity(&cfg));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn has_iroh_identity_false_when_no_identity() {
+        let cfg = StaticConfig {
+            listen_addr: None,
+            tls_identity: None,
+            iroh_relay: None,
+            drain_timeout: Duration::from_millis(10),
+        };
+        assert!(!has_iroh_identity(&cfg));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn build_rustls_server_config_raw_key_succeeds() {
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let identity = TlsIdentity::RawKey(sk);
+        let alpns = vec![b"alknet/test".to_vec(), b"alknet/call".to_vec()];
+        let config = build_rustls_server_config(&identity, &alpns).expect("raw key config builds");
+        assert_eq!(config.alpn_protocols, alpns);
+        assert_eq!(config.max_early_data_size, u32::MAX);
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn build_rustls_server_config_self_signed_succeeds() {
+        let identity = TlsIdentity::SelfSigned;
+        let alpns = vec![b"alknet/test".to_vec()];
+        let config =
+            build_rustls_server_config(&identity, &alpns).expect("self-signed config builds");
+        assert_eq!(config.alpn_protocols, alpns);
+        assert_eq!(config.max_early_data_size, u32::MAX);
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    #[should_panic(expected = "TlsIdentity::Acme is handled by TlsSetup::new_acme")]
+    fn build_rustls_server_config_acme_is_unreachable() {
+        let identity = TlsIdentity::Acme {
+            domains: vec!["example.com".to_string()],
+            cache_dir: std::path::PathBuf::from("/tmp/alknet-acme-test"),
+            directory: crate::config::AcmeDirectory::Staging,
+            contact: vec!["mailto:dev@example.com".to_string()],
+        };
+        let _ = build_rustls_server_config(&identity, &[]);
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn build_quinn_server_config_from_rustls_succeeds() {
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let rustls_config =
+            build_rustls_server_config(&TlsIdentity::RawKey(sk), &[b"alknet/test".to_vec()])
+                .expect("rustls config builds");
+        let quinn_config =
+            build_quinn_server_config_from_rustls(rustls_config).expect("quinn config converts");
+        let _ = quinn_config;
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn load_private_key_returns_error_when_no_key_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.key");
+        std::fs::write(&empty, b"# no key here\njust a comment\n").unwrap();
+        let err = load_private_key(&empty);
+        assert!(
+            matches!(err, Err(EndpointError::TlsConfig(_))),
+            "empty key file must yield TlsConfig error, got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn load_private_key_returns_error_when_file_missing() {
+        let err = load_private_key(std::path::Path::new("/nonexistent/alknet-coverage/missing.key"));
+        assert!(
+            matches!(err, Err(EndpointError::TlsConfig(_))),
+            "missing key file must yield TlsConfig error, got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn load_cert_chain_returns_error_when_file_missing() {
+        let err = load_cert_chain(std::path::Path::new("/nonexistent/alknet-coverage/missing.pem"));
+        assert!(
+            matches!(err, Err(EndpointError::TlsConfig(_))),
+            "missing cert file must yield TlsConfig error, got {err:?}"
+        );
+    }
+
+    // --- AcceptAnyCertVerifier trait methods ------------------------------
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn accept_any_cert_verifier_offers_and_does_not_require_client_auth() {
+        use rustls::server::danger::ClientCertVerifier;
+        let verifier = AcceptAnyCertVerifier;
+        assert!(verifier.offer_client_auth());
+        assert!(!verifier.client_auth_mandatory());
+        assert!(verifier.root_hint_subjects().is_empty());
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn accept_any_cert_verifier_verifies_any_client_cert() {
+        use rustls::pki_types::{CertificateDer, UnixTime};
+        use rustls::server::danger::ClientCertVerifier;
+        let verifier = AcceptAnyCertVerifier;
+        let cert = CertificateDer::from(b"fake-cert-der".to_vec());
+        let result = verifier.verify_client_cert(&cert, &[], UnixTime::now());
+        assert!(result.is_ok(), "AcceptAnyCertVerifier must accept any client cert");
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn accept_any_cert_verifier_supported_schemes_are_non_empty() {
+        use rustls::server::danger::ClientCertVerifier;
+        let verifier = AcceptAnyCertVerifier;
+        let schemes = verifier.supported_verify_schemes();
+        assert!(!schemes.is_empty(), "must advertise at least one scheme");
+        assert!(schemes.contains(&rustls::SignatureScheme::ED25519));
+        assert!(schemes.contains(&rustls::SignatureScheme::RSA_PSS_SHA256));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn accept_any_cert_verifier_debug_is_implemented() {
+        let verifier = AcceptAnyCertVerifier;
+        let s = format!("{verifier:?}");
+        assert!(s.contains("AcceptAnyCertVerifier"));
+    }
+
+    // --- Ed25519SigningKey trait impls ------------------------------------
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn ed25519_signing_key_choose_scheme_returns_some_for_ed25519() {
+        use rustls::sign::SigningKey;
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let signing_key = Ed25519SigningKey::new(sk);
+        let signer = signing_key.choose_scheme(&[rustls::SignatureScheme::ED25519]);
+        assert!(signer.is_some(), "must produce a signer when ED25519 is offered");
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn ed25519_signing_key_choose_scheme_returns_none_without_ed25519() {
+        use rustls::sign::SigningKey;
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let signing_key = Ed25519SigningKey::new(sk);
+        let signer = signing_key.choose_scheme(&[rustls::SignatureScheme::RSA_PSS_SHA256]);
+        assert!(
+            signer.is_none(),
+            "must not produce a signer when ED25519 is not offered"
+        );
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn ed25519_signing_key_algorithm_is_ed25519() {
+        use rustls::sign::SigningKey;
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let signing_key = Ed25519SigningKey::new(sk);
+        assert_eq!(signing_key.algorithm(), rustls::SignatureAlgorithm::ED25519);
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn ed25519_signing_key_public_key_returns_spki() {
+        use rustls::sign::SigningKey;
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let signing_key = Ed25519SigningKey::new(sk);
+        let spki = signing_key.public_key();
+        assert!(spki.is_some(), "public_key must return an SPKI");
+        assert!(!spki.unwrap().as_ref().is_empty(), "SPKI must be non-empty");
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn ed25519_signing_key_signer_signs_message() {
+        use rustls::sign::SigningKey;
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let signing_key = Ed25519SigningKey::new(sk);
+        let signer = signing_key
+            .choose_scheme(&[rustls::SignatureScheme::ED25519])
+            .expect("ED25519 offered");
+        let message = b"alknet coverage signing test";
+        let sig = signer.sign(message).expect("sign must succeed");
+        assert_eq!(sig.len(), 64, "ed25519 signature must be 64 bytes");
+        assert_eq!(signer.scheme(), rustls::SignatureScheme::ED25519);
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn ed25519_signing_key_debug_does_not_leak_material() {
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let signing_key = Ed25519SigningKey::new(sk);
+        let dbg = format!("{signing_key:?}");
+        assert!(dbg.contains("Ed25519SigningKey"));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn raw_key_cert_resolver_debug_is_implemented() {
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let resolver = RawKeyCertResolver::new(&sk);
+        let s = format!("{resolver:?}");
+        assert!(s.contains("RawKeyCertResolver"));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[tokio::test]
+    async fn debug_for_alknet_endpoint_is_implemented_without_panicking() {
+        let sk = crate::config::Ed25519SecretKey::generate();
+        let static_config = StaticConfig {
+            listen_addr: None,
+            tls_identity: Some(TlsIdentity::RawKey(sk)),
+            iroh_relay: None,
+            drain_timeout: Duration::from_millis(10),
+        };
+        struct NoProvider;
+        impl IdentityProvider for NoProvider {
+            fn resolve_from_fingerprint(&self, _: &str) -> Option<Identity> {
+                None
+            }
+            fn resolve_from_token(&self, _: &AuthToken) -> Option<Identity> {
+                None
+            }
+        }
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+        let registry = HandlerRegistry::new();
+        let endpoint = AlknetEndpoint::new(&static_config, registry, dynamic, provider)
+            .await
+            .expect("endpoint constructs");
+        let s = format!("{endpoint:?}");
+        assert!(s.contains("AlknetEndpoint"));
+        assert!(s.contains("drain_timeout"));
+    }
 }

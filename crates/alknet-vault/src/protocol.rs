@@ -149,6 +149,45 @@ mod tests {
     }
 
     #[test]
+    fn test_derived_key_deserialize_rejects_redacted_byte_array() {
+        // `[REDACTED]` as a 10-byte ASCII array: the redacted-marker guard at
+        // protocol.rs:78 is only reachable when private_key deserializes as
+        // Vec<u8> equal to b"[REDACTED]". The byte-array form is the one that
+        // actually reaches the guard (a JSON string fails type coercion first).
+        let redacted_bytes: Vec<u8> = b"[REDACTED]".to_vec();
+        let mut json = String::from(r#"{"key_type":"Ed25519","private_key":"#);
+        json.push_str(&serde_json::to_string(&redacted_bytes).unwrap());
+        json.push_str(r#","public_key":[205]}"#);
+        let result: Result<DerivedKey, _> = serde_json::from_str(&json);
+        let err = result.expect_err("redacted byte array must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("redacted"),
+            "error must explain the redacted-payload rejection, got: {msg}"
+        );
+        assert!(
+            !msg.contains("AB"),
+            "error must not leak any key bytes, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_derived_key_deserialize_accepts_non_redacted_payload() {
+        // A real (non-redacted) private key byte array must deserialize
+        // successfully and reach the Ok arm of the deserialize impl.
+        let key = make_test_key();
+        let public = serde_json::to_string(&key.public_key).unwrap();
+        let private = serde_json::to_string(&vec![0xABu8; 32]).unwrap();
+        let json = format!(
+            r#"{{"key_type":"Ed25519","private_key":{private},"public_key":{public}}}"#
+        );
+        let result: DerivedKey = serde_json::from_str(&json).expect("non-redacted payload deserializes");
+        assert_eq!(result.key_type, KeyType::Ed25519);
+        assert_eq!(result.private_key, vec![0xABu8; 32]);
+        assert_eq!(result.public_key, key.public_key);
+    }
+
+    #[test]
     fn test_derived_key_debug_does_not_leak_private_key_bytes() {
         let key = make_test_key();
         let debug_output = format!("{:?}", key);

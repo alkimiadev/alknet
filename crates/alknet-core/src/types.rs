@@ -668,4 +668,194 @@ mod tests {
         let e = HandlerError::AuthRequired;
         assert_eq!(format!("{e}"), "authentication required");
     }
+
+    // --- HandlerError / StreamError Debug + Display + source ---------------
+
+    #[test]
+    fn handler_error_debug_covers_all_variants() {
+        assert_eq!(
+            format!("{:?}", HandlerError::ConnectionClosed),
+            "HandlerError::ConnectionClosed"
+        );
+        let io_err = io::Error::new(io::ErrorKind::BrokenPipe, "boom");
+        let dbg = format!("{:?}", HandlerError::StreamError(io_err));
+        assert!(dbg.contains("HandlerError::StreamError"));
+        assert_eq!(
+            format!("{:?}", HandlerError::AuthRequired),
+            "HandlerError::AuthRequired"
+        );
+        let inner: Box<dyn std::error::Error + Send + Sync> = "oops".into();
+        let dbg = format!("{:?}", HandlerError::Internal(inner));
+        assert!(dbg.contains("HandlerError::Internal"));
+    }
+
+    #[test]
+    fn handler_error_display_covers_all_variants() {
+        assert_eq!(format!("{}", HandlerError::ConnectionClosed), "connection closed");
+        let io_err = io::Error::new(io::ErrorKind::BrokenPipe, "boom");
+        let s = format!("{}", HandlerError::StreamError(io_err));
+        assert!(s.starts_with("stream error: "));
+        assert_eq!(format!("{}", HandlerError::AuthRequired), "authentication required");
+        let inner: Box<dyn std::error::Error + Send + Sync> = "oops".into();
+        assert_eq!(
+            format!("{}", HandlerError::Internal(inner)),
+            "internal handler error: oops"
+        );
+    }
+
+    #[test]
+    fn handler_error_source_covers_all_variants() {
+        use std::error::Error;
+        assert!(HandlerError::ConnectionClosed.source().is_none());
+        assert!(HandlerError::AuthRequired.source().is_none());
+        let stream_err = HandlerError::StreamError(io::Error::new(io::ErrorKind::BrokenPipe, "boom"));
+        assert!(stream_err.source().is_some(), "StreamError must expose its io::Error as source");
+        let internal_inner: Box<dyn std::error::Error + Send + Sync> = "boom".into();
+        let internal_err = HandlerError::Internal(internal_inner);
+        assert!(internal_err.source().is_some(), "Internal must expose its inner error as source");
+    }
+
+    #[test]
+    fn stream_error_debug_covers_all_variants() {
+        assert_eq!(
+            format!("{:?}", StreamError::ConnectionClosed),
+            "StreamError::ConnectionClosed"
+        );
+        assert_eq!(
+            format!("{:?}", StreamError::StreamClosed),
+            "StreamError::StreamClosed"
+        );
+        assert_eq!(format!("{:?}", StreamError::Timeout), "StreamError::Timeout");
+        let dbg = format!("{:?}", StreamError::Internal(io::Error::other("x")));
+        assert!(dbg.contains("StreamError::Internal"));
+    }
+
+    #[test]
+    fn stream_error_display_covers_all_variants() {
+        assert_eq!(format!("{}", StreamError::ConnectionClosed), "connection closed");
+        assert_eq!(format!("{}", StreamError::StreamClosed), "stream closed");
+        assert_eq!(format!("{}", StreamError::Timeout), "stream timed out");
+        assert_eq!(
+            format!("{}", StreamError::Internal(io::Error::other("boom"))),
+            "stream error: boom"
+        );
+    }
+
+    #[test]
+    fn stream_error_source_covers_all_variants() {
+        use std::error::Error;
+        assert!(StreamError::ConnectionClosed.source().is_none());
+        assert!(StreamError::StreamClosed.source().is_none());
+        assert!(StreamError::Timeout.source().is_none());
+        let internal = StreamError::Internal(io::Error::other("x"));
+        assert!(internal.source().is_some(), "Internal must expose its io::Error as source");
+    }
+
+    // --- map_*_connection_error -------------------------------------------
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn map_quinn_connection_error_timed_out_maps_to_timeout() {
+        assert!(matches!(
+            map_quinn_connection_error(quinn::ConnectionError::TimedOut),
+            StreamError::Timeout
+        ));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn map_quinn_connection_error_reset_maps_to_connection_closed() {
+        assert!(matches!(
+            map_quinn_connection_error(quinn::ConnectionError::Reset),
+            StreamError::ConnectionClosed
+        ));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn map_quinn_connection_error_application_closed_maps_to_connection_closed() {
+        use bytes::Bytes;
+        let close = quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
+            error_code: quinn::VarInt::from_u32(1),
+            reason: Bytes::new(),
+        });
+        assert!(matches!(
+            map_quinn_connection_error(close),
+            StreamError::ConnectionClosed
+        ));
+    }
+
+    #[cfg(feature = "quinn")]
+    #[test]
+    fn map_quinn_connection_error_other_maps_to_internal() {
+        let other = quinn::ConnectionError::VersionMismatch;
+        match map_quinn_connection_error(other) {
+            StreamError::Internal(e) => assert_eq!(e.kind(), io::ErrorKind::Other),
+            other => panic!("expected StreamError::Internal, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn map_iroh_connection_error_timed_out_maps_to_timeout() {
+        assert!(matches!(
+            map_iroh_connection_error(iroh::endpoint::ConnectionError::TimedOut),
+            StreamError::Timeout
+        ));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn map_iroh_connection_error_reset_maps_to_connection_closed() {
+        assert!(matches!(
+            map_iroh_connection_error(iroh::endpoint::ConnectionError::Reset),
+            StreamError::ConnectionClosed
+        ));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn map_iroh_connection_error_application_closed_maps_to_connection_closed() {
+        use bytes::Bytes;
+        let close = iroh::endpoint::ConnectionError::ApplicationClosed(
+            iroh::endpoint::ApplicationClose {
+                error_code: iroh::endpoint::VarInt::from_u32(1),
+                reason: Bytes::new(),
+            },
+        );
+        assert!(matches!(
+            map_iroh_connection_error(close),
+            StreamError::ConnectionClosed
+        ));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn map_iroh_connection_error_other_maps_to_internal() {
+        let other = iroh::endpoint::ConnectionError::VersionMismatch;
+        match map_iroh_connection_error(other) {
+            StreamError::Internal(e) => assert_eq!(e.kind(), io::ErrorKind::Other),
+            other => panic!("expected StreamError::Internal, got {other:?}"),
+        }
+    }
+
+    // --- Capabilities zeroize + default -----------------------------------
+
+    #[test]
+    fn capabilities_default_is_empty() {
+        let caps = Capabilities::default();
+        assert!(caps.get("anything").is_none());
+    }
+
+    #[test]
+    fn capabilities_zeroize_clears_entries() {
+        let mut caps = Capabilities::new()
+            .with_api_key("svc-a", "k1".to_string())
+            .with_http_token("svc-b", "t1".to_string());
+        assert!(caps.get("svc-a").is_some());
+        assert!(caps.get("svc-b").is_some());
+        caps.zeroize();
+        assert!(caps.get("svc-a").is_none());
+        assert!(caps.get("svc-b").is_none());
+    }
 }

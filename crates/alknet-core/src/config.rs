@@ -423,4 +423,60 @@ mod tests {
             "fingerprint-resolved identities must have empty resources (Option B — scopes only)"
         );
     }
+
+    // --- Ed25519SecretKey -------------------------------------------------
+
+    #[test]
+    fn ed25519_secret_key_round_trips_bytes() {
+        let key = Ed25519SecretKey::generate();
+        let bytes = key.as_bytes();
+        let restored = Ed25519SecretKey::from_bytes(&bytes);
+        assert_eq!(restored.as_bytes(), bytes);
+    }
+
+    #[test]
+    fn ed25519_secret_key_sign_verifies_against_public_key() {
+        use ed25519_dalek::{Signature, Verifier};
+        let key = Ed25519SecretKey::generate();
+        let public = key.public();
+        let message = b"alknet coverage check";
+        let signature: Signature = key.sign(message);
+        assert_eq!(signature.to_bytes().len(), 64);
+        assert!(
+            public.verify(message, &signature).is_ok(),
+            "signature produced by Ed25519SecretKey::sign must verify under its public key"
+        );
+    }
+
+    #[test]
+    fn ed25519_secret_key_sign_rejects_tampered_message() {
+        use ed25519_dalek::{Signature, Verifier};
+        let key = Ed25519SecretKey::generate();
+        let public = key.public();
+        let signature: Signature = key.sign(b"original message");
+        assert!(
+            public.verify(b"tampered message", &signature).is_err(),
+            "signature must not verify against a different message"
+        );
+    }
+
+    #[test]
+    fn ed25519_secret_key_debug_does_not_leak_material() {
+        let key = Ed25519SecretKey::generate();
+        let dbg = format!("{key:?}");
+        assert!(dbg.contains("Ed25519SecretKey"));
+        assert!(!dbg.contains("SigningKey"));
+        let raw = hex::encode(key.as_bytes());
+        assert!(
+            !dbg.contains(&raw),
+            "Debug output must not contain the raw key bytes"
+        );
+    }
+
+    #[test]
+    fn ed25519_secret_key_public_matches_underlying_signing_key() {
+        let key = Ed25519SecretKey::generate();
+        let public = key.public();
+        assert_eq!(public.to_bytes().len(), 32);
+    }
 }

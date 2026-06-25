@@ -1,5 +1,5 @@
 ---
-status: open
+status: partially-resolved
 last_updated: 2026-06-25
 reviewed_artifacts:
   - crates/alknet-vault/src/{lib,cache,derivation,encryption,ethereum,mnemonic,protocol,service}.rs
@@ -316,3 +316,74 @@ contains "redacted". ~10 lines.
 - The concentration of gaps in three files, all stemming from the same
   mock-connection limitation, is a good sign — one loopback harness (S5)
   closes most of them, rather than requiring per-path test scaffolding.
+
+---
+
+## Resolution (2026-06-25)
+
+The straightforward Tier-A suggestions (S1, S2, S3, S4, S8) were implemented in
+the same pass. 165 new tests added (224 → 389 passing). Workspace coverage
+rose from **87.1% → 91.2%** (5759/6615 → 6505/7135). `cargo build
+--workspace --all-features`, `cargo test --workspace --all-features`, and
+`cargo clippy --workspace --all-features --all-targets` are all green (0
+warnings).
+
+Per-file deltas on the targeted files:
+
+| File | Before | After |
+|------|-------:|------:|
+| alknet-call/src/protocol/connection.rs | 53.8% | 78.4% |
+| alknet-core/src/endpoint.rs | 55.9% | 73.4% |
+| alknet-core/src/types.rs | 56.7% | 77.9% |
+| alknet-core/src/config.rs | 94.0% | 98.1% |
+| alknet-vault/src/protocol.rs | 86.7% | 100.0% |
+
+What landed:
+
+- **S1 (connection.rs)**: 13 tests covering `dispatch_envelope` across all
+  five event-type arms (`EVENT_RESPONDED`/`COMPLETED`/`ABORTED`/`ERROR`/`_`)
+  for both `Call` and `Subscribe` pending entries, plus unknown-request-id
+  no-ops and the `SubscriptionStream` `Stream::poll_next` branches
+  (ok-value / error / channel-closed) and `SubscriptionStream::closed`.
+- **S2 (types.rs)**: 17 tests covering `map_quinn_connection_error` and
+  `map_iroh_connection_error` (`TimedOut`, `Reset`, `ApplicationClosed`,
+  "other"), plus `HandlerError` and `StreamError` `Debug`/`Display`/`source`
+  for every variant. Previously only `HandlerError::AuthRequired`'s Display
+  was tested.
+- **S3 (config.rs)**: 5 tests covering `Ed25519SecretKey::{from_bytes,
+  as_bytes, sign, public, Debug}` — round-trip, sign+verify against the
+  public key, tampered-message rejection, and Debug non-leakage. (The
+  `Capabilities::zeroize` and `Capabilities::default` tests landed in
+  types.rs as part of S2.)
+- **S4 (endpoint.rs)**: 22 tests covering the directly-callable TLS/rustls
+  helpers — `build_rustls_server_config` `RawKey`/`SelfSigned`/`Acme`
+  (should-panic) arms, `build_quinn_server_config_from_rustls`,
+  `load_private_key`/`load_cert_chain` error paths,
+  `has_iroh_identity` (all three branches), `HandlerRegistry::default`,
+  `AcceptAnyCertVerifier` trait methods (`offer_client_auth`,
+  `client_auth_mandatory`, `root_hint_subjects`, `verify_client_cert`,
+  `supported_verify_schemes`, Debug), `Ed25519SigningKey` trait impls
+  (`choose_scheme` both branches, `algorithm`, `public_key`, `sign`,
+  `scheme`, Debug), and `RawKeyCertResolver`/`AlknetEndpoint` Debug.
+  Lifted endpoint.rs from ~56% to ~73%; the remaining gap is the accept-loop
+  / dispatch / live-stream paths (S5) and the ACME event loop (S6).
+- **S8 (vault protocol.rs)**: 3 tests. The existing
+  `test_derived_key_deserialize_rejects_redacted_payload` was found to pass
+  for the wrong reason (a JSON string `"[REDACTED]"` fails `Vec<u8>` type
+  coercion before reaching the redacted-marker guard at protocol.rs:78). Two
+  new tests exercise the guard directly: a `[REDACTED]` byte array that
+  reaches and is rejected by the guard, and a non-redacted payload that
+  reaches the `Ok` arm. vault protocol.rs is now at 100%.
+
+Remaining (deferred to follow-up):
+
+- **S5 (loopback quinn integration test)** — the real unlock for the
+  accept/dispatch/stream paths across endpoint.rs, types.rs, connection.rs,
+  and adapter.rs `handle`. Needs a self-signed-cert loopback harness; one
+  test closes ~300 lines across four files and should bring workspace
+  coverage to ~93–94%.
+- **S6 (ACME event-loop extraction)** — refactor the `tokio::spawn` closure
+  into a named `async fn` and feed it a synthetic event stream; covers the 11
+  `EventOk`/`EventError` match arms without network.
+- **S7 (adapter.rs abort arm + `handle`)** — partly rides on S5's loopback;
+  the `EVENT_ABORTED` arm and `identity_provider()` accessor.
