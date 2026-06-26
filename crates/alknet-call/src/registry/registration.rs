@@ -775,7 +775,10 @@ mod tests {
             None,
             Capabilities::new(),
         );
-        assert!(!reg.remote_safe, "remote_safe must default to false (ADR-028 §4)");
+        assert!(
+            !reg.remote_safe,
+            "remote_safe must default to false (ADR-028 §4)"
+        );
     }
 
     #[test]

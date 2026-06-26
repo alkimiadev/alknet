@@ -592,9 +592,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_envelope_responded_resolves_call_receiver() {
         let pending = empty_pending();
-        let rx = pending
-            .lock()
-            .register_call("req-1".to_string(), Instant::now() + Duration::from_secs(30), None);
+        let rx = pending.lock().register_call(
+            "req-1".to_string(),
+            Instant::now() + Duration::from_secs(30),
+            None,
+        );
         let envelope = EventEnvelope::responded("req-1", serde_json::json!({"v": 42}));
         dispatch_envelope(&pending, envelope);
         assert!(!pending.lock().contains("req-1"));
@@ -611,8 +613,14 @@ mod tests {
         let mut rx = pending
             .lock()
             .register_subscribe("sub-1".to_string(), None, None);
-        dispatch_envelope(&pending, EventEnvelope::responded("sub-1", serde_json::json!("first")));
-        dispatch_envelope(&pending, EventEnvelope::responded("sub-1", serde_json::json!("second")));
+        dispatch_envelope(
+            &pending,
+            EventEnvelope::responded("sub-1", serde_json::json!("first")),
+        );
+        dispatch_envelope(
+            &pending,
+            EventEnvelope::responded("sub-1", serde_json::json!("second")),
+        );
         assert!(pending.lock().contains("sub-1"));
         let a = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
         let b = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
@@ -697,7 +705,8 @@ mod tests {
             Instant::now() + Duration::from_secs(30),
             None,
         );
-        let malformed = EventEnvelope::new(EVENT_ERROR, "req-4", serde_json::json!("not-an-object"));
+        let malformed =
+            EventEnvelope::new(EVENT_ERROR, "req-4", serde_json::json!("not-an-object"));
         dispatch_envelope(&pending, malformed);
         assert!(pending.lock().contains("req-4"));
     }
@@ -718,7 +727,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_envelope_unknown_request_id_is_no_op() {
         let pending = empty_pending();
-        dispatch_envelope(&pending, EventEnvelope::responded("ghost", serde_json::json!(1)));
+        dispatch_envelope(
+            &pending,
+            EventEnvelope::responded("ghost", serde_json::json!(1)),
+        );
         dispatch_envelope(&pending, EventEnvelope::completed("ghost"));
         dispatch_envelope(&pending, EventEnvelope::aborted("ghost"));
         assert!(pending.lock().is_empty());
@@ -758,7 +770,10 @@ mod tests {
         assert_eq!(a.result.unwrap(), serde_json::json!(1));
         let b = stream.next().await.unwrap();
         assert_eq!(b.result.unwrap(), serde_json::json!(2));
-        assert!(stream.next().await.is_none(), "stream ends after channel closes");
+        assert!(
+            stream.next().await.is_none(),
+            "stream ends after channel closes"
+        );
     }
 
     #[tokio::test]
@@ -775,6 +790,9 @@ mod tests {
         let second = stream.next().await.unwrap();
         assert_eq!(second.request_id, "req-z");
         assert_eq!(second.result.unwrap_err().code, "TIMEOUT");
-        assert!(stream.next().await.is_none(), "stream terminates after error");
+        assert!(
+            stream.next().await.is_none(),
+            "stream terminates after error"
+        );
     }
 }
