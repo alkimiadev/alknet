@@ -1,7 +1,7 @@
 ---
 id: call/client/from-call
 name: Implement from_call adapter (discover remote ops via services/list + services/schema, register FromCall leaves)
-status: pending
+status: completed
 depends_on: [call/client/call-client]
 scope: moderate
 risk: medium

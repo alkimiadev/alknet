@@ -19,7 +19,7 @@ pub struct OperationContext {
     pub env: Arc<dyn OperationEnv + Send + Sync>,
     pub abort_policy: AbortPolicy,
     pub deadline: Option<Instant>,
-    pub(crate) internal: bool,
+    pub internal: bool,
 }
 
 impl OperationContext {

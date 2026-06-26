@@ -229,3 +229,84 @@ async fn two_node_call_round_trip() {
     // CallClient opened a real connection, the shared loop dispatched, and the
     // CallConnection::call() round-tripped).
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn from_call_discovers_and_forwards_over_quic_loopback() {
+    use alknet_call::client::{from_call, FromCallConfig};
+    use alknet_call::registry::context::ScopedOperationEnv;
+
+    let server_registry = build_server_registry();
+    let (server_addr, _server_join) = build_raw_quinn_server(Arc::clone(&server_registry)).await;
+
+    // Client with an empty registry — from_call will populate its overlay.
+    let client_registry = Arc::new(OperationRegistry::new());
+    let client = CallClient::new(Arc::clone(&client_registry), Arc::new(NoopIdentityProvider));
+
+    let conn = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.connect(server_addr, CallCredentials::new()),
+    )
+    .await
+    .expect("connect did not time out")
+    .expect("connect succeeds");
+
+    // from_call discovers the server's External ops (server/echo, server/secret
+    // — both External; services/list + services/schema themselves are External
+    // too) and builds FromCall forwarding-handler bundles. Register them in the
+    // connection's Layer 2 overlay.
+    let bundles = tokio::time::timeout(
+        Duration::from_secs(5),
+        from_call(&conn, FromCallConfig::new()),
+    )
+    .await
+    .expect("from_call did not time out")
+    .expect("from_call succeeds");
+    assert!(
+        !bundles.is_empty(),
+        "from_call must discover at least the server/echo op"
+    );
+    conn.register_imported_all(bundles);
+
+    // The overlay now contains the discovered ops. Verify the forwarding path
+    // by invoking the overlay env directly with a scoped context that allows
+    // server/echo — this is how a composing handler would call the imported op.
+    let env = conn.overlay_env();
+    assert!(
+        env.contains("server/echo"),
+        "overlay must contain the imported server/echo op"
+    );
+
+    // Build a minimal parent context to invoke the overlay env (mirrors how a
+    // composing handler dispatches a child).
+    let scoped = ScopedOperationEnv::new(["server/echo"]);
+    let parent = alknet_call::registry::context::OperationContext {
+        request_id: "parent-1".to_string(),
+        parent_request_id: None,
+        identity: None,
+        handler_identity: None,
+        capabilities: Capabilities::new(),
+        metadata: Default::default(),
+        scoped_env: scoped,
+        env: env.clone(),
+        abort_policy: alknet_call::registry::context::AbortPolicy::default(),
+        deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
+        internal: true,
+    };
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        env.invoke(
+            "server",
+            "echo",
+            serde_json::json!({"from_call": true}),
+            &parent,
+        ),
+    )
+    .await
+    .expect("overlay invoke did not time out");
+    assert_eq!(
+        response.result,
+        Ok(serde_json::json!({"from_call": true})),
+        "from_call forwarding handler must round-trip the input to the remote op"
+    );
+}
