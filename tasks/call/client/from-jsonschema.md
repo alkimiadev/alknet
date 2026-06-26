@@ -1,7 +1,7 @@
 ---
 id: call/client/from-jsonschema
 name: Implement from_jsonschema adapter (schema-only registration, FromJsonSchema provenance, no handler)
-status: pending
+status: completed
 depends_on: [call/client/operation-adapter-trait]
 scope: narrow
 risk: low

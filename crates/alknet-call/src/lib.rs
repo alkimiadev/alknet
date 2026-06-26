@@ -6,5 +6,6 @@
 //! - [`registry`] — operation specs, context, dispatch, and the operation registry.
 //! - [`protocol`] — wire format, streams, and the call adapter.
 
+pub mod client;
 pub mod protocol;
 pub mod registry;

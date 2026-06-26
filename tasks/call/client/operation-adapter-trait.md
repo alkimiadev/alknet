@@ -1,7 +1,7 @@
 ---
 id: call/client/operation-adapter-trait
 name: Define OperationAdapter async trait + AdapterError enum (ADR-017 §5, DC-4/OQ-26)
-status: pending
+status: completed
 depends_on: [call/registry/handler-registration]
 scope: narrow
 risk: low
