@@ -92,15 +92,9 @@ pub struct CallClient {
 }
 
 impl CallClient {
-    /// Open a QUIC connection to `addr` on ALPN `alknet/call`, perform
-    /// credential handshake, and return a CallConnection running the shared
-    /// dispatch loop. Credentials come from capabilities (ADR-014), not env
-    /// vars — see "No-Env-Vars Invariant" below.
-    pub async fn connect(
-        &self,
-        addr: SocketAddr,
-        credentials: CallCredentials,
-    ) -> Result<CallConnection>;
+    /// Default-deny mode: only `remote_safe: true` ops dispatch/list to the
+    /// remote peer (ADR-028).
+    pub fn new(registry: Arc<OperationRegistry>, idp: Arc<dyn IdentityProvider>) -> Self;
 
     /// Trusted-peer mode: construct a CallClient that exposes all External
     /// ops from `registry` to the remote peer, ignoring the remote-safe
@@ -109,6 +103,18 @@ impl CallClient {
         registry: Arc<OperationRegistry>,
         identity_provider: Arc<dyn IdentityProvider>,
     ) -> Self;
+
+    /// Open a QUIC connection to `addr` on ALPN `alknet/call`, perform
+    /// credential handshake, and return a CallConnection running the shared
+    /// dispatch loop. Credentials come from capabilities (ADR-014), not env
+    /// vars — see "No-Env-Vars Invariant" below. The dispatch loop runs on a
+    /// spawned task; the returned `CallConnection` is live until the remote
+    /// closes the connection or the caller drops it.
+    pub async fn connect(
+        &self,
+        addr: SocketAddr,
+        credentials: CallCredentials,
+    ) -> Result<CallConnection, ClientError>;
 }
 ```
 
@@ -127,6 +133,63 @@ both a caller and a callee — it dispatches incoming calls from the remote
 peer against its peer-scoped registry view, and it initiates outgoing calls
 through the `CallConnection::call()` / `subscribe()` / `abort()` API.
 
+#### Shared Dispatcher
+
+The shared dispatch loop lives in `protocol/dispatch.rs` as the `Dispatcher`
+struct. This is the architectural mechanism that keeps `CallClient` from
+becoming a parallel protocol implementation (ADR-017 §1): both `CallAdapter`'s
+accept path and `CallClient`'s connect path construct a `Dispatcher` and call
+`run_loop` — the dispatch half is one implementation, the
+connection-establishment half differs (accept vs dial).
+
+```rust
+/// Peer-scoped registry filter state (ADR-028). `trusted_peer: false`
+/// (default-deny for a CallClient) hides ops whose
+/// `HandlerRegistration.remote_safe` is false from both dispatch and
+/// `services/list`. `trusted_peer: true` (explicit opt-in, also used by the
+/// CallAdapter's local accept path) bypasses the filter.
+pub struct RemoteFilter { pub trusted_peer: bool }
+
+/// Shared dispatcher for an established CallConnection. Constructed by both
+/// CallAdapter (accept path) and CallClient (connect path). Holds no
+/// per-connection state; the CallConnection is passed into run_loop.
+pub struct Dispatcher {
+    pub registry: Arc<OperationRegistry>,
+    pub identity_provider: Arc<dyn IdentityProvider>,
+    pub session_source: Option<Arc<dyn SessionOverlaySource + Send + Sync>>,
+    pub default_timeout: Duration,
+    pub remote_filter: RemoteFilter,
+}
+```
+
+The `remote_filter` is the dispatch-time gate that enforces ADR-028's
+default-deny: `dispatch_requested` checks `remote_filter.allows(registration.remote_safe)`
+**before** building the context or invoking the handler — a non-remote-safe op
+returns `NOT_FOUND` before any capability material reaches the handler (the
+security argument for default-deny, ADR-028 Context). The accept path
+(`CallAdapter`) uses `RemoteFilter::trusted()` by convention — a direct QUIC
+client is not a filtered `CallClient` peer in the ADR-028 sense.
+
+`CallClient::spawn_dispatch(connection)` is the lower-level API that takes a
+pre-established `Connection`, constructs a `CallConnection`, builds a
+`Dispatcher` with the appropriate `RemoteFilter`, spawns the dispatch task,
+and returns the live `CallConnection`. `connect()` uses it after the QUIC dial
+completes; tests use it to wire mock/loopback connections directly.
+
+#### services/list peer-scoped serving
+
+The `services/list` hide behavior (ADR-028 Assumption 2) is wired via a
+separate handler factory: `services_list_handler_peer_scoped(registry,
+trusted_peer)` in `registry/discovery.rs`, backed by
+`OperationRegistry::list_operations_peer_scoped(trusted_peer)`. The assembly
+layer constructs the `CallClient`'s registry with this peer-scoped handler
+(not the plain `services_list_handler` used by the `CallAdapter`'s local
+accept path) so that when the remote peer calls `services/list` on the
+`CallClient`, the response hides non-remote-safe ops in default-deny mode.
+The dispatch-path `RemoteFilter` (above) and the `services/list`-handler
+filter are the two halves of the same default-deny posture — discovery and
+dispatch filters agree.
+
 ### Credential sources for connections
 
 `CallClient::connect()` takes a `CallCredentials` bundle. Credentials come
@@ -139,6 +202,14 @@ pub struct CallCredentials {
     pub auth_token: Option<AuthToken>,           // call-protocol-level token
     pub remote_identity: Option<RemoteIdentity>, // expected fingerprint/cert
 }
+
+/// Expected identity of the remote node (ADR-017 §7). v1 carries a
+/// fingerprint string the assembly layer derives from `Capabilities`.
+pub struct RemoteIdentity { pub fingerprint: String }
+
+/// Errors produced by `CallClient::connect`.
+#[non_exhaustive]
+pub enum ClientError { Transport { .. }, TlsSetup { .. }, ConnectionClosed }
 ```
 
 - **TLS identity** — the local node's Ed25519 raw key (RFC 7250) or X.509 cert,
@@ -153,6 +224,18 @@ from vault-derived `Capabilities`. The credential path is the no-env-vars
 invariant (below). The concrete shapes of `TlsIdentity`, `AuthToken`, and
 `RemoteIdentity` are implementation-detail two-way doors; the one-way
 constraints are that they come from `Capabilities`, not env vars (ADR-014).
+
+**v1 TLS client-auth gap** (OQ-29): v1 `connect()` builds the quinn client
+config with `with_no_client_auth()` and an `AcceptAnyServerCertVerifier` — the
+client does not present its TLS identity as a client cert, and does not pin the
+remote's expected identity from `credentials.remote_identity`. This is a
+two-way-door remainder: wiring the local node's RawKey/X509 identity as a
+rustls client-auth cert (for servers that verify client identity) and
+plugging `credentials.remote_identity` into a real `ServerCertVerifier` is
+additive. The one-way constraint (credentials from `Capabilities`, not env
+vars, ADR-014) is unaffected — the `auth_token` dimension flows through the
+call-protocol `auth_token` payload field, not TLS, so the no-env-vars
+invariant holds independently of this gap.
 
 ### from_call
 
@@ -511,6 +594,14 @@ See [open-questions.md](../../open-questions.md) for full details.
   auto-on-reconnect; the explicit path is additive.
 - **OQ-28** (open, two-way): `from_call` namespace collision behavior — error
   on collision (v1 default, recorded here) vs last-wins.
+- **OQ-29** (open, two-way): `CallClient` TLS client-auth + remote-identity
+  verification — v1 connects with `with_no_client_auth()` and
+  `AcceptAnyServerCertVerifier` (does not present a client cert, does not pin
+  the remote's expected identity from `credentials.remote_identity`). Wiring
+  the local node's RawKey/X509 identity as a rustls client-auth cert and
+  plugging `remote_identity` into a real `ServerCertVerifier` is additive.
+  The one-way constraint (credentials from `Capabilities`, ADR-014) is
+  unaffected — `auth_token` flows through the call-protocol payload, not TLS.
 
 ## References
 

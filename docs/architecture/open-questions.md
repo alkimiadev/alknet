@@ -409,3 +409,27 @@ revisited during implementation without a new ADR.
   remote's op behind another's, which is the kind of surprise the
   default-deny posture exists to avoid.
 - **Cross-references**: ADR-015, ADR-017, ADR-028, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+### OQ-29: CallClient TLS Client-Auth and Remote-Identity Verification
+
+- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §7
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: medium
+- **Resolution**: v1 `CallClient::connect()` builds the quinn client config
+  with `with_no_client_auth()` and an `AcceptAnyServerCertVerifier` — the
+  client does not present its TLS identity (`credentials.tls_identity`) as a
+  client cert, and does not pin the remote's expected identity from
+  `credentials.remote_identity`. The server-side
+  `AcceptAnyCertVerifier` (in alknet-core's endpoint) does not require or
+  verify client certs, so a client cert is not needed to establish a
+  connection in v1. Wiring the local node's RawKey/X509 identity as a rustls
+  client-auth cert (for servers that *do* verify client identity) and
+  plugging `credentials.remote_identity` into a real `ServerCertVerifier` is
+  additive — a two-way-door remainder surfaced during implementation.
+  **The one-way constraint (credentials from `Capabilities`, not env vars,
+  ADR-014) is unaffected**: the `auth_token` dimension flows through the
+  call-protocol `auth_token` payload field, not TLS, so the no-env-vars
+  invariant holds independently of this gap. Decided during a future task that
+  wires RawKey client-auth; recorded here, not in a full ADR.
+- **Cross-references**: ADR-014, ADR-017, ADR-027, [client-and-adapters.md](crates/call/client-and-adapters.md), [endpoint.md](crates/core/endpoint.md)

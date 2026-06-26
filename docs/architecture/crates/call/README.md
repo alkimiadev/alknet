@@ -53,6 +53,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-26 | OperationAdapter error type (AdapterError variants) | open (two-way) | `import()` returns `Result<_, AdapterError>`; variants decided in implementation |
 | OQ-27 | from_call re-import trigger | open (two-way) | v1 default: auto-on-reconnect; explicit `refresh()` is additive |
 | OQ-28 | from_call namespace collision behavior | open (two-way) | v1 default: error on collision (no prefix by default) |
+| OQ-29 | CallClient TLS client-auth and remote-identity verification | open (two-way) | v1 connects with `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth and a real `ServerCertVerifier` is additive (no-env-vars invariant unaffected — `auth_token` flows via call-protocol payload, not TLS) |
 
 ## Key Design Principles
 

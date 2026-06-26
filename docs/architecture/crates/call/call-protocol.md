@@ -164,6 +164,15 @@ The adapter:
 5. Writes response `EventEnvelope` frames back to the appropriate stream
 6. Manages the `PendingRequestMap` for outgoing calls
 
+The dispatch loop is **shared** with `CallClient` (ADR-017 §1): both
+`CallAdapter::handle` (accept path) and `CallClient::connect` (connect path)
+construct a `Dispatcher` (`protocol/dispatch.rs`) and call `run_loop` — the
+dispatch half is one implementation, the connection-establishment half differs
+(accept vs dial). The `Dispatcher` carries a `RemoteFilter` (ADR-028) that
+gates dispatch by `remote_safe`; the accept path uses `RemoteFilter::trusted()`
+by convention. See [client-and-adapters.md](client-and-adapters.md) for the
+`Dispatcher`/`RemoteFilter` mechanism.
+
 ### Stream Model
 
 See ADR-012 for the full rationale.
@@ -538,6 +547,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait.
 - **OQ-25..28** (open, two-way): Call-completion remainders — `CallClient` remote-safe marking shape, `OperationAdapter` error type, `from_call` re-import trigger, `from_call` namespace collision. The `CallClient`/adapter surface itself is specced in [client-and-adapters.md](client-and-adapters.md); the one-way door among these (existence of default-deny filtering) is resolved by ADR-028.
+- **OQ-29** (open, two-way): `CallClient` TLS client-auth + remote-identity verification — v1 connects with `with_no_client_auth()` and `AcceptAnyServerCertVerifier`; wiring RawKey client-auth and a real `ServerCertVerifier` is additive. See [client-and-adapters.md](client-and-adapters.md).
 
 ## References
 
