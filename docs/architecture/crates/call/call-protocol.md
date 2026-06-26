@@ -524,8 +524,9 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Secret material flow | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Call protocol carries no secret material; capabilities injected at assembly layer |
 | Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
-| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction. Client/adapter surface specced in [client-and-adapters.md](client-and-adapters.md) |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
+| Peer-scoped registry filtering for CallClient | [ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | Default-deny `CallClient` registry view; `remote_safe` marking; trusted-peer opt-in |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details` |
 
 ## Open Questions
@@ -536,6 +537,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait.
+- **OQ-25..28** (open, two-way): Call-completion remainders — `CallClient` remote-safe marking shape, `OperationAdapter` error type, `from_call` re-import trigger, `from_call` namespace collision. The `CallClient`/adapter surface itself is specced in [client-and-adapters.md](client-and-adapters.md); the one-way door among these (existence of default-deny filtering) is resolved by ADR-028.
 
 ## References
 

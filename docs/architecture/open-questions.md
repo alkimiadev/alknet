@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-20
+last_updated: 2026-06-26
 ---
 
 # Open Questions
@@ -316,3 +316,96 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Priority**: high
 - **Resolution**: `OperationSpec` gains `error_schemas: Vec<ErrorDefinition>` where each `ErrorDefinition` carries a `code`, `description`, `schema` (JSON Schema for the error detail payload), and optional `http_status` (for adapter projection). The `call.error` payload gains an optional `details` field carrying the typed error payload. Protocol-level codes (`NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`, `INTERNAL`, `TIMEOUT`) are distinct from operation-level domain codes (`FILE_NOT_FOUND`, `RATE_LIMITED`, etc.) — protocol codes are emitted by the dispatch machinery, operation codes by handlers. `from_openapi`/`to_openapi` map OpenAPI response status codes to/from `ErrorDefinition`s, making the adapter contract from ADR-017 faithful on the error axis. `services/schema` exposes `error_schemas` for client code generation. See ADR-023.
 - **Cross-references**: ADR-017, ADR-023, docs/reviews/001-pre-implementation-architecture-sanity-check.md (C5), [operation-registry.md](crates/call/operation-registry.md), [call-protocol.md](crates/call/call-protocol.md)
+
+## Theme: Call Client and Adapters
+
+These open questions are the two-way-door remainders from the
+call-completion gap analysis
+(`docs/research/alknet-call-completion/gap-analysis.md`, DC-1..4). The
+one-way door among them (DC-1, the *existence* of peer-scoped filtering as
+the default) is resolved by ADR-028; what remains open here is the shape.
+The v1 defaults for DC-2/3/4 are recorded in
+[client-and-adapters.md](crates/call/client-and-adapters.md) and may be
+revisited during implementation without a new ADR.
+
+### OQ-25: Remote-Safe Marking Shape for CallClient Peer-Scoped Filtering
+
+- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 (§1 Consequences), ADR-028
+- **Status**: open
+- **Door type**: Two-way (shape only — existence is one-way, resolved by ADR-028)
+- **Priority**: medium
+- **Resolution**: ADR-028 locks the one-way door: a `CallClient`'s registry
+  view is **default-deny** (no operation is exposed to the remote peer unless
+  explicitly marked remote-safe), with share-global as an explicit trusted-peer
+  opt-in. The v1 shape is a `remote_safe: bool` field on
+  `HandlerRegistration` (default `false` across all provenance). The shape is
+  the two-way-door remainder: a boolean is the simplest shape that supports
+  default-deny; a deployment that needs per-peer differentiation (different
+  subsets exposed to different peers on the same node) needs a richer
+  mechanism — per-peer allowlist, capability-class tag, or a peer-id-keyed map
+  on the registration. v1's boolean limits this to "remote-safe for any peer"
+  vs "not", which is acceptable for the runner/dispatch pattern (one remote
+  peer per `CallClient`). A future ADR may amend or supersede ADR-028's shape
+  without revisiting the *existence* of filtering. Also open under this OQ:
+  whether a richer shape should *expose-but-deny* non-remote-safe ops in
+  `services/list` (returning `NOT_FOUND` on call) instead of *hiding* them.
+  v1 hides them — a peer should not see ops it cannot call, so discovery and
+  dispatch filters agree (ADR-028 Assumption 2); expose-but-deny is the
+  richer-shape question, not a v1 question.
+- **Cross-references**: ADR-009, ADR-014, ADR-015, ADR-017, ADR-022, ADR-024,
+  ADR-028, [client-and-adapters.md](crates/call/client-and-adapters.md),
+  [operation-registry.md](crates/call/operation-registry.md)
+
+### OQ-26: OperationAdapter Error Type (AdapterError Variants)
+
+- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §5
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: medium
+- **Resolution**: ADR-017 §5 showed `async fn import(&self) ->
+  Vec<HandlerRegistration>` with no error type. The trait returns
+  `Result<Vec<HandlerRegistration>, AdapterError>` where `AdapterError` is a
+  crate-level enum. The *presence* of an error type is recorded in
+  [client-and-adapters.md](crates/call/client-and-adapters.md); the exact
+  variants are the two-way-door remainder. The failure modes real
+  implementations hit: discovery transport failure (`from_call` remote
+  unreachable), schema parse failure (`from_openapi`, `from_jsonschema`),
+  unauthorized (HTTP 401 for `from_openapi`, `from_mcp`). Likely variants:
+  `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`. Decided
+  during implementation; recorded here, not in a full ADR.
+- **Cross-references**: ADR-017, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+### OQ-27: from_call Re-Import Trigger
+
+- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 Assumption 4
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: ADR-017 Assumption 4 noted re-import "happens on
+  reconnection or is triggered explicitly." The v1 default is
+  **auto-re-import on connection establishment**. The overlay is
+  per-connection (Layer 2, ADR-024), so a stale overlay dies with the
+  connection; re-import on reconnect is naturally scoped to the new
+  connection. This is the right default for the runner pattern (a worker
+  reconnects → the hub re-discovers the worker's ops automatically).
+  Explicit re-import via a future `CallConnection::refresh()` method is
+  additive and can be added if a deployment needs manual control. Reversal
+  is cheap; no ADR needed.
+- **Cross-references**: ADR-017, ADR-024, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+### OQ-28: from_call Namespace Collision Behavior
+
+- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §3
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: ADR-017 §3's `FromCallConfig` namespace prefix is
+  **optional, default no prefix, collision = error**. A node importing from
+  two remotes that both expose `/container/exec` without prefixes should fail
+  loudly rather than silently overwrite. The operator adds prefixes when they
+  know they're importing from multiple sources. This matches the
+  default-deny, explicit-allow posture (ADR-015, ADR-028). Reversal is cheap;
+  no ADR needed. The alternative (last-wins) would silently mask one
+  remote's op behind another's, which is the kind of surprise the
+  default-deny posture exists to avoid.
+- **Cross-references**: ADR-015, ADR-017, ADR-028, [client-and-adapters.md](crates/call/client-and-adapters.md)

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-06-26 — see "Amendments" below)
 
 ## Context
 
@@ -336,9 +336,77 @@ same as `from_openapi` receives HTTP credentials.
 - ADR-014: Secret material flow (credential sources, not static tokens)
 - ADR-015: Privilege model (adapter ops are Internal by default)
 - ADR-016: Abort cascade (cross-node abort propagation)
+- ADR-028: Peer-Scoped Registry Filtering for CallClient Inbound Dispatch
+  (resolves the §1 Consequences security dimension flagged as a two-way door)
 - OQ-15: Call protocol client and adapter contract (resolved by this ADR)
+- OQ-25..28: Two-way-door remainders from the call-completion gap analysis
+  (DC-1 shape, DC-4 error type, DC-2 re-import trigger, DC-3 namespace
+  collision — see [open-questions.md](../open-questions.md))
 - [call-protocol.md](../crates/call/call-protocol.md)
 - [operation-registry.md](../crates/call/operation-registry.md)
+- [client-and-adapters.md](../crates/call/client-and-adapters.md) — the spec
+  that operationally fills the gap this ADR left to implementation
+- `docs/research/alknet-call-completion/gap-analysis.md` — DC-1..4, the
+  decisions that needed resolution before implementation
 - TypeScript `@alkdev/operations` — `from_openapi`, `from_mcp`, `buildEnv`
   prior art
 - POC at `/workspace/@alkdev/dispatch` — head/worker dispatch over SSH+axum
+
+## Amendments (2026-06-26)
+
+This ADR left four decisions as two-way doors (§1 Consequences flagged DC-1's
+security dimension; §5 noted trait signatures are two-way doors; Assumption 4
+noted re-import hot-swap is a two-way door; §3 mentioned the namespace prefix).
+The call-completion gap analysis (`docs/research/alknet-call-completion/gap-analysis.md`
+DC-1..4) resolved them. The resolutions:
+
+### DC-1 — CallClient registry scope: resolved by ADR-028
+
+The §1 Consequences security dimension is resolved by
+[ADR-028](028-callclient-peer-scoped-registry-filtering.md). The one-way
+door (existence of peer-scoped filtering as the v1 default) is locked:
+**default-deny**, with a `remote_safe: bool` on `HandlerRegistration`
+v1 shape and a trusted-peer opt-in. The shape of the marking is the
+two-way-door remainder, tracked as OQ-25. This ADR's §1 text ("It has its own
+operation registry to dispatch incoming calls from the remote side") and
+the Consequences note ("The specific mechanism … is a two-way door") are
+superseded by ADR-028's decision that the *default* is filtered, not
+shared-global. Share-global remains available as the explicit opt-in
+(ADR-028 §3).
+
+### DC-4 — OperationAdapter trait error type: resolved
+
+§5 showed `async fn import(&self) -> Vec<HandlerRegistration>` with no error
+type. The trait returns `Result<Vec<HandlerRegistration>, AdapterError>`
+where `AdapterError` is a crate-level enum. The *presence* of the error type
+is recorded in [client-and-adapters.md](../crates/call/client-and-adapters.md);
+the exact variants are the two-way-door remainder, tracked as OQ-26.
+
+### DC-2 — from_call re-import on reconnection: default set
+
+Assumption 4 noted re-import "happens on reconnection or is triggered
+explicitly." The v1 default is **auto-re-import on connection establishment**.
+The overlay is per-connection (Layer 2, ADR-024), so re-import is naturally
+scoped; a stale overlay dies with the connection. Explicit re-import via a
+future `CallConnection::refresh()` is additive. Two-way door; recorded in
+[client-and-adapters.md](../crates/call/client-and-adapters.md); tracked as
+OQ-27.
+
+### DC-3 — from_call namespace collision: default set
+
+§3's `FromCallConfig` namespace prefix is **optional, default no prefix,
+collision = error**. A node importing from two remotes that both expose the
+same unprefixed op name should fail loudly. The operator adds prefixes when
+importing from multiple sources. Two-way door; recorded in
+[client-and-adapters.md](../crates/call/client-and-adapters.md); tracked as
+OQ-28.
+
+### Operational spec
+
+The gap this ADR left to implementation — the `CallClient` API, the
+`from_call`/`from_jsonschema` flows, the trait signature, the adapter
+location map, the no-env-vars invariant, and the exchange-of-operations
+pattern — is specified in
+[client-and-adapters.md](../crates/call/client-and-adapters.md). That document
+is the operational complement to this ADR; this ADR remains the architectural
+authority.

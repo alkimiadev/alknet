@@ -232,6 +232,8 @@ pub struct HandlerRegistration {
     pub composition_authority: Option<CompositionAuthority>, // None for leaves
     pub scoped_env: Option<ScopedOperationEnv>,               // None for leaves
     pub capabilities: Capabilities,
+    pub remote_safe: bool,   // default false; ADR-028 — exposes this op to
+                             // CallClient peers (trusted-peer mode bypasses)
 }
 ```
 
@@ -632,6 +634,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 **Scoped composition env.** The `OperationEnv` given to a handler is scoped — it can only invoke a declared set of operations, set at registration on the `HandlerRegistration` bundle by the assembly layer (ADR-022). This bounds the parameterized-dispatch attack surface: a handler (or an LLM picking tools, or a quickjs sandbox) can only reach declared operations, not the entire registry. The scoped env is the reachability control; the composition authority is the authority control. Both are needed for least privilege. See ADR-015 and ADR-022.
 
+**No-env-vars invariant.** No handler reads outbound credentials from any source other than `OperationContext.capabilities`. This is the dispatch-side corollary of the capability-injection flow above: because the dispatch path populates `OperationContext.capabilities` from the registration bundle (ADR-022 §6), and because the assembly layer constructs handlers with vault-derived credentials rather than calling `Default::default()`, downstream consumers' `std::env::var` credential reads are unreachable by construction. The full invariant, the credential injection path, and the downstream-consumer framing are recorded in [client-and-adapters.md](client-and-adapters.md); this section documents the dispatch-path mechanism that makes it enforceable.
+
 ## Constraints
 
 - The registry is **layered by trust boundary** (ADR-024). The curated layer (`Local` provenance) is immutable after construction — adding a `Local` op requires restarting the process, which re-enters the startup trust boundary. Session (`Session`) and imported (`FromCall` etc.) ops are dynamic at their respective scopes (per-session, per-connection). The pre-ADR-024 blanket immutability claim was inherited by analogy from ADR-010's `HandlerRegistry` (ALPN-level) and did not apply to the operation registry — the TLS-config argument that justifies `HandlerRegistry` immutability does not touch the operation registry, which lives behind the single ALPN `alknet/call`.
@@ -659,6 +663,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 | Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Curated (static, immutable) + session and connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`from_jsonschema`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md) |
+| Peer-scoped registry filtering for CallClient | [ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | Default-deny `CallClient` registry view; adds `remote_safe` marking to `HandlerRegistration` (the bundle this doc defines) |
 
 ## Open Questions
 
@@ -668,6 +674,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Session ops are `Session` provenance (ADR-022) — always `Internal`, compose under restricted authority scoped down at sandbox creation. Generalized by ADR-024 to cover connection-scoped overlays as well.
+- **OQ-25** (open, two-way): Remote-safe marking shape — existence of default-deny `CallClient` filtering locked by ADR-028; the shape (the `remote_safe: bool` field this doc's `HandlerRegistration` gains vs a richer per-peer mechanism) is the two-way-door remainder. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-26..28** (open, two-way): `OperationAdapter` error type, `from_call` re-import trigger, `from_call` namespace collision. v1 defaults recorded in [client-and-adapters.md](client-and-adapters.md).
 
 ## References
 
