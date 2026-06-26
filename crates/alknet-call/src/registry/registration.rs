@@ -97,6 +97,18 @@ impl OperationRegistry {
             .collect()
     }
 
+    /// List `External` op specs, additionally filtered by `remote_safe` for
+    /// peer-scoped serving (ADR-028 Assumption 2). When `trusted_peer` is true,
+    /// the `remote_safe` filter is bypassed (all `External` ops listed).
+    pub fn list_operations_peer_scoped(&self, trusted_peer: bool) -> Vec<&OperationSpec> {
+        self.operations
+            .values()
+            .filter(|r| r.spec.visibility == Visibility::External)
+            .filter(|r| trusted_peer || r.remote_safe)
+            .map(|r| &r.spec)
+            .collect()
+    }
+
     pub async fn invoke(
         &self,
         name: &str,

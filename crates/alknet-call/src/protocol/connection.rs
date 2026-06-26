@@ -37,6 +37,16 @@ pub struct CallConnection {
     pending: Arc<Mutex<PendingRequestMap>>,
 }
 
+impl Clone for CallConnection {
+    fn clone(&self) -> Self {
+        Self {
+            connection: Arc::clone(&self.connection),
+            imported_operations: Arc::clone(&self.imported_operations),
+            pending: Arc::clone(&self.pending),
+        }
+    }
+}
+
 impl CallConnection {
     pub fn new(connection: Connection) -> Self {
         Self {

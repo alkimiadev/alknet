@@ -6,8 +6,10 @@
 //! `docs/architecture/decisions/017-call-protocol-client-and-adapter-contract.md`
 //! §5 for the trait contract.
 
+mod call_client;
 mod from_jsonschema;
 
+pub use call_client::{CallClient, CallCredentials, ClientError, RemoteIdentity};
 pub use from_jsonschema::{from_jsonschema, FromJsonSchema};
 
 use crate::registry::registration::HandlerRegistration;

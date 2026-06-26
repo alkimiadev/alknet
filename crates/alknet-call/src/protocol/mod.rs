@@ -7,5 +7,6 @@
 pub mod abort;
 pub mod adapter;
 pub mod connection;
+pub mod dispatch;
 pub mod pending;
 pub mod wire;

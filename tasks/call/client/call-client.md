@@ -1,7 +1,7 @@
 ---
 id: call/client/call-client
 name: Implement CallClient (outbound connection opener) with peer-scoped default-deny dispatch (ADR-017, ADR-028)
-status: pending
+status: completed
 depends_on: [call/protocol/call-connection, call/registry/remote-safe-marking]
 scope: moderate
 risk: high

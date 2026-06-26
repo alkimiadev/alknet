@@ -10,7 +10,8 @@ repository.workspace = true
 name = "alknet_call"
 
 [features]
-default = []
+default = ["quinn"]
+quinn = ["dep:quinn", "dep:rustls", "alknet-core/quinn"]
 
 [dependencies]
 alknet-core = { path = "../alknet-core" }
@@ -24,3 +25,9 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 parking_lot = "0.12"
+quinn = { version = "0.11", optional = true }
+rustls = { version = "0.23", optional = true }
+
+[dev-dependencies]
+rcgen = "0.13"
+rustls-pemfile = "2"
