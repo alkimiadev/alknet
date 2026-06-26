@@ -1,7 +1,7 @@
 ---
 id: call/registry/remote-safe-marking
 name: Add remote_safe field to HandlerRegistration for CallClient peer-scoped filtering (ADR-028)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium
