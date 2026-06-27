@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-26
+last_updated: 2026-06-27
 ---
 
 # Open Questions
@@ -494,106 +494,128 @@ revisited during implementation without a new ADR.
 ### OQ-33: PeerId — Cryptographic Identity vs Stable Logical Identifier
 
 - **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) Assumption 1, `docs/research/alknet-call-peer-routing/findings.md` §6.1
-- **Status**: **resolved** (2026-06-27)
+- **Status**: **resolved** (2026-06-27 by ADR-030)
 - **Door type**: One-way (composition semantics), two-way (id source)
 - **Priority**: high
 - **Resolution**: `PeerId` is a **logical identifier, decoupled from the
-  cryptographic identity**. It is *not* `Identity.id` (the TLS fingerprint or
-  API-key prefix) — those change on key rotation, which would break every
+  cryptographic identity**. It is *not* the raw fingerprint or API-key
+  prefix — those change on key rotation, which would break every
   in-flight `PeerRef::Specific` and every ACL entry referencing that peer.
 
-  **v1 source**: connection-assigned UUID (v4) at `connect()`/`accept()` time.
-  Stable for the connection's lifetime; changes on reconnect. This is a
-  **no-storage workaround** — the project has deliberately avoided a DB
-  backend for the core crates (smaller, fewer deps, simpler testing), which
-  has served the local-only crates (vault, registry) well. But peer identity
-  is the first *cross-node* state that wants persistence: what we actually
-  want is a persistent mapping from a logical peer identity to its current
-  cryptographic material, updated on key rotation, surviving restarts.
-  Without a DB, the UUID is the least-bad ephemeral option — the failure
-  mode (in-flight `PeerRef::Specific` gets `NOT_FOUND` on reconnect) is
-  acceptable for v1, and the re-`from_call` produces a fresh `PeerRef`.
+  ADR-029 established the one-way door (`PeerId` is logical, not crypto)
+  with a v1 UUID source as a no-storage workaround. **ADR-030 supersedes
+  the UUID source**: `Identity.id` becomes `PeerEntry.peer_id` (stable
+  across key rotation) on the fingerprint path, and `PeerId =
+  Identity.id` from `IdentityProvider` resolution. The UUID workaround is
+  removed — the stable logical id is the real thing, sourced from the auth
+  system, not an ephemeral connection-assigned value.
 
-  **The real solution (future, tracked as OQ-34):** a persistent peer
-  registry — a mapping from a stable logical peer identity (configured node
-  name or registered identity) to its current cryptographic material,
-  persisted across restarts and key rotations. This is what makes the
-  ACL-stability concern below work correctly: the ACL entry keys on the
-  logical name, the peer registry tracks the current crypto identity for
-  that name, and key rotation becomes a vault-only operation with no ACL
-  update on the remote side. The no-DB posture of the core crates means
-  this registry lives outside the core — likely in a service crate or an
-  assembly-layer store — not in alknet-call itself. See OQ-34.
+  The `PeerEntry` config model (`peer_id`, `fingerprint`, `scopes`,
+  `resources`, `display_name`, `enabled`) lives in `AuthPolicy`. Key
+  rotation is a single `PeerEntry.fingerprint` update — the `peer_id`,
+  ACL entries, and `PeerRef::Specific` references stay stable. The
+  no-DB posture is preserved (core has the trait + the in-memory
+  `ConfigIdentityProvider` adapter; persistence adapters are additive
+  separate crates, ADR-033).
 
-  **Key-rotation / ACL note (context for the future, not a v1 decision):**
-  if `PeerId` were the fingerprint, rotating a node's TLS key would change
-  its `PeerId`, invalidating every ACL entry that references that peer. The
-  vault makes local key rotation easy (derive a new key, re-encrypt,
-  ADR-021); the problem is the *remote* side's ACL — the hub's
-  `authorized_fingerprints` / `AccessControl` entries that reference the old
-  fingerprint. Decoupling `PeerId` from the crypto material means the ACL
-  entry *can* persist across key rotation — but only if there's a store that
-  maps the logical name to the new crypto identity after rotation. That
-  store is OQ-34. The v1 decision (logical id, not crypto; UUID source)
-  keeps the door open for it without requiring it now.
-
-  **The one-way door:** `PeerId` is a logical id, not `Identity.id`. This
-  determines the `PeerCompositeEnv` key type, the `PeerRef::Specific`
-  payload type, and the `ScopedPeerEnv.peer_pinned` entry shape. Reversing
-  it (switching to `Identity.id`) would break the peer-keyed overlay, the
-  routing selector, and the reachability set simultaneously. The *source* of
-  the logical id (UUID now, peer registry later) is the two-way-door
-  remainder — switching from UUID to a persistent registry changes the
-  id-generation path, not the composition model.
+  **The one-way door (preserved from ADR-029):** `PeerId` is a logical id,
+  not `Identity.id` (the fingerprint). This determines the
+  `PeerCompositeEnv` key type, the `PeerRef::Specific` payload type, and
+  the `ScopedPeerEnv.peer_pinned` entry shape. The *source* of the logical
+  id (ADR-029's UUID → ADR-030's `PeerEntry.peer_id`) was the two-way-door
+  remainder; it is now resolved.
 - **Cross-references**: ADR-009, ADR-014, ADR-015, ADR-017, ADR-021, ADR-027,
-  ADR-029, OQ-34, [client-and-adapters.md](crates/call/client-and-adapters.md),
+  ADR-029, ADR-030, OQ-34, OQ-35, [client-and-adapters.md](crates/call/client-and-adapters.md),
   [operation-registry.md](crates/call/operation-registry.md),
   [auth.md](crates/core/auth.md)
 
 ### OQ-34: Persistent Peer Registry (Cross-Node State Storage)
 
 - **Origin**: OQ-33 (the storage dimension it surfaced), the no-DB posture of ADR-008/018/025
-- **Status**: open
+- **Status**: **resolved** (2026-06-27 by ADR-030 + ADR-031 + ADR-033)
 - **Door type**: One-way (storage boundary), two-way (backend choice)
-- **Priority**: medium (not a v1 blocker — UUID works for v1; becomes real
-  when key rotation across nodes or peer-attribution persistence matters)
-- **Resolution**: The core crates (alknet-core, alknet-call, alknet-vault)
-  are deliberately storage-free — no DB, no persistence layer, in-memory
-  state only. This has kept the core small and testable, and it works for
-  local-only state (vault key rotation is version-indexed paths, no DB
-  needed, ADR-021). **Peer identity is the first cross-node state that
-  wants persistence**: a stable logical peer identity mapped to its current
-  cryptographic material, surviving restarts and key rotations. The v1
-  workaround (OQ-33: connection-assigned UUID) is ephemeral — it works for
-  the immediate use case (head→workers, operator-controlled, reconnects
-  produce a fresh UUID) but doesn't support ACL entries that persist across
-  key rotation, because there's nowhere to store "worker-a's current crypto
-  identity is X."
+- **Priority**: ~~medium (not a v1 blocker)~~ → resolved
+- **Resolution**: The storage boundary is: **core defines repo traits +
+  in-memory default adapters; persistence adapters are separate crates;
+  the assembly layer wires the adapter.** This is the repo/adapter
+  pattern (ADR-033), already established by `IdentityProvider` (ADR-004)
+  and now extended to `CredentialStore` (ADR-031).
 
-  **What this OQ tracks (not designed, not a v1 decision):**
-  - Whether a persistent peer registry belongs in a service crate (e.g., an
-    `alknet-registry` or `alknet-peer-store`), in the assembly layer (a
-    SQLite file the binary owns), or as a new alknet-core abstraction
-    (a `PeerRegistry` trait with no built-in impl, like `IdentityProvider`).
-  - Whether the no-DB posture extends to "core has a trait, service has the
-    impl" (the `IdentityProvider` pattern) or stays "core is storage-free,
-    persistence is entirely outside the crate graph."
-  - The backend choice (SQLite, a key-value store, a config file) is the
-    two-way-door remainder; the *storage boundary* (does core know about
-    persistence at all?) is the one-way door.
+  - `IdentityProvider` (ADR-004) — the auth repo trait, in core.
+    `ConfigIdentityProvider` is the in-memory default, backed by
+    `AuthPolicy.peers` (ADR-030). A future `alknet-peer-store-sqlite`
+    adapter that persists `PeerEntry` records in a `peers` table is
+    additive — it implements the same trait.
+  - `CredentialStore` (ADR-031) — the credential repo trait, in core.
+    `InMemoryCredentialStore` is the in-memory default. A future
+    persistence adapter is additive.
 
-  **Why this is a one-way door on the storage boundary, not a two-way door:**
-  if core gains a `PeerRegistry` trait, downstream crates depend on it and
-  the trait shape becomes a contract. If core stays storage-free, the
-  registry lives in a service crate and core never knows about persistence.
-  Reversing either direction breaks downstream consumers. The decision
-  should be made when a concrete use case (key rotation across nodes,
-    durable peer attribution, multi-hop federation with OQ-32) forces it —
-  not before.
+  The no-DB posture of the core crates is preserved in the sense that
+  matters: core has **no backend dependency** (no SQLite, no honker). The
+  in-memory default adapters carry no persistence. The persistence
+  adapters are additive crates, built when a concrete use case forces
+  them, wired by the assembly layer.
 
-  **Not a v1 blocker.** The UUID works for v1; this OQ exists so the
-  no-DB posture's limit is tracked and the decision is made deliberately
-  when it's needed, not accidentally when someone bolts a SQLite file onto
-  the assembly layer and it becomes load-bearing.
-- **Cross-references**: ADR-008, ADR-018, ADR-021, ADR-025, ADR-029, OQ-33,
+  The concrete adapter shapes (table schemas, backend choice, indexing,
+  caching) are the two-way-door remainder, tracked as OQ-36 (deferred for
+  exploration). The trait shapes are the one-way door, committed by
+  ADR-030, ADR-031, and ADR-033.
+- **Cross-references**: ADR-008, ADR-018, ADR-021, ADR-025, ADR-029,
+  ADR-030, ADR-031, ADR-033, OQ-33, OQ-36, [auth.md](crates/core/auth.md),
+  [config.md](crates/core/config.md)
+
+## Theme: Storage and Adapters
+
+### OQ-35: API Key Identity vs Peer Identity
+
+- **Origin**: ADR-030 §"API keys" (the asymmetry between the two auth paths)
+- **Status**: resolved (recorded by ADR-030, not a blocker)
+- **Door type**: One-way (the asymmetry is deliberate, not an oversight)
+- **Priority**: medium
+- **Resolution**: The fingerprint auth path gets the `PeerEntry`
+  id-decoupling treatment (`Identity.id = peer_id`, stable across key
+  rotation); the API-key auth path does not (`Identity.id = prefix`,
+  changes with the key). This is deliberate:
+
+  - Node identity (fingerprint path) must survive key rotation — the
+    same logical node rotates its TLS key, and every ACL entry / routing
+    reference to it should stay stable. `PeerEntry` provides this.
+  - Bearer-token identity (API-key path) IS the token — rotating the key
+    means a new prefix and a new identity, by design (revocation is the
+    rotation mechanism for API keys). Decoupling the API key identity
+    from the prefix would solve a problem API keys don't have.
+
+  The asymmetry is documented in `auth.md` ("API keys vs peer entries")
+  and in ADR-030 §"API keys" so it's explicit, not an oversight. See
+  [auth.md](crates/core/auth.md) for the table comparing the two paths.
+- **Cross-references**: ADR-030, [auth.md](crates/core/auth.md),
+  [config.md](crates/core/config.md)
+
+### OQ-36: Concrete Adapter Shapes (Deferred for Exploration)
+
+- **Origin**: ADR-033 §"What this does NOT do" (concrete adapter shapes not
+  specified), the project's note that the repo pattern is a tool to reach
+  for, not a one-size-fits-all mold
+- **Status**: open (deferred for exploration)
+- **Door type**: Two-way (adapter shapes are implementation details;
+  the trait shapes are the one-way doors, already committed by ADR-030/031/033)
+- **Priority**: low (becomes real when a persistence use case forces a
+  concrete adapter build)
+- **Resolution**: The repo/adapter pattern is committed (ADR-033): core
+  defines repo traits + in-memory default adapters; persistence adapters
+  are separate crates; the assembly layer wires the adapter. The
+  **concrete adapter shapes** — table schemas, backend choice (SQLite +
+  honker vs. a key-value store vs. a remote service), indexing, caching,
+  connection management — are deferred for exploration.
+
+  The project is iterating on adapter simplification. The trait shapes
+  (`IdentityProvider`, `CredentialStore`) are the commitment; the adapter
+  shapes are not. When a concrete use case (peer identity persistence
+  across restarts, credential persistence across restarts, ACL delegation
+  graph) forces a persistence adapter build, the adapter shape gets
+  reasoned through then, not speculatively now.
+
+  This OQ exists so the deferral is deliberate, not accidental — the
+  pattern is committed, the adapters are not, and the gap is tracked.
+- **Cross-references**: ADR-030, ADR-031, ADR-033, OQ-34,
   [auth.md](crates/core/auth.md), [config.md](crates/core/config.md)

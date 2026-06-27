@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-21
+last_updated: 2026-06-27
 ---
 
 # Authentication
@@ -91,21 +91,41 @@ The authenticated peer identity. Carries authorization information.
 ```rust
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
-    /// Unique identifier string. Fingerprint, key prefix, or principal name.
+    /// Stable logical identifier. On the fingerprint path, this is the
+    /// `PeerEntry.peer_id` (stable across key rotation, ADR-030). On the
+    /// API-key path, this is the key prefix (changes with the key — see
+    /// "API keys vs peer entries" below). On the composition path, this
+    /// is the `CompositionAuthority` label (ADR-022).
     pub id: String,
 
     /// Authorization scopes. e.g., ["relay:connect", "secrets:derive"]
     pub scopes: Vec<String>,
 
     /// Named resource lists. e.g., {"service": ["gitea", "registry"]}
+    /// Populated from `PeerEntry.resources` on the fingerprint path
+    /// (ADR-030), from `CompositionAuthority.resources` on the
+    /// composition path (ADR-022), and empty on the API-key path.
     pub resources: HashMap<String, Vec<String>>,
 }
 ```
 
 This is the same structure as the reference implementation (`alknet-main/crates/alknet-core/src/auth/identity.rs`), minus the russh dependency. The `id` field is ALPN-agnostic:
-- SSH key auth: `"SHA256:abc123..."` (key fingerprint)
-- API key auth: `"alk_test"` (key prefix)
-- Certificate auth: `"username"` (principal name)
+- SSH key / TLS cert auth (fingerprint path): the `PeerEntry.peer_id` (ADR-030) — a stable logical name like `"worker-a"`, **not** the fingerprint. The fingerprint is the *credential*; the `peer_id` is the *identity*. Decoupling them means key rotation changes the credential but not the identity, so ACL entries and routing references stay stable.
+- API key auth: `"alk_test"` (key prefix) — the prefix IS the identity; rotation = new identity (see "API keys vs peer entries" below).
+- Composition path: the `CompositionAuthority` label (ADR-022) — e.g., `"agent-chat"`.
+
+### API keys vs peer entries
+
+The fingerprint and API-key auth paths have different identity semantics, by design (ADR-030):
+
+| Axis | Fingerprint (PeerEntry) | API key (ApiKeyEntry) |
+|------|-------------------------|------------------------|
+| Identity source | TLS handshake / SSH key | Bearer token in protocol frame |
+| Key rotation | Same logical node, new material | New identity (revocation = new key) |
+| `Identity.id` | `peer_id` (stable across rotation) | `prefix` (changes with the key) |
+| `Identity.resources` | Populated from `PeerEntry.resources` | Empty (resources are composition-only) |
+
+An API key's prefix IS the identity — rotating the key means a new prefix and a new identity, by design (revocation is the rotation mechanism for API keys). Decoupling the API key identity from the prefix would solve a problem API keys don't have: they're bearer tokens, not node identities. The fingerprint path gets the `PeerEntry` treatment because node identity must survive key rotation; the API-key path doesn't because bearer-token identity IS the token. The asymmetry is deliberate, not an oversight — see ADR-030 §"API keys".
 
 ## AuthToken
 
@@ -149,30 +169,32 @@ pub struct ConfigIdentityProvider {
 The "Config" prefix indicates that identities are resolved from configuration (as opposed to a database or external service). This reads from `ArcSwap<DynamicConfig>`, which is hot-reloadable — not from `StaticConfig`. An alternative name would be `DynamicConfigIdentityProvider` to make this clearer, but `ConfigIdentityProvider` is consistent with the reference implementation and the naming is unlikely to cause confusion in practice.
 
 How it resolves:
-- **Fingerprint**: Look up in `DynamicConfig::auth::authorized_keys_fingerprints`. If found, return `Identity { id: fingerprint, scopes: ["relay:connect"], resources: {} }`.
-- **Token**: Parse as UTF-8. If it starts with `alk_`, look up in `DynamicConfig::auth::api_keys` by prefix match + SHA-256 hash. If found and not expired, return `Identity { id: prefix, scopes: entry.scopes, resources: {} }`.
+- **Fingerprint**: Look up in `DynamicConfig::auth.peers` for the matching `PeerEntry` (by `fingerprint`). If found and `enabled`, return `Identity { id: peer.peer_id, scopes: peer.scopes, resources: peer.resources }`. The `Identity.id` is the stable `peer_id`, **not** the fingerprint — key rotation changes the fingerprint but not the `peer_id`, so ACL entries and routing references stay stable (ADR-030).
+- **Token**: Parse as UTF-8. If it starts with `alk_`, look up in `DynamicConfig::auth.api_keys` by prefix match + SHA-256 hash. If found and not expired, return `Identity { id: prefix, scopes: entry.scopes, resources: {} }`. The `Identity.id` is the key prefix — API key rotation = new identity (see "API keys vs peer entries" above).
 
-> **Resource-scoped ACLs and external identities.** `Identity.resources` is
-> populated only by the composition path (`CompositionAuthority::as_identity`,
-> ADR-015/022) — never by token or fingerprint resolvers. API keys and
-> fingerprints grant **scopes only**; resource-scoped access is an
-> internal-composition concern. An `OperationSpec` that declares
-> `resource_type`/`resource_action` will return `FORBIDDEN` when the caller
-> authenticated via token or fingerprint, because `Identity.resources` is
-> empty. This is a documented limitation, not a bug: if a future crate needs
-> per-key resource binding, it must earn a dedicated ADR that adds a
-> `resources` field to `ApiKeyEntry` and the fingerprint config path, rather
-> than silently widening the external-auth contract.
+See [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) for the `PeerEntry` model and the id-fingerprint decoupling rationale.
+
+### Resource-scoped ACLs
+
+`Identity.resources` is populated on three paths:
+
+| Path | Source of `resources` | Use case |
+|------|----------------------|----------|
+| Fingerprint resolution (`ConfigIdentityProvider`) | `PeerEntry.resources` (ADR-030) | External fingerprint-authenticated callers with per-peer resource binding |
+| API key resolution (`ConfigIdentityProvider`) | Empty (by design) | API keys grant scopes only; resource-scoped access is composition-only |
+| Composition (`CompositionAuthority::as_identity`, ADR-015/022) | `CompositionAuthority.resources` | Internal composition calls with declared resource binding |
+
+An `OperationSpec` that declares `resource_type`/`resource_action` will return `FORBIDDEN` when the caller authenticated via API key (because `Identity.resources` is empty), but succeeds when the caller authenticated via fingerprint with matching `PeerEntry.resources`, or via composition with matching `CompositionAuthority.resources`. The API-key limitation is deliberate (see "API keys vs peer entries" above); the fingerprint path's resource binding is the ADR-030 change that lifts the pre-ADR-030 limitation.
 
 Changes to `DynamicConfig` via `ConfigReloadHandle` are reflected immediately — `ConfigIdentityProvider` reads from `ArcSwap` on every call.
 
 ### Fingerprint string format
 
-`tls_client_fingerprint` and `authorized_fingerprints` use a prefixed-hex
+`tls_client_fingerprint` and `PeerEntry.fingerprint` use a prefixed-hex
 format. The prefix identifies the key type; the body is the hex-encoded
 hash or raw key bytes. `AuthPolicy::resolve_identity_from_fingerprint`
-does a literal `HashSet::contains()` — no normalization — so the extractor
-and the operator config must use the same format.
+scans `peers` for a matching `fingerprint` field — no normalization — so
+the extractor and the operator config must use the same format.
 
 | Transport | Source | Format |
 |-----------|--------|--------|
@@ -196,10 +218,10 @@ normally with `tls_client_fingerprint: None`.
 
 The verifier accepts any presented cert without CA verification because
 alknet's identity model is fingerprint-based, not PKI-based — the
-`AuthPolicy::authorized_fingerprints` set is the trust anchor, not a
-root CA store. The cert bytes are extracted at the TLS layer and hashed
-to a fingerprint string; the fingerprint is then matched against the
-configured set by `IdentityProvider::resolve_from_fingerprint()`.
+`AuthPolicy::peers` set is the trust anchor, not a root CA store. The
+cert bytes are extracted at the TLS layer and hashed to a fingerprint
+string; the fingerprint is then matched against the configured `PeerEntry.fingerprint`
+fields by `IdentityProvider::resolve_from_fingerprint()`.
 
 ## Resolution Flow
 
@@ -293,10 +315,13 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 | AuthContext is immutable in handle() | [ADR-011](../../decisions/011-authcontext-structure.md) | Handlers create local variables for resolved identity |
 | Two resolution paths | [ADR-004](../../decisions/004-auth-as-shared-core.md) | Fingerprint and token, not phased auth |
 | Handler stores resolved identity on Connection | OQ-11 (resolved) | `connection.set_identity()` — write-once-read-many for observability |
+| PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `authorized_fingerprints` → `peers: Vec<PeerEntry>`; `Identity.id` = `peer_id` (stable), not fingerprint; key rotation changes fingerprint, not identity |
+| CredentialStore repo trait | [ADR-031](../../decisions/031-credentialstore-repo-trait.md) | Second repo trait in core (alongside `IdentityProvider`); `InMemoryCredentialStore` default adapter |
+| Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines traits + in-memory defaults; persistence adapters are separate crates |
 
 ## Open Questions
 
-None. All auth-related open questions are resolved.
+- **OQ-35**: API key identity vs peer identity — the asymmetry between the fingerprint path (gets `PeerEntry` id-decoupling) and the API-key path (doesn't) is deliberate. See ADR-030 §"API keys" and "API keys vs peer entries" above.
 
 ## Security Constraints
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-23
+last_updated: 2026-06-27
 ---
 
 # Operation Registry
@@ -113,6 +113,7 @@ pub struct OperationContext {
     pub parent_request_id: Option<String>,
     pub identity: Option<Identity>,                       // Caller's identity (inbound — who invoked me)
     pub handler_identity: Option<CompositionAuthority>,    // Handler's composition authority (ADR-022)
+    pub forwarded_for: Option<Identity>,                   // Original caller when forwarded (ADR-032, metadata only — NOT used by AccessControl::check)
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     /// Reachability set — the operations this handler may compose.
@@ -176,6 +177,7 @@ impl OperationContext {
 - `parent_request_id`: Set when this call was initiated by another operation (via `OperationEnv`). Records the agency chain — the call tree is the principal→agent chain (ADR-015)
 - `identity`: The authenticated caller (from `IdentityProvider`) — inbound auth (who is calling me). For external calls, this is who sent the `call.requested`. For internal calls, this is the parent handler's `handler_identity` (propagated through `OperationEnv::invoke()`)
 - `handler_identity`: The composition authority of the handler processing this call. `None` for leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) — they don't compose. `Some(...)` for `Local` and `Session` ops that can compose children. For internal calls (`internal: true`), the ACL check runs against this authority (ADR-015, ADR-022). This is NOT a peer `Identity` — it's a declared authority bundle set at registration by the assembly layer
+- `forwarded_for`: The original caller when this call was forwarded by a `from_call` handler (ADR-032). **Metadata only** — `AccessControl::check` never reads it; the ACL always authorizes the direct caller's `identity`. Handlers may read it for logging, auditing, per-user rate limiting, or application context. Populated from `call.requested.forwarded_for` by the dispatch path; set to `None` for composed children (wire-ingress only). The forwarder's claim, not a verified identity — a malicious hub can lie (same property as HTTP `X-Forwarded-For`). See ADR-032.
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
 - `metadata`: Request-scoped context (tracing IDs, connection info). **Must not hold secret material** — see ADR-014. **Does not propagate through `OperationEnv::invoke()`** — nested calls get fresh metadata. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`.
 - `scoped_env`: The reachability set — the operations this handler may compose. Populated from the registration bundle's `scoped_env` (ADR-022). The reachability check in `OperationEnv::invoke()` consults `scoped_env.allows(&name)`. This is *data* (a `ScopedOperationEnv` struct), not a dispatch trait. `None`/empty for leaves.
@@ -420,6 +422,9 @@ impl OperationEnv for LocalOperationEnv {
             // None for leaves — they don't compose, so this is never used
             // for ACL on a grandchild.
             handler_identity: registration.composition_authority.clone(),
+            // Composed children do not inherit forwarded_for — it's a
+            // wire-ingress field, not a composition-ingress field (ADR-032).
+            forwarded_for: None,
             capabilities: parent.capabilities.clone(),       // Inherit caller's capabilities
             metadata: HashMap::new(),                         // Fresh — does NOT propagate parent metadata (ADR-014)
             abort_policy: policy,                             // Explicit policy (from invoke() default or invoke_with_policy)
@@ -666,6 +671,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`from_jsonschema`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md) |
 | Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` (the field this doc's `HandlerRegistration` previously gained) |
+| Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `OperationContext` and `call.requested`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
 | ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~`remote_safe` marking on `HandlerRegistration`~~ — superseded by ADR-029 |
 
 ## Open Questions

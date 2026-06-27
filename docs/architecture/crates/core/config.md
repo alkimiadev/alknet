@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-21
+last_updated: 2026-06-27
 ---
 
 # Configuration
@@ -165,27 +165,78 @@ pub struct DynamicConfig {
 
 ### AuthPolicy
 
-Authorization policy derived from authorized keys, certificate authorities, and API keys.
+Authorization policy derived from peer entries and API keys.
 
 ```rust
 pub struct AuthPolicy {
-    /// SHA-256 fingerprints of authorized keys (SSH keys, TLS client certs).
-    /// Stored as strings to avoid russh dependency in core.
-    pub authorized_fingerprints: HashSet<String>,
+    /// Peer entries: each maps a stable logical peer_id to its current
+    /// fingerprint, scopes, resources, and enabled state. Replaces the
+    /// pre-ADR-030 `authorized_fingerprints: HashSet<String>`. The list
+    /// is keyed by `peer_id`; resolution looks up by `fingerprint`.
+    /// See ADR-030.
+    pub peers: Vec<PeerEntry>,
 
-    /// API keys for token-based auth.
+    /// API keys for token-based auth. Unchanged by ADR-030 — API keys
+    /// don't get the PeerEntry treatment (rotation = new identity is the
+    /// correct semantics for bearer tokens). See ADR-030 §"API keys".
     pub api_keys: Vec<ApiKeyEntry>,
 }
 ```
 
-Certificate authority entries for cert-based auth will be added when
-alknet-ssh is implemented. The `cert_authorities` field is omitted from v1
-to avoid referencing an undefined type. Adding it back is additive (a new
+### PeerEntry
+
+A peer entry maps a stable logical peer identity to its current
+cryptographic material and authorization scopes. The `peer_id` is stable
+across key rotation; the `fingerprint` changes when the node rotates its
+TLS key. `ConfigIdentityProvider::resolve_from_fingerprint` resolves
+fingerprint → `PeerEntry` → `Identity { id: peer_id, ... }`, so
+`Identity.id` is the stable `peer_id`, not the rotating fingerprint.
+
+```rust
+pub struct PeerEntry {
+    /// Stable logical peer id ("worker-a", "alice"). Does NOT change on
+    /// key rotation. This becomes Identity.id on resolution.
+    pub peer_id: String,
+
+    /// Current cryptographic material — the fingerprint the endpoint
+    /// extracts from the TLS handshake (SHA256:... for X.509, ed25519:...
+    /// for RFC 7250 raw keys). Changes on key rotation.
+    pub fingerprint: String,
+
+    /// Authorization scopes granted to this peer. Resolved into
+    /// Identity.scopes.
+    pub scopes: Vec<String>,
+
+    /// Named resource lists granted to this peer. Resolved into
+    /// Identity.resources. Populated from config (ADR-030 lifts the
+    /// pre-ADR-030 limitation that fingerprint-resolved identities had
+    /// empty resources).
+    pub resources: HashMap<String, Vec<String>>,
+
+    /// Human-readable display name for logs / UIs. Optional.
+    pub display_name: Option<String>,
+
+    /// Whether this peer is authorized at all. false = the fingerprint
+    /// is recognized but the peer is disabled (token-revoked-equivalent
+    /// for fingerprints). Resolution returns None.
+    pub enabled: bool,
+}
+```
+
+See [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md)
+for the `PeerEntry` model, the id-fingerprint decoupling rationale, and
+the key-rotation story (vault rotates locally; the remote side updates
+the `PeerEntry.fingerprint` field; the `peer_id` and all ACL / routing
+references stay stable).
+
+Certificate authority entries for cert-based auth are omitted from
+`AuthPolicy` until alknet-ssh is implemented, to avoid referencing an
+undefined type. Adding the `cert_authorities` field is additive (a new
 field on `AuthPolicy` is non-breaking for existing config files that don't
 use it). alknet-ssh will define `CertAuthorityEntry` with the necessary
 fields (public key, principals, options).
 
-This replaces the reference implementation's `AuthPolicy` which depended on `russh::keys::PublicKey`. The new version stores fingerprints as strings, not russh types. This removes the russh dependency from alknet-core.
+This replaces the reference implementation's `AuthPolicy` which depended on `russh::keys::PublicKey`. The new version stores fingerprints as strings (in `PeerEntry.fingerprint`), not russh types. This removes the russh dependency from alknet-core.
 
 ### ApiKeyEntry
 
@@ -287,3 +338,5 @@ Simplified from the reference implementation. Removes proxy-specific errors (now
 | No russh dependency in core | [ADR-003](../../decisions/003-crate-decomposition.md) | Core is ALPN-agnostic; russh is an alknet-ssh dependency |
 | ArcSwap for dynamic config | Carry-forward from reference | Lock-free reads, atomic swaps |
 | No ListenerConfig | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | Single endpoint, ALPN replaces multiple listener types |
+| PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `authorized_fingerprints: HashSet<String>` → `peers: Vec<PeerEntry>`; `Identity.id` = `peer_id` (stable), not fingerprint |
+| Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines repo traits + in-memory defaults; `AuthPolicy.peers` is the config model for the in-memory `ConfigIdentityProvider` adapter; persistence adapters are separate crates |

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-21
+last_updated: 2026-06-27
 ---
 
 # alknet-core
@@ -13,8 +13,8 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 |----------|--------|-------------|
 | [core-types.md](core-types.md) | draft | ProtocolHandler trait, HandlerError, Connection, BiStream, StreamError |
 | [endpoint.md](endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, graceful shutdown |
-| [auth.md](auth.md) | draft | AuthContext, Identity, IdentityProvider, AuthToken, resolution flow |
-| [config.md](config.md) | draft | StaticConfig, DynamicConfig, ArcSwap, ConfigReloadHandle |
+| [auth.md](auth.md) | draft | AuthContext, Identity, IdentityProvider, AuthToken, resolution flow, PeerEntry, CredentialStore |
+| [config.md](config.md) | draft | StaticConfig, DynamicConfig, ArcSwap, ConfigReloadHandle, AuthPolicy.peers |
 
 ## Applicable ADRs
 
@@ -30,6 +30,9 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | [010](../../decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Endpoint, HandlerRegistry, accept loop |
 | [011](../../decisions/011-authcontext-structure.md) | AuthContext Structure | AuthContext fields and resolution flow |
 | [015](../../decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | Per-request identity on OperationContext; admin scope for config reload |
+| [030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | PeerEntry and Identity.id Decoupling | `authorized_fingerprints` → `peers: Vec<PeerEntry>`; `Identity.id` = `peer_id` (stable) |
+| [031](../../decisions/031-credentialstore-repo-trait.md) | CredentialStore Repo Trait | Second repo trait in core; `InMemoryCredentialStore` default adapter |
+| [033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Core defines traits + in-memory defaults; persistence adapters are separate crates |
 
 ## Relevant Open Questions
 
@@ -38,6 +41,10 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | OQ-04 | Dynamic handler registration | resolved (start static) | HandlerRegistry is immutable at startup |
 | OQ-05 | Multi-connectivity endpoint | resolved (quinn + iroh) | AlknetEndpoint supports both, both feature-gated |
 | OQ-11 | Handler-level auth resolution observability | resolved | Handlers store resolved identity on Connection; two identity scopes (connection-level for observability, per-request for ACL) |
+| OQ-33 | PeerId — logical id vs crypto identity | resolved by ADR-030 | `PeerId` = `Identity.id` = `PeerEntry.peer_id` (stable across key rotation) |
+| OQ-34 | Persistent peer registry (storage boundary) | resolved by ADR-030+031+033 | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
+| OQ-35 | API key identity vs peer identity | resolved (recorded by ADR-030) | The asymmetry between fingerprint and API-key paths is deliberate |
+| OQ-36 | Concrete adapter shapes | open (deferred for exploration) | The repo/adapter pattern is committed (ADR-033); concrete adapter shapes are not |
 
 ## Key Design Principles
 

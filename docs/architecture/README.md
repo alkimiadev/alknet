@@ -1,17 +1,24 @@
 ---
 status: draft
-last_updated: 2026-06-26
+last_updated: 2026-06-27
 ---
 
 # Alknet Architecture
 
 ## Current State
 
-**Pre-implementation.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains only `alknet-vault` (stable — implementation complete and verified, local-only by construction per ADR-025, HD-derivation key model per ADR-026) and research/reference material. Foundational ADRs (001–028) are in place. ADR-024 resolves the registry mutability question and the `OperationContext.env` type identity crisis by layering the registry by trust boundary. ADR-025 drops irpc from the vault, making it local-only by construction. ADR-026 records the HD-derivation key model as a foundational decision. Review #003 (type/API surface completeness) resolved: `DerivedKey` derive contradiction, `encrypt` prose, return-type divergence, RwLock contradiction, drift table gaps, ADR-022 stale sketches, `Capabilities`/`SessionOverlaySource`/`CallConnection`/`CachedKey` definitions, `CompositeOperationEnv` dispatch contract, `with_local` signature, payload schemas, timeout propagation, and request ID generation. The alknet-core and alknet-call crate specs are in draft; the alknet-vault crate specs are stable.
+**Pre-implementation of the storage/repo pattern.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains `alknet-vault` (stable — implementation complete and verified, local-only by construction per ADR-025, HD-derivation key model per ADR-026) and research/reference material. Foundational ADRs (001–029) are in place, with ADR-029 (peer-graph routing) Proposed and the call crate implemented and reviewed.
 
-The alknet-call crate is **implemented and reviewed** — both the server-side core and the client/adapter surface. The server-side core (`CallAdapter`, `CallConnection` dispatch loop, wire framing, pending map, abort cascade, operation registry, service discovery) and the client/adapter surface (`CallClient`, `from_call`, `from_jsonschema`, `OperationAdapter` trait, shared `Dispatcher`) are implemented and tested (207 lib + 2 integration tests passing). The call-completion gap analysis (`docs/research/alknet-call-completion/gap-analysis.md`) identified the missing client/adapter surface specced in ADR-017 plus four decisions (DC-1..4); all are resolved — DC-1 by ADR-028 (peer-scoped default-deny filtering), DC-2/3/4 as two-way-door defaults in `client-and-adapters.md` (OQ-25..28). A post-implementation review (`tasks/call/review-completion.md`) confirmed spec conformance; the one spec-sketch omission (`connect()`'s `ClientError` return type) was the intended illustrative-sketch gap, now filled in. A TLS client-auth gap surfaced during implementation is tracked as OQ-29.
+The storage and auth strategy research (`docs/research/alknet-storage-strategy/findings.md`) surfaced the repo/adapter pattern as the answer to cross-node state (peer identity, credentials). This has now landed as four ADRs:
 
-**Next step**: The alknet-call crate is ready for downstream consumers (alknet-http's `OperationAdapter` implementations, the container-service/runner pattern, alknet-agent, alknet-napi). The remaining open questions (OQ-25..29) are all two-way-door shape/defaults, not blockers. The next crate phase is alknet-http (Phase 0 findings in `docs/research/alknet-http/`).
+- **ADR-030** (PeerEntry and Identity.id decoupling): `authorized_fingerprints: HashSet<String>` → `peers: Vec<PeerEntry>`; `Identity.id` becomes the stable `peer_id` (not the fingerprint); key rotation changes the fingerprint, not the identity. Supersedes ADR-029's v1 UUID source (the one-way door — `PeerId` is logical, not crypto — is preserved; the source changes from UUID to `Identity.id` from `PeerEntry`). Resolves OQ-33 and the storage-boundary half of OQ-34.
+- **ADR-031** (CredentialStore repo trait): the second repo trait in core (alongside `IdentityProvider`), with `InMemoryCredentialStore` default adapter. Establishes the credential-persistence abstraction.
+- **ADR-032** (Forwarded-for identity): `forwarded_for` field on `call.requested` and `OperationContext`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it. Wire-format one-way door, included with the ADR-029 migration window.
+- **ADR-033** (Storage boundary and repo/adapter pattern): core defines repo traits + in-memory defaults; persistence adapters are separate crates; the assembly layer wires the adapter. Resolves OQ-34's storage-boundary question. Concrete adapter shapes are deferred for exploration (OQ-36).
+
+The alknet-call crate is **implemented and reviewed** — both the server-side core and the client/adapter surface (207 lib + 2 integration tests passing). The alknet-core and alknet-call crate specs are in draft; the alknet-vault crate specs are stable.
+
+**Next step**: The storage/repo-pattern ADRs (030–033) are accepted and amend the core and call specs. The next implementation phase is the ADR-029 migration (peer-keyed overlays, `PeerRef` routing, retire `remote_safe`/`trusted_peer`) with the ADR-030 `PeerEntry` change and the ADR-032 `forwarded_for` field folded in — the `OperationContext`, `from_call` handler, and `AuthPolicy` are all under edit, making this the cheapest window. After that: alknet-http (Phase 0 findings in `docs/research/alknet-http/`), which consumes the `CredentialStore` trait and the `OperationAdapter` contract.
 
 ## Architecture Documents
 
@@ -66,7 +73,11 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | Accepted |
 | [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | Accepted |
 | [028](decisions/028-callclient-peer-scoped-registry-filtering.md) | Peer-Scoped Registry Filtering for CallClient Inbound Dispatch | ~~Accepted~~ → **Superseded** by ADR-029 |
-| [029](decisions/029-peer-graph-routing-model.md) | Peer-Graph Routing Model for alknet-call Composition | Proposed |
+| [029](decisions/029-peer-graph-routing-model.md) | Peer-Graph Routing Model for alknet-call Composition | Accepted (Assumption 1's `PeerId` source superseded by ADR-030) |
+| [030](decisions/030-peerentry-and-identity-id-decoupling.md) | PeerEntry and Identity.id Decoupling | Accepted (supersedes ADR-029 Assumption 1's UUID source) |
+| [031](decisions/031-credentialstore-repo-trait.md) | CredentialStore Repo Trait | Accepted |
+| [032](decisions/032-forwarded-for-identity.md) | Forwarded-For Identity (Metadata, Not Authority) | Accepted |
+| [033](decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Accepted |
 
 ## Open Questions
 
@@ -98,6 +109,11 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-23**: Handler identity registration path — registration bundle with provenance, composition authority, scoped env, capabilities (ADR-022)
 - **OQ-24**: Operation error schemas — declared domain errors with typed `details` payload; adapter fidelity for `from_openapi`/`to_openapi` (ADR-023)
 
+**Resolved by the storage/repo-pattern ADRs (ADR-030–033):**
+- **OQ-33**: ~~PeerId stability~~ — **resolved by ADR-030** (logical id; source is `Identity.id` = `PeerEntry.peer_id`, stable across key rotation; UUID workaround removed)
+- **OQ-34**: ~~Persistent peer registry~~ — **resolved by ADR-030 + ADR-031 + ADR-033** (storage boundary: core defines repo traits + in-memory defaults; persistence adapters are separate crates)
+- **OQ-35**: API key identity vs peer identity — resolved (recorded by ADR-030; the asymmetry between fingerprint and API-key paths is deliberate)
+
 **Open (two-way-door remainders from alknet-call completion + peer-graph routing):**
 - **OQ-25**: ~~Remote-safe marking shape~~ — **dissolved by ADR-029** (no marking; peer authorization is `AccessControl::check(peer_identity)`)
 - **OQ-26**: ~~`OperationAdapter` error type~~ — **resolved** (`AdapterError` variants: `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`; `#[non_exhaustive]`)
@@ -107,8 +123,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-30**: `PeerRef::Any` routing policy — v1 insertion-order first-match; round-robin/least-loaded is future (ADR-029)
 - **OQ-31**: `services/list-peers` re-export semantics — v1 "own ops only"; `services/list-peers` is opt-in (ADR-029)
 - **OQ-32**: Multi-hop federation — v1 one-hop; peer-keyed model extends without redesign; petgraph candidate (ADR-029)
-- **OQ-33**: ~~PeerId stability~~ — **resolved** (logical id, not `Identity.id`; v1 UUID, decoupled from crypto material for key-rotation-safe ACLs)
-- **OQ-34**: Persistent peer registry — the storage dimension OQ-33 surfaced; not a v1 blocker (UUID works); tracked so the no-DB posture's limit is deliberate
+- **OQ-36**: Concrete adapter shapes — open (deferred for exploration; the repo/adapter pattern is committed by ADR-033, the concrete adapter shapes are not)
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

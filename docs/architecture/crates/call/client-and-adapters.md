@@ -173,7 +173,8 @@ pub struct PeerCompositeEnv {
     pub connections: HashMap<PeerId, Arc<dyn OperationEnv + Send + Sync>>,  // Layer 2, peer-keyed
     connection_order: Vec<PeerId>,  // insertion order for PeerRef::Any first-match
 }
-pub type PeerId = String;  // logical id (UUID v1), NOT Identity.id — see OQ-33
+pub type PeerId = String;  // = Identity.id from IdentityProvider resolution
+                           // = PeerEntry.peer_id (stable, not crypto material — ADR-030)
 ```
 
 `OperationEnv` gains a peer-routing method with a `PeerRef` selector
@@ -306,6 +307,16 @@ The scoped env (ADR-015) bounds *which* operations are reachable, not *what*
 they do. `from_call` means "I trust the remote node as much as my own
 handlers." The abort cascade (ADR-016) crosses the node boundary transparently
 through the forwarding handler's `parent_request_id`.
+
+**Forwarded-for identity** (ADR-032): the `from_call` forwarding handler
+populates `forwarded_for` on the `call.requested` payload it constructs to
+send to the spoke. The hub reads its own `OperationContext.identity` (the
+end user it authenticated) and sets `forwarded_for` to that identity when
+forwarding. The spoke receives it as metadata on its `OperationContext` —
+available for logging, auditing, per-user rate limiting, but never used by
+`AccessControl::check` (the spoke authorizes the hub, its direct caller,
+not the end user). The hub may set `forwarded_for: None` if it doesn't
+want to disclose the originator. See [ADR-032](../../decisions/032-forwarded-for-identity.md).
 
 ### from_jsonschema
 
@@ -587,6 +598,9 @@ Based on the gap analysis and the downstream unblock chain:
 |----------|-----|---------|
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction; trait is async; adapters produce `HandlerRegistration` bundles |
 | Peer-graph routing model (DC-1, supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via existing `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` |
+| PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `PeerId` source changes from UUID to `Identity.id` (= `PeerEntry.peer_id`, stable across key rotation); `Identity.id` decoupled from crypto material on the fingerprint path |
+| Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `call.requested` and `OperationContext`; the `from_call` handler populates it; metadata only, never used by `AccessControl::check` |
+| Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
 | ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~Default-deny; `remote_safe: bool`; trusted-peer opt-in~~ — superseded by ADR-029 (flat-namespace single-peer model couldn't express head→N-workers; parallel auth system duplicated existing `AccessControl`) |
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | The no-env-vars invariant's foundation; capabilities injected at assembly layer |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | The registration bundle adapters produce; `composition_authority: None` for leaves |
@@ -631,12 +645,23 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-32** (open): Multi-hop federation — v1 is one-hop; the peer-keyed
   overlay model extends to multi-hop without redesign; petgraph is the
   candidate if path-finding becomes real (ADR-029 §3.7).
-- **OQ-33** (resolved): `PeerId` is a logical id (connection-assigned UUID),
-  not `Identity.id` — decoupling from crypto material keeps the door open for
-  key-rotation-safe ACLs. See OQ-33 in open-questions.md.
-- **OQ-34** (open): Persistent peer registry — the storage dimension OQ-33
-  surfaced; not a v1 blocker (UUID works), tracked so the no-DB posture's
-  limit is deliberate. See OQ-34 in open-questions.md.
+- **OQ-33** (resolved by ADR-030): `PeerId` is a logical id. Source is
+  `Identity.id` from `IdentityProvider` resolution (= `PeerEntry.peer_id`,
+  stable across key rotation), not a connection-assigned UUID. The UUID
+  workaround is removed. See OQ-33 in open-questions.md.
+- **OQ-34** (resolved by ADR-030 + ADR-033): Persistent peer registry —
+  the storage boundary is `core trait + in-memory default` (config-backed
+  `ConfigIdentityProvider` now; persistence adapters additive in separate
+  crates). See OQ-34 in open-questions.md.
+- **OQ-35** (recorded by ADR-030): API key identity vs peer identity — the
+  asymmetry between the fingerprint path (gets `PeerEntry` id-decoupling)
+  and the API-key path (doesn't) is deliberate. See OQ-35 in
+  open-questions.md.
+- **OQ-36** (tracked by ADR-033): Concrete adapter shapes — the repo/adapter
+  pattern is committed (core trait + in-memory default; persistence adapters
+  are separate crates); the concrete adapter shapes (table schemas, backend
+  choice, indexing) are deferred for exploration. See OQ-36 in
+  open-questions.md.
 
 ## References
 

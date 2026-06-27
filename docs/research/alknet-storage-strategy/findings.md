@@ -1,11 +1,14 @@
 ---
-status: draft
+status: reviewed
 last_updated: 2026-06-27
 ---
 
 # Storage and Auth Strategy
 
-**Status**: Draft for iteration
+**Status**: Conclusions landed as ADR-030, ADR-031, ADR-032, ADR-033. This
+document is the research that informed those ADRs; the ADRs and the amended
+specs (`auth.md`, `config.md`, `client-and-adapters.md`,
+`operation-registry.md`) are now the authoritative source.
 **Date**: 2026-06-27
 **Scope**: Cross-cutting — storage decomposition, auth/ACL model, repo/adapter
 pattern, SQLite+honker as foundation, metagraph as tool. Synthesizes the
@@ -14,7 +17,7 @@ OQ-33/34 resolution.
 
 This document consolidates a multi-thread discussion into an architectural
 strategy for storage and auth in the alknet crate graph. It is not an ADR —
-it's the research that will inform ADRs and spec amendments.
+it's the research that informed ADRs and spec amendments.
 
 ---
 

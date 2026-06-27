@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (supersedes ADR-028)
+Accepted (supersedes ADR-028; Assumption 1's `PeerId` source is superseded
+by ADR-030 on the source dimension — the one-way door is preserved)
 
 ## Context
 
@@ -242,6 +243,14 @@ with attribution, filtered by the calling peer's authorization).
    material, surviving key rotation) is tracked as OQ-34, not a v1 blocker.
    The one-way door: `PeerId` is logical, not crypto — this determines the
    `PeerCompositeEnv` key type and `PeerRef::Specific` payload. See OQ-33.
+
+   > **Superseded by ADR-030 on the `PeerId` source dimension.** The
+   > one-way door (`PeerId` is logical, not crypto) is preserved. The v1
+   > UUID source is replaced by `Identity.id` from `PeerEntry.peer_id`
+   > (stable across key rotation). The "no-storage workaround" framing is
+   > no longer accurate — the storage boundary is now `config + in-memory
+   > adapter` (ADR-030 + ADR-033), with persistence adapters additive. See
+   > ADR-030 and OQ-33 (resolved).
 
 2. **`PeerRef::Any` = insertion-order first-match.** Deterministic but
    order-dependent (worker A connects before worker B → `Any` routes to A
