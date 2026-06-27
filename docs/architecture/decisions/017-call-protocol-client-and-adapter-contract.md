@@ -360,19 +360,20 @@ noted re-import hot-swap is a two-way door; §3 mentioned the namespace prefix).
 The call-completion gap analysis (`docs/research/alknet-call-completion/gap-analysis.md`
 DC-1..4) resolved them. The resolutions:
 
-### DC-1 — CallClient registry scope: resolved by ADR-028
+### DC-1 — CallClient registry scope: resolved by ADR-028, superseded by ADR-029
 
-The §1 Consequences security dimension is resolved by
-[ADR-028](028-callclient-peer-scoped-registry-filtering.md). The one-way
-door (existence of peer-scoped filtering as the v1 default) is locked:
-**default-deny**, with a `remote_safe: bool` on `HandlerRegistration`
-v1 shape and a trusted-peer opt-in. The shape of the marking is the
-two-way-door remainder, tracked as OQ-25. This ADR's §1 text ("It has its own
-operation registry to dispatch incoming calls from the remote side") and
-the Consequences note ("The specific mechanism … is a two-way door") are
-superseded by ADR-028's decision that the *default* is filtered, not
-shared-global. Share-global remains available as the explicit opt-in
-(ADR-028 §3).
+The §1 Consequences security dimension was originally resolved by ADR-028
+(default-deny `remote_safe: bool` + `trusted_peer` opt-in). **ADR-028 is now
+superseded by [ADR-029](029-peer-graph-routing-model.md)** (2026-06-27):
+the flat-namespace single-peer model ADR-028 built on cannot express the
+head→N-workers pattern, and the `remote_safe`/`trusted_peer` gate duplicates
+the existing `AccessControl`/`Identity` machinery while reintroducing the
+blanket-bypass anti-pattern ADR-015 killed. ADR-029 replaces the flat overlay
+with peer-keyed overlays + `PeerRef` routing, and retires `remote_safe`/
+`trusted_peer` in favor of `AccessControl::check(peer_identity)` — the
+existing authorization path that was already in the dispatch path. The peer-
+scoping question this section flagged is now answered structurally (peer-keyed
+overlays), not by a parallel boolean gate.
 
 ### DC-4 — OperationAdapter trait error type: resolved
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-26
+last_updated: 2026-06-27
 ---
 
 # alknet-call — Client and Adapters
@@ -61,9 +61,16 @@ fills the gap ADR-017 left to implementation: the `CallClient` API, the
 `from_call`/`from_jsonschema` flows, the trait signature, the adapter
 location, the credential invariant, and the bilateral pattern. The gap
 analysis (`docs/research/alknet-call-completion/gap-analysis.md`) identified
-four decisions (DC-1..4) needed before implementation; DC-1 is resolved by
-ADR-028, and DC-2/3/4 are two-way-door defaults recorded here and tracked as
-OQs (DC-2→OQ-27, DC-3→OQ-28, DC-4→OQ-26).
+four decisions (DC-1..4) needed before implementation. DC-1 was initially
+resolved by ADR-028 (`remote_safe`/`trusted_peer`), but a subsequent research
+pass (`docs/research/alknet-call-peer-routing/findings.md`) found that
+ADR-028's model was structurally broken for the head→N-workers pattern (the
+primary use case) and that its parallel `remote_safe`/`trusted_peer`
+authorization system duplicated the existing `AccessControl`/`Identity`
+machinery. **ADR-029 supersedes ADR-028**: peer-keyed overlays + `PeerRef`
+routing, and peer authorization through the existing `AccessControl::check(peer_identity)`.
+DC-2/3/4 are two-way-door defaults recorded here (DC-2→OQ-27, DC-3→OQ-28
+cross-peer dissolved / same-peer stays, DC-4→OQ-26).
 
 ## Architecture
 
@@ -79,30 +86,12 @@ accept path is the producer on the inbound side. Both produce the same
 
 ```rust
 pub struct CallClient {
-    /// The operation registry. The peer-scoped view is a dispatch-time read
-    /// over this registry, not a copy (ADR-028 §5).
     registry: Arc<OperationRegistry>,
     identity_provider: Arc<dyn IdentityProvider>,
-    /// Trusted-peer mode (ADR-028 §3): when true, the dispatch path exposes
-    /// all External ops to the remote peer and `services/list` lists all
-    /// External ops, ignoring the `remote_safe` marking. When false
-    /// (default), only registrations with `remote_safe: true` dispatch, and
-    /// `services/list` hides non-remote-safe ops (ADR-028 Assumption 2).
-    trusted_peer: bool,
 }
 
 impl CallClient {
-    /// Default-deny mode: only `remote_safe: true` ops dispatch/list to the
-    /// remote peer (ADR-028).
     pub fn new(registry: Arc<OperationRegistry>, idp: Arc<dyn IdentityProvider>) -> Self;
-
-    /// Trusted-peer mode: construct a CallClient that exposes all External
-    /// ops from `registry` to the remote peer, ignoring the remote-safe
-    /// marking. Explicit opt-in per ADR-028 §3.
-    pub fn trusted_peer(
-        registry: Arc<OperationRegistry>,
-        identity_provider: Arc<dyn IdentityProvider>,
-    ) -> Self;
 
     /// Open a QUIC connection to `addr` on ALPN `alknet/call`, perform
     /// credential handshake, and return a CallConnection running the shared
@@ -118,20 +107,25 @@ impl CallClient {
 }
 ```
 
-The v1 mechanism is the `trusted_peer: bool` flag plus the `remote_safe: bool`
-field on each `HandlerRegistration` (default `false` across all provenance,
-ADR-028 §4). A richer per-peer filtering mechanism (per-peer allowlist,
-capability-class tag) is the two-way-door remainder tracked as OQ-25; v1's
-boolean limits exposure control to "remote-safe for any peer" vs "not," which
-is acceptable for the runner/dispatch pattern (one remote peer per
-`CallClient`).
+Peer authorization flows through the existing `AccessControl::check` against
+the peer's resolved `Identity` (ADR-029 §3) — there is no `trusted_peer` flag
+and no `remote_safe` marking. When a remote peer calls an op, the dispatch
+path resolves the peer's `Identity` (from the connection's TLS fingerprint or
+the `auth_token` payload, via the existing `IdentityProvider`) and runs
+`AccessControl::check(peer_identity)` against the op's `AccessControl`. If
+the op's required scopes/resources are satisfied, the call dispatches; if not,
+`FORBIDDEN` before the handler runs (capabilities never populated — the
+security property). An op that should never be callable from the wire uses
+`Visibility::Internal` (existing mechanism, `NOT_FOUND` before ACL). See
+[ADR-029](../../decisions/029-peer-graph-routing-model.md) §3 for the full
+mapping of the three `remote_safe` cases to `AccessControl`/`Visibility`.
 
 The connection is symmetric after establishment (ADR-017 §2): both sides can
 send and receive `call.requested`. Connection direction (who opened it) is
 independent of call direction (who calls whom). The `CallClient` is therefore
 both a caller and a callee — it dispatches incoming calls from the remote
-peer against its peer-scoped registry view, and it initiates outgoing calls
-through the `CallConnection::call()` / `subscribe()` / `abort()` API.
+peer through the same `AccessControl`-gated path, and it initiates outgoing
+calls through the `CallConnection::call()` / `subscribe()` / `abort()` API.
 
 #### Shared Dispatcher
 
@@ -143,13 +137,6 @@ accept path and `CallClient`'s connect path construct a `Dispatcher` and call
 connection-establishment half differs (accept vs dial).
 
 ```rust
-/// Peer-scoped registry filter state (ADR-028). `trusted_peer: false`
-/// (default-deny for a CallClient) hides ops whose
-/// `HandlerRegistration.remote_safe` is false from both dispatch and
-/// `services/list`. `trusted_peer: true` (explicit opt-in, also used by the
-/// CallAdapter's local accept path) bypasses the filter.
-pub struct RemoteFilter { pub trusted_peer: bool }
-
 /// Shared dispatcher for an established CallConnection. Constructed by both
 /// CallAdapter (accept path) and CallClient (connect path). Holds no
 /// per-connection state; the CallConnection is passed into run_loop.
@@ -158,37 +145,54 @@ pub struct Dispatcher {
     pub identity_provider: Arc<dyn IdentityProvider>,
     pub session_source: Option<Arc<dyn SessionOverlaySource + Send + Sync>>,
     pub default_timeout: Duration,
-    pub remote_filter: RemoteFilter,
 }
 ```
 
-The `remote_filter` is the dispatch-time gate that enforces ADR-028's
-default-deny: `dispatch_requested` checks `remote_filter.allows(registration.remote_safe)`
-**before** building the context or invoking the handler — a non-remote-safe op
-returns `NOT_FOUND` before any capability material reaches the handler (the
-security argument for default-deny, ADR-028 Context). The accept path
-(`CallAdapter`) uses `RemoteFilter::trusted()` by convention — a direct QUIC
-client is not a filtered `CallClient` peer in the ADR-028 sense.
+The dispatch path resolves the peer's `Identity`, runs `AccessControl::check`
+against the op's `AccessControl`, and dispatches if allowed — the same
+authorization machinery that gates every other call. No `RemoteFilter`, no
+`remote_safe` gate (ADR-029 §3 retires these).
 
 `CallClient::spawn_dispatch(connection)` is the lower-level API that takes a
 pre-established `Connection`, constructs a `CallConnection`, builds a
-`Dispatcher` with the appropriate `RemoteFilter`, spawns the dispatch task,
-and returns the live `CallConnection`. `connect()` uses it after the QUIC dial
-completes; tests use it to wire mock/loopback connections directly.
+`Dispatcher`, spawns the dispatch task, and returns the live `CallConnection`.
+`connect()` uses it after the QUIC dial completes; tests use it to wire
+mock/loopback connections directly.
 
-#### services/list peer-scoped serving
+#### Peer-keyed composition env (ADR-029)
 
-The `services/list` hide behavior (ADR-028 Assumption 2) is wired via a
-separate handler factory: `services_list_handler_peer_scoped(registry,
-trusted_peer)` in `registry/discovery.rs`, backed by
-`OperationRegistry::list_operations_peer_scoped(trusted_peer)`. The assembly
-layer constructs the `CallClient`'s registry with this peer-scoped handler
-(not the plain `services_list_handler` used by the `CallAdapter`'s local
-accept path) so that when the remote peer calls `services/list` on the
-`CallClient`, the response hides non-remote-safe ops in default-deny mode.
-The dispatch-path `RemoteFilter` (above) and the `services/list`-handler
-filter are the two halves of the same default-deny posture — discovery and
-dispatch filters agree.
+The composition env that aggregates multiple connections is **peer-keyed**
+(ADR-029 §1). `CompositeOperationEnv`'s singular
+`connection: Option<Arc<dyn OperationEnv>>` is replaced by `PeerCompositeEnv`
+with peer-keyed connections:
+
+```rust
+pub struct PeerCompositeEnv {
+    pub base: Arc<dyn OperationEnv + Send + Sync>,       // Layer 0 curated
+    pub session: Option<Arc<dyn OperationEnv + Send + Sync>>,  // Layer 1
+    pub connections: HashMap<PeerId, Arc<dyn OperationEnv + Send + Sync>>,  // Layer 2, peer-keyed
+    connection_order: Vec<PeerId>,  // insertion order for PeerRef::Any first-match
+}
+pub type PeerId = String;  // = Identity.id
+```
+
+`OperationEnv` gains a peer-routing method with a `PeerRef` selector
+(`Specific(PeerId)` / `Any`), default-impl for back-compat. See
+[ADR-029](../../decisions/029-peer-graph-routing-model.md) §2 for the full
+`invoke_peer` signature and `ScopedPeerEnv` peer-qualified reachability. The
+per-`CallConnection` overlay stays flat (one connection = one peer); the
+peer-keying is at the aggregation layer (the head node's composition env).
+
+#### services/list
+
+`services/list` filters by `AccessControl::check(calling_peer_identity)` —
+the calling peer sees only ops it is authorized to call. The
+`services_list_handler` / `services_list_handler_peer_scoped` split collapses
+to a single `AccessControl`-filtered handler (the `peer_scoped` variant and
+the `remote_safe` filter are removed). `services/list-peers` is the opt-in for
+peer-attributed re-export listing (each peer's sub-overlay listed with
+attribution, filtered by the calling peer's authorization). See
+[ADR-029](../../decisions/029-peer-graph-routing-model.md) §6.
 
 ### Credential sources for connections
 
@@ -287,10 +291,14 @@ a stale overlay dies with the connection; re-import on reconnect is naturally
 scoped to the new connection. This is the v1 default; explicit re-import via a
 future `CallConnection::refresh()` is additive.
 
-**Namespace collision** (DC-3, OQ-28): optional prefix, default no prefix,
-collision = error. A node importing from two remotes that both expose
-`/container/exec` without prefixes should fail loudly. The operator adds
-prefixes when they know they're importing from multiple sources.
+**Namespace collision** (DC-3, OQ-28): under the peer-graph model (ADR-029),
+cross-peer collision dissolves — same name on different peers is fine (they
+live in separate peer sub-overlays, no prefix needed). Same-peer collision
+stays an error (a peer shouldn't expose two ops with the same name).
+`FromCallConfig::namespace_prefix` is optional local-naming sugar for when
+the importing node wants to expose a peer's ops under a different name
+*locally* — a local-naming concern, not a disambiguation concern. It defaults
+to `None`.
 
 **Trust is transitive** (recorded in `operation-registry.md`): a
 `from_call`-imported operation executes the remote node's code, not yours.
@@ -520,10 +528,13 @@ Based on the gap analysis and the downstream unblock chain:
 4. **`from_jsonschema`** (medium, standalone) — schema-only registration, no
    handler. Small.
 
-5. **DC-1 resolution** (peer-scoped registry filtering, ADR-028) — the
-   security dimension of `CallClient`'s registry. Addressed in parallel with
-   #1 — it's a filtering layer on the registry the `CallClient` exposes, not
-   a blocker for the connection-establishment work.
+5. **DC-1 resolution** (peer-graph routing model, ADR-029) — the
+   peer-keyed overlay + `AccessControl`-based peer authorization model that
+   replaces ADR-028's `remote_safe`/`trusted_peer`. This is a structural
+   change to `CompositeOperationEnv` (→ `PeerCompositeEnv`), the dispatch
+   path (retire `RemoteFilter`), and `OperationEnv` (gain `invoke_peer`).
+   See ADR-029 for the migration; the POC shapes in the research doc are the
+   reference.
 
 ## What This Completion Unblocks
 
@@ -547,13 +558,23 @@ Based on the gap analysis and the downstream unblock chain:
   call protocol's wire format carries no private keys, API keys, or decrypted
   credentials (ADR-014). The no-env-vars invariant (above) is the dispatch-side
   corollary.
-- **Peer-scoped registry is default-deny.** A `CallClient` exposes no
-  operations to the remote peer unless marked remote-safe. Trusted-peer
-  opt-in is explicit (ADR-028).
+- **Peer authorization via `AccessControl`.** A remote peer's call is
+  authorized by `AccessControl::check(peer_identity)` against the op's
+  `AccessControl` — the same mechanism that gates every other call. No
+  `remote_safe` flag, no `trusted_peer` bypass (ADR-029 §3). An op with
+  `AccessControl::default()` is callable by any peer; an op with
+  `required_scopes` is callable only by peers whose `Identity.scopes` satisfy
+  them; an op with `Visibility::Internal` is never callable from the wire.
+- **Composition env is peer-keyed.** A head node with N worker connections
+  holds a `PeerCompositeEnv` with `connections: HashMap<PeerId, Arc<dyn OperationEnv>>`,
+  not a singular connection overlay. `invoke_peer()` routes to the right peer
+  via `PeerRef::Specific` / `PeerRef::Any` (ADR-029 §1-2).
 - **`from_call` re-import is auto-on-reconnect.** v1 default; the overlay is
   per-connection so re-import is naturally scoped (DC-2, OQ-27).
-- **`from_call` namespace collision is an error.** Default no prefix; the
-  operator adds prefixes when importing from multiple sources (DC-3, OQ-28).
+- **`from_call` namespace collision is same-peer only.** Cross-peer collision
+  dissolves (same name on different peers is fine — separate sub-overlays,
+  ADR-029 §5). Same-peer collision stays an error. `namespace_prefix` is
+  optional local-naming sugar, not the disambiguation mechanism (DC-3, OQ-28).
 - **`OperationAdapter::import()` returns `Result`.** Failures surface as
   `AdapterError` (DC-4, OQ-26).
 - **MCP stdio transport is not built.** Streamable HTTP is the only supported
@@ -565,7 +586,8 @@ Based on the gap analysis and the downstream unblock chain:
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction; trait is async; adapters produce `HandlerRegistration` bundles |
-| Peer-scoped registry filtering (DC-1) | [ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | Default-deny; `remote_safe: bool` on `HandlerRegistration`; trusted-peer opt-in; one-way door on the security dimension |
+| Peer-graph routing model (DC-1, supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via existing `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` |
+| ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~Default-deny; `remote_safe: bool`; trusted-peer opt-in~~ — superseded by ADR-029 (flat-namespace single-peer model couldn't express head→N-workers; parallel auth system duplicated existing `AccessControl`) |
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | The no-env-vars invariant's foundation; capabilities injected at assembly layer |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | The registration bundle adapters produce; `composition_authority: None` for leaves |
 | Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Layer 2 per-connection overlay where `from_call` imports land |
@@ -583,38 +605,50 @@ Based on the gap analysis and the downstream unblock chain:
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-25** (open, two-way): Remote-safe marking shape — `remote_safe: bool`
-  v1 vs per-peer allowlist vs capability-class tag. The *existence* of
-  filtering is locked by ADR-028; the shape is the two-way-door remainder.
+- **OQ-25** (dissolved by ADR-029): `remote_safe` marking shape — moot.
+  `remote_safe`/`trusted_peer` are retired; peer authorization is
+  `AccessControl::check(peer_identity)`. No marking to shape.
 - **OQ-26** (open, two-way): `AdapterError` enum variants (DC-4). The
   *presence* of an error type is recorded here; the variants are
-  implementation-detail.
+  implementation-detail. A `SamePeerCollision` variant may replace the flat
+  `Conflict` variant (ADR-029 §5).
 - **OQ-27** (open, two-way): `from_call` re-import trigger — auto-on-reconnect
   (v1 default, recorded here) vs explicit `CallConnection::refresh()`. v1 is
-  auto-on-reconnect; the explicit path is additive.
-- **OQ-28** (open, two-way): `from_call` namespace collision behavior — error
-  on collision (v1 default, recorded here) vs last-wins.
+  auto-on-reconnect; the explicit path is additive. The overlay is now
+  peer-scoped (drops with the connection), so re-import is naturally scoped.
+- **OQ-28** (cross-peer dissolved by ADR-029 / same-peer stays): Cross-peer
+  collision dissolves — same name on different peers is fine (separate
+  sub-overlays). Same-peer collision stays an error. `namespace_prefix` is
+  optional local-naming sugar, not the disambiguation mechanism.
 - **OQ-29** (open, two-way): `CallClient` TLS client-auth + remote-identity
   verification — v1 connects with `with_no_client_auth()` and
-  `AcceptAnyServerCertVerifier` (does not present a client cert, does not pin
-  the remote's expected identity from `credentials.remote_identity`). Wiring
-  the local node's RawKey/X509 identity as a rustls client-auth cert and
-  plugging `remote_identity` into a real `ServerCertVerifier` is additive.
-  The one-way constraint (credentials from `Capabilities`, ADR-014) is
-  unaffected — `auth_token` flows through the call-protocol payload, not TLS.
+  `AcceptAnyServerCertVerifier`. Wiring RawKey client-auth is additive.
+  Orthogonal to the routing model (ADR-029); `auth_token` flows through the
+  call-protocol payload, not TLS, so the no-env-vars invariant is unaffected.
+- **OQ-30** (open, two-way): `PeerRef::Any` routing policy — v1 insertion-order
+  first-match; round-robin/least-loaded is the future extension (ADR-029 §2).
+- **OQ-31** (open, two-way): `services/list-peers` re-export semantics — v1
+  defaults to "own ops only"; `services/list-peers` is the opt-in (ADR-029 §6).
+- **OQ-32** (open): Multi-hop federation — v1 is one-hop; the peer-keyed
+  overlay model extends to multi-hop without redesign; petgraph is the
+  candidate if path-finding becomes real (ADR-029 §3.7).
 
 ## References
 
 - ADR-017: Call Protocol Client and Adapter Contract (the spec this document
   operationally fills)
-- ADR-028: Peer-Scoped Registry Filtering for CallClient Inbound Dispatch
-  (resolves DC-1)
+- ADR-029: Peer-Graph Routing Model (supersedes ADR-028; resolves DC-1 with
+  peer-keyed overlays + `AccessControl`-based peer authorization)
+- ~~ADR-028~~: Peer-Scoped Registry Filtering (superseded by ADR-029)
 - `call-protocol.md` — `CallAdapter`, `CallConnection`, dispatch loop, stream
   model (the server-side complement to this document)
 - `operation-registry.md` — `HandlerRegistration`, provenance, capability
   injection, service discovery (the discovery API `from_call` consumes)
 - `docs/research/alknet-call-completion/gap-analysis.md` — DC-1..4, the
   implementation-state audit, the downstream unblock chain
+- `docs/research/alknet-call-peer-routing/findings.md` — the peer-graph
+  routing research that identified ADR-028's structural gap and validated
+  the ADR-029 design via POC
 - `/workspace/@alkdev/operations/` — TypeScript prior art (`from_openapi.ts`,
   `from_mcp.ts`, `from_schema.ts`, `scanner.ts`)
 - `/workspace/@alkdev/dispatch/` — concrete downstream consumer (container

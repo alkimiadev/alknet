@@ -65,7 +65,8 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Accepted |
 | [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | Accepted |
 | [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | Accepted |
-| [028](decisions/028-callclient-peer-scoped-registry-filtering.md) | Peer-Scoped Registry Filtering for CallClient Inbound Dispatch | Accepted |
+| [028](decisions/028-callclient-peer-scoped-registry-filtering.md) | Peer-Scoped Registry Filtering for CallClient Inbound Dispatch | ~~Accepted~~ → **Superseded** by ADR-029 |
+| [029](decisions/029-peer-graph-routing-model.md) | Peer-Graph Routing Model for alknet-call Composition | Proposed |
 
 ## Open Questions
 
@@ -97,12 +98,15 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-23**: Handler identity registration path — registration bundle with provenance, composition authority, scoped env, capabilities (ADR-022)
 - **OQ-24**: Operation error schemas — declared domain errors with typed `details` payload; adapter fidelity for `from_openapi`/`to_openapi` (ADR-023)
 
-**Open (two-way-door remainders from alknet-call completion):**
-- **OQ-25**: Remote-safe marking shape — existence of default-deny `CallClient` filtering locked by ADR-028; shape (`remote_safe: bool` v1 vs per-peer allowlist) open
+**Open (two-way-door remainders from alknet-call completion + peer-graph routing):**
+- **OQ-25**: ~~Remote-safe marking shape~~ — **dissolved by ADR-029** (no marking; peer authorization is `AccessControl::check(peer_identity)`)
 - **OQ-26**: `OperationAdapter` error type — `import()` returns `Result<_, AdapterError>`; variants decided in implementation
 - **OQ-27**: `from_call` re-import trigger — v1 default auto-on-reconnect; explicit `refresh()` additive
-- **OQ-28**: `from_call` namespace collision — v1 default error-on-collision (no prefix by default)
-- **OQ-29**: `CallClient` TLS client-auth + remote-identity verification — v1 connects with `with_no_client_auth()` and `AcceptAnyServerCertVerifier`; wiring RawKey client-auth is additive (the no-env-vars invariant is unaffected — `auth_token` flows through the call-protocol payload, not TLS)
+- **OQ-28**: `from_call` namespace collision — cross-peer **dissolved by ADR-029** (separate sub-overlays); same-peer stays error
+- **OQ-29**: `CallClient` TLS client-auth — v1 `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth is additive
+- **OQ-30**: `PeerRef::Any` routing policy — v1 insertion-order first-match; round-robin/least-loaded is future (ADR-029)
+- **OQ-31**: `services/list-peers` re-export semantics — v1 "own ops only"; `services/list-peers` is opt-in (ADR-029)
+- **OQ-32**: Multi-hop federation — v1 one-hop; peer-keyed model extends without redesign; petgraph candidate (ADR-029)
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

@@ -2,7 +2,20 @@
 
 ## Status
 
-Accepted
+**Superseded** by [ADR-029](029-peer-graph-routing-model.md) (2026-06-27).
+
+ADR-028 introduced `remote_safe: bool` and `trusted_peer: bool` as a parallel
+authorization system for peer-scoped dispatch. This was a structural miss: the
+flat-namespace single-peer model it built on cannot express the head→N-workers
+pattern (the primary use case), and the parallel `remote_safe`/`trusted_peer`
+gate duplicates the existing `AccessControl`/`Identity` machinery (which
+already authorizes peer calls) while reintroducing the blanket-bypass
+anti-pattern ADR-015 was written to kill. ADR-029 replaces the flat overlay
+with peer-keyed overlays + `PeerRef` routing, and retires `remote_safe`/
+`trusted_peer` in favor of the existing `AccessControl::check(peer_identity)`.
+See ADR-029 for the design that replaces this one; see
+`docs/research/alknet-call-peer-routing/findings.md` for the research that
+identified the gap.
 
 ## Context
 

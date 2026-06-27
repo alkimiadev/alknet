@@ -232,8 +232,9 @@ pub struct HandlerRegistration {
     pub composition_authority: Option<CompositionAuthority>, // None for leaves
     pub scoped_env: Option<ScopedOperationEnv>,               // None for leaves
     pub capabilities: Capabilities,
-    pub remote_safe: bool,   // default false; ADR-028 — exposes this op to
-                             // CallClient peers (trusted-peer mode bypasses)
+    // NOTE: ADR-028 added `remote_safe: bool` here; ADR-029 supersedes it and
+    // removes the field. Peer authorization is `AccessControl::check(peer_identity)`,
+    // not a per-op boolean. See ADR-029 §3.
 }
 ```
 
@@ -664,7 +665,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Curated (static, immutable) + session and connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`from_jsonschema`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md) |
-| Peer-scoped registry filtering for CallClient | [ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | Default-deny `CallClient` registry view; adds `remote_safe` marking to `HandlerRegistration` (the bundle this doc defines) |
+| Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` (the field this doc's `HandlerRegistration` previously gained) |
+| ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~`remote_safe` marking on `HandlerRegistration`~~ — superseded by ADR-029 |
 
 ## Open Questions
 
@@ -674,8 +676,14 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on the curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Session ops are `Session` provenance (ADR-022) — always `Internal`, compose under restricted authority scoped down at sandbox creation. Generalized by ADR-024 to cover connection-scoped overlays as well.
-- **OQ-25** (open, two-way): Remote-safe marking shape — existence of default-deny `CallClient` filtering locked by ADR-028; the shape (the `remote_safe: bool` field this doc's `HandlerRegistration` gains vs a richer per-peer mechanism) is the two-way-door remainder. See [client-and-adapters.md](client-and-adapters.md).
-- **OQ-26..28** (open, two-way): `OperationAdapter` error type, `from_call` re-import trigger, `from_call` namespace collision. v1 defaults recorded in [client-and-adapters.md](client-and-adapters.md).
+- **OQ-25** (dissolved by ADR-029): `remote_safe` marking shape — moot.
+  `remote_safe`/`trusted_peer` are retired; peer authorization is
+  `AccessControl::check(peer_identity)`, the existing mechanism. See
+  [client-and-adapters.md](client-and-adapters.md) and ADR-029 §3.
+- **OQ-26..28** (OQ-26/27 stay two-way; OQ-28 cross-peer dissolved by ADR-029 /
+  same-peer stays): `OperationAdapter` error type, `from_call` re-import
+  trigger, `from_call` namespace collision. v1 defaults recorded in
+  [client-and-adapters.md](client-and-adapters.md).
 
 ## References
 

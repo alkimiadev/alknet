@@ -38,7 +38,8 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Registration bundle carries provenance, composition authority, scoped env, capabilities |
 | [023](../../decisions/023-operation-error-schemas.md) | Operation Error Schemas | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity |
 | [024](../../decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
-| [028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | Peer-Scoped Registry Filtering for CallClient Inbound Dispatch | Default-deny peer-scoped registry view; `remote_safe` marking on `HandlerRegistration`; trusted-peer opt-in; locks the ADR-017 §1 security-dimension one-way door |
+| [028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | ~~Peer-Scoped Registry Filtering~~ | ~~Accepted~~ → **Superseded** by ADR-029 (flat-namespace single-peer model couldn't express head→N-workers; parallel auth system duplicated `AccessControl`) |
+| [029](../../decisions/029-peer-graph-routing-model.md) | Peer-Graph Routing Model | Peer-keyed overlays + `PeerRef` routing; `AccessControl`-based peer authorization; retires `remote_safe`/`trusted_peer` |
 
 ## Relevant Open Questions
 
@@ -49,11 +50,14 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-14 | Batch operation semantics | resolved | Correlated `call.requested` events is the correct protocol design |
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
 | OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays. |
-| OQ-25 | Remote-safe marking shape for CallClient peer-scoped filtering | open (two-way) | Existence of default-deny filtering locked by ADR-028; shape (`remote_safe: bool` v1 vs per-peer allowlist) is the two-way-door remainder |
+| OQ-25 | ~~Remote-safe marking shape~~ | **dissolved** (ADR-029) | `remote_safe`/`trusted_peer` retired; peer authorization is `AccessControl::check(peer_identity)` |
 | OQ-26 | OperationAdapter error type (AdapterError variants) | open (two-way) | `import()` returns `Result<_, AdapterError>`; variants decided in implementation |
-| OQ-27 | from_call re-import trigger | open (two-way) | v1 default: auto-on-reconnect; explicit `refresh()` is additive |
-| OQ-28 | from_call namespace collision behavior | open (two-way) | v1 default: error on collision (no prefix by default) |
-| OQ-29 | CallClient TLS client-auth and remote-identity verification | open (two-way) | v1 connects with `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth and a real `ServerCertVerifier` is additive (no-env-vars invariant unaffected — `auth_token` flows via call-protocol payload, not TLS) |
+| OQ-27 | from_call re-import trigger | open (two-way) | v1 default: auto-on-reconnect; explicit `refresh()` additive |
+| OQ-28 | from_call namespace collision | cross-peer **dissolved** (ADR-029) / same-peer stays | Cross-peer: separate sub-overlays, no collision. Same-peer: error. `namespace_prefix` is local-naming sugar |
+| OQ-29 | CallClient TLS client-auth and remote-identity verification | open (two-way) | v1 `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth is additive (orthogonal to ADR-029) |
+| OQ-30 | `PeerRef::Any` routing policy | open (two-way) | v1 insertion-order first-match; round-robin/least-loaded is future (ADR-029) |
+| OQ-31 | `services/list-peers` re-export semantics | open (two-way) | v1 "own ops only"; `services/list-peers` is opt-in (ADR-029) |
+| OQ-32 | Multi-hop federation | open | v1 one-hop; peer-keyed model extends without redesign; petgraph candidate (ADR-029) |
 
 ## Key Design Principles
 

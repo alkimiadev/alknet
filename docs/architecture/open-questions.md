@@ -319,41 +319,32 @@ These questions are acknowledged but not active. They will be promoted to open w
 
 ## Theme: Call Client and Adapters
 
-These open questions are the two-way-door remainders from the
-call-completion gap analysis
-(`docs/research/alknet-call-completion/gap-analysis.md`, DC-1..4). The
-one-way door among them (DC-1, the *existence* of peer-scoped filtering as
-the default) is resolved by ADR-028; what remains open here is the shape.
-The v1 defaults for DC-2/3/4 are recorded in
+These open questions are the remainders from the call-completion gap analysis
+(`docs/research/alknet-call-completion/gap-analysis.md`, DC-1..4) and the
+peer-graph routing research (`docs/research/alknet-call-peer-routing/findings.md`).
+ADR-029 supersedes ADR-028 and dissolves OQ-25 and the cross-peer half of
+OQ-28; the remaining two-way-door shape/defaults are recorded in
 [client-and-adapters.md](crates/call/client-and-adapters.md) and may be
 revisited during implementation without a new ADR.
 
-### OQ-25: Remote-Safe Marking Shape for CallClient Peer-Scoped Filtering
+### OQ-25: ~~Remote-Safe Marking Shape for CallClient Peer-Scoped Filtering~~ (Dissolved by ADR-029)
 
 - **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 (§1 Consequences), ADR-028
-- **Status**: open
-- **Door type**: Two-way (shape only — existence is one-way, resolved by ADR-028)
-- **Priority**: medium
-- **Resolution**: ADR-028 locks the one-way door: a `CallClient`'s registry
-  view is **default-deny** (no operation is exposed to the remote peer unless
-  explicitly marked remote-safe), with share-global as an explicit trusted-peer
-  opt-in. The v1 shape is a `remote_safe: bool` field on
-  `HandlerRegistration` (default `false` across all provenance). The shape is
-  the two-way-door remainder: a boolean is the simplest shape that supports
-  default-deny; a deployment that needs per-peer differentiation (different
-  subsets exposed to different peers on the same node) needs a richer
-  mechanism — per-peer allowlist, capability-class tag, or a peer-id-keyed map
-  on the registration. v1's boolean limits this to "remote-safe for any peer"
-  vs "not", which is acceptable for the runner/dispatch pattern (one remote
-  peer per `CallClient`). A future ADR may amend or supersede ADR-028's shape
-  without revisiting the *existence* of filtering. Also open under this OQ:
-  whether a richer shape should *expose-but-deny* non-remote-safe ops in
-  `services/list` (returning `NOT_FOUND` on call) instead of *hiding* them.
-  v1 hides them — a peer should not see ops it cannot call, so discovery and
-  dispatch filters agree (ADR-028 Assumption 2); expose-but-deny is the
-  richer-shape question, not a v1 question.
+- **Status**: **dissolved** (ADR-029)
+- **Door type**: ~~Two-way (shape only — existence is one-way, resolved by ADR-028)~~
+- **Priority**: ~~medium~~
+- **Resolution**: **Dissolved by [ADR-029](decisions/029-peer-graph-routing-model.md).**
+  ADR-028's `remote_safe: bool` / `trusted_peer` model is superseded — it was a
+  parallel, weaker authorization system that duplicated the existing
+  `AccessControl`/`Identity` machinery. ADR-029 retires `remote_safe`/
+  `trusted_peer` entirely; peer authorization flows through
+  `AccessControl::check(peer_identity)`. The op's `AccessControl` *is* the
+  peer-authorization policy — there is no separate marking. Per-peer
+  differentiation is via `IdentityProvider` config (different peers get
+  different scopes), not a per-op boolean. The "shape" question is moot
+  because there is no marking to shape. See ADR-029 §3.
 - **Cross-references**: ADR-009, ADR-014, ADR-015, ADR-017, ADR-022, ADR-024,
-  ADR-028, [client-and-adapters.md](crates/call/client-and-adapters.md),
+  ~~ADR-028~~ (superseded), ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md),
   [operation-registry.md](crates/call/operation-registry.md)
 
 ### OQ-26: OperationAdapter Error Type (AdapterError Variants)
@@ -408,7 +399,16 @@ revisited during implementation without a new ADR.
   no ADR needed. The alternative (last-wins) would silently mask one
   remote's op behind another's, which is the kind of surprise the
   default-deny posture exists to avoid.
-- **Cross-references**: ADR-015, ADR-017, ADR-028, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+  **Cross-peer collision dissolved by ADR-029.** Under the peer-keyed overlay
+  model, same name on different peers is fine — they live in separate
+  peer sub-overlays, no collision, no prefix needed. The collision rule now
+  stays only *within* a peer (same name on the same peer is still an error —
+  a peer shouldn't expose two ops with the same name). `FromCallConfig::namespace_prefix`
+  becomes optional local-naming sugar, not the disambiguation mechanism. See
+  ADR-029 §5.
+- **Cross-references**: ADR-015, ADR-017, ~~ADR-028~~ (superseded), ADR-029,
+  [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-29: CallClient TLS Client-Auth and Remote-Identity Verification
 
@@ -433,3 +433,56 @@ revisited during implementation without a new ADR.
   invariant holds independently of this gap. Decided during a future task that
   wires RawKey client-auth; recorded here, not in a full ADR.
 - **Cross-references**: ADR-014, ADR-017, ADR-027, [client-and-adapters.md](crates/call/client-and-adapters.md), [endpoint.md](crates/core/endpoint.md)
+
+### OQ-30: PeerRef::Any Routing Policy
+
+- **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §2, [client-and-adapters.md](crates/call/client-and-adapters.md), `docs/research/alknet-call-peer-routing/findings.md` §3.2
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: v1 `PeerRef::Any` uses insertion-order first-match —
+  deterministic but order-dependent (worker A connects before worker B → `Any`
+  routes to A until A disconnects). This is the simplest routing policy and is
+  correct for the immediate use case (the head picks the first worker that
+  serves the op). A richer `RoutingPolicy` (round-robin, least-loaded,
+  affinity) is the two-way-door remainder; the `PeerRef` enum is designed to
+  compose with a `Route { selector, policy }` struct without breaking the
+  `invoke_peer` signature. Decided during implementation when a fan-out use
+  case needs it; recorded here, not in a full ADR.
+- **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+### OQ-31: services/list-peers Re-Export Semantics
+
+- **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §6, `docs/research/alknet-call-peer-routing/findings.md` §3.5
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: v1 defaults to "own ops only" — `services/list` shows the
+  head's own Layer 0 `External` ops, filtered by `AccessControl::check(calling_peer)`,
+  unchanged from today (minus the `remote_safe` filter). A `services/list-peers`
+  opt-in (new built-in operation) lists the peer overlays with attribution:
+  each peer's sub-overlay listed as `{ peer: Option<PeerId>, operations: [...] }`,
+  filtered by the calling peer's authorization. Whether re-exported peer ops
+  are listed by default, opt-in, or per-peer-policy is the two-way-door
+  remainder; v1 is opt-in (`services/list-peers`). The re-export policy is an
+  `AccessControl` decision on the listing op. Decided during implementation
+  when a consumer needs peer-attributed discovery; recorded here, not in a
+  full ADR.
+- **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+### OQ-32: Multi-Hop Federation
+
+- **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §3.7, `docs/research/alknet-call-peer-routing/findings.md` §3.7
+- **Status**: open
+- **Door type**: One-way (federation model), two-way (mechanism)
+- **Priority**: low
+- **Resolution**: v1 is one-hop — worker A does not transitively see worker
+  B's ops through the head unless the head explicitly re-exports them. The
+  peer-keyed overlay model extends to multi-hop without redesign (a chain of
+  `PeerRef::Specific` routing decisions), but path-finding (which peer reaches
+  which op transitively) is where a graph library (petgraph) would pay off.
+  For v1 (one hop, shallow), a nested `HashMap<PeerId, HashMap<String, ...>>`
+  suffices. Whether multi-hop federation becomes a real use case is a future
+  decision; the peer-keyed model does not foreclose it. Not designed; tracked
+  here so the v1 model's extendability is recorded.
+- **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)

@@ -168,10 +168,13 @@ The dispatch loop is **shared** with `CallClient` (ADR-017 §1): both
 `CallAdapter::handle` (accept path) and `CallClient::connect` (connect path)
 construct a `Dispatcher` (`protocol/dispatch.rs`) and call `run_loop` — the
 dispatch half is one implementation, the connection-establishment half differs
-(accept vs dial). The `Dispatcher` carries a `RemoteFilter` (ADR-028) that
-gates dispatch by `remote_safe`; the accept path uses `RemoteFilter::trusted()`
-by convention. See [client-and-adapters.md](client-and-adapters.md) for the
-`Dispatcher`/`RemoteFilter` mechanism.
+(accept vs dial). Peer authorization flows through the existing
+`AccessControl::check(peer_identity)` — no `RemoteFilter`/`remote_safe` gate
+(ADR-029 §3). The composition env is peer-keyed (`PeerCompositeEnv`,
+ADR-029 §1) to handle head→N-workers routing. See
+[client-and-adapters.md](client-and-adapters.md) for the `Dispatcher` mechanism
+and [ADR-029](../../decisions/029-peer-graph-routing-model.md) for the
+peer-graph routing model.
 
 ### Stream Model
 
@@ -535,7 +538,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction. Client/adapter surface specced in [client-and-adapters.md](client-and-adapters.md) |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
-| Peer-scoped registry filtering for CallClient | [ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | Default-deny `CallClient` registry view; `remote_safe` marking; trusted-peer opt-in |
+| Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; `AccessControl`-based peer authorization; retires `remote_safe`/`trusted_peer` |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details` |
 
 ## Open Questions
@@ -546,8 +549,15 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-14** (resolved): Batch is a client-side pattern of correlated `call.requested` events, not a protocol primitive.
 - **OQ-16** (resolved by ADR-014): No vault operations are exposed over the call protocol for now.
 - **OQ-19** (resolved): Session-scoped operation registries — agent-written operations overlaid on global registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait.
-- **OQ-25..28** (open, two-way): Call-completion remainders — `CallClient` remote-safe marking shape, `OperationAdapter` error type, `from_call` re-import trigger, `from_call` namespace collision. The `CallClient`/adapter surface itself is specced in [client-and-adapters.md](client-and-adapters.md); the one-way door among these (existence of default-deny filtering) is resolved by ADR-028.
-- **OQ-29** (open, two-way): `CallClient` TLS client-auth + remote-identity verification — v1 connects with `with_no_client_auth()` and `AcceptAnyServerCertVerifier`; wiring RawKey client-auth and a real `ServerCertVerifier` is additive. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-25** (dissolved by ADR-029): `remote_safe` marking shape — moot;
+  `remote_safe`/`trusted_peer` retired; peer authorization is
+  `AccessControl::check(peer_identity)`.
+- **OQ-26..29** (OQ-26/27/29 open two-way; OQ-28 cross-peer dissolved / same-peer stays):
+  `OperationAdapter` error type, `from_call` re-import trigger, `from_call`
+  namespace collision, `CallClient` TLS client-auth. See
+  [client-and-adapters.md](client-and-adapters.md) and ADR-029.
+- **OQ-30..32** (open): `PeerRef::Any` routing policy, `services/list-peers`
+  re-export semantics, multi-hop federation. See ADR-029.
 
 ## References
 
