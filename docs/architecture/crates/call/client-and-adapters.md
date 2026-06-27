@@ -173,7 +173,7 @@ pub struct PeerCompositeEnv {
     pub connections: HashMap<PeerId, Arc<dyn OperationEnv + Send + Sync>>,  // Layer 2, peer-keyed
     connection_order: Vec<PeerId>,  // insertion order for PeerRef::Any first-match
 }
-pub type PeerId = String;  // = Identity.id
+pub type PeerId = String;  // logical id (UUID v1), NOT Identity.id — see OQ-33
 ```
 
 `OperationEnv` gains a peer-routing method with a `PeerRef` selector
@@ -608,10 +608,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-25** (dissolved by ADR-029): `remote_safe` marking shape — moot.
   `remote_safe`/`trusted_peer` are retired; peer authorization is
   `AccessControl::check(peer_identity)`. No marking to shape.
-- **OQ-26** (open, two-way): `AdapterError` enum variants (DC-4). The
-  *presence* of an error type is recorded here; the variants are
-  implementation-detail. A `SamePeerCollision` variant may replace the flat
-  `Conflict` variant (ADR-029 §5).
+- **OQ-26** (resolved): `AdapterError` variants — `DiscoveryFailed`,
+  `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`
+  (replaces flat `Conflict`). `#[non_exhaustive]`.
 - **OQ-27** (open, two-way): `from_call` re-import trigger — auto-on-reconnect
   (v1 default, recorded here) vs explicit `CallConnection::refresh()`. v1 is
   auto-on-reconnect; the explicit path is additive. The overlay is now
@@ -632,6 +631,12 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-32** (open): Multi-hop federation — v1 is one-hop; the peer-keyed
   overlay model extends to multi-hop without redesign; petgraph is the
   candidate if path-finding becomes real (ADR-029 §3.7).
+- **OQ-33** (resolved): `PeerId` is a logical id (connection-assigned UUID),
+  not `Identity.id` — decoupling from crypto material keeps the door open for
+  key-rotation-safe ACLs. See OQ-33 in open-questions.md.
+- **OQ-34** (open): Persistent peer registry — the storage dimension OQ-33
+  surfaced; not a v1 blocker (UUID works), tracked so the no-DB posture's
+  limit is deliberate. See OQ-34 in open-questions.md.
 
 ## References
 

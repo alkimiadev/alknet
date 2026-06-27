@@ -79,7 +79,7 @@ pub enum PeerRef {
     Specific(PeerId),  // route to this peer; NOT_FOUND if it doesn't serve the op
     Any,               // first peer (insertion order) that serves it
 }
-pub type PeerId = String;  // = Identity.id
+pub type PeerId = String;  // logical id, NOT Identity.id — see OQ-33
 
 async fn invoke_peer(&self, peer: &PeerRef, namespace: &str, operation: &str,
     input: Value, parent: &OperationContext, policy: AbortPolicy) -> ResponseEnvelope {
@@ -221,22 +221,27 @@ with attribution, filtered by the calling peer's authorization).
   (the `CallClient`, `Dispatcher`, `HandlerRegistration`, `discovery.rs`)
   changes. This is the cost of fixing a one-way-door miss — the previous model
   shipped and was reviewed before the structural gap was caught.
-- `PeerId = Identity.id` (the fingerprint) is not stable across key rotation.
-  A peer that rotates its TLS key gets a new `PeerId`; in-flight
-  `PeerRef::Specific(old_id)` gets `NOT_FOUND` after reconnect. For the
-  immediate use case (head→workers where the operator controls key rotation),
-  this is acceptable. A stable logical node name decoupled from cryptographic
-  identity is the cleaner long-term shape (assumption 1).
+- `PeerId` is a logical identifier, **not** `Identity.id` (the fingerprint or
+  API-key prefix). Coupling `PeerId` to the crypto material would break every
+  in-flight `PeerRef::Specific` and every ACL entry referencing that peer on
+  key rotation. v1 uses a connection-assigned UUID; a configured node name is
+  the future shape. See OQ-33 for the full decision and the key-rotation/ACL
+  rationale.
 
 ## Assumptions
 
-1. **`PeerId = Identity.id` (the fingerprint).** Reconnects with a rotated key
-   change the `PeerId`; the peer-keyed overlay drops the old `PeerId`'s
-   sub-overlay and creates a new one. An in-flight `PeerRef::Specific(old_id)`
-   gets `NOT_FOUND`. This is acceptable for v1 (operator-controlled key
-   rotation in the head→workers pattern). A stable logical node name separate
-   from the cryptographic identity is a future question; the peer-keyed overlay
-   model accommodates it by changing what `PeerId` aliases, not by redesign.
+1. **`PeerId` is a logical identifier, not `Identity.id`.** v1 source is a
+   connection-assigned UUID (v4) — stable for the connection's lifetime,
+   changes on reconnect. This is a no-storage workaround: the core crates are
+   deliberately DB-free (smaller, fewer deps), which works for local-only
+   state but not for cross-node peer identity that wants to persist across
+   restarts and key rotations. An in-flight `PeerRef::Specific(stale_uuid)`
+   gets `NOT_FOUND` on reconnect — the correct failure mode (the peer is
+   gone); re-`from_call` produces a fresh `PeerRef`. The real solution (a
+   persistent peer registry that maps a stable logical name to current crypto
+   material, surviving key rotation) is tracked as OQ-34, not a v1 blocker.
+   The one-way door: `PeerId` is logical, not crypto — this determines the
+   `PeerCompositeEnv` key type and `PeerRef::Specific` payload. See OQ-33.
 
 2. **`PeerRef::Any` = insertion-order first-match.** Deterministic but
    order-dependent (worker A connects before worker B → `Any` routes to A
@@ -278,8 +283,8 @@ with attribution, filtered by the calling peer's authorization).
 - ADR-028: Peer-Scoped Registry Filtering for CallClient Inbound Dispatch
   (superseded)
 - OQ-25: dissolved (no `remote_safe` marking — `AccessControl` is the policy)
-- OQ-26: stays (`AdapterError` — a `SamePeerCollision` variant may replace
-  the flat `Conflict` variant)
+- OQ-26: resolved (`AdapterError` variants — `SamePeerCollision` replaces
+  the flat `Conflict` variant; `#[non_exhaustive]`)
 - OQ-27: stays (re-import trigger — unchanged; the overlay is now peer-scoped)
 - OQ-28: dissolved cross-peer (same name on different peers is fine); stays
   same-peer
@@ -287,6 +292,10 @@ with attribution, filtered by the calling peer's authorization).
 - OQ-30: `PeerRef::Any` routing policy (new — round-robin/least-loaded)
 - OQ-31: `services/list-peers` re-export semantics (new)
 - OQ-32: Multi-hop federation (new — petgraph candidate)
+- OQ-33: resolved — `PeerId` is a logical id (UUID v1), not `Identity.id`;
+  decoupling from crypto material keeps the door open for key-rotation-safe ACLs
+- OQ-34: persistent peer registry (new — the storage dimension OQ-33 surfaced;
+  not a v1 blocker, tracked so the no-DB posture's limit is deliberate)
 - Research: `docs/research/alknet-call-peer-routing/findings.md`
 - Prior art: Ray.io actors (`ActorHandle` = `PeerRef::Specific`), Dapr service
   invocation (app-ID routing = `PeerRef::Specific`, access-control allowlist =

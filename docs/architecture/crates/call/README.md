@@ -51,13 +51,15 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-16 | Safe vault operations for call protocol exposure | resolved (ADR-014) | None exposed for now |
 | OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays. |
 | OQ-25 | ~~Remote-safe marking shape~~ | **dissolved** (ADR-029) | `remote_safe`/`trusted_peer` retired; peer authorization is `AccessControl::check(peer_identity)` |
-| OQ-26 | OperationAdapter error type (AdapterError variants) | open (two-way) | `import()` returns `Result<_, AdapterError>`; variants decided in implementation |
+| OQ-26 | OperationAdapter error type (AdapterError variants) | **resolved** | `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`; `#[non_exhaustive]` |
 | OQ-27 | from_call re-import trigger | open (two-way) | v1 default: auto-on-reconnect; explicit `refresh()` additive |
 | OQ-28 | from_call namespace collision | cross-peer **dissolved** (ADR-029) / same-peer stays | Cross-peer: separate sub-overlays, no collision. Same-peer: error. `namespace_prefix` is local-naming sugar |
 | OQ-29 | CallClient TLS client-auth and remote-identity verification | open (two-way) | v1 `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth is additive (orthogonal to ADR-029) |
 | OQ-30 | `PeerRef::Any` routing policy | open (two-way) | v1 insertion-order first-match; round-robin/least-loaded is future (ADR-029) |
 | OQ-31 | `services/list-peers` re-export semantics | open (two-way) | v1 "own ops only"; `services/list-peers` is opt-in (ADR-029) |
 | OQ-32 | Multi-hop federation | open | v1 one-hop; peer-keyed model extends without redesign; petgraph candidate (ADR-029) |
+| OQ-33 | PeerId — crypto identity vs stable logical id | **resolved** | Logical id (UUID v1), not `Identity.id`; decoupled from crypto for key-rotation-safe ACLs |
+| OQ-34 | Persistent peer registry (cross-node state storage) | open | Not a v1 blocker (UUID works); the no-DB posture's limit, tracked for deliberate future decision |
 
 ## Key Design Principles
 

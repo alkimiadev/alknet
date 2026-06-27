@@ -349,22 +349,26 @@ revisited during implementation without a new ADR.
 
 ### OQ-26: OperationAdapter Error Type (AdapterError Variants)
 
-- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §5
-- **Status**: open
+- **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §5, [ADR-029](decisions/029-peer-graph-routing-model.md) §5
+- **Status**: **resolved** (2026-06-27)
 - **Door type**: Two-way
 - **Priority**: medium
-- **Resolution**: ADR-017 §5 showed `async fn import(&self) ->
-  Vec<HandlerRegistration>` with no error type. The trait returns
-  `Result<Vec<HandlerRegistration>, AdapterError>` where `AdapterError` is a
-  crate-level enum. The *presence* of an error type is recorded in
-  [client-and-adapters.md](crates/call/client-and-adapters.md); the exact
-  variants are the two-way-door remainder. The failure modes real
-  implementations hit: discovery transport failure (`from_call` remote
-  unreachable), schema parse failure (`from_openapi`, `from_jsonschema`),
-  unauthorized (HTTP 401 for `from_openapi`, `from_mcp`). Likely variants:
-  `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`. Decided
-  during implementation; recorded here, not in a full ADR.
-- **Cross-references**: ADR-017, [client-and-adapters.md](crates/call/client-and-adapters.md)
+- **Resolution**: The `AdapterError` enum is `#[non_exhaustive]` +
+  `thiserror::Error`, with these v1 variants:
+  - `DiscoveryFailed { message: String }` — `from_call` remote unreachable / `services/list` failed
+  - `SchemaParse { message: String }` — `from_openapi` / `from_jsonschema` couldn't parse the spec
+  - `Transport { message: String }` — underlying transport error (QUIC for `from_call`, HTTP for `from_openapi`/`from_mcp`)
+  - `Unauthorized { message: String }` — HTTP 401 for `from_openapi`/`from_mcp`, auth rejected for `from_call`
+  - `SamePeerCollision { message: String }` — namespace collision *within a single peer* (ADR-029 §5: cross-peer collision dissolves; same-peer collision stays an error). Replaces the flat `Conflict` variant from the pre-ADR-029 implementation.
+
+  `#[non_exhaustive]` lets `alknet-http`'s adapters extend without breaking
+  match arms. The variant payloads are `String` messages — kept simple and
+  `Send + Sync` by construction. This matches the shipped implementation
+  (`crates/alknet-call/src/client/mod.rs`) except `Conflict` →
+  `SamePeerCollision` (the ADR-029 migration renames it). Two-way door:
+  adding variants later is non-breaking; renaming a variant is a match-arm
+  update but not an architectural change.
+- **Cross-references**: ADR-017, ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-27: from_call Re-Import Trigger
 
@@ -486,3 +490,110 @@ revisited during implementation without a new ADR.
   decision; the peer-keyed model does not foreclose it. Not designed; tracked
   here so the v1 model's extendability is recorded.
 - **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
+
+### OQ-33: PeerId — Cryptographic Identity vs Stable Logical Identifier
+
+- **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) Assumption 1, `docs/research/alknet-call-peer-routing/findings.md` §6.1
+- **Status**: **resolved** (2026-06-27)
+- **Door type**: One-way (composition semantics), two-way (id source)
+- **Priority**: high
+- **Resolution**: `PeerId` is a **logical identifier, decoupled from the
+  cryptographic identity**. It is *not* `Identity.id` (the TLS fingerprint or
+  API-key prefix) — those change on key rotation, which would break every
+  in-flight `PeerRef::Specific` and every ACL entry referencing that peer.
+
+  **v1 source**: connection-assigned UUID (v4) at `connect()`/`accept()` time.
+  Stable for the connection's lifetime; changes on reconnect. This is a
+  **no-storage workaround** — the project has deliberately avoided a DB
+  backend for the core crates (smaller, fewer deps, simpler testing), which
+  has served the local-only crates (vault, registry) well. But peer identity
+  is the first *cross-node* state that wants persistence: what we actually
+  want is a persistent mapping from a logical peer identity to its current
+  cryptographic material, updated on key rotation, surviving restarts.
+  Without a DB, the UUID is the least-bad ephemeral option — the failure
+  mode (in-flight `PeerRef::Specific` gets `NOT_FOUND` on reconnect) is
+  acceptable for v1, and the re-`from_call` produces a fresh `PeerRef`.
+
+  **The real solution (future, tracked as OQ-34):** a persistent peer
+  registry — a mapping from a stable logical peer identity (configured node
+  name or registered identity) to its current cryptographic material,
+  persisted across restarts and key rotations. This is what makes the
+  ACL-stability concern below work correctly: the ACL entry keys on the
+  logical name, the peer registry tracks the current crypto identity for
+  that name, and key rotation becomes a vault-only operation with no ACL
+  update on the remote side. The no-DB posture of the core crates means
+  this registry lives outside the core — likely in a service crate or an
+  assembly-layer store — not in alknet-call itself. See OQ-34.
+
+  **Key-rotation / ACL note (context for the future, not a v1 decision):**
+  if `PeerId` were the fingerprint, rotating a node's TLS key would change
+  its `PeerId`, invalidating every ACL entry that references that peer. The
+  vault makes local key rotation easy (derive a new key, re-encrypt,
+  ADR-021); the problem is the *remote* side's ACL — the hub's
+  `authorized_fingerprints` / `AccessControl` entries that reference the old
+  fingerprint. Decoupling `PeerId` from the crypto material means the ACL
+  entry *can* persist across key rotation — but only if there's a store that
+  maps the logical name to the new crypto identity after rotation. That
+  store is OQ-34. The v1 decision (logical id, not crypto; UUID source)
+  keeps the door open for it without requiring it now.
+
+  **The one-way door:** `PeerId` is a logical id, not `Identity.id`. This
+  determines the `PeerCompositeEnv` key type, the `PeerRef::Specific`
+  payload type, and the `ScopedPeerEnv.peer_pinned` entry shape. Reversing
+  it (switching to `Identity.id`) would break the peer-keyed overlay, the
+  routing selector, and the reachability set simultaneously. The *source* of
+  the logical id (UUID now, peer registry later) is the two-way-door
+  remainder — switching from UUID to a persistent registry changes the
+  id-generation path, not the composition model.
+- **Cross-references**: ADR-009, ADR-014, ADR-015, ADR-017, ADR-021, ADR-027,
+  ADR-029, OQ-34, [client-and-adapters.md](crates/call/client-and-adapters.md),
+  [operation-registry.md](crates/call/operation-registry.md),
+  [auth.md](crates/core/auth.md)
+
+### OQ-34: Persistent Peer Registry (Cross-Node State Storage)
+
+- **Origin**: OQ-33 (the storage dimension it surfaced), the no-DB posture of ADR-008/018/025
+- **Status**: open
+- **Door type**: One-way (storage boundary), two-way (backend choice)
+- **Priority**: medium (not a v1 blocker — UUID works for v1; becomes real
+  when key rotation across nodes or peer-attribution persistence matters)
+- **Resolution**: The core crates (alknet-core, alknet-call, alknet-vault)
+  are deliberately storage-free — no DB, no persistence layer, in-memory
+  state only. This has kept the core small and testable, and it works for
+  local-only state (vault key rotation is version-indexed paths, no DB
+  needed, ADR-021). **Peer identity is the first cross-node state that
+  wants persistence**: a stable logical peer identity mapped to its current
+  cryptographic material, surviving restarts and key rotations. The v1
+  workaround (OQ-33: connection-assigned UUID) is ephemeral — it works for
+  the immediate use case (head→workers, operator-controlled, reconnects
+  produce a fresh UUID) but doesn't support ACL entries that persist across
+  key rotation, because there's nowhere to store "worker-a's current crypto
+  identity is X."
+
+  **What this OQ tracks (not designed, not a v1 decision):**
+  - Whether a persistent peer registry belongs in a service crate (e.g., an
+    `alknet-registry` or `alknet-peer-store`), in the assembly layer (a
+    SQLite file the binary owns), or as a new alknet-core abstraction
+    (a `PeerRegistry` trait with no built-in impl, like `IdentityProvider`).
+  - Whether the no-DB posture extends to "core has a trait, service has the
+    impl" (the `IdentityProvider` pattern) or stays "core is storage-free,
+    persistence is entirely outside the crate graph."
+  - The backend choice (SQLite, a key-value store, a config file) is the
+    two-way-door remainder; the *storage boundary* (does core know about
+    persistence at all?) is the one-way door.
+
+  **Why this is a one-way door on the storage boundary, not a two-way door:**
+  if core gains a `PeerRegistry` trait, downstream crates depend on it and
+  the trait shape becomes a contract. If core stays storage-free, the
+  registry lives in a service crate and core never knows about persistence.
+  Reversing either direction breaks downstream consumers. The decision
+  should be made when a concrete use case (key rotation across nodes,
+    durable peer attribution, multi-hop federation with OQ-32) forces it —
+  not before.
+
+  **Not a v1 blocker.** The UUID works for v1; this OQ exists so the
+  no-DB posture's limit is tracked and the decision is made deliberately
+  when it's needed, not accidentally when someone bolts a SQLite file onto
+  the assembly layer and it becomes load-bearing.
+- **Cross-references**: ADR-008, ADR-018, ADR-021, ADR-025, ADR-029, OQ-33,
+  [auth.md](crates/core/auth.md), [config.md](crates/core/config.md)
