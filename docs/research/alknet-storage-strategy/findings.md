@@ -7,16 +7,14 @@ last_updated: 2026-06-27
 
 **Status**: Draft for iteration
 **Date**: 2026-06-27
-**Scope**: Cross-cutting — storage decomposition, auth/ACL model, repo pattern,
-SQLite+honker as foundation, metagraph as tool. Synthesizes the discussion
-that surfaced during the peer-graph routing research (ADR-029) and OQ-33/34
-resolution.
+**Scope**: Cross-cutting — storage decomposition, auth/ACL model, repo/adapter
+pattern, SQLite+honker as foundation, metagraph as tool. Synthesizes the
+discussion that surfaced during the peer-graph routing research (ADR-029) and
+OQ-33/34 resolution.
 
 This document consolidates a multi-thread discussion into an architectural
 strategy for storage and auth in the alknet crate graph. It is not an ADR —
-it's the research that will inform ADRs and spec amendments. The
-implementation-relevant pieces (the `forwarded_for` field, the
-`IdentityProvider`-as-repo framing) get folded into specs after review.
+it's the research that will inform ADRs and spec amendments.
 
 ---
 
@@ -28,8 +26,8 @@ for it?
 
 1. **Peer identity (OQ-33/OQ-34)** — a head node needs to persist the mapping
    from a stable logical peer identity to its current cryptographic material,
-   surviving key rotation and restarts. The UUID workaround is ephemeral; the
-   real solution is a store.
+   surviving key rotation and restarts. The UUID workaround is ephemeral; a
+   real store is needed.
 2. **Filesystem (POC-validated)** — SQLite + honker + iroh-blobs as the
    three-layer stack for path-tree metadata, content-addressed blobs, and
    transactional notify-on-commit. 24 tests across two POC crates.
@@ -44,6 +42,11 @@ for all three**, and the metagraph model is the right shape for *some* of the
 data. The question is how to decompose this so the core crates stay lean
 while the storage-dependent crates get what they need — without forcing
 everything through the same abstraction.
+
+The answer is a **repo/adapter pattern**: core defines traits, adapters
+implement them against specific backends, the assembly layer wires the
+adapter. This is not a deferral — the traits and the adapters are concrete
+design commitments, documented below.
 
 ---
 
@@ -129,20 +132,28 @@ wakes on commit, not on poll.
 
 ---
 
-## 4. The Repo Pattern for Auth
+## 4. The Repo/Adapter Pattern
 
-### The existing pattern (make it explicit)
+### The principle
 
-`alknet-core` already has the repo pattern: `IdentityProvider` is a trait
-with two methods (`resolve_from_fingerprint`, `resolve_from_token`), one
-adapter (`ConfigIdentityProvider`, backed by `ArcSwap<DynamicConfig>`), and
-one consumer (the call protocol's `Dispatcher`). This is a repo trait — it
-abstracts the *what* (resolve an identity from a credential) from the *how*
-(in-memory config, SQLite, Redis, remote service).
+Core defines traits (repo interfaces). Adapters implement them against
+specific backends. The assembly layer wires the adapter. Downstream crates
+consume the trait, not the adapter. This is the same pattern `IdentityProvider`
+already establishes — we're making it explicit and extending it to every
+storage-shaped concern.
 
-**Make this explicit.** `IdentityProvider` is the auth repo trait in core.
-Adapters implement it. The assembly layer wires the adapter. Downstream
-crates consume the trait, not the adapter.
+### Reference: kepal
+
+The TypeScript project [kepal](/workspace/keypal) is a clean example. It
+abstracts API key management (hashing, validation, scopes, expiration,
+caching) with a `Storage` interface and adapters for Redis, Drizzle, Prisma,
+Kysely, Convex, and in-memory. The core logic (`Manager`) is backend-agnostic;
+the storage is a trait; the consumer picks the adapter at wiring time. An
+`AdapterFactory` provides column-mapping / schema-config so the same adapter
+works against different table schemas.
+
+The alknet equivalent: core defines the repo trait, adapters implement it,
+the assembly layer wires the adapter. The shapes map cleanly.
 
 ### Why this matters beyond the call crate
 
@@ -153,44 +164,141 @@ a repo trait in core, those crates use the same trait, the same adapters, and
 potentially the same backing store — without depending on alknet-call. The
 call crate is one consumer of auth, not the owner of it.
 
-### The distributed-auth door
+The repo pattern also opens the door to distributed auth adapters (automerge
+sync, Redis, a remote identity service) — the trait doesn't care which
+backend is wired. That's not designed here, but the pattern doesn't foreclose
+it.
 
-If the repo trait is clean, someone can wire an adapter that syncs via
-automerge (like the filesystem POC's path-tree CRDT), a Redis adapter, or a
-remote-service adapter. The trait doesn't care. Auth data that isn't storing
-sensitive details (unless encrypted) could be distributed via the same
-patterns the filesystem uses for its path tree. This isn't designed here —
-it's a door the repo pattern opens by not foreclosing it.
+### The concrete repo traits and adapters
 
-### Reference: kepal
+This is the design commitment, not a deferral:
 
-The TypeScript project [kepal](/workspace/keypal) is a clean example of this
-pattern. It abstracts API key management (hashing, validation, scopes,
-expiration, caching) with a `Storage` interface and adapters for Redis,
-Drizzle, Prisma, Kysely, Convex, and in-memory. The core logic
-(`Manager`) is backend-agnostic; the storage is a trait; the consumer picks
-the adapter at wiring time. An `AdapterFactory` provides column-mapping /
-schema-config so the same adapter works against different table schemas.
+#### `IdentityProvider` (auth repo trait — already in core)
 
-The alknet equivalent: `IdentityProvider` is the trait (like kepal's
-`Storage`), `ConfigIdentityProvider` is the in-memory adapter (like kepal's
-`MemoryStore`), the SQLite peer registry is the real adapter (like kepal's
-`RedisStore`/`DrizzleStore`), and the assembly layer wires the adapter (like
-kepal's `Manager` constructor). The shapes map cleanly.
+```rust
+pub trait IdentityProvider: Send + Sync + 'static {
+    fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity>;
+    fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity>;
+}
+```
 
-### PeerStore: adapter-internal, not core
+Already exists. Already used by the call protocol's `Dispatcher`. The
+contract is: given a credential (fingerprint or token), return the resolved
+`Identity` (id, scopes, resources). The `Identity.id` is the **stable logical
+peer identity**, decoupled from the fingerprint (OQ-33). The adapter maps
+fingerprint → stable id + scopes + resources.
+
+**Adapters that need to exist:**
+
+1. **`ConfigIdentityProvider`** (exists, needs updating) — backed by
+   `ArcSwap<DynamicConfig>`. Today it sets `Identity.id = fingerprint`, which
+   couples the identity to the crypto material and breaks on key rotation.
+   Needs to be updated to use `PeerEntry` (see below) so `Identity.id` is the
+   stable `peer_id`, not the fingerprint.
+
+2. **`SqliteIdentityProvider`** (needs building) — backed by a `peers` table
+   in SQLite + honker. Implements `IdentityProvider` by querying the `peers`
+   table. This is the persistent adapter that survives restarts and supports
+   runtime peer add/remove/update. The `peers` table is:
+
+   ```sql
+   CREATE TABLE peers (
+       peer_id TEXT PRIMARY KEY,           -- stable logical id ("worker-a")
+       fingerprint TEXT NOT NULL,          -- current crypto material
+       scopes TEXT NOT NULL DEFAULT '[]',  -- JSON array
+       resources TEXT NOT NULL DEFAULT '{}', -- JSON map
+       display_name TEXT,
+       enabled INTEGER NOT NULL DEFAULT 1,
+       created_at INTEGER NOT NULL,
+       updated_at INTEGER NOT NULL
+   );
+   CREATE INDEX idx_peers_fingerprint ON peers(fingerprint);
+   ```
+
+   Key rotation: `UPDATE peers SET fingerprint = ?new WHERE peer_id = ?`. The
+   `peer_id` is stable; ACL entries key on it; the fingerprint changes; the
+   ACL still matches.
+
+3. **In-memory `IdentityProvider`** (exists for tests) — the current
+   `ConfigIdentityProvider` with `AuthPolicy::default()` or a test config.
+
+#### `CredentialStore` (encrypted credentials repo trait — needs adding to core)
+
+The http crate's `from_openapi`/`from_mcp` handlers need provider credentials
+(API keys, OAuth tokens). The vault encrypts them; a store persists the
+encrypted blobs. The trait:
+
+```rust
+pub trait CredentialStore: Send + Sync {
+    fn get(&self, provider: &str) -> Option<EncryptedData>;
+    fn put(&self, provider: &str, data: &EncryptedData) -> Result<(), CredentialStoreError>;
+    fn delete(&self, provider: &str) -> Result<(), CredentialStoreError>;
+}
+```
+
+**Adapters:**
+1. **`InMemoryCredentialStore`** — `HashMap<String, EncryptedData>`. For
+   tests and simple deployments where credentials are loaded from config at
+   startup.
+2. **`SqliteCredentialStore`** — `credentials` table in SQLite + honker.
+   Persists encrypted provider credentials. The vault encrypts; the store
+   persists the `EncryptedData` blob; the assembly layer loads them into
+   `Capabilities` at registration time (the no-env-vars invariant, ADR-014).
+
+   ```sql
+   CREATE TABLE credentials (
+       provider TEXT PRIMARY KEY,           -- "openai", "anthropic", etc.
+       encrypted_data TEXT NOT NULL,        -- EncryptedData JSON (key_version, iv, ciphertext)
+       created_at INTEGER NOT NULL,
+       updated_at INTEGER NOT NULL
+   );
+   ```
+
+#### `PeerStore` (adapter-internal, not a core trait)
 
 A `PeerStore` trait (save/find/update/delete peer records) is an
 *adapter-internal* detail, not a core trait. The core trait is
-`IdentityProvider`. The SQLite adapter implements `IdentityProvider` by
-delegating to a `PeerStore` internally. The trait boundary that matters for
-cross-crate sharing is `IdentityProvider`, not `PeerStore`.
+`IdentityProvider`. The `SqliteIdentityProvider` implements
+`IdentityProvider` by delegating to an internal `PeerStore` (which queries
+the `peers` table). The `ConfigIdentityProvider` implements
+`IdentityProvider` by reading `PeerEntry` from config. The trait boundary
+that matters for cross-crate sharing is `IdentityProvider`, not `PeerStore`.
 
-This keeps core lean: one auth trait (`IdentityProvider`), not two. The
-store trait lives in the adapter crate (or the assembly layer), where it's
-an implementation detail. If a future adapter (Redis, remote service) needs
-a different internal store shape, it's free to define one — the core contract
-is `IdentityProvider`, not the store.
+This keeps core lean: the auth repo trait (`IdentityProvider`) and the
+credential repo trait (`CredentialStore`) are in core. The store traits
+(`PeerStore`, etc.) are adapter-internal.
+
+### The `PeerEntry` config model
+
+`AuthPolicy` needs to support the id-fingerprint decoupling. Today it has
+`authorized_fingerprints: HashSet<String>` — just fingerprints, no stable id.
+The update:
+
+```rust
+pub struct PeerEntry {
+    pub peer_id: String,           // stable logical id ("worker-a")
+    pub fingerprint: String,       // current crypto material
+    pub scopes: Vec<String>,
+    pub resources: HashMap<String, Vec<String>>,
+    pub display_name: Option<String>,
+    pub enabled: bool,
+}
+
+pub struct AuthPolicy {
+    pub peers: Vec<PeerEntry>,           // replaces authorized_fingerprints
+    pub api_keys: Vec<ApiKeyEntry>,
+}
+```
+
+`ConfigIdentityProvider::resolve_from_fingerprint` queries `peers` for the
+matching fingerprint and returns `Identity { id: peer.peer_id, scopes:
+peer.scopes, resources: peer.resources }`. The `Identity.id` is the stable
+`peer_id`, not the fingerprint. Key rotation: update the `fingerprint` field
+in the `PeerEntry`; the `peer_id` and all ACL entries stay stable.
+
+This is a config change to `AuthPolicy`, not a storage change. It works
+in-memory from config, without SQLite. The SQLite adapter (`SqliteIdentityProvider`)
+stores the same `PeerEntry` shape in a table and persists across restarts.
 
 ---
 
@@ -255,22 +363,13 @@ hub's end users. The hub's ACL handles end-user authorization.
 
 ### No global ACL, no replication
 
-Each node's ACL is local — in its own SQLite file (when storage arrives), in
-its own `peers` table, checked by its own `AccessControl`. There is no
-global ACL, no cross-service ACL replication. When a user's key rotates, the
-hub's `peers` table updates her fingerprint. The spoke's `peers` table is
-unchanged — it only knows about the hub. When the hub's key rotates, the
-spoke's `peers` table updates the hub's fingerprint — a single entry update,
-not a full ACL replication.
-
-### The "many DBs" concern
-
-Having many SQLite files (one per node, one per concern) looks like the
-microservices ACL-replication mess. It isn't, because the trust model is
-per-node: each node only authorizes its direct callers. The DBs don't
-overlap. The mess only happens if you try end-to-end identity propagation
-(the spoke needs to know about every end user) — that's the anti-pattern,
-and the repo pattern + per-node ACL avoids it.
+Each node's ACL is local — in its own SQLite file (when the SQLite adapter
+is wired), in its own `peers` table, checked by its own `AccessControl`.
+There is no global ACL, no cross-service ACL replication. When a user's key
+rotates, the hub's `peers` table updates her fingerprint. The spoke's `peers`
+table is unchanged — it only knows about the hub. When the hub's key
+rotates, the spoke's `peers` table updates the hub's fingerprint — a single
+entry update, not a full ACL replication.
 
 ---
 
@@ -292,10 +391,11 @@ quotas, or pass it to the operation handler for context. But the spoke's ACL
 still authorizes the *hub*, not the end user — the forwarded-for identity is
 informational, not authoritative.
 
-### The recommendation: add it, as metadata
+### The decision: add it, as metadata
 
-The forwarded-for identity should be added as a protocol-level field, not
-as an afterthought. Reasoning:
+The forwarded-for identity is a protocol-level field. It's either in the
+model or it isn't — it can't be bolted on without a protocol change. The
+recommendation is to include it:
 
 1. **Audit trail.** Without it, a cross-node call chain is untraceable at
    the leaf. The spoke knows "the hub called me" but not "alice asked the
@@ -359,9 +459,9 @@ authenticates as itself (its own `auth_token`); the `forwarded_for` field
 carries the originator's identity as context.
 
 This is a protocol addition — a field on the `call.requested` payload and
-on `OperationContext`. It's in or it's out; it can't be bolted on later
-without a protocol change. The recommendation is to include it from the
-start.
+on `OperationContext`. It's included in the ADR-029 migration or a
+companion task — the `from_call` handler is being rewritten anyway, and the
+`OperationContext` struct is being touched.
 
 ---
 
@@ -372,15 +472,18 @@ start.
 ```
 alknet-core (lean — no SQLite, no honker)
 ├── IdentityProvider trait          (the auth repo trait — already exists)
+├── CredentialStore trait           (the encrypted-credentials repo trait — needs adding)
 ├── Identity, AuthToken, AuthContext (the auth types — already exist)
 ├── AccessControl, AccessResult      (the ACL check — already exists)
-└── (no PeerStore trait — adapter-internal, not core)
+├── ConfigIdentityProvider           (in-memory adapter — needs PeerEntry update)
+├── InMemoryCredentialStore          (in-memory adapter — needs building)
+└── PeerEntry                        (config model for decoupled id — needs adding to AuthPolicy)
 
 Storage-consuming crates (each owns its SQLite + honker):
-├── alknet-filesystem     — path-tree tables (tree, not graph; POC-proven)
-├── peer registry         — peers table (KV; implements IdentityProvider)
-├── provider credentials  — credentials table (KV; encrypted by vault)
-└── alknet-graphs (future) — metagraph tables (graph-shaped problems)
+├── alknet-peer-store-sqlite  — SqliteIdentityProvider (peers table + honker)
+├── alknet-credential-store-sqlite — SqliteCredentialStore (credentials table + honker)
+├── alknet-filesystem         — path-tree tables (tree, not graph; POC-proven)
+└── alknet-graphs             — metagraph tables (graph-shaped problems: ACL delegation, workflows, taskgraph)
 
 alknet-call (lean — no SQLite, no honker, no storage traits)
 ├── Uses IdentityProvider (the trait, not the adapter)
@@ -391,18 +494,20 @@ alknet-call (lean — no SQLite, no honker, no storage traits)
 
 ### What goes where
 
-| Concern | Where it lives | Shape |
-|---------|---------------|-------|
-| Auth repo trait (`IdentityProvider`) | alknet-core | Trait (already exists) |
-| Auth adapters (Config, SQLite, future Redis/remote) | Adapter crates or assembly layer | Implements `IdentityProvider` |
-| Per-node ACL check (`AccessControl::check`) | alknet-core (already exists) | Table-shaped: scope/resource match |
-| Peer identity storage (PeerStore) | Adapter crate (adapter-internal) | `peers` table |
-| Filesystem path tree + bucket ACL | alknet-filesystem | Specialized tables (POC-proven) |
-| Provider credentials (encrypted) | Adapter crate or assembly layer | `credentials` table (vault encrypts) |
-| ACL delegation graph (future) | alknet-graphs (metagraph) | Graph (traversal, scope narrowing) |
-| Workflows / flowgraph (future) | alknet-graphs (metagraph) | Graph (DAG) |
-| Taskgraph (future) | alknet-graphs (metagraph) | Graph (dependency DAG) |
-| Forwarded-for identity | alknet-call (protocol field) | Metadata on `call.requested` + `OperationContext` |
+| Concern | Where it lives | Shape | Status |
+|---------|---------------|-------|--------|
+| Auth repo trait (`IdentityProvider`) | alknet-core | Trait | Exists |
+| Credential repo trait (`CredentialStore`) | alknet-core | Trait | Needs adding |
+| In-memory auth adapter (`ConfigIdentityProvider`) | alknet-core | Config-backed | Needs `PeerEntry` update |
+| In-memory credential adapter (`InMemoryCredentialStore`) | alknet-core | HashMap-backed | Needs building |
+| SQLite auth adapter (`SqliteIdentityProvider`) | `alknet-peer-store-sqlite` | `peers` table + honker | Needs building |
+| SQLite credential adapter (`SqliteCredentialStore`) | `alknet-credential-store-sqlite` | `credentials` table + honker | Needs building |
+| Per-node ACL check (`AccessControl::check`) | alknet-core | Table-shaped: scope/resource match | Exists |
+| Filesystem path tree + bucket ACL | alknet-filesystem | Specialized tables (POC-proven) | POC done, crate needs building |
+| ACL delegation graph | alknet-graphs (metagraph) | Graph (traversal, scope narrowing) | Needs building when delegation is needed |
+| Workflows / flowgraph | alknet-graphs (metagraph) | Graph (DAG) | Needs building when workflows are needed |
+| Taskgraph | alknet-graphs (metagraph) | Graph (dependency DAG) | Needs building when taskgraph is needed |
+| Forwarded-for identity | alknet-call (protocol field) | Metadata on `call.requested` + `OperationContext` | Needs adding |
 
 ### What the old spec had that we're dropping
 
@@ -411,8 +516,8 @@ alknet-call (lean — no SQLite, no honker, no storage traits)
 | Multi-tenant (system.db + tenant.db) | Dropped | Each tenant gets its own complete setup (own ACL, ops, DB). Simpler, no cross-tenant complexity. |
 | `secrets/` module (HD derivation, secret service) | Replaced by alknet-vault | The vault already handles encryption/decryption (ADR-018/019/020/025/026). Storage just stores the `EncryptedData` blob. |
 | Metagraph as the foundation | Demoted to tool | SQLite+honker is the foundation. Metagraph is one tool on it, for graph-shaped problems. Tables are another tool, for table-shaped problems. |
-| `alknet-storage` as one crate | Split | The storage-consuming concerns are separate (filesystem, peer registry, graphs). No single "storage" crate. |
-| Accounts/organizations/multi-tenant identity | Deferred | The v1 need is a `peers` table (PeerId → fingerprint + scopes). The full account/org model is a future adapter. |
+| `alknet-storage` as one crate | Split | The storage-consuming concerns are separate (peer store, credential store, filesystem, graphs). No single "storage" crate. |
+| Accounts/organizations/multi-tenant identity | Dropped | The need is a `peers` table (PeerId → fingerprint + scopes). The full account/org model is over-engineering for the current use case. |
 | `alknet-flowgraph` as a separate crate | Folded into alknet-graphs | The metagraph + petgraph interop are one crate for graph-shaped problems. |
 
 ---
@@ -428,7 +533,7 @@ check is `AccessControl::check(identity)` — a flat scope-match, not a graph
 traversal. This is fast, indexable, and correct for the current model (no
 delegation).
 
-### Delegation is graph-shaped (future)
+### Delegation is graph-shaped
 
 When delegation is needed ("A delegates to B with narrowed scopes, B
 delegates to C with further narrowing"), the delegation chain is a graph
@@ -512,81 +617,104 @@ own storage. The ACL doesn't inspect operation input; the handler does.
 
 ---
 
-## 10. What This Means for the Immediate Path
+## 10. Build Order
 
-### ADR-029 migration (now)
+This is the concrete sequence, not a deferral. Each item is a design
+commitment that needs to be built. The order is dependency-driven, not
+priority-driven — earlier items unblock later ones.
 
-The peer-graph routing migration uses the UUID workaround (no storage). This
-document doesn't change that. But it establishes the pattern for when
-storage arrives:
+### Tier 1: Core repo traits and config model (unblocks everything)
 
-1. **ADR-029 migration** (now) — UUID PeerId, no storage, in-memory peer
-   overlays. `IdentityProvider` is `ConfigIdentityProvider` (in-memory).
-2. **Peer registry** (when key rotation / durable peer attribution is
-   needed) — `peers` table + honker, implements `IdentityProvider`, replaces
-   `ConfigIdentityProvider`. The call protocol's `Dispatcher` uses
-   `IdentityProvider` as today — no change. The `PeerCompositeEnv` uses
-   `PeerId` (= `Identity.id` from the adapter) — no change to routing.
-3. **alknet-graphs** (when ACL delegation / workflows / taskgraph are
-   needed) — metagraph crate, built on the same SQLite+honker pattern. For
-   graph-shaped problems only.
+1. **`PeerEntry` in `AuthPolicy`** — replace `authorized_fingerprints:
+   HashSet<String>` with `peers: Vec<PeerEntry>` (peer_id, fingerprint,
+   scopes, resources). Update `ConfigIdentityProvider` to resolve
+   fingerprint → `PeerEntry` → `Identity { id: peer_id, ... }`. This is the
+   id-fingerprint decoupling (OQ-33). Without this, the ACL keys on the
+   fingerprint and breaks on key rotation.
 
-Each step is independent. The migration doesn't wait for storage. Storage
-doesn't wait for the metagraph. The metagraph doesn't wait for the filesystem
-(which already has its own tables).
+2. **`CredentialStore` trait in core** — the repo trait for encrypted
+   provider credentials. `InMemoryCredentialStore` adapter (HashMap-backed)
+   for tests and config-loaded deployments.
 
-### What goes into specs next (after this doc is reviewed)
+These are core changes — no SQLite, no honker, no new crates. They fix the
+id-fingerprint coupling and establish the credential repo pattern.
 
-1. **`IdentityProvider` as the auth repo trait** — make the repo framing
-   explicit in `auth.md` and the `IdentityProvider` doc. No trait change;
-   just documenting the pattern.
-2. **`forwarded_for` field** — add to `call-protocol.md` (the
-   `call.requested` payload schema) and `operation-registry.md`
-   (`OperationContext`). `AccessControl::check` signature unchanged.
-3. **Per-node ACL framing** — add to `client-and-adapters.md` and
-   `operation-registry.md` as the cross-node extension of the existing
-   `AccessControl` model. No "trusted" flag.
-4. **OQ-34 update** — record the repo-pattern framing and the decomposition
-   (SQLite+honker as pattern, metagraph as tool, `IdentityProvider` as the
-   core trait).
+### Tier 2: SQLite adapters (enables persistence)
 
-### What does NOT go into specs (stays in this research doc)
+3. **`alknet-peer-store-sqlite`** — `SqliteIdentityProvider` backed by a
+   `peers` table + honker. Implements `IdentityProvider`. The assembly layer
+   wires it instead of `ConfigIdentityProvider` when persistence is needed.
+   The `peers` table schema is in §4. Honker `notify("peers:changed")` on
+   mutations for cache invalidation.
 
-- The metagraph schema (GraphType/NodeType/EdgeType) — that's a future
-  `alknet-graphs` spec, not relevant to the current crates
-- The filesystem's path-tree schema — that's the filesystem crate's spec
-- The full account/org identity model — deferred; the v1 need is a `peers`
-  table
-- The distributed-auth adapter (automerge/Redis) — a door the repo pattern
-  opens; not designed
+4. **`alknet-credential-store-sqlite`** — `SqliteCredentialStore` backed by
+   a `credentials` table + honker. Implements `CredentialStore`. The
+   assembly layer wires it when credentials need to persist across restarts.
+
+These are new crates — each owns its SQLite file, attaches honker, defines
+its schema. They implement the core traits.
+
+### Tier 3: Protocol and call crate (enables cross-node composition)
+
+5. **ADR-029 migration** — peer-keyed overlays (`PeerCompositeEnv`), retire
+   `remote_safe`/`trusted_peer`, `PeerRef` routing, `AccessControl`-based
+   peer authorization. The `forwarded_for` field is added here (or in a
+   companion task) since `OperationContext` and the `from_call` handler are
+   being rewritten.
+
+6. **`forwarded_for` field** — add to `call.requested` payload and
+   `OperationContext`. The `from_call` handler populates it; the dispatch
+   path makes it available; `AccessControl::check` ignores it. This is a
+   protocol addition that's included with the migration or done as a
+   companion task immediately after.
+
+### Tier 4: Graph-shaped problems (enables ACL delegation, workflows, taskgraph)
+
+7. **`alknet-graphs`** — the metagraph crate (GraphType/NodeType/EdgeType,
+   CRUD, schema validation, petgraph interop). Built on SQLite + honker.
+   This is built when the first graph-shaped consumer needs it — ACL
+   delegation, workflows, or taskgraph. Not built speculatively; built when
+   there's a graph-shaped problem to solve.
+
+8. **ACL delegation graph** — a metagraph instance (PrincipalNode,
+   DelegatesEdge, scope narrowing). The `IdentityProvider` adapter traverses
+   it to compute effective scopes. Built when delegation is needed — not
+   before, not speculatively.
+
+### What does NOT get built (dropped, not deferred)
+
+- Multi-tenant (system.db + tenant.db) — dropped; each tenant gets its own
+  setup
+- Accounts/organizations/multi-tenant identity — dropped; the `peers` table
+  is the model
+- `secrets/` module — dropped; the vault handles encryption
+- `alknet-storage` as one crate — dropped; split by concern
 
 ---
 
 ## 11. Open Questions
 
-1. **When does the `forwarded_for` field get added?** It's a protocol
-   addition (a field on `call.requested` and `OperationContext`). It's in
-   the ADR-029 migration or it's a separate protocol-change task. The
-   recommendation is to include it in the migration — the `from_call`
-   handler is being rewritten anyway, and the `OperationContext` struct is
-   being touched. Adding the field now is cheaper than a separate protocol
-   change later.
+1. **Does the peer registry SQLite adapter live in its own crate
+   (`alknet-peer-store-sqlite`) or in the assembly layer?** The kepal
+   pattern suggests a separate crate (the adapter is reusable across
+   deployments). `ConfigIdentityProvider` lives in core (a simple impl);
+   the SQLite adapter could live in a separate crate or in the assembly
+   layer's binary. This is a packaging choice — the trait is in core either
+   way.
 
-2. **Does the peer registry adapter live in its own crate or in the assembly
-   layer?** The `ConfigIdentityProvider` lives in alknet-core (a simple
-   impl). The SQLite adapter could live in a `alknet-peer-store-sqlite`
-   crate, or it could be in the assembly layer's binary (like a wiring
-   detail). The kepal pattern suggests a separate crate (the adapter is
-   reusable across deployments). This is a two-way door — the trait is in
-   core either way; the adapter's location is a packaging choice.
+2. **Does the ACL delegation graph produce `Identity.scopes` at resolution
+   time or at check time?** The recommendation in §8 is at resolution time
+   (the `IdentityProvider` adapter traverses the delegation graph to compute
+   effective scopes, returns an `Identity` with them, and the check is
+   flat). The alternative is lazy computation (the check triggers the
+   traversal). This is a design question for when the delegation graph is
+   built — the current model has no delegation, so it's not blocking.
 
-3. **Does the ACL delegation graph (future) produce `Identity.scopes` at
-   resolution time or at check time?** The recommendation in §8 is at
-   resolution time (the `IdentityProvider` adapter traverses the delegation
-   graph to compute effective scopes, returns an `Identity` with them, and
-   the check is flat). But an alternative is lazy computation (the check
-   triggers the traversal). This is a future question, not a v1 decision —
-   the current model has no delegation.
+3. **Does the `CredentialStore` trait need a `list` method?** The current
+   design has `get`/`put`/`delete`. A `list` (list all providers) might be
+   needed for a management UI or for the assembly layer to enumerate
+   credentials at startup. Two-way door — add `list` when a consumer needs
+   it.
 
 ---
 
