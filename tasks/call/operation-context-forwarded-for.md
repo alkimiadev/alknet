@@ -1,7 +1,7 @@
 ---
 id: call/operation-context-forwarded-for
 name: Add forwarded_for field to OperationContext and wire from call.requested (ADR-032)
-status: pending
+status: completed
 depends_on: [call/retire-remote-safe]
 scope: narrow
 risk: low
@@ -145,4 +145,4 @@ to `AccessControl::check`.
 
 ## Summary
 
-> To be filled on completion
+Added forwarded_for: Option<Identity> field to OperationContext (with ADR-032 doc comment) and wired it through the dispatch path: Dispatcher::build_root_context accepts a forwarded_for parameter, dispatch_requested extracts it from payload.get("forwarded_for") via serde_json::from_value::<Identity> (missing or malformed → None, no error), and LocalOperationEnv/OverlayOperationEnv invoke_with_policy set forwarded_for: None for composed children (wire-ingress only). Added Serialize/Deserialize derives to alknet_core::auth::Identity so it can be deserialized from the JSON payload. Updated all OperationContext literal sites (production + tests + integration test). AccessControl::check signature unchanged — still takes Option<&Identity> (the direct caller); no code path passes forwarded_for to it (verified structurally). 8 unit tests covering: build_root_context populates/omits forwarded_for, dispatch_requested populates from payload / None when missing / None when malformed / does not satisfy ACL when only forwarded_for has the scope / present alongside satisfied ACL, and composed children get None. Coordinator fixed 5 cross-task test sites (adapter.rs + discovery.rs) where OperationContext literals from peer-composite-env and services-list tasks needed forwarded_for: None. 213 unit + 2 integration tests pass, clippy clean, fmt clean.
