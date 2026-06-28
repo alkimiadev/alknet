@@ -1,7 +1,7 @@
 ---
 id: call/operation-env-invoke-peer
 name: Add invoke_peer/peer_contains/PeerRef to OperationEnv trait for peer-keyed routing (ADR-029 §2)
-status: pending
+status: completed
 depends_on: [call/peer-composite-env]
 scope: moderate
 risk: medium
@@ -153,4 +153,4 @@ impls — the trait surface grows, the behavior is preserved.
 
 ## Summary
 
-> To be filled on completion
+Added PeerRef enum (Specific/Any variants), invoke_peer trait method with default-impl delegating to invoke_with_policy, and PeerCompositeEnv override with real peer-keyed routing — PeerRef::Specific routes to named peer only (no fallthrough → NOT_FOUND if peer doesn't serve op), PeerRef::Any reuses invoke_with_policy. Reachability check (scoped_env.allows) gates before peer routing. peer_contains default delegates to contains; PeerCompositeEnv override checks specific peer's sub-overlay. 8 unit tests covering all acceptance criteria. 221 unit + 2 integration tests pass, clippy clean, fmt clean.
