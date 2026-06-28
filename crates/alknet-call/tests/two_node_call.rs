@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use alknet_call::client::{CallClient, CallCredentials};
+use alknet_call::client::{CallClient, CallCredentials, RemoteIdentity};
 use alknet_call::protocol::adapter::CallAdapter;
 use alknet_call::protocol::wire::ResponseEnvelope;
 use alknet_call::registry::discovery::{
@@ -49,11 +49,14 @@ fn echo_handler() -> Handler {
 
 /// Build a raw quinn server endpoint with a self-signed cert and the
 /// `CallAdapter` accepting `alknet/call` connections. Returns
-/// `(bound_addr, join_handle)`. The accept loop spawns a task per connection
-/// that hands the connection to `CallAdapter::handle`.
+/// `(bound_addr, server_fingerprint, join_handle)` — the fingerprint is the
+/// `SHA256:<hex>` of the self-signed cert DER, which the client pins via
+/// `CallCredentials::with_remote_identity` (the known-peer path, ADR-034 §3).
+/// The accept loop spawns a task per connection that hands the connection to
+/// `CallAdapter::handle`.
 async fn build_raw_quinn_server(
     registry: Arc<OperationRegistry>,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+) -> (std::net::SocketAddr, String, tokio::task::JoinHandle<()>) {
     let provider: Arc<dyn IdentityProvider> = Arc::new(NoopIdentityProvider);
     let adapter = Arc::new(CallAdapter::new(
         Arc::clone(&registry),
@@ -64,6 +67,8 @@ async fn build_raw_quinn_server(
     let params = rcgen::CertificateParams::default();
     let cert = params.self_signed(&key_pair).expect("self-signed cert");
     let cert_der = cert.der().clone();
+    let fingerprint = alknet_core::fingerprint::fingerprint_from_cert_der(cert_der.as_ref())
+        .expect("cert produces fingerprint");
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
         rustls::pki_types::PrivatePkcs8KeyDer::from(key_pair.serialize_der()),
     );
@@ -112,7 +117,7 @@ async fn build_raw_quinn_server(
         }
     });
 
-    (bound_addr, join)
+    (bound_addr, fingerprint, join)
 }
 
 /// Build the server's registry: an echo op, a secret op, and the
@@ -177,10 +182,14 @@ fn build_server_registry() -> Arc<OperationRegistry> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_node_call_round_trip() {
     let server_registry = build_server_registry();
-    let (server_addr, _server_join) = build_raw_quinn_server(Arc::clone(&server_registry)).await;
+    let (server_addr, server_fingerprint, _server_join) =
+        build_raw_quinn_server(Arc::clone(&server_registry)).await;
 
     // Client side: a CallClient with its own ops so the server can call back
-    // (connection symmetry).
+    // (connection symmetry). Pin the server's self-signed cert fingerprint
+    // (the known-peer path, ADR-034 §3) — `WebPkiServerVerifier` would reject
+    // it as UnknownIssuer since the self-signed cert is not in the platform
+    // root store.
     let mut client_registry = OperationRegistry::new();
     client_registry.register(HandlerRegistration::new(
         external_spec("client/echo"),
@@ -193,9 +202,12 @@ async fn two_node_call_round_trip() {
     let client_registry = Arc::new(client_registry);
     let client = CallClient::new(Arc::clone(&client_registry), Arc::new(NoopIdentityProvider));
 
+    let credentials = CallCredentials::new().with_remote_identity(RemoteIdentity {
+        fingerprint: server_fingerprint,
+    });
     let conn = tokio::time::timeout(
         Duration::from_secs(5),
-        client.connect(server_addr, CallCredentials::new()),
+        client.connect(server_addr, credentials),
     )
     .await
     .expect("connect did not time out")
@@ -224,15 +236,21 @@ async fn from_call_discovers_and_forwards_over_quic_loopback() {
     use alknet_call::registry::context::ScopedOperationEnv;
 
     let server_registry = build_server_registry();
-    let (server_addr, _server_join) = build_raw_quinn_server(Arc::clone(&server_registry)).await;
+    let (server_addr, server_fingerprint, _server_join) =
+        build_raw_quinn_server(Arc::clone(&server_registry)).await;
 
     // Client with an empty registry — from_call will populate its overlay.
+    // Pin the server's self-signed cert fingerprint (ADR-034 §3 known-peer
+    // path).
     let client_registry = Arc::new(OperationRegistry::new());
     let client = CallClient::new(Arc::clone(&client_registry), Arc::new(NoopIdentityProvider));
 
+    let credentials = CallCredentials::new().with_remote_identity(RemoteIdentity {
+        fingerprint: server_fingerprint,
+    });
     let conn = tokio::time::timeout(
         Duration::from_secs(5),
-        client.connect(server_addr, CallCredentials::new()),
+        client.connect(server_addr, credentials),
     )
     .await
     .expect("connect did not time out")

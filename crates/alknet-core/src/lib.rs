@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod config;
 pub mod endpoint;
+pub mod fingerprint;
 pub mod store;
 pub mod types;
 

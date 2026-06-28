@@ -11,7 +11,7 @@ name = "alknet_call"
 
 [features]
 default = ["quinn"]
-quinn = ["dep:quinn", "dep:rustls", "alknet-core/quinn"]
+quinn = ["dep:quinn", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "alknet-core/quinn"]
 
 [dependencies]
 alknet-core = { path = "../alknet-core" }
@@ -26,8 +26,10 @@ uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 parking_lot = "0.12"
 quinn = { version = "0.11", optional = true }
-rustls = { version = "0.23", optional = true }
+rustls = { version = "0.23", optional = true, features = ["aws_lc_rs"] }
+rustls-native-certs = { version = "0.8", optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
 [dev-dependencies]
 rcgen = "0.13"
-rustls-pemfile = "2"
+hex = "0.4"
