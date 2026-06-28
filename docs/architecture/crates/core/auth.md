@@ -237,6 +237,63 @@ How it resolves:
 
 See [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) for the `PeerEntry` model, the multi-credential resolution, and the fingerprint normalization rationale.
 
+## IdentityStore (write trait, ADR-035)
+
+`IdentityProvider` (defined above) is **read-only** and stays
+read-only — it is the hot-path trait called on every incoming
+connection (sync, no `.await`). Peer **mutations** (add/update/remove
+a `PeerEntry`) go through a separate async write trait that extends
+`IdentityProvider`:
+
+```rust
+/// Write trait — management path, async (ADR-035). ConfigIdentityProvider
+/// does NOT implement this (config reload is its write path — see below).
+/// SqliteIdentityProvider does: writes hit SQLite, emit honker NOTIFY,
+/// and the local LISTEN refreshes the in-memory read index.
+#[async_trait]
+pub trait IdentityStore: IdentityProvider {
+    async fn put_peer(&self, peer: &PeerEntry) -> Result<(), StoreError>;
+    async fn update_peer(&self, peer_id: &str, peer: &PeerEntry) -> Result<(), StoreError>;
+    async fn remove_peer(&self, peer_id: &str) -> Result<(), StoreError>;
+}
+```
+
+`IdentityStore: IdentityProvider` is a supertrait — any type that
+implements `IdentityProvider` *could* implement `IdentityStore`, but
+not implementing it is a design posture, not a type-system constraint.
+`ConfigIdentityProvider` deliberately does **not** implement
+`IdentityStore`: it holds no SQLite handle and no backend, and its
+write path is config reload (`ConfigReloadHandle::reload`), not a
+method call. This preserves the config-is-source-of-truth model.
+Implementing `IdentityStore` for `ConfigIdentityProvider` "for
+symmetry" would violate that model — the constraint is the absence of
+a backend, not a trait bound. A deployment that wants method-call
+peer management (CLI `alknet peer add`, an admin call-protocol
+operation) wires the SQLite adapter (`SqliteIdentityProvider`), which
+implements both `IdentityProvider` (sync reads from cache) and
+`IdentityStore` (async writes to SQLite + honker NOTIFY).
+
+### Cache invalidation without restart (ADR-035)
+
+The no-restart-on-auth-change property — already established for
+`ConfigIdentityProvider` via `ArcSwap` config reload — is preserved by
+the SQLite adapter via honker's SQLite `NOTIFY`/`LISTEN`:
+
+1. A write (`put_peer` / `update_peer` / `remove_peer`) commits to
+   SQLite and emits `NOTIFY 'peers_changed'`.
+2. The running alknet process's `LISTEN` wakes in single-digit ms
+   (honker watches `PRAGMA data_version` — no polling, no daemon).
+3. The process reloads its in-memory index from `SELECT * FROM peers`
+   and atomically swaps it (`ArcSwap`, same pattern as config reload).
+4. The next `resolve_from_fingerprint` call reads the new index. Live
+   resolution changes, no restart.
+
+See [ADR-035](../../decisions/035-concrete-persistence-adapter-shapes.md)
+for the full adapter design (the `alknet-store-sqlite` crate, the
+schema shape, the `StoreError` type, the writer's-own-process cache
+coherence details, and why honker is a hard dependency of the SQLite
+adapter rather than an option).
+
 ### Resource-scoped ACLs
 
 `Identity.resources` is populated on two paths:
@@ -387,12 +444,14 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 | CredentialStore repo trait | [ADR-031](../../decisions/031-credentialstore-repo-trait.md) | Second repo trait in core (alongside `IdentityProvider`); `InMemoryCredentialStore` default adapter |
 | Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines traits + in-memory defaults; persistence adapters are separate crates |
 | Three remote roles and outgoing-only X.509 | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Public X.509 endpoint / transport relay / hub; `PeerEntry` asymmetry (pure-client X.509 is not a peer); client-side verifier by `PeerEntry` presence |
+| Concrete persistence adapter shapes | [ADR-035](../../decisions/035-concrete-persistence-adapter-shapes.md) | Read-sync / write-async split (`IdentityStore` async write trait); SQLite adapter caches in memory, honker NOTIFY for no-restart cache invalidation; `StoreError` type |
 
 ## Open Questions
 
 - **OQ-29** (resolved): `CallClient` TLS client-auth — wire quinn client-auth (present Ed25519 key as raw public key client cert); key-type-aware server cert verification (raw key = fingerprint match, X.509 = CA verification); fingerprint normalization (`ed25519:` across quinn/iroh). See OQ-29 in open-questions.md.
 - **OQ-35** (dissolved): the "API key asymmetry" framing was wrong; `PeerEntry` supports multiple credential paths (fingerprints + auth_token_hash), `ApiKeyEntry` is for tokens that ARE the identity. See OQ-35 in open-questions.md.
 - **OQ-37** (resolved): X.509 outgoing-only case — three remote roles named (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry is correct (pure-client X.509 connections are not in the peer graph on the client side); client-side verifier selection by `PeerEntry` presence (CA verification for unknown X.509, fingerprint pin for known peers). See ADR-034 and OQ-37 in open-questions.md.
+- **OQ-36** (resolved): Concrete persistence adapter shapes — read-sync / write-async split (`IdentityStore` async write trait extends the sync `IdentityProvider` read trait); SQLite adapter caches in memory and uses honker NOTIFY/LISTEN for no-restart cache invalidation; `alknet-store-sqlite` crate implements both `IdentityStore` and `CredentialStore`. See ADR-035 and OQ-36 in open-questions.md.
 
 ## Security Constraints
 

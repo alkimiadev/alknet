@@ -706,10 +706,13 @@ See [open-questions.md](../../open-questions.md) for full details.
   `PeerEntry` supports multiple credential paths (fingerprints +
   auth_token_hash), `ApiKeyEntry` is for tokens that ARE the identity.
   See OQ-35 in open-questions.md.
-- **OQ-36** (open, deferred for exploration): Concrete persistence adapter
-  shapes — the repo/adapter pattern is committed (ADR-033); the in-memory
-  adapters ship with core; the persistence adapter shapes (SQLite, etc.)
-  are deferred for exploration. See OQ-36 in open-questions.md.
+- **OQ-36** (resolved by ADR-035): Concrete persistence adapter shapes —
+  read-sync / write-async split (`IdentityStore` async write trait
+  extends the sync `IdentityProvider` read trait); SQLite adapter caches
+  in memory and uses honker NOTIFY/LISTEN for no-restart cache
+  invalidation; `alknet-store-sqlite` crate implements both
+  `IdentityStore` and `CredentialStore`. See ADR-035 and OQ-36 in
+  open-questions.md.
 - **OQ-37** (resolved by ADR-034): X.509 outgoing-only case — three
   remote roles named (public X.509 endpoint, transport relay, hub).
   `PeerEntry` asymmetry is correct: a pure-client connection to a public

@@ -368,7 +368,9 @@ It is noted here only to confirm it does not reopen OQ-37.
   quinn/iroh); the `SHA256:<hex>` X.509 fingerprint format
 - [ADR-033](033-storage-boundary-and-repo-adapter-pattern.md) — the
   repo/adapter pattern that an on-chain `IdentityProvider` adapter
-  follows; OQ-36 (concrete adapter shapes deferred for exploration)
+  follows; [ADR-035](035-concrete-persistence-adapter-shapes.md) commits
+  the concrete SQLite adapter shape (the on-chain adapter would follow
+  the same trait + separate-crate pattern)
 - [ADR-017](017-call-protocol-client-and-adapter-contract.md) §7 —
   `CallCredentials.remote_identity` (ADR-017 specified "expected
   fingerprint or cert"; this ADR §2 extends its semantics so that
@@ -382,9 +384,10 @@ It is noted here only to confirm it does not reopen OQ-37.
   that selects the verifier
 - OQ-10 (deferred) — git adapter scope; the on-chain / gossip-synced
   git-hosting hub use case in §6 is downstream of the git crate
-- OQ-36 (open, deferred for exploration) — concrete persistence adapter
-  shapes; the on-chain `IdentityProvider` adapter in §6 follows this
-  pattern
+- OQ-36 (resolved by ADR-035) — concrete persistence adapter shapes;
+  the on-chain `IdentityProvider` adapter in §6 follows the same
+  repo/adapter pattern (trait in core, adapter additive in a separate
+  crate)
 - `docs/research/alknet-http/phase-0-findings.md` — DH-2 (h3 /
   WebTransport deferred past v1); the WebTransport-relay-as-proxy
   feature noted in this ADR's §5 belongs in that deferral bucket

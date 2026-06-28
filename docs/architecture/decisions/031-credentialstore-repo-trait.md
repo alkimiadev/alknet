@@ -4,7 +4,12 @@
 
 Accepted (establishes the second repo-trait in core, alongside
 `IdentityProvider`; resolves the credential-persistence dimension of
-OQ-34)
+OQ-34). **Refined by [ADR-035](035-concrete-persistence-adapter-shapes.md)**:
+`put`/`delete` are async (the sketch below showed them sync; ADR-035
+refines this within the one-way door this ADR committed — "there IS a
+`CredentialStore` trait with `get`/`put`/`delete` keyed by provider,
+persisting `EncryptedData`, never decrypting" stands). `get` stays
+sync (cached read). See ADR-035 §3.
 
 ## Context
 
@@ -47,10 +52,23 @@ lives alongside it, and a future persistence adapter is a separate crate
 ```rust
 pub trait CredentialStore: Send + Sync {
     fn get(&self, provider: &str) -> Option<EncryptedData>;
-    fn put(&self, provider: &str, data: &EncryptedData) -> Result<(), CredentialStoreError>;
-    fn delete(&self, provider: &str) -> Result<(), CredentialStoreError>;
+    // put/delete refined to async by ADR-035 (within the one-way door
+    // this ADR committed). The sketch below showed them sync; the
+    // refinement is that a SQLite-backed adapter cannot do a sync write
+    // without blocking, and the in-memory default trivially satisfies
+    // an async trait (no .await points). get stays sync (cached read).
+    async fn put(&self, provider: &str, data: &EncryptedData) -> Result<(), StoreError>;
+    async fn delete(&self, provider: &str) -> Result<(), StoreError>;
 }
 ```
+
+The error type was sketched here as `CredentialStoreError`;
+**[ADR-035](035-concrete-persistence-adapter-shapes.md) §7 renames it
+to `StoreError`** — a single shared type for both the
+`CredentialStore` and `IdentityStore` traits, so both adapters and all
+consumers reference one error type. The rename is within this ADR's
+one-way door (the contract was "a `#[non_exhaustive]` error enum for
+store failures"; the name was unspecified detail).
 
 - `provider: &str` — the provider identifier (`"openai"`, `"anthropic"`,
   `"github"`, etc.). The key the assembly layer uses to look up a
@@ -58,9 +76,11 @@ pub trait CredentialStore: Send + Sync {
 - `EncryptedData` — the vault's encrypted-blob type (ADR-020, defined in
   `alknet-vault`). The store persists the blob as-is; it does not decrypt.
   Decryption is the vault's job (ADR-025, local-only by construction).
-- `CredentialStoreError` — a crate-level error enum for store failures
-  (backend unreachable, serialization, etc.). `#[non_exhaustive]` so
-  adapter crates can extend without breaking match arms.
+- `StoreError` — a crate-level error enum for store failures (backend
+  unreachable, serialization, etc.). `#[non_exhaustive]` so adapter
+  crates can extend without breaking match arms. (Sketched here as
+  `CredentialStoreError`; renamed to `StoreError` by ADR-035 §7 — a
+  single shared type for both `CredentialStore` and `IdentityStore`.)
 
 The trait returns `Option<EncryptedData>` from `get` (not `Result`): a
 missing credential is the common case (the provider isn't configured),
@@ -204,6 +224,9 @@ returns `vec![]` from the in-memory adapter until overridden).
   is the sole decryption boundary)
 - ADR-033: Storage Boundary and Repo/Adapter Pattern (the overarching
   pattern this ADR follows)
+- ADR-035: Concrete Persistence Adapter Shapes (refines this ADR's
+  `put`/`delete` to async; commits the `alknet-store-sqlite` adapter
+  design and the honker cache-invalidation mechanism)
 - OQ-34: Persistent Peer Registry (resolved by this ADR + ADR-030 + ADR-033
   — the storage boundary is `config + in-memory adapter` now, persistence
   adapters additive)

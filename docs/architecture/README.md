@@ -14,7 +14,7 @@ The storage and auth strategy research (`docs/research/alknet-storage-strategy/f
 - **ADR-030** (PeerEntry and Identity.id decoupling): `authorized_fingerprints: HashSet<String>` → `peers: Vec<PeerEntry>`; `Identity.id` becomes the stable `peer_id` (not the fingerprint); key rotation changes the fingerprint, not the identity. Supersedes ADR-029's v1 UUID source (the one-way door — `PeerId` is logical, not crypto — is preserved; the source changes from UUID to `Identity.id` from `PeerEntry`). Resolves OQ-33 and the storage-boundary half of OQ-34.
 - **ADR-031** (CredentialStore repo trait): the second repo trait in core (alongside `IdentityProvider`), with `InMemoryCredentialStore` default adapter. Establishes the credential-persistence abstraction.
 - **ADR-032** (Forwarded-for identity): `forwarded_for` field on `call.requested` and `OperationContext`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it. Wire-format one-way door, included with the ADR-029 migration window.
-- **ADR-033** (Storage boundary and repo/adapter pattern): core defines repo traits + in-memory defaults; persistence adapters are separate crates; the assembly layer wires the adapter. Resolves OQ-34's storage-boundary question. Concrete adapter shapes are deferred for exploration (OQ-36).
+- **ADR-033** (Storage boundary and repo/adapter pattern): core defines repo traits + in-memory defaults; persistence adapters are separate crates; the assembly layer wires the adapter. Resolves OQ-34's storage-boundary question. Concrete adapter shapes now committed by ADR-035 (was OQ-36).
 
 The alknet-call crate is **implemented and reviewed** — both the server-side core and the client/adapter surface (207 lib + 2 integration tests passing). The alknet-core and alknet-call crate specs are in draft; the alknet-vault crate specs are stable.
 
@@ -79,6 +79,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [032](decisions/032-forwarded-for-identity.md) | Forwarded-For Identity (Metadata, Not Authority) | Accepted |
 | [033](decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Accepted |
 | [034](decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Outgoing-Only X.509 and the Three Peer Roles | Accepted |
+| [035](decisions/035-concrete-persistence-adapter-shapes.md) | Concrete Persistence Adapter Shapes — Read/Write Split, honker+SQLite | Accepted |
 
 ## Open Questions
 
@@ -124,7 +125,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 
 **Open (feature extensions, not blocking):**
 - **OQ-32**: Multi-hop federation — the one-hop model is the architectural commitment; multi-hop is a feature extension that doesn't break downstream
-- **OQ-36**: Concrete persistence adapter shapes — the repo/adapter pattern is committed (ADR-033); in-memory adapters ship with core; persistence adapters (SQLite, etc.) are deferred for exploration
+- **OQ-36**: ~~Concrete persistence adapter shapes~~ — **resolved by ADR-035** (read-sync / write-async / honker-NOTIFY cache invalidation; `alknet-store-sqlite` crate; `IdentityStore` write trait; `CredentialStore::put`/`delete` async)
 - **OQ-37**: ~~X.509 outgoing-only case~~ — **resolved by ADR-034** (three remote roles named: public X.509 endpoint, transport relay, hub; `PeerEntry` asymmetry is correct; client-side verifier selection by `PeerEntry` presence)
 
 **Deferred (not active):**

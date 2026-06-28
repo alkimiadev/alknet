@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-06-28
 ---
 
 # Configuration
@@ -245,6 +245,19 @@ field on `AuthPolicy` is non-breaking for existing config files that don't
 use it). alknet-ssh will define `CertAuthorityEntry` with the necessary
 fields (public key, principals, options).
 
+**Two write paths for `AuthPolicy.peers`** (ADR-035): the
+**config-backed** path (`ConfigReloadHandle::reload`, used by
+`ConfigIdentityProvider` — edit the config file, signal reload, live
+resolution changes via `ArcSwap`) and the **method-call** path
+(`IdentityStore::put_peer` / `update_peer` / `remove_peer`, used by
+`SqliteIdentityProvider` — a CLI or admin op writes to SQLite, honker
+NOTIFY refreshes the in-memory index, live resolution changes). Both
+produce the same `PeerEntry` shape; the difference is the source of
+truth (config file vs. SQLite) and the write mechanism. A deployment
+picks one by wiring the corresponding adapter at the assembly layer.
+The `IdentityStore` trait is defined in [auth.md](auth.md#identitystore-write-trait-adr-035);
+the adapter design is in [ADR-035](../../decisions/035-concrete-persistence-adapter-shapes.md).
+
 This replaces the reference implementation's `AuthPolicy` which depended on `russh::keys::PublicKey`. The new version stores fingerprints as strings (in `PeerEntry.fingerprint`), not russh types. This removes the russh dependency from alknet-core.
 
 ### ApiKeyEntry
@@ -349,3 +362,4 @@ Simplified from the reference implementation. Removes proxy-specific errors (now
 | No ListenerConfig | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | Single endpoint, ALPN replaces multiple listener types |
 | PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `authorized_fingerprints: HashSet<String>` → `peers: Vec<PeerEntry>`; `Identity.id` = `peer_id` (stable), not fingerprint |
 | Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines repo traits + in-memory defaults; `AuthPolicy.peers` is the config model for the in-memory `ConfigIdentityProvider` adapter; persistence adapters are separate crates |
+| Concrete persistence adapter shapes | [ADR-035](../../decisions/035-concrete-persistence-adapter-shapes.md) | `AuthPolicy.peers` is the **config-backed** write surface (reload via `ConfigReloadHandle`); the SQLite adapter's `IdentityStore` trait is the **method-call** write surface for deployments that want `alknet peer add`-style management without config edits. Both produce the same `PeerEntry` shape; the difference is the write path. |

@@ -3,7 +3,10 @@
 ## Status
 
 Accepted (resolves the storage-boundary dimension of OQ-34; establishes the
-pattern that ADR-030 and ADR-031 follow)
+pattern that ADR-030 and ADR-031 follow). **The concrete adapter shapes
+deferred by §"What this does NOT do" are now committed by
+[ADR-035](035-concrete-persistence-adapter-shapes.md)** (read/write split,
+honker+SQLite, `alknet-store-sqlite` crate).
 
 ## Context
 
@@ -56,10 +59,10 @@ pub trait IdentityProvider: Send + Sync + 'static {           // ADR-004
 }
 pub struct ConfigIdentityProvider { ... }                        // in-memory default (ADR-030)
 
-pub trait CredentialStore: Send + Sync {                        // ADR-031
+pub trait CredentialStore: Send + Sync {                        // ADR-031, refined by ADR-035
     fn get(&self, provider: &str) -> Option<EncryptedData>;
-    fn put(&self, provider: &str, data: &EncryptedData) -> Result<(), CredentialStoreError>;
-    fn delete(&self, provider: &str) -> Result<(), CredentialStoreError>;
+    async fn put(&self, provider: &str, data: &EncryptedData) -> Result<(), StoreError>;
+    async fn delete(&self, provider: &str) -> Result<(), StoreError>;
 }
 pub struct InMemoryCredentialStore { ... }                      // in-memory default (ADR-031)
 ```
@@ -74,6 +77,11 @@ no persistence backend dependency.
 A persistence adapter (e.g., `alknet-peer-store-sqlite`,
 `alknet-credential-store-sqlite`) is a **separate crate** that implements a
 core repo trait against a specific backend. The adapter:
+(**Update:** [ADR-035](035-concrete-persistence-adapter-shapes.md)
+collapses these two into a single `alknet-store-sqlite` crate
+implementing both `IdentityStore` and `CredentialStore` with shared
+SQLite connection + honker LISTEN infra; splitting later is a two-way
+door.)
 
 - Depends on alknet-core (for the trait and the types it implements
   against).
@@ -129,6 +137,13 @@ and passes `Arc<dyn IdentityProvider>` to every handler that needs it.
   note is that the repo pattern is a tool to reach for when a storage
   concern is concrete, not a one-size-fits-all mold to apply
   speculatively. The pattern is committed; the adapters are not.
+  **Update**: [ADR-035](035-concrete-persistence-adapter-shapes.md) now
+  commits the concrete adapter shape for the SQLite+honker backend
+  (read-sync / write-async split, `IdentityStore` write trait, honker
+  NOTIFY cache invalidation, `alknet-store-sqlite` crate). The deferral
+  above applied to *which* backend and *what* shape; ADR-035 resolves
+  both for the SQLite case. Other backends (Redis, Postgres, on-chain)
+  remain "not needed for current scope."
 - **Does not change the no-DB posture of the core crates.** Core remains
   DB-free in the sense that it has no backend dependency — only a trait
   boundary. The in-memory adapter carries no persistence. The persistence
@@ -212,11 +227,15 @@ and passes `Arc<dyn IdentityProvider>` to every handler that needs it.
   `ConfigIdentityProvider` in-memory default)
 - ADR-031: CredentialStore Repo Trait (the second application —
   `CredentialStore` trait + `InMemoryCredentialStore` default)
+- ADR-035: Concrete Persistence Adapter Shapes (commits the concrete
+  adapter shape this ADR's §"What this does NOT do" deferred —
+  read/write split, honker+SQLite, `alknet-store-sqlite` crate)
 - OQ-34: Persistent Peer Registry (resolved by this ADR — the storage
   boundary is `core trait + in-memory default`, persistence adapters
   additive)
-- OQ-36: Concrete Adapter Shapes (tracked by this ADR — deferred for
-  exploration; the trait shapes are committed, the adapter shapes are not)
+- OQ-36: Concrete Adapter Shapes (resolved by ADR-035 — the concrete
+  SQLite+honker adapter shape is committed; the trait shapes committed
+  by this ADR and ADR-030/031 are the one-way doors ADR-035 builds on)
 - `docs/research/alknet-storage-strategy/findings.md` §3-4 (the
   SQLite+honker foundation and the repo/adapter pattern)
 - `/workspace/keypal` — TypeScript repo-pattern reference (the Storage
