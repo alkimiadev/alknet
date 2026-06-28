@@ -1,7 +1,7 @@
 ---
 id: core/three-remote-roles-docs
 name: Document the three remote roles and client-side verifier selection rule (ADR-034)
-status: pending
+status: completed
 depends_on: [core/peer-entry-model]
 scope: single
 risk: trivial
@@ -82,4 +82,4 @@ endpoint is **not** in that graph on the client side: no `PeerEntry`, no
 
 ## Summary
 
-> To be filled on completion
+Added doc comments to alknet-core/src/auth.rs (three remote roles table + client-side verifier selection rule from ADR-034 §1/§3, referencing auth.md and ADR-034) and alknet-core/src/endpoint.rs (clarified server-side AcceptAnyCertVerifier is request-but-don't-require fingerprint extraction, and that client-side verifier selection is a CallClient concern by PeerEntry presence per ADR-034 §3). Comments-only, no code changes. cargo build/clippy/test all clean; rustfmt clean on touched files.
