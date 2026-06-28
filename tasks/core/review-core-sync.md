@@ -1,7 +1,7 @@
 ---
 id: core/review-core-sync
 name: Review alknet-core ADR-029/030/031/034/035 sync for spec conformance
-status: pending
+status: completed
 depends_on: [core/credential-store-trait, core/identity-store-trait, core/config-identity-provider-peerentry, core/fingerprint-normalization, core/three-remote-roles-docs]
 scope: moderate
 risk: low
@@ -120,4 +120,4 @@ the new `Identity.id = peer_id` semantics) begins its sync.
 
 ## Summary
 
-> To be filled on completion
+All 9 review checklist sections passed (PeerEntry/AuthPolicy, ConfigIdentityProvider, CredentialStore, IdentityStore, fingerprint normalization, three-roles docs, pattern consistency, security constraints, test coverage). Verification: cargo build/clippy(-D warnings)/fmt --check all clean; 135 tests pass. Negative criteria confirmed: no authorized_fingerprints, no remote_safe/trusted_peer, no russh, no vault/honker/rusqlite/sqlx deps in core (honker appears only in a doc comment describing the SQLite adapter — not a dependency), no env::var, no list method, ConfigIdentityProvider does not implement IdentityStore. No fixes applied — implementation was conformant.
