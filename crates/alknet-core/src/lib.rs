@@ -9,4 +9,7 @@
 pub mod auth;
 pub mod config;
 pub mod endpoint;
+pub mod store;
 pub mod types;
+
+pub use store::{CredentialStore, EncryptedData, InMemoryCredentialStore, StoreError};
