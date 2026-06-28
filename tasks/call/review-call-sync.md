@@ -1,7 +1,7 @@
 ---
 id: call/review-call-sync
 name: Review alknet-call ADR-029/030/032/034 sync for spec conformance
-status: pending
+status: completed
 depends_on: [call/operation-env-invoke-peer, call/services-list-accesscontrol-filtered, call/call-client-verifier-selection, call/from-call-forwarded-for, call/dispatch-peer-identity]
 scope: broad
 risk: low
@@ -152,4 +152,4 @@ checkpoint at the end of the call phase — the most complex sync in this batch.
 
 ## Summary
 
-> To be filled on completion
+All 12 checklist sections PASS. Negative criteria verified: no remote_safe/trusted_peer/RemoteFilter/list_operations_peer_scoped/AcceptAnyServerCertVerifier/CompositeOperationEnv in code. PeerCompositeEnv matches ADR-029 §1. PeerId = Identity.id (stable). invoke_peer/PeerRef match ADR-029 §2. forwarded_for matches ADR-032. services/list filters by AccessControl::check. CallClient verifier selection matches ADR-034 §3. from_call peer-keyed registration with SamePeerCollision. dispatch_peer_identity: AccessControl::check is sole gate. FIXES APPLIED: ran cargo fmt to fix 3 drifts in adapter.rs (2 spots) and env.rs (1 spot) — pure formatting, no semantic change. No large deviations — implementation is conformant with ADR-029/030/032/034. 389 tests pass, clippy clean.
