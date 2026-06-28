@@ -559,7 +559,8 @@ mod tests {
             .set_identity(peer_identity)
             .expect("identity not yet set");
 
-        let context = adapter.build_root_context("req-5".to_string(), "fs/readFile", None, None, &conn);
+        let context =
+            adapter.build_root_context("req-5".to_string(), "fs/readFile", None, None, &conn);
 
         let scoped = ScopedOperationEnv::new(["worker/exec"]);
         let invoke_ctx = OperationContext {
@@ -616,7 +617,8 @@ mod tests {
         );
         conn.register_imported(imported);
 
-        let context = adapter.build_root_context("req-6".to_string(), "fs/readFile", None, None, &conn);
+        let context =
+            adapter.build_root_context("req-6".to_string(), "fs/readFile", None, None, &conn);
 
         let scoped = ScopedOperationEnv::new(["worker/exec"]);
         let invoke_ctx = OperationContext {

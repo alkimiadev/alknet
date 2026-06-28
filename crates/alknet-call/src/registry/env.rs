@@ -283,9 +283,7 @@ impl OperationEnv for PeerCompositeEnv {
     }
 
     fn peer_contains(&self, peer: &PeerId, name: &str) -> bool {
-        self.connections
-            .get(peer)
-            .is_some_and(|c| c.contains(name))
+        self.connections.get(peer).is_some_and(|c| c.contains(name))
     }
 
     fn peer_ids(&self) -> Vec<PeerId> {
