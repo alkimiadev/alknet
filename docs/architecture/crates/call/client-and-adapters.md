@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-06-28
 ---
 
 # alknet-call — Client and Adapters
@@ -205,16 +205,28 @@ credential dimensions (ADR-017 §7):
 pub struct CallCredentials {
     pub tls_identity: Option<TlsIdentity>,      // RFC 7250 raw key or X.509
     pub auth_token: Option<AuthToken>,           // call-protocol-level token
-    pub remote_identity: Option<RemoteIdentity>, // expected fingerprint/cert
+    pub remote_identity: Option<RemoteIdentity>, // expected fingerprint/cert (None = CA path, see below)
 }
 
-/// Expected identity of the remote node (ADR-017 §7). v1 carries a
-/// fingerprint string the assembly layer derives from `Capabilities`.
+/// Expected identity of the remote node (ADR-017 §7, extended by
+/// ADR-034 §2). Carries a fingerprint string the assembly layer
+/// derives from `Capabilities` when the local node has a `PeerEntry`
+/// for the remote (the known-peer case → fingerprint pin).
+///
+/// `remote_identity: None` is the **public X.509 endpoint** case: the
+/// local node has no `PeerEntry` for the remote, so there is no
+/// fingerprint to pin. Combined with an X.509 transport, `None`
+/// selects CA verification (`WebPkiServerVerifier`) per the
+/// verifier-selection rule in ADR-034 §3. Combined with an Ed25519
+/// raw-key transport, `None` fails closed (raw-key remotes are always
+/// known peers — no CA to fall back to).
+///
+/// The `Option` is therefore load-bearing, not cosmetic: `Some(fingerprint)`
+/// means "pin this" (known peer), `None` means "trust the CA or fail"
+/// (unknown remote). An implementer must not default `remote_identity`
+/// to a placeholder value to "satisfy" the field — `None` is a real
+/// state that drives verifier selection.
 pub struct RemoteIdentity { pub fingerprint: String }
-
-/// Errors produced by `CallClient::connect`.
-#[non_exhaustive]
-pub enum ClientError { Transport { .. }, TlsSetup { .. }, ConnectionClosed }
 ```
 
 - **TLS identity** — the local node's Ed25519 raw key (RFC 7250) or X.509 cert,
@@ -222,7 +234,10 @@ pub enum ClientError { Transport { .. }, TlsSetup { .. }, ConnectionClosed }
 - **Auth token** — an opaque call-protocol-level token, decrypted from the
   vault or derived from a shared secret.
 - **Remote identity verification** — the expected fingerprint/cert of the
-  remote node, stored as a capability.
+  remote node, stored as a capability. `Some` → fingerprint pin (known
+  peer with a `PeerEntry`); `None` → CA verification for X.509 remotes,
+  fail-closed for Ed25519 raw-key remotes (ADR-034 §2/§3). The `None`
+  case is the public-X.509-endpoint path, not a missing field.
 
 These are populated by the assembly layer at `CallClient` construction time
 from vault-derived `Capabilities`. The credential path is the no-env-vars
@@ -241,6 +256,22 @@ additive. The one-way constraint (credentials from `Capabilities`, not env
 vars, ADR-014) is unaffected — the `auth_token` dimension flows through the
 call-protocol `auth_token` payload field, not TLS, so the no-env-vars
 invariant holds independently of this gap.
+
+**Outgoing X.509 and the peer model** (ADR-034): the client-side
+`ServerCertVerifier` is selected by whether the local node has a
+`PeerEntry` for the remote, not by key type alone. A pure-client
+connection to a **public X.509 endpoint** (no `PeerEntry` on the local
+side — e.g., dialing `api.alk.dev` or a third-party API) uses
+`WebPkiServerVerifier` (CA verification), gets **no `PeerId`** on the
+client side, and is **not added to `PeerCompositeEnv`** — it is not in
+the call-protocol peer graph (ADR-029). Ops discovered via `from_call`
+on such a connection land in the connection's Layer 2 overlay
+(ADR-024) and are invoked through the `CallConnection` handle directly,
+not via `PeerRef::Specific`. A connection to a **hub** (a `PeerEntry`
+with mixed Ed25519 + X.509 fingerprints) uses fingerprint pinning on
+both cert paths and does enter the peer graph. See
+[ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+for the verifier selection rule and the three-role naming.
 
 ### from_call
 
@@ -591,6 +622,22 @@ Based on the gap analysis and the downstream unblock chain:
 - **MCP stdio transport is not built.** Streamable HTTP is the only supported
   MCP transport in alknet. stdio = spawn arbitrary executable = built-in RCE.
   Recorded as an explicit security position, not a feature gap.
+- **Pure-client X.509 connections are not in the peer graph on the client
+  side.** A `CallClient` connection to a public X.509 endpoint with no
+  local `PeerEntry` for the remote gets no `PeerId`, is not added to
+  `PeerCompositeEnv`, and is not addressable via `PeerRef::Specific`.
+  Ops discovered on it live in the connection's Layer 2 overlay and are
+  invoked through the `CallConnection` handle. The client-side
+  `ServerCertVerifier` uses CA verification (`WebPkiServerVerifier`) for
+  such remotes; known peers (hub with `PeerEntry`) use fingerprint
+  pinning. See [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md).
+- **`CallCredentials.remote_identity: None` is load-bearing.** `None`
+  means "no `PeerEntry` for this remote → use CA verification (X.509)
+  or fail closed (Ed25519 raw key)" per the ADR-034 §3 verifier rule.
+  The implementation must not default `remote_identity` to a placeholder
+  to satisfy the field, and must not treat `None` as "skip verification"
+  — `None` + X.509 is CA verification, `None` + raw key is a hard
+  failure. `Some(fingerprint)` is the known-peer pin path.
 
 ## Design Decisions
 
@@ -609,6 +656,7 @@ Based on the gap analysis and the downstream unblock chain:
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | Cross-node abort through `from_call` forwarding handler's `parent_request_id` |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | `error_schemas` mirrored by `from_call` from remote op's spec |
 | TLS identity redesign | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | RFC 7250 raw key / X.509 cert dimensions of `CallCredentials` |
+| Outgoing-only X.509 and three peer roles | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Public X.509 endpoint is not a `PeerEntry` on the client side (no `PeerId`, not in peer graph); client-side verifier by `PeerEntry` presence (CA vs fingerprint pin); hub = mixed-fingerprint `PeerEntry` |
 | HD derivation for encryption keys | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Vault-derived TLS identity material |
 | Vault key model | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | Vault-derived TLS identity material |
 | Vault local-only dispatch | [ADR-025](../../decisions/025-vault-local-only-dispatch.md) | Vault access at assembly layer only; the credential injection path's first hop |
@@ -662,9 +710,17 @@ See [open-questions.md](../../open-questions.md) for full details.
   shapes — the repo/adapter pattern is committed (ADR-033); the in-memory
   adapters ship with core; the persistence adapter shapes (SQLite, etc.)
   are deferred for exploration. See OQ-36 in open-questions.md.
-- **OQ-37** (open): X.509 outgoing-only case — the three auth types and
-  how X.509 server identity fits the peer model. Not blocking the
-  ADR-029 migration. See OQ-37 in open-questions.md.
+- **OQ-37** (resolved by ADR-034): X.509 outgoing-only case — three
+  remote roles named (public X.509 endpoint, transport relay, hub).
+  `PeerEntry` asymmetry is correct: a pure-client connection to a public
+  X.509 endpoint is **not** in the call-protocol peer graph on the
+  client side — no `PeerEntry`, no `PeerId`, no `PeerRef::Specific`
+  routing. Ops discovered via `from_call`/`from_openapi`/`from_mcp`
+  land in the connection's Layer 2 overlay and are invoked through the
+  connection handle. The client-side `ServerCertVerifier` is selected
+  by `PeerEntry` presence: known peer → fingerprint pin; unknown X.509
+  remote → CA verification (`WebPkiServerVerifier`). See ADR-034 and
+  OQ-37 in open-questions.md.
 
 ## References
 

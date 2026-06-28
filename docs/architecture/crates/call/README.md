@@ -64,7 +64,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-33 | PeerId — crypto identity vs stable logical id | **resolved** (ADR-030) | `PeerId = Identity.id = PeerEntry.peer_id` (stable across key rotation) |
 | OQ-34 | Persistent peer registry | **resolved** (ADR-030+033) | Core trait + in-memory default; persistence adapters are separate crates |
 | OQ-35 | ~~API key asymmetry~~ | **dissolved** | `PeerEntry` supports multiple credential paths; `ApiKeyEntry` is for tokens that ARE the identity |
-| OQ-37 | X.509 outgoing-only case | open | Three auth types; how X.509 server identity fits the peer model. Not blocking. |
+| OQ-37 | X.509 outgoing-only case | **resolved** (ADR-034) | Three remote roles (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry correct; verifier by `PeerEntry` presence |
 
 ## Key Design Principles
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-06-28
 ---
 
 # Alknet Architecture
@@ -78,6 +78,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [031](decisions/031-credentialstore-repo-trait.md) | CredentialStore Repo Trait | Accepted |
 | [032](decisions/032-forwarded-for-identity.md) | Forwarded-For Identity (Metadata, Not Authority) | Accepted |
 | [033](decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Accepted |
+| [034](decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Outgoing-Only X.509 and the Three Peer Roles | Accepted |
 
 ## Open Questions
 
@@ -124,7 +125,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Open (feature extensions, not blocking):**
 - **OQ-32**: Multi-hop federation — the one-hop model is the architectural commitment; multi-hop is a feature extension that doesn't break downstream
 - **OQ-36**: Concrete persistence adapter shapes — the repo/adapter pattern is committed (ADR-033); in-memory adapters ship with core; persistence adapters (SQLite, etc.) are deferred for exploration
-- **OQ-37**: X.509 outgoing-only case — the three auth types (Ed25519, X.509, bearer token) and how X.509 server identity fits the peer model. Not blocking the ADR-029 migration; downstream (HTTP crate phase)
+- **OQ-37**: ~~X.509 outgoing-only case~~ — **resolved by ADR-034** (three remote roles named: public X.509 endpoint, transport relay, hub; `PeerEntry` asymmetry is correct; client-side verifier selection by `PeerEntry` presence)
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

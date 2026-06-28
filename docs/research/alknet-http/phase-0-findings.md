@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-25
+last_updated: 2026-06-28
 ---
 
 # alknet-http — Phase 0 Research Findings
@@ -165,6 +165,19 @@ HTTP/2 is sufficient. WebTransport is the browser path for the agent service
 `http/1.1`. The `h3` ALPN is reserved in the registry but the implementation
 lands as a fast-follow when the agent service needs browser streaming. This
 keeps v1 focused on the adapter + REST surface. Two-way door.
+
+**WebTransport relay-as-proxy (recorded via ADR-034, not a v1 item):** a
+distinct WebTransport feature — a proxy that terminates the browser's
+WebTransport connection and forwards encrypted traffic to a P2P hub's
+Ed25519 endpoint (so the hub need not expose its own public X.509 cert)
+— belongs in this same deferral bucket. It does not change the auth
+model: the browser still authenticates by bearer token, the hub still
+resolves it via `PeerEntry.auth_token_hash`, and the proxy is
+transport-only. ADR-030 §6's fingerprint normalization
+(`ed25519:<hex>` across quinn/iroh) was already designed to keep the
+proxied path clean. See
+[ADR-034](../../architecture/decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+§5 for the recording.
 
 ### DH-3: How does HTTP map to call-protocol operations?
 *(One-way door — needs an ADR)*
@@ -335,6 +348,12 @@ implementation detail; the credential (API key/token) comes from
   strategy for generated OpenAPI specs (tied to the registry's External
   operation set version) needs specifying. One-way door after first
   publication.
+- **OQ-HTTP-07 (WebTransport relay-as-proxy)**: a WebTransport proxy that
+  fronts a P2P hub for browsers (so the hub need not expose public X.509)
+  is a real feature for the browser-to-P2P-peer case. Deferred with h3 /
+  WebTransport (DH-2); recorded in ADR-034 §5 so it is not lost. Does not
+  change the auth model (bearer token + `PeerEntry.auth_token_hash`;
+  proxy is transport-only). Two-way door; lands with the `h3` fast-follow.
 
 ## Next Steps (Phase 0 → Phase 1)
 

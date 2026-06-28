@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-06-28
 ---
 
 # Open Questions
@@ -666,58 +666,62 @@ is a feature extension, not an unmade architecture decision.
 
 ## Theme: TLS Identity
 
-### OQ-37: X.509 Outgoing-Only Case (Three Auth Types)
+### OQ-37: X.509 Outgoing-Only Case (Three Peer Roles)
 
 - **Origin**: ADR-030 §"Bearer tokens" (the three credential types), the
   discussion that X.509 is fundamentally different from Ed25519
-- **Status**: open (lingering — the X.509 server-identity case needs design)
+- **Status**: **resolved** (2026-06-28 by ADR-034)
 - **Door type**: One-way (how X.509 server identity integrates with the
   peer model)
-- **Priority**: medium
-- **Resolution**: The three credential types are: Ed25519 raw key (the
-  common case, normalized to `ed25519:<hex>` across quinn/iroh), X.509
-  (domain-facing endpoints, ACME, `SHA256:<hex>`), and bearer token
-  (`PeerEntry.auth_token_hash` or `ApiKeyEntry`).
+- **Priority**: medium → resolved
+- **Resolution**: **The pre-ADR-034 framing conflated three distinct
+  remote roles under "X.509 endpoint."** [ADR-034](decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+  names them and resolves the peer-model question:
 
-  Ed25519 and bearer token are resolved (ADR-030 + OQ-29). The X.509 case
-  that remains open is **outgoing-only**: a client connects to a public
-  X.509 endpoint (e.g., `api.alk.dev`). The client must verify the server
-  cert against a CA (rustls's `WebPkiServerVerifier`) — the
-  `AcceptAnyServerCertVerifier` is a security hole for X.509. The server
-  may or may not require a client cert (most public X.509 endpoints
-  won't — browsers can't easily do TLS client-auth).
+  1. **Public X.509 endpoint** — a remote HTTPS / `alknet/call`-over-TLS
+     server reachable by domain, authenticated by CA verification
+     (`WebPkiServerVerifier`). The local node is a *client*; it
+     authenticates by bearer token. **Not a `PeerEntry` on the client
+     side** — it is not in the call-protocol peer graph (ADR-029), gets
+     no `PeerId`, and is not addressable via `PeerRef::Specific`. Ops
+     discovered via `from_call`/`from_openapi`/`from_mcp` land in the
+     connection's Layer 2 overlay and are invoked through the
+     connection handle.
+  2. **Transport relay** — iroh's DERP-equivalent (`iroh-relay`).
+     Infrastructure, not an alknet peer; no `PeerEntry` / `PeerId`.
+     Inherited with the `iroh` feature; its identity is iroh's concern.
+  3. **Hub / hosting node** — an alknet application peer (head/worker
+     hub, git-hosting hub) that *also* exposes a public domain + X.509
+     for browsers. A single `PeerEntry` with **mixed fingerprints**
+     (`ed25519:...` + `SHA256:...`), already supported by ADR-030.
+     Browsers connecting to it are *not* alknet peers — served by
+     `alknet-http`, bearer-token auth, no `PeerId`.
 
-  What's resolved:
-  - The `PeerEntry.fingerprints` field accepts X.509 fingerprints
-    (`SHA256:<hex of DER>`) alongside Ed25519 fingerprints.
-  - The client-side verifier is key-type-aware (OQ-29): raw keys use
-    fingerprint-matching, X.509 uses CA verification.
+  **The "make `PeerEntry` symmetric" instinct is rejected.** `PeerEntry`
+  is for peers in the call-protocol peer graph; pure-client connections
+  to public X.509 endpoints are not in that graph on the client side.
+  The asymmetry reflects a real trust-model difference: known peers have
+  stable logical identities (pin the fingerprint); public APIs don't
+  (trust the CA, hold the connection handle directly).
 
-  What's open:
-  - How does the outgoing X.509 case interact with `PeerEntry`? If a
-    client connects to `api.alk.dev` (X.509, no client-auth), the client
-    doesn't present a cert, so the server has no fingerprint to resolve.
-    The client authenticates via `auth_token` (the bearer-token path).
-    The server's `PeerEntry` for this client uses `auth_token_hash`, not
-    `fingerprints`. This works — but the server's `PeerEntry` might not
-    have a fingerprint at all for an HTTP-only client.
-  - Conversely, if the server requires X.509 client-auth (mutual TLS),
-    the client presents its X.509 cert, the server extracts the
-    `SHA256:<hex>` fingerprint, and `PeerEntry.fingerprints` matches it.
-    This works too.
-  - The open question is whether there are cases where X.509 server
-    identity needs to be part of the `PeerEntry` model (the server's
-    identity, not the client's) — e.g., for the client to know "I'm
-    connected to `api.alk.dev`, which is peer-id `api-server`." Currently
-    `PeerEntry` is about the *remote* peer's credentials, as seen by the
-    *local* node. For an outgoing connection, the local node is the
-    client, and `PeerEntry` describes the server. This may need a
-    design pass to make sure the model is symmetric.
+  **Client-side verifier selection rule (extends OQ-29):** known peer
+  (`PeerEntry` present) → fingerprint pin (Ed25519 `ed25519:<hex>` or
+  X.509 `SHA256:<hex>`); unknown X.509 remote (`PeerEntry` absent) → CA
+  verification. An unknown Ed25519 raw-key remote cannot be verified at
+  all (no CA fallback) and fails closed — same model as iroh.
+
+  **Downstream, not blocking, recorded so they don't get lost:**
+  WebTransport relay-as-proxy (browser → proxy → P2P hub) is deferred
+  with the rest of h3/WebTransport (alknet-http DH-2); ADR-030 §6's
+  fingerprint normalization already keeps the proxied path clean. On-
+  chain / smart-contract peer discovery (relays syncing git repos via
+  iroh gossip) is a *source* of `PeerEntry` records, fits the OQ-36
+  repo/adapter pattern (`alknet-peer-store-onchain` implementing
+  `IdentityProvider`), and does not change the auth model.
 
   Not blocking the ADR-029 migration — the Ed25519 path is the primary
-  use case and it's resolved. The X.509 outgoing-only case is a real
-  question but it's downstream (the HTTP crate phase, when
-  `from_openapi`/`from_mcp` handlers connect to X.509 endpoints).
-- **Cross-references**: ADR-027, ADR-029, ADR-030, OQ-29,
-  [client-and-adapters.md](crates/call/client-and-adapters.md),
+  use case and was already resolved; this ADR closes the X.509
+  outgoing-only remainder.
+- **Cross-references**: ADR-027, ADR-029, ADR-030, ADR-033, ADR-034,
+  OQ-29, OQ-36, [client-and-adapters.md](crates/call/client-and-adapters.md),
   [endpoint.md](crates/core/endpoint.md), [auth.md](crates/core/auth.md)

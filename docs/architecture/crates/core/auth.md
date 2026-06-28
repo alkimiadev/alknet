@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-06-28
 ---
 
 # Authentication
@@ -132,6 +132,64 @@ Bearer tokens have two paths:
 
 The distinction is whether the token needs a stable logical id across rotation (`PeerEntry`) or not (`ApiKeyEntry`). See ADR-030 §"Bearer tokens."
 
+## Three Remote Roles (ADR-034)
+
+The three credential types above describe how a *single* `PeerEntry` can
+be authenticated. Separately, there are **three distinct remote roles**
+that the architecture must not conflate (see [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md)):
+
+| Role | Identity | alknet peer? | `PeerEntry` on local side? |
+|------|----------|--------------|----------------------------|
+| **Public X.509 endpoint** | Domain + CA-issued X.509 | No (local node is a client) | No |
+| **Transport relay** (iroh's DERP-equivalent) | iroh `NodeId` (Ed25519) | No (infrastructure) | No |
+| **Hub / hosting node** | Ed25519 raw key **and/or** X.509 | Yes (full peer) | Yes |
+
+(Transport path and examples per role are in ADR-034; this table is
+auth-focused — identity, peer-graph membership, and `PeerEntry`
+presence on the local side.)
+
+`PeerEntry` (and the `PeerId` it resolves to) is the model for peers in
+the call-protocol peer graph (ADR-029) — peers that get a stable logical
+identity, are addressable via `PeerRef::Specific`, and whose ops land in
+the peer-keyed overlay. A pure-client connection to a public X.509
+endpoint (e.g., `api.alk.dev`, a third-party API) is **not** in that
+graph on the client side: the local node holds no `PeerEntry` for it,
+the connection gets no `PeerId`, and ops discovered via
+`from_call`/`from_openapi`/`from_mcp` are invoked through the
+connection handle directly (Layer 2 overlay, ADR-024), not through
+peer-keyed routing. The asymmetry is deliberate — a public domain's
+operator can change hands, so there is no stable logical identity to
+attach; the local node trusts the CA today and holds the connection
+handle.
+
+The **hub** case is an ordinary `PeerEntry` that happens to expose both
+an Ed25519 fingerprint (P2P path) and an X.509 fingerprint
+(`SHA256:<hex>`, WebTransport/HTTPS path) — already supported by
+`PeerEntry.fingerprints: Vec<String>` (ADR-030). Browsers connecting to
+a hub over WebTransport/HTTPS are *not* alknet peers on the hub's side
+either — they're served by `alknet-http`, authenticate by bearer token,
+and get no `PeerId`.
+
+### Client-side verifier selection (outgoing connections)
+
+The `CallClient` / `from_openapi` / `from_mcp` client-side
+`ServerCertVerifier` is selected by **whether the local node has a
+`PeerEntry` for the remote**, not by key type alone:
+
+| Local has `PeerEntry` for remote? | Remote cert type | Client verifier |
+|----------------------------------|------------------|-----------------|
+| No (public X.509 endpoint) | X.509 | `WebPkiServerVerifier` (CA verification) |
+| No | Ed25519 raw key | fails closed (no CA to fall back to — raw-key remotes are always known peers) |
+| Yes (hub, Ed25519 path) | Ed25519 raw key | fingerprint match (`ed25519:<hex>`) |
+| Yes (hub, X.509 path) | X.509 | fingerprint match (`SHA256:<hex>`) |
+
+This is the key-type-aware verifier from OQ-29, with the peer-model
+criterion (ADR-034) made explicit. `AcceptAnyServerCertVerifier` is a
+security hole for X.509 and is only safe for raw-key fingerprint
+extraction on the *server* side; the *client* side must use CA
+verification for unknown X.509 remotes and fingerprint pinning for
+known peers.
+
 ## AuthToken
 
 Opaque authentication token carried in protocol frames.
@@ -230,7 +288,7 @@ The verifier accepts any presented cert without CA verification because
 alknet's identity model is fingerprint-based, not PKI-based — the
 `AuthPolicy::peers` set is the trust anchor, not a root CA store. The
 cert bytes are extracted at the TLS layer and hashed to a fingerprint
-string; the fingerprint is then matched against the configured `PeerEntry.fingerprint`
+string; the fingerprint is then matched against the configured `PeerEntry.fingerprints`
 fields by `IdentityProvider::resolve_from_fingerprint()`.
 
 ## Resolution Flow
@@ -328,12 +386,13 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 | PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `authorized_fingerprints` → `peers: Vec<PeerEntry>`; `Identity.id` = `peer_id` (stable), not fingerprint; key rotation changes fingerprint, not identity |
 | CredentialStore repo trait | [ADR-031](../../decisions/031-credentialstore-repo-trait.md) | Second repo trait in core (alongside `IdentityProvider`); `InMemoryCredentialStore` default adapter |
 | Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines traits + in-memory defaults; persistence adapters are separate crates |
+| Three remote roles and outgoing-only X.509 | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Public X.509 endpoint / transport relay / hub; `PeerEntry` asymmetry (pure-client X.509 is not a peer); client-side verifier by `PeerEntry` presence |
 
 ## Open Questions
 
 - **OQ-29** (resolved): `CallClient` TLS client-auth — wire quinn client-auth (present Ed25519 key as raw public key client cert); key-type-aware server cert verification (raw key = fingerprint match, X.509 = CA verification); fingerprint normalization (`ed25519:` across quinn/iroh). See OQ-29 in open-questions.md.
 - **OQ-35** (dissolved): the "API key asymmetry" framing was wrong; `PeerEntry` supports multiple credential paths (fingerprints + auth_token_hash), `ApiKeyEntry` is for tokens that ARE the identity. See OQ-35 in open-questions.md.
-- **OQ-37** (open): X.509 outgoing-only case — the three auth types and how X.509 server identity fits the peer model. Not blocking the ADR-029 migration. See OQ-37 in open-questions.md.
+- **OQ-37** (resolved): X.509 outgoing-only case — three remote roles named (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry is correct (pure-client X.509 connections are not in the peer graph on the client side); client-side verifier selection by `PeerEntry` presence (CA verification for unknown X.509, fingerprint pin for known peers). See ADR-034 and OQ-37 in open-questions.md.
 
 ## Security Constraints
 

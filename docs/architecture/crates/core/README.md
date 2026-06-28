@@ -45,7 +45,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | OQ-34 | Persistent peer registry (storage boundary) | resolved by ADR-030+031+033 | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
 | OQ-35 | ~~API key asymmetry~~ | dissolved | `PeerEntry` supports multiple credential paths; `ApiKeyEntry` is for tokens that ARE the identity |
 | OQ-36 | Concrete persistence adapter shapes | open (deferred for exploration) | The repo/adapter pattern is committed (ADR-033); in-memory adapters ship with core; persistence adapters deferred |
-| OQ-37 | X.509 outgoing-only case | open | Three auth types; how X.509 server identity fits the peer model. Not blocking. |
+| OQ-37 | X.509 outgoing-only case | resolved by ADR-034 | Three remote roles (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry correct; client-side verifier by `PeerEntry` presence (CA vs fingerprint pin) |
 
 ## Key Design Principles
 
