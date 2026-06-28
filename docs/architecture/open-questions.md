@@ -323,9 +323,10 @@ These open questions are the remainders from the call-completion gap analysis
 (`docs/research/alknet-call-completion/gap-analysis.md`, DC-1..4) and the
 peer-graph routing research (`docs/research/alknet-call-peer-routing/findings.md`).
 ADR-029 supersedes ADR-028 and dissolves OQ-25 and the cross-peer half of
-OQ-28; the remaining two-way-door shape/defaults are recorded in
-[client-and-adapters.md](crates/call/client-and-adapters.md) and may be
-revisited during implementation without a new ADR.
+OQ-28. Most of the remaining OQs are now resolved (decisions made, defaults
+recorded). OQ-29 is the exception — it's load-bearing on ADR-030 and
+requires a decision before the ADR-029 migration lands. OQ-32 (multi-hop)
+is a feature extension, not an unmade architecture decision.
 
 ### OQ-25: ~~Remote-Safe Marking Shape for CallClient Peer-Scoped Filtering~~ (Dissolved by ADR-029)
 
@@ -373,122 +374,170 @@ revisited during implementation without a new ADR.
 ### OQ-27: from_call Re-Import Trigger
 
 - **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 Assumption 4
-- **Status**: open
+- **Status**: **resolved** (2026-06-27)
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: ADR-017 Assumption 4 noted re-import "happens on
-  reconnection or is triggered explicitly." The v1 default is
-  **auto-re-import on connection establishment**. The overlay is
-  per-connection (Layer 2, ADR-024), so a stale overlay dies with the
-  connection; re-import on reconnect is naturally scoped to the new
-  connection. This is the right default for the runner pattern (a worker
-  reconnects → the hub re-discovers the worker's ops automatically).
-  Explicit re-import via a future `CallConnection::refresh()` method is
-  additive and can be added if a deployment needs manual control. Reversal
-  is cheap; no ADR needed.
+- **Resolution**: The decision is **auto-re-import on connection
+  establishment**. The overlay is per-connection (Layer 2, ADR-024), so a
+  stale overlay dies with the connection; re-import on reconnect is
+  naturally scoped to the new connection. This is the right default for the
+  runner pattern (a worker reconnects → the hub re-discovers the worker's
+  ops automatically). An explicit `CallConnection::refresh()` method is a
+  genuine feature addition — non-breaking, additive — if a deployment
+  needs manual control.
 - **Cross-references**: ADR-017, ADR-024, [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-28: from_call Namespace Collision Behavior
 
 - **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §3
-- **Status**: open
+- **Status**: **resolved** (2026-06-27)
 - **Door type**: Two-way
 - **Priority**: low
 - **Resolution**: ADR-017 §3's `FromCallConfig` namespace prefix is
-  **optional, default no prefix, collision = error**. A node importing from
-  two remotes that both expose `/container/exec` without prefixes should fail
-  loudly rather than silently overwrite. The operator adds prefixes when they
-  know they're importing from multiple sources. This matches the
-  default-deny, explicit-allow posture (ADR-015, ADR-028). Reversal is cheap;
-  no ADR needed. The alternative (last-wins) would silently mask one
-  remote's op behind another's, which is the kind of surprise the
+  **optional, default no prefix, same-peer collision = error**. A node
+  importing from a peer that exposes two ops with the same name should fail
+  loudly rather than silently overwrite. This matches the default-deny,
+  explicit-allow posture (ADR-015). The alternative (last-wins) would
+  silently mask one op behind another, which is the kind of surprise the
   default-deny posture exists to avoid.
 
-  **Cross-peer collision dissolved by ADR-029.** Under the peer-keyed overlay
-  model, same name on different peers is fine — they live in separate
-  peer sub-overlays, no collision, no prefix needed. The collision rule now
-  stays only *within* a peer (same name on the same peer is still an error —
-  a peer shouldn't expose two ops with the same name). `FromCallConfig::namespace_prefix`
-  becomes optional local-naming sugar, not the disambiguation mechanism. See
-  ADR-029 §5.
+  **Cross-peer collision dissolved by ADR-029.** Under the peer-keyed
+  overlay model, same name on different peers is fine — they live in
+  separate peer sub-overlays, no collision, no prefix needed.
+  `FromCallConfig::namespace_prefix` is optional local-naming sugar for
+  when the importing node wants to expose a peer's ops under a different
+  name *locally* — a local-naming concern, not a disambiguation concern.
+  See ADR-029 §5.
 - **Cross-references**: ADR-015, ADR-017, ~~ADR-028~~ (superseded), ADR-029,
   [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-29: CallClient TLS Client-Auth and Remote-Identity Verification
 
 - **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §7
-- **Status**: open
-- **Door type**: Two-way
-- **Priority**: medium
-- **Resolution**: v1 `CallClient::connect()` builds the quinn client config
-  with `with_no_client_auth()` and an `AcceptAnyServerCertVerifier` — the
-  client does not present its TLS identity (`credentials.tls_identity`) as a
-  client cert, and does not pin the remote's expected identity from
-  `credentials.remote_identity`. The server-side
-  `AcceptAnyCertVerifier` (in alknet-core's endpoint) does not require or
-  verify client certs, so a client cert is not needed to establish a
-  connection in v1. Wiring the local node's RawKey/X509 identity as a rustls
-  client-auth cert (for servers that *do* verify client identity) and
-  plugging `credentials.remote_identity` into a real `ServerCertVerifier` is
-  additive — a two-way-door remainder surfaced during implementation.
-  **The one-way constraint (credentials from `Capabilities`, not env vars,
-  ADR-014) is unaffected**: the `auth_token` dimension flows through the
-  call-protocol `auth_token` payload field, not TLS, so the no-env-vars
-  invariant holds independently of this gap. Decided during a future task that
-  wires RawKey client-auth; recorded here, not in a full ADR.
-- **Cross-references**: ADR-014, ADR-017, ADR-027, [client-and-adapters.md](crates/call/client-and-adapters.md), [endpoint.md](crates/core/endpoint.md)
+- **Status**: **open — load-bearing on ADR-030** (not "additive" as previously framed)
+- **Door type**: One-way (identity model interaction), two-way (mechanism)
+- **Priority**: **high** (was medium; promoted — this is the activation path
+  for ADR-030's `PeerEntry` fingerprint → `peer_id` resolution)
+- **Resolution**: **Previously framed as "additive — two-way-door
+  remainder." That framing is incorrect.** ADR-030 makes `PeerId =
+  Identity.id = PeerEntry.peer_id` on the fingerprint path. But the
+  fingerprint path requires the client to present a TLS client cert, and
+  the current `CallClient::connect()` uses `with_no_client_auth()` — no
+  client cert is presented, no fingerprint is extracted by the server's
+  `AcceptAnyCertVerifier`, and `IdentityProvider::resolve_from_fingerprint`
+  returns `None`. The peer gets no `PeerId` from the fingerprint path.
+
+  The `auth_token` path (`resolve_from_token`) still works, but it
+  resolves to `Identity.id = ApiKeyEntry.prefix` (the API-key identity
+  path), **not** to `PeerEntry.peer_id`. So with TLS client-auth unwired,
+  a calling peer's `PeerId` is either `None` (no client cert) or an
+  API-key prefix (if an `auth_token` is used) — neither is the stable
+  `PeerEntry.peer_id` that ADR-030 commits. The PeerEntry path is dormant
+  until client-auth is wired.
+
+  This is not a "two-way-door remainder" — it's the activation path for
+  ADR-030's primary use case (stable `peer_id` across key rotation for
+  peer-keyed overlays). The decision to make is:
+
+  - **(a)** Wire TLS client-auth as part of the ADR-029 migration, so the
+    fingerprint → `PeerEntry` → `peer_id` path is live from day one. The
+    server's `AcceptAnyCertVerifier` already requests (but doesn't verify)
+    client certs; the client's `with_no_client_auth()` is the gap. Wiring
+    the local node's `RawKey`/`X509` identity as a rustls client-auth cert
+    is the missing piece. Remote-identity verification (plugging
+    `credentials.remote_identity` into a real `ServerCertVerifier`) is
+    genuinely additive — the server-side fingerprint extraction is what
+    matters for `PeerId`, not the client-side verification of the server.
+
+  - **(b)** Ship the ADR-029 migration with `auth_token`-only peer identity
+    and treat TLS client-auth as a follow-up. This means `PeerCompositeEnv`
+    keys on `Identity.id = ApiKeyEntry.prefix` (the token prefix) until
+    client-auth is wired, then switches to `PeerEntry.peer_id` when it is.
+    The switch is a behavior change for any deployment that built on the
+    token-prefix identity — the `PeerId` changes from the prefix to the
+    `peer_id`. This is the "compounds into a mess" path.
+
+  - **(c)** Extend `PeerEntry` to also cover `auth_token`-based peer
+    identity — a peer entry keyed by token prefix (or a `PeerEntry.token`
+    field) instead of (or alongside) fingerprint. This unifies the two
+    identity paths under `PeerEntry`, so the `PeerId` is stable regardless
+    of which credential path the peer used. This is a design change to
+    ADR-030, not just an implementation choice.
+
+  **The X.509 / raw-key wrinkle:** the vast majority of end users will use
+  Ed25519 raw keys (RFC 7250) — the same key type as SSH keys, native to
+  iroh's `NodeId` model. The fingerprint format for raw keys is
+  `ed25519:<hex>`. For X.509 (public-facing endpoints like
+  `api.alk.dev`, relays), the fingerprint is `SHA256:<hex of DER>` — a
+  different format, a different key type, but the same `PeerEntry.fingerprint`
+  field. The `IdentityProvider::resolve_from_fingerprint` path is
+  format-agnostic (it's a string match against `PeerEntry.fingerprint`),
+  so both key types work once client-auth is wired. The wrinkle is on the
+  client side: presenting an Ed25519 raw key as a TLS client cert uses a
+  different rustls path than presenting an X.509 cert. Both are supported
+  by rustls; the `CallCredentials.tls_identity` field already carries the
+  `TlsIdentity` enum (RawKey / X509). The wiring is per-variant.
+
+  **Not decided yet.** This OQ is promoted to high priority and requires a
+  decision before the ADR-029 migration lands. The previous "additive,
+  two-way-door remainder" framing is struck.
+- **Cross-references**: ADR-014, ADR-017, ADR-027, ADR-029, ADR-030,
+  [client-and-adapters.md](crates/call/client-and-adapters.md),
+  [endpoint.md](crates/core/endpoint.md), [auth.md](crates/core/auth.md)
 
 ### OQ-30: PeerRef::Any Routing Policy
 
 - **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §2, [client-and-adapters.md](crates/call/client-and-adapters.md), `docs/research/alknet-call-peer-routing/findings.md` §3.2
-- **Status**: open
+- **Status**: **resolved** (2026-06-27)
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: v1 `PeerRef::Any` uses insertion-order first-match —
-  deterministic but order-dependent (worker A connects before worker B → `Any`
-  routes to A until A disconnects). This is the simplest routing policy and is
-  correct for the immediate use case (the head picks the first worker that
-  serves the op). A richer `RoutingPolicy` (round-robin, least-loaded,
-  affinity) is the two-way-door remainder; the `PeerRef` enum is designed to
-  compose with a `Route { selector, policy }` struct without breaking the
-  `invoke_peer` signature. Decided during implementation when a fan-out use
-  case needs it; recorded here, not in a full ADR.
+- **Resolution**: `PeerRef::Any` uses **insertion-order first-match** —
+  deterministic but order-dependent (worker A connects before worker B →
+  `Any` routes to A until A disconnects). This is the simplest routing
+  policy and is correct for the immediate use case (the head picks the
+  first worker that serves the op). A richer `RoutingPolicy` (round-robin,
+  least-loaded, affinity) is a feature extension — the `PeerRef` enum is
+  designed to compose with a `Route { selector, policy }` struct without
+  breaking the `invoke_peer` signature. Adding a routing policy is
+  non-breaking; it's a feature addition when a fan-out use case needs it,
+  not an unmade architectural decision.
 - **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-31: services/list-peers Re-Export Semantics
 
 - **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §6, `docs/research/alknet-call-peer-routing/findings.md` §3.5
-- **Status**: open
+- **Status**: **resolved** (2026-06-27)
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: v1 defaults to "own ops only" — `services/list` shows the
-  head's own Layer 0 `External` ops, filtered by `AccessControl::check(calling_peer)`,
-  unchanged from today (minus the `remote_safe` filter). A `services/list-peers`
-  opt-in (new built-in operation) lists the peer overlays with attribution:
-  each peer's sub-overlay listed as `{ peer: Option<PeerId>, operations: [...] }`,
-  filtered by the calling peer's authorization. Whether re-exported peer ops
-  are listed by default, opt-in, or per-peer-policy is the two-way-door
-  remainder; v1 is opt-in (`services/list-peers`). The re-export policy is an
-  `AccessControl` decision on the listing op. Decided during implementation
-  when a consumer needs peer-attributed discovery; recorded here, not in a
-  full ADR.
+- **Resolution**: `services/list` defaults to **"own ops only"** — it shows
+  the head's own Layer 0 `External` ops, filtered by
+  `AccessControl::check(calling_peer)`, unchanged from today (minus the
+  retired `remote_safe` filter). A `services/list-peers` opt-in (new
+  built-in operation) lists the peer overlays with attribution: each
+  peer's sub-overlay listed as `{ peer: Option<PeerId>, operations: [...] }`,
+  filtered by the calling peer's authorization. The re-export policy is an
+  `AccessControl` decision on the listing op. Whether `services/list-peers`
+  is built now or as a feature addition is a scheduling question — the
+  decision (opt-in, `AccessControl`-filtered) is made.
 - **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-32: Multi-Hop Federation
 
 - **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §3.7, `docs/research/alknet-call-peer-routing/findings.md` §3.7
-- **Status**: open
+- **Status**: open (feature extension, not an unmade architecture decision)
 - **Door type**: One-way (federation model), two-way (mechanism)
 - **Priority**: low
-- **Resolution**: v1 is one-hop — worker A does not transitively see worker
-  B's ops through the head unless the head explicitly re-exports them. The
-  peer-keyed overlay model extends to multi-hop without redesign (a chain of
-  `PeerRef::Specific` routing decisions), but path-finding (which peer reaches
-  which op transitively) is where a graph library (petgraph) would pay off.
-  For v1 (one hop, shallow), a nested `HashMap<PeerId, HashMap<String, ...>>`
-  suffices. Whether multi-hop federation becomes a real use case is a future
-  decision; the peer-keyed model does not foreclose it. Not designed; tracked
-  here so the v1 model's extendability is recorded.
+- **Resolution**: The model is **one-hop** — worker A does not transitively
+  see worker B's ops through the head unless the head explicitly re-exports
+  them. The peer-keyed overlay model extends to multi-hop without redesign
+  (a chain of `PeerRef::Specific` routing decisions), but path-finding
+  (which peer reaches which op transitively) is where a graph library
+  (petgraph) would pay off. For one-hop (shallow), a nested
+  `HashMap<PeerId, HashMap<String, ...>>` suffices. Multi-hop federation is
+  a feature extension — the one-hop model is the architectural commitment;
+  extending to multi-hop doesn't break downstream crates. Whether multi-hop
+  becomes a real use case is a future decision; the peer-keyed model does
+  not foreclose it.
 - **Cross-references**: ADR-029, [client-and-adapters.md](crates/call/client-and-adapters.md)
 
 ### OQ-33: PeerId — Cryptographic Identity vs Stable Logical Identifier
@@ -591,7 +640,7 @@ revisited during implementation without a new ADR.
 - **Cross-references**: ADR-030, [auth.md](crates/core/auth.md),
   [config.md](crates/core/config.md)
 
-### OQ-36: Concrete Adapter Shapes (Deferred for Exploration)
+### OQ-36: Concrete Persistence Adapter Shapes (Deferred for Exploration)
 
 - **Origin**: ADR-033 §"What this does NOT do" (concrete adapter shapes not
   specified), the project's note that the repo pattern is a tool to reach
@@ -599,23 +648,35 @@ revisited during implementation without a new ADR.
 - **Status**: open (deferred for exploration)
 - **Door type**: Two-way (adapter shapes are implementation details;
   the trait shapes are the one-way doors, already committed by ADR-030/031/033)
-- **Priority**: low (becomes real when a persistence use case forces a
-  concrete adapter build)
+- **Priority**: medium (must be addressed before the next round of
+  implementation; not blocking the current OQ-29 decision)
 - **Resolution**: The repo/adapter pattern is committed (ADR-033): core
   defines repo traits + in-memory default adapters; persistence adapters
-  are separate crates; the assembly layer wires the adapter. The
-  **concrete adapter shapes** — table schemas, backend choice (SQLite +
-  honker vs. a key-value store vs. a remote service), indexing, caching,
-  connection management — are deferred for exploration.
+  are separate crates; the assembly layer wires the adapter.
 
-  The project is iterating on adapter simplification. The trait shapes
-  (`IdentityProvider`, `CredentialStore`) are the commitment; the adapter
-  shapes are not. When a concrete use case (peer identity persistence
-  across restarts, credential persistence across restarts, ACL delegation
-  graph) forces a persistence adapter build, the adapter shape gets
-  reasoned through then, not speculatively now.
+  **What ships with core** (not deferred): the repo traits
+  (`IdentityProvider`, `CredentialStore`) and their in-memory default
+  adapters (`ConfigIdentityProvider`, `InMemoryCredentialStore`). These are
+  the one-way-door commitments — they ship with the core crate, not as
+  separate adapters. The in-memory adapters are real implementations, not
+  stubs — a full repo pattern (the same trait surface a persistence
+  adapter would implement), just backed by config / `HashMap` instead of
+  a database.
+
+  **What's deferred**: the concrete *persistence* adapter shapes — table
+  schemas, backend choice (SQLite + honker vs. a key-value store vs. a
+  remote service), indexing, caching, connection management. These are the
+  separate-crate adapters (e.g., `alknet-peer-store-sqlite`,
+  `alknet-credential-store-sqlite`) that implement the core traits against
+  a specific backend. The project is iterating on adapter simplification;
+  the trait shapes are the commitment, the persistence adapter shapes are
+  not. When a concrete use case (peer identity persistence across
+  restarts, credential persistence across restarts, ACL delegation graph)
+  forces a persistence adapter build, the adapter shape gets reasoned
+  through then.
 
   This OQ exists so the deferral is deliberate, not accidental — the
-  pattern is committed, the adapters are not, and the gap is tracked.
+  pattern is committed, the in-memory adapters ship with core, and the
+  persistence adapter shapes are the open exploration.
 - **Cross-references**: ADR-030, ADR-031, ADR-033, OQ-34,
   [auth.md](crates/core/auth.md), [config.md](crates/core/config.md)

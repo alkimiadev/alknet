@@ -1,7 +1,7 @@
 ---
 status: draft
-last_updated: 2026-06-26
-review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean. Call-completion gap (ADR-017 client/adapter surface) addressed 2026-06-26 — ADR-028 + client-and-adapters.md added; implementation pending.
+last_updated: 2026-06-27
+review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean. Call-completion gap (ADR-017 client/adapter surface) addressed 2026-06-26; ADR-029 migration pending.
 ---
 
 # alknet-call
@@ -40,6 +40,9 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | [024](../../decisions/024-operation-registry-layering.md) | Operation Registry Layering | Curated (static) + session/connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 | [028](../../decisions/028-callclient-peer-scoped-registry-filtering.md) | ~~Peer-Scoped Registry Filtering~~ | ~~Accepted~~ → **Superseded** by ADR-029 (flat-namespace single-peer model couldn't express head→N-workers; parallel auth system duplicated `AccessControl`) |
 | [029](../../decisions/029-peer-graph-routing-model.md) | Peer-Graph Routing Model | Peer-keyed overlays + `PeerRef` routing; `AccessControl`-based peer authorization; retires `remote_safe`/`trusted_peer` |
+| [030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | PeerEntry and Identity.id Decoupling | `PeerId` source = `Identity.id` = `PeerEntry.peer_id` (stable); supersedes ADR-029's UUID source |
+| [032](../../decisions/032-forwarded-for-identity.md) | Forwarded-For Identity | `forwarded_for` on `OperationContext` and `call.requested`; metadata only, never used by `AccessControl::check` |
+| [033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
 
 ## Relevant Open Questions
 
@@ -52,14 +55,14 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays. |
 | OQ-25 | ~~Remote-safe marking shape~~ | **dissolved** (ADR-029) | `remote_safe`/`trusted_peer` retired; peer authorization is `AccessControl::check(peer_identity)` |
 | OQ-26 | OperationAdapter error type (AdapterError variants) | **resolved** | `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`; `#[non_exhaustive]` |
-| OQ-27 | from_call re-import trigger | open (two-way) | v1 default: auto-on-reconnect; explicit `refresh()` additive |
-| OQ-28 | from_call namespace collision | cross-peer **dissolved** (ADR-029) / same-peer stays | Cross-peer: separate sub-overlays, no collision. Same-peer: error. `namespace_prefix` is local-naming sugar |
-| OQ-29 | CallClient TLS client-auth and remote-identity verification | open (two-way) | v1 `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth is additive (orthogonal to ADR-029) |
-| OQ-30 | `PeerRef::Any` routing policy | open (two-way) | v1 insertion-order first-match; round-robin/least-loaded is future (ADR-029) |
-| OQ-31 | `services/list-peers` re-export semantics | open (two-way) | v1 "own ops only"; `services/list-peers` is opt-in (ADR-029) |
-| OQ-32 | Multi-hop federation | open | v1 one-hop; peer-keyed model extends without redesign; petgraph candidate (ADR-029) |
-| OQ-33 | PeerId — crypto identity vs stable logical id | **resolved** | Logical id (UUID v1), not `Identity.id`; decoupled from crypto for key-rotation-safe ACLs |
-| OQ-34 | Persistent peer registry (cross-node state storage) | open | Not a v1 blocker (UUID works); the no-DB posture's limit, tracked for deliberate future decision |
+| OQ-27 | from_call re-import trigger | **resolved** | Auto-re-import on connection establishment; `refresh()` is a feature addition |
+| OQ-28 | from_call namespace collision | **resolved** | Same-peer collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays) |
+| OQ-29 | CallClient TLS client-auth | **open (high, load-bearing on ADR-030)** | NOT "additive" — activates the `PeerEntry` fingerprint → `peer_id` path. Requires decision before ADR-029 migration. |
+| OQ-30 | `PeerRef::Any` routing policy | **resolved** | Insertion-order first-match; richer routing is a feature extension |
+| OQ-31 | `services/list-peers` re-export semantics | **resolved** | Opt-in `services/list-peers`; `services/list` is "own ops only" |
+| OQ-32 | Multi-hop federation | open (feature extension) | One-hop model is the commitment; multi-hop is a feature extension, not a deferral |
+| OQ-33 | PeerId — crypto identity vs stable logical id | **resolved** (ADR-030) | `PeerId = Identity.id = PeerEntry.peer_id` (stable across key rotation) |
+| OQ-34 | Persistent peer registry | **resolved** (ADR-030+033) | Core trait + in-memory default; persistence adapters are separate crates |
 
 ## Key Design Principles
 
@@ -74,6 +77,6 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 9. **Internal calls switch authority context, not skip ACL**: The `internal` flag marks composition-originated calls. ACL runs against the handler's composition authority, not the caller's and not as a blanket skip. Operations have External/Internal visibility. Scoped composition env bounds reachability. See ADR-015, ADR-022.
 10. **Provenance determines composition capability**: Only `Local` and `Session` ops can compose. Leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) are forwarding stubs — they don't get composition authority or a scoped env. The assembly layer is the sole grantor of composition authority. See ADR-022.
 11. **Connection direction is independent of call direction**: Who opens the QUIC connection is a connection-layer concern, not a protocol-layer concern. Both sides can call each other once connected. The `CallAdapter` accepts connections; the `CallClient` opens them; both produce the same `CallConnection` and dispatch through the same loop. See ADR-017, [client-and-adapters.md](client-and-adapters.md).
-12. **CallClient registry is default-deny**: A `CallClient` exposes no operations to the remote peer unless explicitly marked remote-safe. Sharing the global registry is an explicit trusted-peer opt-in, never the default. This prevents a remote peer's call from triggering dispatch that populates `OperationContext.capabilities` from the local node's registration bundle. See ADR-028.
+12. **Peer authorization via `AccessControl`**: A remote peer's call is authorized by `AccessControl::check(peer_identity)` against the op's `AccessControl` — the same mechanism that gates every other call. No `remote_safe` flag, no `trusted_peer` bypass. An op with `AccessControl::default()` is callable by any peer; an op with `required_scopes` is callable only by peers whose `Identity.scopes` satisfy them; an op with `Visibility::Internal` is never callable from the wire. See ADR-029.
 13. **Adapter trait lives with the types; implementations live with their transport**: `OperationAdapter` is in `alknet-call`; `from_call`/`from_jsonschema` are in `alknet-call` (QUIC / pure parse); `from_openapi`/`from_mcp`/`to_openapi`/`to_mcp` are in `alknet-http` (reqwest / axum). `alknet-call` stays lean — no HTTP client, no HTTP server. See [client-and-adapters.md](client-and-adapters.md).
 14. **No handler reads outbound credentials from any source other than `OperationContext.capabilities`** (no-env-vars invariant): the credential injection path is vault → assembly layer → `Capabilities` → `HandlerRegistration.capabilities` → `OperationContext.capabilities` → handler. Downstream consumers' `std::env::var` reads are unreachable because the assembly layer never calls `Default::default()`. See ADR-014, [client-and-adapters.md](client-and-adapters.md).

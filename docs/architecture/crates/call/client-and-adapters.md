@@ -625,26 +625,30 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-26** (resolved): `AdapterError` variants — `DiscoveryFailed`,
   `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`
   (replaces flat `Conflict`). `#[non_exhaustive]`.
-- **OQ-27** (open, two-way): `from_call` re-import trigger — auto-on-reconnect
-  (v1 default, recorded here) vs explicit `CallConnection::refresh()`. v1 is
-  auto-on-reconnect; the explicit path is additive. The overlay is now
-  peer-scoped (drops with the connection), so re-import is naturally scoped.
-- **OQ-28** (cross-peer dissolved by ADR-029 / same-peer stays): Cross-peer
-  collision dissolves — same name on different peers is fine (separate
-  sub-overlays). Same-peer collision stays an error. `namespace_prefix` is
-  optional local-naming sugar, not the disambiguation mechanism.
-- **OQ-29** (open, two-way): `CallClient` TLS client-auth + remote-identity
-  verification — v1 connects with `with_no_client_auth()` and
-  `AcceptAnyServerCertVerifier`. Wiring RawKey client-auth is additive.
-  Orthogonal to the routing model (ADR-029); `auth_token` flows through the
-  call-protocol payload, not TLS, so the no-env-vars invariant is unaffected.
-- **OQ-30** (open, two-way): `PeerRef::Any` routing policy — v1 insertion-order
-  first-match; round-robin/least-loaded is the future extension (ADR-029 §2).
-- **OQ-31** (open, two-way): `services/list-peers` re-export semantics — v1
-  defaults to "own ops only"; `services/list-peers` is the opt-in (ADR-029 §6).
-- **OQ-32** (open): Multi-hop federation — v1 is one-hop; the peer-keyed
-  overlay model extends to multi-hop without redesign; petgraph is the
-  candidate if path-finding becomes real (ADR-029 §3.7).
+- **OQ-27** (resolved): `from_call` re-import trigger — auto-re-import on
+  connection establishment. `CallConnection::refresh()` is a feature
+  addition, not an unmade decision.
+- **OQ-28** (resolved): `from_call` namespace collision — same-peer
+  collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
+  `namespace_prefix` is optional local-naming sugar.
+- **OQ-29** (open, **high priority, load-bearing on ADR-030**): `CallClient`
+  TLS client-auth — NOT "additive" as previously framed. ADR-030's
+  `PeerEntry` fingerprint → `peer_id` resolution requires the client to
+  present a TLS client cert; `with_no_client_auth()` means no fingerprint,
+  no `PeerEntry` resolution, no stable `peer_id`. The `auth_token` path
+  resolves to `Identity.id = ApiKeyEntry.prefix`, not `peer_id`. See OQ-29
+  for the three options (wire client-auth with the migration / ship
+  token-only / extend PeerEntry to cover auth_token). Requires a decision
+  before the ADR-029 migration lands.
+- **OQ-30** (resolved): `PeerRef::Any` routing policy — insertion-order
+  first-match. A richer `RoutingPolicy` is a feature extension.
+- **OQ-31** (resolved): `services/list-peers` — opt-in; `services/list`
+  is "own ops only."
+- **OQ-32** (open, feature extension): Multi-hop federation — the one-hop
+  model is the architectural commitment; multi-hop is a feature extension
+  that doesn't break downstream. The peer-keyed model extends to multi-hop
+  without redesign; petgraph is the candidate if path-finding becomes real
+  (ADR-029 §3.7).
 - **OQ-33** (resolved by ADR-030): `PeerId` is a logical id. Source is
   `Identity.id` from `IdentityProvider` resolution (= `PeerEntry.peer_id`,
   stable across key rotation), not a connection-assigned UUID. The UUID
@@ -657,11 +661,10 @@ See [open-questions.md](../../open-questions.md) for full details.
   asymmetry between the fingerprint path (gets `PeerEntry` id-decoupling)
   and the API-key path (doesn't) is deliberate. See OQ-35 in
   open-questions.md.
-- **OQ-36** (tracked by ADR-033): Concrete adapter shapes — the repo/adapter
-  pattern is committed (core trait + in-memory default; persistence adapters
-  are separate crates); the concrete adapter shapes (table schemas, backend
-  choice, indexing) are deferred for exploration. See OQ-36 in
-  open-questions.md.
+- **OQ-36** (open, deferred for exploration): Concrete persistence adapter
+  shapes — the repo/adapter pattern is committed (ADR-033); the in-memory
+  adapters ship with core; the persistence adapter shapes (SQLite, etc.)
+  are deferred for exploration. See OQ-36 in open-questions.md.
 
 ## References
 

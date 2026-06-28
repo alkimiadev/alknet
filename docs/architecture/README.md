@@ -114,16 +114,18 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-34**: ~~Persistent peer registry~~ — **resolved by ADR-030 + ADR-031 + ADR-033** (storage boundary: core defines repo traits + in-memory defaults; persistence adapters are separate crates)
 - **OQ-35**: API key identity vs peer identity — resolved (recorded by ADR-030; the asymmetry between fingerprint and API-key paths is deliberate)
 
-**Open (two-way-door remainders from alknet-call completion + peer-graph routing):**
-- **OQ-25**: ~~Remote-safe marking shape~~ — **dissolved by ADR-029** (no marking; peer authorization is `AccessControl::check(peer_identity)`)
-- **OQ-26**: ~~`OperationAdapter` error type~~ — **resolved** (`AdapterError` variants: `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`; `#[non_exhaustive]`)
-- **OQ-27**: `from_call` re-import trigger — v1 default auto-on-reconnect; explicit `refresh()` additive
-- **OQ-28**: `from_call` namespace collision — cross-peer **dissolved by ADR-029** (separate sub-overlays); same-peer stays error
-- **OQ-29**: `CallClient` TLS client-auth — v1 `with_no_client_auth()` + `AcceptAnyServerCertVerifier`; wiring RawKey client-auth is additive
-- **OQ-30**: `PeerRef::Any` routing policy — v1 insertion-order first-match; round-robin/least-loaded is future (ADR-029)
-- **OQ-31**: `services/list-peers` re-export semantics — v1 "own ops only"; `services/list-peers` is opt-in (ADR-029)
-- **OQ-32**: Multi-hop federation — v1 one-hop; peer-keyed model extends without redesign; petgraph candidate (ADR-029)
-- **OQ-36**: Concrete adapter shapes — open (deferred for exploration; the repo/adapter pattern is committed by ADR-033, the concrete adapter shapes are not)
+**Resolved by the call-completion / ADR-029 work:**
+- **OQ-27**: ~~`from_call` re-import trigger~~ — **resolved** (auto-re-import on connection establishment; `refresh()` is a feature addition)
+- **OQ-28**: ~~`from_call` namespace collision~~ — **resolved** (same-peer collision = error; cross-peer dissolved by ADR-029)
+- **OQ-30**: ~~`PeerRef::Any` routing policy~~ — **resolved** (insertion-order first-match; richer routing is a feature extension)
+- **OQ-31**: ~~`services/list-peers` re-export semantics~~ — **resolved** (opt-in `services/list-peers`; `services/list` is "own ops only")
+
+**Open (requires decision before ADR-029 migration lands):**
+- **OQ-29**: `CallClient` TLS client-auth — **promoted to high priority, load-bearing on ADR-030**. Not "additive" as previously framed — it's the activation path for the `PeerEntry` fingerprint → `peer_id` resolution. Without it, `PeerCompositeEnv` keys on `None` or the API-key prefix, not the stable `peer_id`. See OQ-29 for the three options (wire client-auth with the migration / ship token-only / extend PeerEntry to cover auth_token).
+
+**Open (feature extensions, not blocking):**
+- **OQ-32**: Multi-hop federation — the one-hop model is the architectural commitment; multi-hop is a feature extension that doesn't break downstream
+- **OQ-36**: Concrete adapter shapes — the repo/adapter pattern is committed (ADR-033); concrete adapter shapes are deferred for exploration. Note: the trait shapes and in-memory adapters must ship with core (per the project's clarification) — the deferral is for the persistence adapters (SQLite, etc.), not the core traits
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
