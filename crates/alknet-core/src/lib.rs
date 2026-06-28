@@ -12,4 +12,5 @@ pub mod endpoint;
 pub mod store;
 pub mod types;
 
+pub use auth::{IdentityProvider, IdentityStore};
 pub use store::{CredentialStore, EncryptedData, InMemoryCredentialStore, StoreError};

@@ -54,8 +54,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use async_trait::async_trait;
 
-use crate::config::DynamicConfig;
+use crate::config::{DynamicConfig, PeerEntry};
+use crate::store::StoreError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
@@ -80,6 +82,18 @@ pub struct AuthContext {
 pub trait IdentityProvider: Send + Sync + 'static {
     fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity>;
     fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity>;
+}
+
+/// Write trait — management path, async (ADR-035). `ConfigIdentityProvider`
+/// does NOT implement this (config reload is its write path). A persistence
+/// adapter (e.g. `SqliteIdentityProvider` in `alknet-store-sqlite`) does:
+/// writes hit the backend, emit a honker `NOTIFY`, and the local `LISTEN`
+/// refreshes the in-memory read index.
+#[async_trait]
+pub trait IdentityStore: IdentityProvider {
+    async fn put_peer(&self, peer: &PeerEntry) -> Result<(), StoreError>;
+    async fn update_peer(&self, peer_id: &str, peer: &PeerEntry) -> Result<(), StoreError>;
+    async fn remove_peer(&self, peer_id: &str) -> Result<(), StoreError>;
 }
 
 pub struct ConfigIdentityProvider {
@@ -341,5 +355,161 @@ mod tests {
         handle.reload(config_with_fingerprint("worker-a", "SHA256:abc123"));
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
+    }
+
+    #[test]
+    fn config_identity_provider_is_identity_provider_not_store() {
+        fn assert_provider<T: IdentityProvider>() {}
+        fn assert_not_store<T>() {}
+        assert_provider::<ConfigIdentityProvider>();
+        assert_not_store::<ConfigIdentityProvider>();
+    }
+}
+
+#[cfg(test)]
+mod identity_store_tests {
+    use super::*;
+    use crate::config::PeerEntry;
+    use std::collections::HashMap as StdHashMap;
+    use std::sync::RwLock;
+
+    fn make_peer(peer_id: &str) -> PeerEntry {
+        PeerEntry {
+            peer_id: peer_id.to_string(),
+            fingerprints: vec![format!("SHA256:{peer_id}")],
+            auth_token_hash: None,
+            scopes: vec!["relay:connect".to_string()],
+            resources: StdHashMap::new(),
+            display_name: None,
+            enabled: true,
+        }
+    }
+
+    struct MockIdentityStore {
+        peers: RwLock<HashMap<String, PeerEntry>>,
+    }
+
+    impl MockIdentityStore {
+        fn new() -> Self {
+            Self {
+                peers: RwLock::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl IdentityProvider for MockIdentityStore {
+        fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity> {
+            let peers = self.peers.read().unwrap_or_else(|e| e.into_inner());
+            peers.values().find_map(|p| {
+                if p.fingerprints.iter().any(|f| f == fingerprint) && p.enabled {
+                    Some(Identity {
+                        id: p.peer_id.clone(),
+                        scopes: p.scopes.clone(),
+                        resources: p.resources.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+        }
+
+        fn resolve_from_token(&self, _token: &AuthToken) -> Option<Identity> {
+            None
+        }
+    }
+
+    #[async_trait]
+    impl IdentityStore for MockIdentityStore {
+        async fn put_peer(&self, peer: &PeerEntry) -> Result<(), StoreError> {
+            let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
+            peers.insert(peer.peer_id.clone(), peer.clone());
+            Ok(())
+        }
+
+        async fn update_peer(&self, peer_id: &str, peer: &PeerEntry) -> Result<(), StoreError> {
+            let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
+            if !peers.contains_key(peer_id) {
+                return Err(StoreError::NotFound {
+                    entity: peer_id.to_string(),
+                });
+            }
+            peers.remove(peer_id);
+            peers.insert(peer.peer_id.clone(), peer.clone());
+            Ok(())
+        }
+
+        async fn remove_peer(&self, peer_id: &str) -> Result<(), StoreError> {
+            let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
+            if peers.remove(peer_id).is_none() {
+                return Err(StoreError::NotFound {
+                    entity: peer_id.to_string(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_put_peer_upserts() {
+        let store = MockIdentityStore::new();
+        let mut peer = make_peer("worker-a");
+        store.put_peer(&peer).await.unwrap();
+        assert_eq!(
+            store
+                .resolve_from_fingerprint("SHA256:worker-a")
+                .unwrap()
+                .id,
+            "worker-a"
+        );
+
+        peer.display_name = Some("renamed".to_string());
+        store.put_peer(&peer).await.unwrap();
+        let peers = store.peers.read().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers.get("worker-a").unwrap().display_name.as_deref(),
+            Some("renamed")
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_update_peer_existing_succeeds() {
+        let store = MockIdentityStore::new();
+        store.put_peer(&make_peer("worker-a")).await.unwrap();
+        let updated = make_peer("worker-b");
+        store.update_peer("worker-a", &updated).await.unwrap();
+        assert!(store.resolve_from_fingerprint("SHA256:worker-a").is_none());
+        assert!(store.resolve_from_fingerprint("SHA256:worker-b").is_some());
+    }
+
+    #[tokio::test]
+    async fn mock_update_peer_missing_returns_not_found() {
+        let store = MockIdentityStore::new();
+        let err = store
+            .update_peer("ghost", &make_peer("ghost"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn mock_remove_peer_existing_succeeds() {
+        let store = MockIdentityStore::new();
+        store.put_peer(&make_peer("worker-a")).await.unwrap();
+        store.remove_peer("worker-a").await.unwrap();
+        assert!(store.resolve_from_fingerprint("SHA256:worker-a").is_none());
+    }
+
+    #[tokio::test]
+    async fn mock_remove_peer_missing_returns_not_found() {
+        let store = MockIdentityStore::new();
+        let err = store.remove_peer("ghost").await.unwrap_err();
+        assert!(matches!(err, StoreError::NotFound { .. }));
+    }
+
+    #[test]
+    fn mock_identity_store_is_identity_provider() {
+        fn assert_provider<T: IdentityProvider>() {}
+        assert_provider::<MockIdentityStore>();
     }
 }
