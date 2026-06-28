@@ -1,7 +1,7 @@
 ---
 id: core/identity-store-trait
 name: Add IdentityStore async write trait extending IdentityProvider (ADR-035)
-status: pending
+status: completed
 depends_on: [core/peer-entry-model]
 scope: single
 risk: low
@@ -95,4 +95,4 @@ Add `IdentityStore` alongside `IdentityProvider` in `alknet-core/src/auth.rs`
 
 ## Summary
 
-> To be filled on completion
+Added the IdentityStore async write trait (put_peer/update_peer/remove_peer) extending the read-only IdentityProvider supertrait in crates/alknet-core/src/auth.rs, re-exported from lib.rs. Uses StoreError from core/credential-store-trait. ConfigIdentityProvider deliberately does NOT implement IdentityStore (verified by trait-bound assertion test). Added a MockIdentityStore test impl covering upsert, update-existing, update-missing→NotFound, remove-existing, remove-missing→NotFound, and IdentityProvider conformance. 126 tests pass, cargo build/clippy clean.
