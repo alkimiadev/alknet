@@ -1,7 +1,7 @@
 ---
 id: call/services-list-accesscontrol-filtered
 name: Filter services/list by AccessControl::check(peer_identity) and add services/list-peers opt-in (ADR-029 §6)
-status: pending
+status: completed
 depends_on: [call/retire-remote-safe]
 scope: narrow
 risk: medium
@@ -119,4 +119,4 @@ with `peer_id` attribution, and filters by the calling peer's authorization.
 
 ## Summary
 
-> To be filled on completion
+Filtered services/list by AccessControl::check(ctx.identity) (op with default ACL listed to any peer; op with required_scopes hidden from unauthorized peers; Internal ops still excluded by list_operations). Added services/list-peers opt-in op that attributes ops by peer_id via context.env.peer_ids()/peer_operations() and filters by the calling peer's authorization. Added PeerId type + peer_ids/peer_contains/peer_operations default-impls to OperationEnv trait (work as stubs until PeerCompositeEnv is wired). Added AccessResult::is_allowed() helper. 6 new unit tests cover authorized/unauthorized/default-ACL filtering and list-peers peer_id attribution + ACL filtering. 205 unit + 2 integration tests pass, clippy clean, fmt clean.
