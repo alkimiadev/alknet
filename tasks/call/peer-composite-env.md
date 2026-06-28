@@ -1,7 +1,7 @@
 ---
 id: call/peer-composite-env
 name: Replace CompositeOperationEnv with PeerCompositeEnv (peer-keyed overlays) and PeerId from Identity.id (ADR-029/030)
-status: pending
+status: completed
 depends_on: [call/retire-remote-safe]
 scope: broad
 risk: high
@@ -184,4 +184,4 @@ degenerate case (`connections` with one entry).
 
 ## Summary
 
-> To be filled on completion
+Replaced CompositeOperationEnv with PeerCompositeEnv (peer-keyed HashMap<PeerId, overlay> + connection_order for insertion-order first-match routing). Added PeerId = String (= Identity.id from IdentityProvider resolution, ADR-030). Implemented new/with_session/attach_peer/detach_peer; invoke_with_policy routes session → peers in insertion order → base (first contains wins); contains aggregates session + all connections + base. Rewrote Dispatcher::compose_root_env to build PeerCompositeEnv per call, attaching this connection's overlay keyed by connection.identity().id — connections with no resolved identity are NOT attached (ADR-030 §5). Migrated all CompositeOperationEnv call sites and tests. 199 lib + 2 integration tests pass, clippy clean, fmt clean.
