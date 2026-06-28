@@ -1,7 +1,7 @@
 ---
 id: core/peer-entry-model
 name: Add PeerEntry struct and replace AuthPolicy.authorized_fingerprints with peers (ADR-030)
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: medium
@@ -172,4 +172,4 @@ validation method or assertion that duplicate `peer_id` values in
 
 ## Summary
 
-> To be filled on completion
+Implemented PeerEntry struct (7 fields) in config.rs, replaced `AuthPolicy.authorized_fingerprints: HashSet<String>` with `peers: Vec<PeerEntry>`. Added `resolve_identity_from_token` (PeerEntry.auth_token_hash → fall through to resolve_api_key) and updated `resolve_identity_from_fingerprint` to resolve via PeerEntry returning `Identity.id = peer_id` (stable). Added `validate_peer_ids()` returning `DuplicatePeerId` error. Migrated all auth.rs/config.rs tests to PeerEntry model with new unit tests covering fingerprint resolution (known/unknown/disabled), token resolution (matching/non-matching/fall-through), multi-fingerprint peers, resource population on both paths, and duplicate peer_id detection. Also fixed a pre-existing test compile bug in endpoint.rs (StaticConfig.iroh_relay field reference not gated behind #[cfg(feature = "iroh")]). 110 tests pass, clippy clean, fmt clean.

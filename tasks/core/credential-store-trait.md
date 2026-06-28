@@ -1,7 +1,7 @@
 ---
 id: core/credential-store-trait
 name: Add CredentialStore trait, InMemoryCredentialStore, EncryptedData mirror, and StoreError (ADR-031/035)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
@@ -141,4 +141,4 @@ Re-export `CredentialStore`, `InMemoryCredentialStore`, `EncryptedData`, and
 
 ## Summary
 
-> To be filled on completion
+Added `store` module to alknet-core with: `CredentialStore` trait (sync `get`, async `put`/`delete` via #[async_trait], no `list`), `InMemoryCredentialStore` default adapter (`new()`/`with_entries()`, async put/delete with no .await points, RwLock-backed), `EncryptedData` core mirror (4 fields: key_version/salt/iv/data, derives Serialize/Deserialize/Clone/Debug), and `StoreError` enum (3 variants, #[non_exhaustive], thiserror::Error). Re-exported all four from lib.rs. No vault dependency added (core-owned mirror per ADR-018). 9 unit tests covering get/put/delete round-trip, missing-provider None, put-replaces, with_entries seeding, EncryptedData serde round-trip (empty + non-empty salt), and StoreError Display for all variants. 119 total tests pass, clippy clean.
