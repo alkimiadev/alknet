@@ -140,8 +140,7 @@ impl AlknetEndpoint {
                 ))
             })?;
             let tls_setup = TlsSetup::new(tls_identity, &alpns).await?;
-            let server_config =
-                build_quinn_server_config_from_rustls(tls_setup.server_config)?;
+            let server_config = build_quinn_server_config_from_rustls(tls_setup.server_config)?;
             let endpoint = quinn::Endpoint::server(server_config, listen_addr)
                 .map_err(EndpointError::BindFailed)?;
             #[cfg(feature = "acme")]
@@ -482,10 +481,7 @@ struct TlsSetup {
 }
 #[cfg(feature = "quinn")]
 impl TlsSetup {
-    async fn new(
-        tls_identity: &TlsIdentity,
-        alpns: &[Vec<u8>],
-    ) -> Result<Self, EndpointError> {
+    async fn new(tls_identity: &TlsIdentity, alpns: &[Vec<u8>]) -> Result<Self, EndpointError> {
         match tls_identity {
             TlsIdentity::Acme {
                 domains,
@@ -1084,7 +1080,9 @@ mod tests {
     async fn endpoint_constructs_with_iroh_raw_key_identity() {
         let static_config = StaticConfig {
             listen_addr: None,
-            tls_identity: Some(TlsIdentity::RawKey(crate::config::Ed25519SecretKey::generate())),
+            tls_identity: Some(TlsIdentity::RawKey(
+                crate::config::Ed25519SecretKey::generate(),
+            )),
             iroh_relay: None,
             drain_timeout: Duration::from_millis(10),
         };
@@ -1265,10 +1263,7 @@ mod tests {
     fn acme_directory_production_url() {
         use crate::config::AcmeDirectory;
         let dir = AcmeDirectory::Production;
-        assert_eq!(
-            dir.url(),
-            "https://acme-v02.api.letsencrypt.org/directory"
-        );
+        assert_eq!(dir.url(), "https://acme-v02.api.letsencrypt.org/directory");
     }
 
     #[test]
@@ -1340,7 +1335,9 @@ mod tests {
     fn has_iroh_identity_true_for_raw_key() {
         let cfg = StaticConfig {
             listen_addr: None,
-            tls_identity: Some(TlsIdentity::RawKey(crate::config::Ed25519SecretKey::generate())),
+            tls_identity: Some(TlsIdentity::RawKey(
+                crate::config::Ed25519SecretKey::generate(),
+            )),
             iroh_relay: None,
             drain_timeout: Duration::from_millis(10),
         };
@@ -1437,7 +1434,9 @@ mod tests {
     #[cfg(feature = "quinn")]
     #[test]
     fn load_private_key_returns_error_when_file_missing() {
-        let err = load_private_key(std::path::Path::new("/nonexistent/alknet-coverage/missing.key"));
+        let err = load_private_key(std::path::Path::new(
+            "/nonexistent/alknet-coverage/missing.key",
+        ));
         assert!(
             matches!(err, Err(EndpointError::TlsConfig(_))),
             "missing key file must yield TlsConfig error, got {err:?}"
@@ -1447,7 +1446,9 @@ mod tests {
     #[cfg(feature = "quinn")]
     #[test]
     fn load_cert_chain_returns_error_when_file_missing() {
-        let err = load_cert_chain(std::path::Path::new("/nonexistent/alknet-coverage/missing.pem"));
+        let err = load_cert_chain(std::path::Path::new(
+            "/nonexistent/alknet-coverage/missing.pem",
+        ));
         assert!(
             matches!(err, Err(EndpointError::TlsConfig(_))),
             "missing cert file must yield TlsConfig error, got {err:?}"
@@ -1474,7 +1475,10 @@ mod tests {
         let verifier = AcceptAnyCertVerifier;
         let cert = CertificateDer::from(b"fake-cert-der".to_vec());
         let result = verifier.verify_client_cert(&cert, &[], UnixTime::now());
-        assert!(result.is_ok(), "AcceptAnyCertVerifier must accept any client cert");
+        assert!(
+            result.is_ok(),
+            "AcceptAnyCertVerifier must accept any client cert"
+        );
     }
 
     #[cfg(feature = "quinn")]
@@ -1505,7 +1509,10 @@ mod tests {
         let sk = crate::config::Ed25519SecretKey::generate();
         let signing_key = Ed25519SigningKey::new(sk);
         let signer = signing_key.choose_scheme(&[rustls::SignatureScheme::ED25519]);
-        assert!(signer.is_some(), "must produce a signer when ED25519 is offered");
+        assert!(
+            signer.is_some(),
+            "must produce a signer when ED25519 is offered"
+        );
     }
 
     #[cfg(feature = "quinn")]
@@ -1581,6 +1588,7 @@ mod tests {
         let static_config = StaticConfig {
             listen_addr: None,
             tls_identity: Some(TlsIdentity::RawKey(sk)),
+            #[cfg(feature = "iroh")]
             iroh_relay: None,
             drain_timeout: Duration::from_millis(10),
         };

@@ -7,7 +7,7 @@
 //! `auth::ConfigIdentityProvider`. The remaining types (`StaticConfig`,
 //! `TlsIdentity`, `ConfigError`) are filled in by the core/config task.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -103,9 +103,20 @@ pub struct DynamicConfig {
     pub rate_limits: RateLimitConfig,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeerEntry {
+    pub peer_id: String,
+    pub fingerprints: Vec<String>,
+    pub auth_token_hash: Option<String>,
+    pub scopes: Vec<String>,
+    pub resources: HashMap<String, Vec<String>>,
+    pub display_name: Option<String>,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AuthPolicy {
-    pub authorized_fingerprints: HashSet<String>,
+    pub peers: Vec<PeerEntry>,
     pub api_keys: Vec<ApiKeyEntry>,
 }
 
@@ -124,15 +135,39 @@ impl AuthPolicy {
     }
 
     pub fn resolve_identity_from_fingerprint(&self, fingerprint: &str) -> Option<Identity> {
-        if self.authorized_fingerprints.contains(fingerprint) {
-            Some(Identity {
-                id: fingerprint.to_string(),
-                scopes: vec!["relay:connect".to_string()],
-                resources: std::collections::HashMap::new(),
+        self.peers
+            .iter()
+            .find(|p| p.enabled && p.fingerprints.iter().any(|f| f == fingerprint))
+            .map(|p| Identity {
+                id: p.peer_id.clone(),
+                scopes: p.scopes.clone(),
+                resources: p.resources.clone(),
             })
-        } else {
-            None
+    }
+
+    pub fn resolve_identity_from_token(&self, token: &str) -> Option<Identity> {
+        let token_hash = sha256_hex(token);
+        self.peers
+            .iter()
+            .find(|p| p.enabled && p.auth_token_hash.as_deref() == Some(&token_hash))
+            .map(|p| Identity {
+                id: p.peer_id.clone(),
+                scopes: p.scopes.clone(),
+                resources: p.resources.clone(),
+            })
+            .or_else(|| self.resolve_api_key(token))
+    }
+
+    pub fn validate_peer_ids(&self) -> Result<(), DuplicatePeerId> {
+        let mut seen = std::collections::HashSet::new();
+        for peer in &self.peers {
+            if !seen.insert(peer.peer_id.as_str()) {
+                return Err(DuplicatePeerId {
+                    peer_id: peer.peer_id.clone(),
+                });
+            }
         }
+        Ok(())
     }
 
     pub fn resolve_api_key(&self, token: &str) -> Option<Identity> {
@@ -147,11 +182,7 @@ impl AuthPolicy {
             .iter()
             .find(|e| prefix_part.starts_with(&e.prefix))?;
 
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(token.as_bytes());
-        let result = hasher.finalize();
-        let expected_hash = format!("sha256:{}", hex::encode(result));
+        let expected_hash = sha256_hex(token);
 
         if entry.hash != expected_hash {
             return None;
@@ -173,6 +204,20 @@ impl AuthPolicy {
             resources: std::collections::HashMap::new(),
         })
     }
+}
+
+fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    format!("sha256:{}", hex::encode(result))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("duplicate peer_id: {peer_id}")]
+pub struct DuplicatePeerId {
+    pub peer_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -249,7 +294,7 @@ mod tests {
     #[test]
     fn dynamic_config_default() {
         let cfg = DynamicConfig::default();
-        assert!(cfg.auth.authorized_fingerprints.is_empty());
+        assert!(cfg.auth.peers.is_empty());
         assert!(cfg.auth.api_keys.is_empty());
         assert_eq!(cfg.rate_limits.max_connections_per_ip, 100);
         assert_eq!(cfg.rate_limits.max_auth_attempts, 5);
@@ -258,7 +303,7 @@ mod tests {
     #[test]
     fn auth_policy_default() {
         let policy = AuthPolicy::default();
-        assert!(policy.authorized_fingerprints.is_empty());
+        assert!(policy.peers.is_empty());
         assert!(policy.api_keys.is_empty());
     }
 
@@ -311,12 +356,20 @@ mod tests {
         let handle = ConfigReloadHandle::new(dynamic.clone());
 
         let initial = handle.dynamic();
-        assert!(initial.auth.authorized_fingerprints.is_empty());
+        assert!(initial.auth.peers.is_empty());
 
-        let mut new_auth = AuthPolicy::default();
-        new_auth
-            .authorized_fingerprints
-            .insert("aa:bb:cc".to_string());
+        let new_auth = AuthPolicy {
+            peers: vec![PeerEntry {
+                peer_id: "worker-a".to_string(),
+                fingerprints: vec!["aa:bb:cc".to_string()],
+                auth_token_hash: None,
+                scopes: vec!["relay:connect".to_string()],
+                resources: HashMap::new(),
+                display_name: None,
+                enabled: true,
+            }],
+            api_keys: Vec::new(),
+        };
         let new_config = DynamicConfig {
             auth: new_auth,
             rate_limits: RateLimitConfig::default(),
@@ -324,8 +377,9 @@ mod tests {
         handle.reload(new_config);
 
         let after = handle.dynamic();
-        assert!(after.auth.authorized_fingerprints.contains("aa:bb:cc"));
-        assert!(initial.auth.authorized_fingerprints.is_empty());
+        assert_eq!(after.auth.peers.len(), 1);
+        assert_eq!(after.auth.peers[0].peer_id, "worker-a");
+        assert!(initial.auth.peers.is_empty());
     }
 
     #[test]
@@ -378,11 +432,8 @@ mod tests {
 
     #[test]
     fn resolve_api_key_returns_empty_resources() {
-        use sha2::{Digest, Sha256};
         let token = "alk_test_secret";
-        let mut hasher = Sha256::new();
-        hasher.update(token.as_bytes());
-        let hash = format!("sha256:{}", hex::encode(hasher.finalize()));
+        let hash = sha256_hex(token);
 
         let entry = ApiKeyEntry {
             prefix: "alk_tes".to_string(),
@@ -392,12 +443,15 @@ mod tests {
             expires_at: None,
         };
         let policy = AuthPolicy {
-            authorized_fingerprints: HashSet::new(),
+            peers: Vec::new(),
             api_keys: vec![entry],
         };
 
         let identity = policy.resolve_api_key(token);
-        assert!(identity.is_some(), "api key with matching prefix and hash should resolve");
+        assert!(
+            identity.is_some(),
+            "api key with matching prefix and hash should resolve"
+        );
         let identity = identity.unwrap();
         assert_eq!(identity.id, "alk_tes");
         assert_eq!(identity.scopes, vec!["admin"]);
@@ -408,20 +462,198 @@ mod tests {
     }
 
     #[test]
-    fn resolve_identity_from_fingerprint_returns_empty_resources() {
+    fn resolve_identity_from_fingerprint_uses_peer_id() {
         let policy = AuthPolicy {
-            authorized_fingerprints: HashSet::from(["SHA256:known".to_string()]),
+            peers: vec![PeerEntry {
+                peer_id: "worker-a".to_string(),
+                fingerprints: vec!["SHA256:known".to_string()],
+                auth_token_hash: None,
+                scopes: vec!["relay:connect".to_string()],
+                resources: HashMap::new(),
+                display_name: None,
+                enabled: true,
+            }],
             api_keys: vec![],
         };
 
         let identity = policy
             .resolve_identity_from_fingerprint("SHA256:known")
             .expect("known fingerprint should resolve");
-        assert_eq!(identity.id, "SHA256:known");
-        assert!(
-            identity.resources.is_empty(),
-            "fingerprint-resolved identities must have empty resources (Option B — scopes only)"
-        );
+        assert_eq!(identity.id, "worker-a");
+        assert_eq!(identity.scopes, vec!["relay:connect"]);
+    }
+
+    // --- PeerEntry model (ADR-030) ---------------------------------------
+
+    fn peer_entry(peer_id: &str, fingerprints: &[&str]) -> PeerEntry {
+        PeerEntry {
+            peer_id: peer_id.to_string(),
+            fingerprints: fingerprints.iter().map(|s| s.to_string()).collect(),
+            auth_token_hash: None,
+            scopes: vec!["relay:connect".to_string()],
+            resources: HashMap::new(),
+            display_name: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn fingerprint_resolution_known_returns_some_with_peer_id() {
+        let policy = AuthPolicy {
+            peers: vec![peer_entry("worker-a", &["ed25519:abc"])],
+            api_keys: vec![],
+        };
+        let identity = policy
+            .resolve_identity_from_fingerprint("ed25519:abc")
+            .expect("known fingerprint resolves");
+        assert_eq!(identity.id, "worker-a");
+        assert_eq!(identity.scopes, vec!["relay:connect"]);
+    }
+
+    #[test]
+    fn fingerprint_resolution_unknown_returns_none() {
+        let policy = AuthPolicy {
+            peers: vec![peer_entry("worker-a", &["ed25519:abc"])],
+            api_keys: vec![],
+        };
+        assert!(policy
+            .resolve_identity_from_fingerprint("ed25519:unknown")
+            .is_none());
+    }
+
+    #[test]
+    fn fingerprint_resolution_disabled_returns_none() {
+        let mut entry = peer_entry("worker-a", &["ed25519:abc"]);
+        entry.enabled = false;
+        let policy = AuthPolicy {
+            peers: vec![entry],
+            api_keys: vec![],
+        };
+        assert!(policy
+            .resolve_identity_from_fingerprint("ed25519:abc")
+            .is_none());
+    }
+
+    #[test]
+    fn token_resolution_matching_peer_returns_some_with_peer_id() {
+        let token = "bearer-secret";
+        let mut entry = peer_entry("worker-a", &["ed25519:abc"]);
+        entry.auth_token_hash = Some(sha256_hex(token));
+        let policy = AuthPolicy {
+            peers: vec![entry],
+            api_keys: vec![],
+        };
+        let identity = policy
+            .resolve_identity_from_token(token)
+            .expect("matching auth_token_hash resolves");
+        assert_eq!(identity.id, "worker-a");
+    }
+
+    #[test]
+    fn token_resolution_non_matching_falls_through_to_api_key() {
+        let api_token = "alk_test_secret";
+        let mut entry = peer_entry("worker-a", &["ed25519:abc"]);
+        entry.auth_token_hash = Some(sha256_hex("different-token"));
+        let api_entry = ApiKeyEntry {
+            prefix: "alk_tes".to_string(),
+            hash: sha256_hex(api_token),
+            scopes: vec!["admin".to_string()],
+            description: "test key".to_string(),
+            expires_at: None,
+        };
+        let policy = AuthPolicy {
+            peers: vec![entry],
+            api_keys: vec![api_entry],
+        };
+        let identity = policy
+            .resolve_identity_from_token(api_token)
+            .expect("api key fall-through resolves");
+        assert_eq!(identity.id, "alk_tes");
+        assert_eq!(identity.scopes, vec!["admin"]);
+    }
+
+    #[test]
+    fn token_resolution_no_match_returns_none() {
+        let policy = AuthPolicy {
+            peers: vec![peer_entry("worker-a", &["ed25519:abc"])],
+            api_keys: vec![],
+        };
+        assert!(policy.resolve_identity_from_token("unknown").is_none());
+    }
+
+    #[test]
+    fn multi_fingerprint_peer_any_resolves_to_same_peer_id() {
+        let policy = AuthPolicy {
+            peers: vec![peer_entry("worker-a", &["ed25519:abc", "SHA256:def"])],
+            api_keys: vec![],
+        };
+        let id1 = policy
+            .resolve_identity_from_fingerprint("ed25519:abc")
+            .expect("first fingerprint resolves");
+        let id2 = policy
+            .resolve_identity_from_fingerprint("SHA256:def")
+            .expect("second fingerprint resolves");
+        assert_eq!(id1.id, "worker-a");
+        assert_eq!(id2.id, "worker-a");
+    }
+
+    #[test]
+    fn resources_populated_on_fingerprint_path() {
+        let mut resources = HashMap::new();
+        resources.insert("service".to_string(), vec!["gitea".to_string()]);
+        let mut entry = peer_entry("worker-a", &["ed25519:abc"]);
+        entry.resources = resources.clone();
+        let policy = AuthPolicy {
+            peers: vec![entry],
+            api_keys: vec![],
+        };
+        let identity = policy
+            .resolve_identity_from_fingerprint("ed25519:abc")
+            .expect("known fingerprint resolves");
+        assert_eq!(identity.resources, resources);
+    }
+
+    #[test]
+    fn resources_populated_on_token_path() {
+        let token = "bearer-secret";
+        let mut resources = HashMap::new();
+        resources.insert("service".to_string(), vec!["gitea".to_string()]);
+        let mut entry = peer_entry("worker-a", &["ed25519:abc"]);
+        entry.auth_token_hash = Some(sha256_hex(token));
+        entry.resources = resources.clone();
+        let policy = AuthPolicy {
+            peers: vec![entry],
+            api_keys: vec![],
+        };
+        let identity = policy
+            .resolve_identity_from_token(token)
+            .expect("matching token resolves");
+        assert_eq!(identity.resources, resources);
+    }
+
+    #[test]
+    fn duplicate_peer_id_validation_rejects() {
+        let policy = AuthPolicy {
+            peers: vec![
+                peer_entry("worker-a", &["ed25519:abc"]),
+                peer_entry("worker-a", &["ed25519:def"]),
+            ],
+            api_keys: vec![],
+        };
+        let err = policy.validate_peer_ids().expect_err("duplicate detected");
+        assert_eq!(err.peer_id, "worker-a");
+    }
+
+    #[test]
+    fn unique_peer_ids_validate_ok() {
+        let policy = AuthPolicy {
+            peers: vec![
+                peer_entry("worker-a", &["ed25519:abc"]),
+                peer_entry("worker-b", &["ed25519:def"]),
+            ],
+            api_keys: vec![],
+        };
+        assert!(policy.validate_peer_ids().is_ok());
     }
 
     // --- Ed25519SecretKey -------------------------------------------------

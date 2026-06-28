@@ -691,11 +691,17 @@ mod tests {
 
     #[test]
     fn handler_error_display_covers_all_variants() {
-        assert_eq!(format!("{}", HandlerError::ConnectionClosed), "connection closed");
+        assert_eq!(
+            format!("{}", HandlerError::ConnectionClosed),
+            "connection closed"
+        );
         let io_err = io::Error::new(io::ErrorKind::BrokenPipe, "boom");
         let s = format!("{}", HandlerError::StreamError(io_err));
         assert!(s.starts_with("stream error: "));
-        assert_eq!(format!("{}", HandlerError::AuthRequired), "authentication required");
+        assert_eq!(
+            format!("{}", HandlerError::AuthRequired),
+            "authentication required"
+        );
         let inner: Box<dyn std::error::Error + Send + Sync> = "oops".into();
         assert_eq!(
             format!("{}", HandlerError::Internal(inner)),
@@ -708,11 +714,18 @@ mod tests {
         use std::error::Error;
         assert!(HandlerError::ConnectionClosed.source().is_none());
         assert!(HandlerError::AuthRequired.source().is_none());
-        let stream_err = HandlerError::StreamError(io::Error::new(io::ErrorKind::BrokenPipe, "boom"));
-        assert!(stream_err.source().is_some(), "StreamError must expose its io::Error as source");
+        let stream_err =
+            HandlerError::StreamError(io::Error::new(io::ErrorKind::BrokenPipe, "boom"));
+        assert!(
+            stream_err.source().is_some(),
+            "StreamError must expose its io::Error as source"
+        );
         let internal_inner: Box<dyn std::error::Error + Send + Sync> = "boom".into();
         let internal_err = HandlerError::Internal(internal_inner);
-        assert!(internal_err.source().is_some(), "Internal must expose its inner error as source");
+        assert!(
+            internal_err.source().is_some(),
+            "Internal must expose its inner error as source"
+        );
     }
 
     #[test]
@@ -725,14 +738,20 @@ mod tests {
             format!("{:?}", StreamError::StreamClosed),
             "StreamError::StreamClosed"
         );
-        assert_eq!(format!("{:?}", StreamError::Timeout), "StreamError::Timeout");
+        assert_eq!(
+            format!("{:?}", StreamError::Timeout),
+            "StreamError::Timeout"
+        );
         let dbg = format!("{:?}", StreamError::Internal(io::Error::other("x")));
         assert!(dbg.contains("StreamError::Internal"));
     }
 
     #[test]
     fn stream_error_display_covers_all_variants() {
-        assert_eq!(format!("{}", StreamError::ConnectionClosed), "connection closed");
+        assert_eq!(
+            format!("{}", StreamError::ConnectionClosed),
+            "connection closed"
+        );
         assert_eq!(format!("{}", StreamError::StreamClosed), "stream closed");
         assert_eq!(format!("{}", StreamError::Timeout), "stream timed out");
         assert_eq!(
@@ -748,7 +767,10 @@ mod tests {
         assert!(StreamError::StreamClosed.source().is_none());
         assert!(StreamError::Timeout.source().is_none());
         let internal = StreamError::Internal(io::Error::other("x"));
-        assert!(internal.source().is_some(), "Internal must expose its io::Error as source");
+        assert!(
+            internal.source().is_some(),
+            "Internal must expose its io::Error as source"
+        );
     }
 
     // --- map_*_connection_error -------------------------------------------
@@ -817,12 +839,11 @@ mod tests {
     #[test]
     fn map_iroh_connection_error_application_closed_maps_to_connection_closed() {
         use bytes::Bytes;
-        let close = iroh::endpoint::ConnectionError::ApplicationClosed(
-            iroh::endpoint::ApplicationClose {
+        let close =
+            iroh::endpoint::ConnectionError::ApplicationClosed(iroh::endpoint::ApplicationClose {
                 error_code: iroh::endpoint::VarInt::from_u32(1),
                 reason: Bytes::new(),
-            },
-        );
+            });
         assert!(matches!(
             map_iroh_connection_error(close),
             StreamError::ConnectionClosed

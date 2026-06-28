@@ -55,14 +55,14 @@ impl IdentityProvider for ConfigIdentityProvider {
     fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity> {
         let config = self.dynamic.load();
         let token_str = String::from_utf8_lossy(&token.raw);
-        config.auth.resolve_api_key(&token_str)
+        config.auth.resolve_identity_from_token(&token_str)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApiKeyEntry, AuthPolicy, DynamicConfig, RateLimitConfig};
+    use crate::config::{ApiKeyEntry, AuthPolicy, DynamicConfig, PeerEntry, RateLimitConfig};
 
     fn compute_api_key_hash(token: &str) -> String {
         use sha2::{Digest, Sha256};
@@ -80,12 +80,22 @@ mod tests {
         (provider, arc_swap)
     }
 
-    fn config_with_fingerprint(fingerprint: &str) -> DynamicConfig {
-        let mut fingerprints = std::collections::HashSet::new();
-        fingerprints.insert(fingerprint.to_string());
+    fn peer_entry_with_fingerprint(peer_id: &str, fingerprint: &str) -> PeerEntry {
+        PeerEntry {
+            peer_id: peer_id.to_string(),
+            fingerprints: vec![fingerprint.to_string()],
+            auth_token_hash: None,
+            scopes: vec!["relay:connect".to_string()],
+            resources: std::collections::HashMap::new(),
+            display_name: None,
+            enabled: true,
+        }
+    }
+
+    fn config_with_fingerprint(peer_id: &str, fingerprint: &str) -> DynamicConfig {
         DynamicConfig {
             auth: AuthPolicy {
-                authorized_fingerprints: fingerprints,
+                peers: vec![peer_entry_with_fingerprint(peer_id, fingerprint)],
                 api_keys: Vec::new(),
             },
             rate_limits: RateLimitConfig::default(),
@@ -95,7 +105,7 @@ mod tests {
     fn config_with_api_key(entry: ApiKeyEntry) -> DynamicConfig {
         DynamicConfig {
             auth: AuthPolicy {
-                authorized_fingerprints: std::collections::HashSet::new(),
+                peers: Vec::new(),
                 api_keys: vec![entry],
             },
             rate_limits: RateLimitConfig::default(),
@@ -143,18 +153,18 @@ mod tests {
 
     #[test]
     fn fingerprint_resolution_known_returns_some() {
-        let (provider, _) = make_provider(config_with_fingerprint("SHA256:abc123"));
+        let (provider, _) = make_provider(config_with_fingerprint("worker-a", "SHA256:abc123"));
         let identity = provider
             .resolve_from_fingerprint("SHA256:abc123")
             .expect("known fingerprint resolves");
-        assert_eq!(identity.id, "SHA256:abc123");
+        assert_eq!(identity.id, "worker-a");
         assert_eq!(identity.scopes, vec!["relay:connect".to_string()]);
         assert!(identity.resources.is_empty());
     }
 
     #[test]
     fn fingerprint_resolution_unknown_returns_none() {
-        let (provider, _) = make_provider(config_with_fingerprint("SHA256:abc123"));
+        let (provider, _) = make_provider(config_with_fingerprint("worker-a", "SHA256:abc123"));
         assert!(provider
             .resolve_from_fingerprint("SHA256:unknown")
             .is_none());
@@ -256,7 +266,7 @@ mod tests {
         let (provider, arc_swap) = make_provider(DynamicConfig::default());
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
 
-        let new_config = config_with_fingerprint("SHA256:abc123");
+        let new_config = config_with_fingerprint("worker-a", "SHA256:abc123");
         arc_swap.store(Arc::new(new_config));
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
@@ -264,7 +274,8 @@ mod tests {
 
     #[test]
     fn config_reload_removes_fingerprint_access_immediately() {
-        let (provider, arc_swap) = make_provider(config_with_fingerprint("SHA256:abc123"));
+        let (provider, arc_swap) =
+            make_provider(config_with_fingerprint("worker-a", "SHA256:abc123"));
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
 
         arc_swap.store(Arc::new(DynamicConfig::default()));
@@ -281,7 +292,7 @@ mod tests {
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
 
-        handle.reload(config_with_fingerprint("SHA256:abc123"));
+        handle.reload(config_with_fingerprint("worker-a", "SHA256:abc123"));
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
     }
