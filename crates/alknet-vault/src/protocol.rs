@@ -178,10 +178,10 @@ mod tests {
         let key = make_test_key();
         let public = serde_json::to_string(&key.public_key).unwrap();
         let private = serde_json::to_string(&vec![0xABu8; 32]).unwrap();
-        let json = format!(
-            r#"{{"key_type":"Ed25519","private_key":{private},"public_key":{public}}}"#
-        );
-        let result: DerivedKey = serde_json::from_str(&json).expect("non-redacted payload deserializes");
+        let json =
+            format!(r#"{{"key_type":"Ed25519","private_key":{private},"public_key":{public}}}"#);
+        let result: DerivedKey =
+            serde_json::from_str(&json).expect("non-redacted payload deserializes");
         assert_eq!(result.key_type, KeyType::Ed25519);
         assert_eq!(result.private_key, vec![0xABu8; 32]);
         assert_eq!(result.public_key, key.public_key);
