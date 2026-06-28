@@ -1,7 +1,7 @@
 ---
 id: core/fingerprint-normalization
 name: Normalize quinn Ed25519 raw-key fingerprint to ed25519:hex format (ADR-030 §6)
-status: pending
+status: completed
 depends_on: [core/peer-entry-model]
 scope: narrow
 risk: medium
@@ -124,4 +124,4 @@ fingerprint via both the quinn SPKI-extraction path and the iroh NodeId path
 
 ## Summary
 
-> To be filled on completion
+Implemented DER parser for SPKI to extract raw 32-byte Ed25519 public key from RFC 7250 raw public key certs; fingerprint_from_cert_der now produces ed25519:<lowercase hex> for Ed25519 SPKI and keeps SHA256:<hex of DER> for X.509 certs. Same Ed25519 key now produces identical fingerprint via quinn SPKI path and iroh NodeId path. Added 5 unit tests covering Ed25519 SPKI format, lowercase hex, 32-byte key extraction, cross-transport parity, X.509 fallback, and non-Ed25519 SPKI fallback. 135 tests pass with default features, clippy clean, fmt clean.
