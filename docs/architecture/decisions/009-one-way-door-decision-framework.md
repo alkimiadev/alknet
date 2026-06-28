@@ -16,23 +16,31 @@ Without an explicit framework, one-way doors can be treated as casually as two-w
 
 ### Classification
 
-Every architectural decision is classified as one of:
+Every architectural decision is classified by **reversal cost** — how expensive it is to undo if you got it wrong:
 
-**One-way door** — Reversing this decision requires rewriting significant code across multiple crates or permanently closes a capability door. Examples:
+**One-way door** — Reversing this decision requires rewriting significant code across multiple crates or permanently closes a capability door. Getting it wrong is expensive. Examples:
 - BiStream as a concrete quinn type (closes WASM door permanently)
 - alknet-vault pulled into alknet-core as a dependency (loses standalone property permanently)
 - ProtocolHandler signature changes (every handler must be rewritten)
 
-**Two-way door** — Reversing this decision is cheap or additive. Examples:
+**Two-way door** — Reversing this decision is cheap or additive. Getting it wrong is recoverable. Examples:
 - Static vs dynamic handler registration (can add ArcSwap later)
 - Single transport vs multi-transport endpoint (can add transport trait later)
 - Call protocol stream model (can add multiplexing later)
 
 ### Process
 
-- **One-way doors** require an ADR before implementation. If the right choice is unclear, validate with a POC before writing the ADR. If a POC can't resolve the uncertainty within a reasonable timebox, default to the option that keeps more doors open.
-- **Two-way doors** can be decided during implementation. Start with the simplest option and add complexity when needed. Note the decision in a commit message or a brief ADR if the context is worth capturing, but don't block on it.
-- When in doubt, classify up. If it's unclear whether a door is one-way or two-way, treat it as one-way until proven otherwise.
+- **One-way doors** require an ADR before implementation. If the right choice is unclear, validate with a POC before writing the ADR. If a POC can't resolve the uncertainty within a reasonable timebox, default to the option that keeps more doors open. One-way doors get the deliberation they deserve because getting them wrong is expensive.
+- **Two-way doors** still require a decision — pick the simplest option that works, implement it, and move on. If it turns out wrong, revert and try the alternative. The decision is made; what's cheap is the reversal. Note the decision in a commit message or a brief ADR if the context is worth capturing, but don't block on it.
+- When in doubt about which classification applies, classify up. If it's unclear whether a door is one-way or two-way, treat it as one-way until proven otherwise.
+
+### What this framework is NOT
+
+This framework classifies decisions by **reversal cost**, not by **urgency**. It does not say "two-way doors can be deferred." A two-way door is a decision you make now and can revert later if needed — it's not a license to leave the decision unmade.
+
+- **Deferral** is a separate concept: sometimes a decision genuinely doesn't need to be made yet because the use case isn't concrete (scope management). That's valid, but it's a scoping judgment, not a door-type classification.
+- **Conflating the two** — using "it's a two-way door" as a reason to defer an architectural decision — leads to decisions that compound into a mess. The decision gets made by default (the implementation picks something), and downstream code builds on it, making the "cheap reversal" expensive.
+- **The architect's role**: architecture decisions (one-way OR two-way) are for the architect to make, not the implementation agent. The implementation agent makes implementation decisions (variable names, loop order, which library to use for a parsed task). If a decision affects the system's structure, constraints, or API surface, it's an architecture decision regardless of its door type.
 
 ### WASM as a design constraint
 
@@ -46,10 +54,10 @@ This is not "WASM support now." It's "don't close the WASM door accidentally."
 ## Consequences
 
 **Positive:**
-- One-way doors get the deliberation they deserve — ADRs, POCs, explicit justification
-- Two-way doors don't block progress — start simple, add complexity when needed
+- One-way doors get the deliberation they deserve — ADRs, POCs, explicit justification — because getting them wrong is expensive
+- Two-way doors don't block progress — decide, implement, revert if needed — because getting them wrong is recoverable
 - WASM compatibility is preserved as a constraint, not treated as an active deliverable
-- The framework creates a shared vocabulary for discussing decision urgency ("is this a one-way door?")
+- The framework creates a shared vocabulary for discussing reversal cost ("is this a one-way door?")
 
 **Negative:**
 - Classification requires judgment — some decisions are genuinely ambiguous (mitigated: classify up when in doubt)

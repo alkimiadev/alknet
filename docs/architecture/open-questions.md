@@ -7,9 +7,11 @@ last_updated: 2026-06-27
 
 Questions are organized by theme. Each question has a stable OQ-ID for cross-referencing from spec documents.
 
-Door type classifications follow ADR-009:
-- **One-way door**: Reversal requires rewriting significant code or permanently closes a capability. Requires ADR before implementation.
-- **Two-way door**: Reversal is cheap or additive. Can be decided during implementation.
+Door type classifications follow ADR-009 — they describe **reversal cost** (how expensive it is to undo), not urgency:
+- **One-way door**: Reversal requires rewriting significant code or permanently closes a capability. Getting it wrong is expensive — requires ADR before implementation.
+- **Two-way door**: Reversal is cheap or additive. Getting it wrong is recoverable — decide, implement, revert if needed.
+
+Door type is separate from whether a decision is made. A two-way door is a decision you make now and can revert later, not a decision to defer. See ADR-009 §"What this framework is NOT."
 
 ## Theme: Core Types
 

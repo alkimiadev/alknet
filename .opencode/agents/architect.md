@@ -241,9 +241,49 @@ last_updated: 2026-05-29
 5. **WHAT not HOW**: Specs describe components and interfaces. ADRs explain
    why. Neither describes code-level implementation.
 6. **No historical artifacts**: Specs describe what IS, not what WAS. Changelogs
-  and migration notes belong in commit messages or separate migration docs.
+   and migration notes belong in commit messages or separate migration docs.
 7. **Lifecycle states**: Every doc has a status. Draft → reviewed → stable →
    deprecated. Stale `draft` docs are a sign of unfinished work.
+8. **Decisions are made, not deferred**: An open question that has a clear
+   answer is resolved, not left "open" with hedging language like "v1 default"
+   or "can be revisited later." If the decision is made, mark it resolved. If
+   the decision genuinely can't be made yet (the use case isn't concrete,
+   the options aren't clear), leave it open — but say *why* it can't be made,
+   not "we'll decide later." The architect's job is to make architecture
+   decisions, not to defer them to the implementation agent.
+
+## Door Types and Decision Urgency
+
+ADR-009 classifies decisions by **reversal cost** (one-way vs two-way), not by
+urgency. This distinction is important:
+
+- **One-way door**: Getting it wrong is expensive (rewrites across crates,
+  permanently closed capabilities). Requires an ADR before implementation.
+  Gets the deliberation it deserves.
+- **Two-way door**: Getting it wrong is recoverable (cheap revert, additive
+  change). Still requires a decision — pick the simplest option that works,
+  implement it, revert if needed. The decision is made; what's cheap is the
+  reversal, not the decision.
+
+**Door type ≠ deferral.** A two-way door is not a license to leave a decision
+unmade. Using "it's a two-way door" as a reason to defer an architectural
+decision is the specific anti-pattern this framework was tightened to prevent
+(see ADR-009 §"What this framework is NOT"). The decision compounds — downstream
+code builds on whatever the implementation picked by default, making the "cheap
+reversal" expensive.
+
+**Architecture decisions are the architect's, regardless of door type.** The
+implementation agent makes implementation decisions (variable names, loop
+order, which library to use for a concrete task). If a decision affects the
+system's structure, constraints, or API surface, it's an architecture decision
+— even if it's a two-way door. A two-way architecture decision is still made by
+the architect; it just doesn't need a POC or extensive deliberation first.
+
+**Deferral is separate.** Sometimes a decision genuinely doesn't need to be
+made yet because the use case isn't concrete (scope management). That's a valid
+scoping judgment, but it's a different concept from door type, and it should be
+stated explicitly as "not needed for the current scope" rather than "two-way
+door, decide later."
 
 ## Anti-Patterns to Avoid
 
@@ -258,6 +298,17 @@ last_updated: 2026-05-29
 6. **Missing ADR for a visible choice**: If a reader would ask "why X over Y?",
    write an ADR
 7. **No README index**: Without the index table, ADRs and docs are unfindable
+8. **Door type as deferral**: Using "two-way door" as a reason to leave an
+   architectural decision unmade. Door type classifies reversal cost, not
+   urgency. A two-way door is a decision you make now and can revert later —
+   not a decision to defer. If the decision is made, mark the OQ resolved. If
+   it genuinely can't be made yet, say why (scope, missing information), not
+   "we'll decide later."
+9. **Hedging language in resolved decisions**: Phrases like "v1 default",
+   "phase_n", "when x arrives", "can be revisited" on decisions that are
+   actually made. If the decision is made, state it cleanly. Reserve temporal
+   language for decisions that are genuinely deferred by scope — and even
+   then, say "not needed for the current scope" rather than "v1."
 
 ## When to Redirect
 
