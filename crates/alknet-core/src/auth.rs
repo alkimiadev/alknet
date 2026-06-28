@@ -1,7 +1,53 @@
 //! Authentication: `AuthContext`, `Identity`, `IdentityProvider`, `AuthToken`,
 //! `ConfigIdentityProvider`.
 //!
-//! See `docs/architecture/crates/core/auth.md` for the full specification.
+//! See `docs/architecture/crates/core/auth.md` for the full specification and
+//! [ADR-034](../../../docs/architecture/decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+//! for the three-remote-roles decision.
+//!
+//! # Three remote roles (ADR-034 §1)
+//!
+//! The three credential types (`PeerEntry.fingerprints` entries) describe how
+//! a *single* `PeerEntry` can be authenticated. Separately, there are three
+//! distinct remote roles that must not be conflated:
+//!
+//! | Role | Identity | alknet peer? | `PeerEntry` on local side? |
+//! |------|----------|--------------|----------------------------|
+//! | **Public X.509 endpoint** | Domain + CA-issued X.509 | No (local node is a client) | No |
+//! | **Transport relay** (iroh's DERP-equivalent) | iroh `NodeId` (Ed25519) | No (infrastructure) | No |
+//! | **Hub / hosting node** | Ed25519 raw key **and/or** X.509 | Yes (full peer) | Yes |
+//!
+//! `PeerEntry` (and the `PeerId` it resolves to) is the model for peers in
+//! the call-protocol peer graph (ADR-029) — peers that get a stable logical
+//! identity, are addressable via `PeerRef::Specific`, and whose ops land in
+//! the peer-keyed overlay. A pure-client connection to a public X.509
+//! endpoint (e.g. a third-party API) is **not** in that graph on the client
+//! side: no `PeerEntry`, no `PeerId`, no `PeerRef::Specific` routing. The
+//! asymmetry is deliberate — a public domain's operator can change hands, so
+//! there is no stable logical identity to attach.
+//!
+//! The hub case is an ordinary `PeerEntry` that happens to expose both an
+//! Ed25519 fingerprint (P2P path) and an X.509 fingerprint
+//! (`SHA256:<hex>`, WebTransport/HTTPS path) — already supported by
+//! `PeerEntry.fingerprints: Vec<String>` (ADR-030).
+//!
+//! # Client-side verifier selection (ADR-034 §3)
+//!
+//! The `CallClient` / `from_openapi` / `from_mcp` client-side
+//! `ServerCertVerifier` is selected by **whether the local node has a
+//! `PeerEntry` for the remote**, not by key type alone:
+//!
+//! | Local has `PeerEntry` for remote? | Remote cert type | Client verifier |
+//! |----------------------------------|------------------|-----------------|
+//! | No (public X.509 endpoint) | X.509 | `WebPkiServerVerifier` (CA verification) |
+//! | No | Ed25519 raw key | fails closed (no CA to fall back to) |
+//! | Yes (hub, Ed25519 path) | Ed25519 raw key | fingerprint match (`ed25519:<hex>`) |
+//! | Yes (hub, X.509 path) | X.509 | fingerprint match (`SHA256:<hex>`) |
+//!
+//! This is the key-type-aware verifier from OQ-29, with the peer-model
+//! criterion (ADR-034) made explicit. The client-side verifier selection is
+//! a `CallClient` concern (`call/call-client-verifier-selection`), not an
+//! `IdentityProvider` concern — `IdentityProvider` is unchanged by ADR-034.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

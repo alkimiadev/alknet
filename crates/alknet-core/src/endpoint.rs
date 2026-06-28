@@ -1,6 +1,31 @@
 //! Endpoint: `AlknetEndpoint`, `HandlerRegistry`, `EndpointError`.
 //!
-//! See `docs/architecture/crates/core/endpoint.md` for the full specification.
+//! See `docs/architecture/crates/core/endpoint.md` for the full specification
+//! and [ADR-034](../../../docs/architecture/decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+//! for the three-remote-roles decision.
+//!
+//! # Server-side vs client-side verifier concerns (ADR-034)
+//!
+//! This module's `AcceptAnyCertVerifier` is a **server-side** `ClientCertVerifier`
+//! used in "request-but-don't-require" mode: the server asks for a client TLS
+//! cert (X.509 or RFC 7250 raw key) so it can extract the fingerprint via
+//! `peer_identity()`, but it does not require one and does not verify the
+//! presented cert against a CA. The cert bytes are hashed to a fingerprint
+//! string and matched against `PeerEntry.fingerprints` by
+//! `IdentityProvider::resolve_from_fingerprint()`. Alknet's identity model is
+//! fingerprint-based, not PKI-based — the `PeerEntry` set is the trust anchor,
+//! not a root CA store.
+//!
+//! ADR-034 does **not** change the server-side endpoint. The **client-side**
+//! `ServerCertVerifier` (for outgoing connections) is selected by `PeerEntry`
+//! presence (ADR-034 §3): known peer (`PeerEntry` present) → fingerprint pin;
+//! unknown X.509 remote (`PeerEntry` absent) → CA verification
+//! (`WebPkiServerVerifier`); unknown Ed25519 raw-key remote → fail closed.
+//! That selection is a `CallClient` concern
+//! (`call/call-client-verifier-selection`), not an endpoint concern —
+//! `AcceptAnyCertVerifier` here is only safe for raw-key fingerprint
+//! extraction on the *server* side and must not be reused as a client-side
+//! verifier.
 
 use std::collections::HashMap;
 use std::io;
@@ -740,6 +765,19 @@ fn generate_self_signed_cert() -> Result<SelfSignedCert, EndpointError> {
 }
 
 #[cfg(feature = "quinn")]
+/// Server-side "request-but-don't-require" client cert verifier (ADR-034).
+///
+/// Asks for a client TLS cert (X.509 or RFC 7250 raw key) so the endpoint can
+/// extract the fingerprint via `peer_identity()`, but does not require one
+/// and does not verify the presented cert against a CA. The fingerprint is
+/// matched against `PeerEntry.fingerprints` by
+/// `IdentityProvider::resolve_from_fingerprint()`.
+///
+/// **Server-side only.** This must not be reused as a client-side
+/// `ServerCertVerifier` — the client-side verifier is selected by `PeerEntry`
+/// presence (ADR-034 §3): CA verification for unknown X.509 remotes,
+/// fingerprint pinning for known peers. See the module docs and
+/// `call/call-client-verifier-selection`.
 struct AcceptAnyCertVerifier;
 
 #[cfg(feature = "quinn")]
