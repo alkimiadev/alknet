@@ -29,7 +29,7 @@ use super::wire::{
 };
 use crate::protocol::adapter::SessionOverlaySource;
 use crate::registry::context::{AbortPolicy, OperationContext, ScopedOperationEnv};
-use crate::registry::env::{CompositeOperationEnv, LocalOperationEnv, OperationEnv};
+use crate::registry::env::{LocalOperationEnv, OperationEnv, PeerCompositeEnv};
 use crate::registry::registration::OperationRegistry;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -107,12 +107,19 @@ impl Dispatcher {
             .session_source
             .as_ref()
             .and_then(|s| s.overlay_for(context));
-        let connection_overlay = connection.overlay_env();
-        Arc::new(CompositeOperationEnv::new(
-            base,
-            Some(connection_overlay),
-            session,
-        ))
+
+        let mut env = PeerCompositeEnv::new(base);
+        if let Some(session) = session {
+            env = env.with_session(session);
+        }
+        if let Some(peer_id) = connection
+            .connection()
+            .identity()
+            .map(|identity| identity.id.clone())
+        {
+            env.attach_peer(peer_id, connection.overlay_env());
+        }
+        Arc::new(env)
     }
 
     pub(crate) fn build_root_context(
