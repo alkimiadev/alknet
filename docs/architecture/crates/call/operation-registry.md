@@ -361,24 +361,68 @@ pub trait OperationEnv: Send + Sync {
     ) -> ResponseEnvelope;
 
     /// Does this env contain the named operation? Used by
-    /// `CompositeOperationEnv` to probe overlays before dispatching
-    /// (ADR-024). The composite checks `session.contains()` →
-    /// `connection.contains()` → base, dispatching to the first overlay
-    /// that contains the op. Default impl returns `true` (a single-layer
-    /// env like `LocalOperationEnv` contains everything it can dispatch).
+    /// `PeerCompositeEnv` to probe overlays before dispatching
+    /// (ADR-024 + ADR-029). The composite checks `session.contains()` →
+    /// each peer's sub-overlay (in `connection_order`) → base,
+    /// dispatching to the first overlay that contains the op. Default
+    /// impl returns `true` (a single-layer env like `LocalOperationEnv`
+    /// contains everything it can dispatch).
     fn contains(&self, name: &str) -> bool { true }
+
+    /// Peer-routing composition (ADR-029 §2). Routes to a specific peer
+    /// (`PeerRef::Specific`) or to the first peer that serves the op
+    /// (`PeerRef::Any`). The default impl ignores the peer selector and
+    /// delegates to `invoke_with_policy`, preserving back-compat for
+    /// single-layer envs (`LocalOperationEnv`, `OverlayOperationEnv`)
+    /// that don't override it. `PeerCompositeEnv` overrides with real
+    /// peer-keyed routing.
+    async fn invoke_peer(
+        &self,
+        peer: &PeerRef,
+        namespace: &str,
+        operation: &str,
+        input: Value,
+        parent: &OperationContext,
+        policy: AbortPolicy,
+    ) -> ResponseEnvelope {
+        // default: ignore peer selector, dispatch via invoke_with_policy
+        let _ = peer; // unused — single-layer envs don't route by peer
+        self.invoke_with_policy(namespace, operation, input, parent, policy).await
+    }
+
+    /// Does this env contain the named op *on the named peer*? Used by
+    /// `PeerCompositeEnv` to probe a specific peer's sub-overlay before
+    /// dispatching via `invoke_peer` with `PeerRef::Specific`. Default
+    /// impl delegates to `contains` (single-layer envs ignore the peer
+    /// dimension). `PeerCompositeEnv` overrides to check the specific
+    /// peer's sub-overlay.
+    fn peer_contains(&self, _peer: &PeerId, name: &str) -> bool { self.contains(name) }
 }
 ```
 
 The `parent` parameter propagates the calling context: the nested call gets `parent_request_id: Some(parent.request_id)`, inherits `parent.handler_identity` as the caller identity, and is marked `internal: true`.
 
+The `invoke_peer` / `peer_contains` methods (ADR-029 §2) take a `PeerRef`
+selector and a `PeerId`. These types are defined alongside the
+`PeerCompositeEnv` struct — see [client-and-adapters.md](client-and-adapters.md#peer-keyed-composition-env-adr-029)
+and [ADR-029](../../decisions/029-peer-graph-routing-model.md) §2:
+
+```rust
+pub enum PeerRef {
+    Specific(PeerId),  // route to this peer; NOT_FOUND if it doesn't serve the op
+    Any,               // first peer (insertion order) that serves it
+}
+pub type PeerId = String;  // = Identity.id from IdentityProvider resolution
+                           // = PeerEntry.peer_id (stable, not crypto material — ADR-030)
+```
+
 **Metadata does not propagate through composition.** Nested calls get fresh metadata (`HashMap::new()`), not the parent's metadata bag. This is a security constraint (ADR-014): `metadata: HashMap<String, Value>` accepts any `serde_json::Value`, including secret material. If metadata propagated through `env.invoke()`, a handler that accidentally placed a secret in metadata would leak it to every child operation — and if a child is a `from_call` operation (ADR-017), the metadata would cross the wire to the remote node. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`, not in ambient context.
 
 **Local dispatch only.** The initial `OperationEnv` implementation for the
 curated layer (Layer 0) dispatches directly through the local
-`OperationRegistry`. The composite env (curated + session + connection
-overlays) is a separate type built by the `CallAdapter` per call — see
-ADR-024 and the `CompositeOperationEnv` sketch below.
+`OperationRegistry`. The composite env (curated + session + peer-keyed
+connection overlays) is a separate type built by the `CallAdapter` per call —
+see ADR-024, ADR-029, and the `PeerCompositeEnv` sketch below.
 
 ```rust
 /// Layer 0 dispatch — the curated registry. This is the base env that
@@ -446,52 +490,101 @@ impl OperationEnv for LocalOperationEnv {
 ```
 
 The composite env (built by the `CallAdapter` per incoming call) wraps the
-curated base and any active overlays:
+curated base and any active overlays. Per ADR-029, the connection overlay is
+**peer-keyed** — a head node with N worker connections holds a
+`HashMap<PeerId, connection_overlay>`, not one overlay. The singular-connection
+case (one peer) is the degenerate case with a single-entry map.
 
 ```rust
-/// Per-call composite env (ADR-024). Built by the CallAdapter in
+/// Per-call composite env (ADR-024 + ADR-029). Built by the CallAdapter in
 /// build_root_context from the active layers. The child inherits this by
-/// Arc::clone through invoke().
-pub struct CompositeOperationEnv {
-    session: Option<Arc<dyn OperationEnv + Send + Sync>>,    // Layer 1 — active session, if any
-    connection: Option<Arc<dyn OperationEnv + Send + Sync>>, // Layer 2 — this connection's imported ops
-    base: Arc<dyn OperationEnv + Send + Sync>,               // Layer 0 — curated registry (LocalOperationEnv)
+/// Arc::clone through invoke(). The connection overlay is peer-keyed
+/// (ADR-029 §1) to handle head→N-workers routing.
+pub struct PeerCompositeEnv {
+    pub base: Arc<dyn OperationEnv + Send + Sync>,       // Layer 0 curated
+    pub session: Option<Arc<dyn OperationEnv + Send + Sync>>,  // Layer 1
+    pub connections: HashMap<PeerId, Arc<dyn OperationEnv + Send + Sync>>,  // Layer 2, peer-keyed
+    connection_order: Vec<PeerId>,  // insertion order for PeerRef::Any first-match
 }
 
 #[async_trait]
-impl OperationEnv for CompositeOperationEnv {
+impl OperationEnv for PeerCompositeEnv {
     // `invoke` uses the default impl (delegates to `invoke_with_policy`
     // with `parent.abort_policy.clone()`).
 
     async fn invoke_with_policy(&self, namespace: &str, operation: &str, input: Value, parent: &OperationContext, policy: AbortPolicy) -> ResponseEnvelope {
+        // PeerRef::Any routing (ADR-029 §2): session → peers in insertion
+        // order → curated base. First overlay that *contains* the op wins.
         let name = format!("{namespace}/{operation}");
         // Reachability check against parent.scoped_env (same as LocalOperationEnv).
         if !parent.scoped_env.allows(&name) {
             return ResponseEnvelope::not_found(name);
         }
-        // Dispatch in overlay order: session → connection → curated base.
-        // First overlay that *contains* the op wins. `contains()` (ADR-024)
-        // is the probe — it avoids the sentinel-return ambiguity and ensures
-        // cross-impl interop: any OperationEnv impl that correctly reports
-        // `contains` works with this composite.
         if let Some(session) = &self.session {
             if session.contains(&name) {
                 return session.invoke_with_policy(namespace, operation, input, parent, policy).await;
             }
         }
-        if let Some(connection) = &self.connection {
-            if connection.contains(&name) {
-                return connection.invoke_with_policy(namespace, operation, input, parent, policy).await;
+        // Peer-keyed overlay: iterate peers in insertion order, dispatch to
+        // the first peer whose sub-overlay contains the op. This is the
+        // head→N-workers fan-out primitive (ADR-029 §2, OQ-30: insertion-
+        // order first-match).
+        for peer_id in &self.connection_order {
+            if let Some(conn_env) = self.connections.get(peer_id) {
+                if conn_env.contains(&name) {
+                    return conn_env.invoke_with_policy(namespace, operation, input, parent, policy).await;
+                }
             }
         }
         self.base.invoke_with_policy(namespace, operation, input, parent, policy).await
     }
 
+    // `invoke_peer` overrides the default impl with real peer-keyed
+    // routing (ADR-029 §2). `PeerRef::Specific` routes to the named peer's
+    // sub-overlay only (no fallthrough — NOT_FOUND if that peer doesn't
+    // serve the op). `PeerRef::Any` reuses `invoke_with_policy` (the
+    // insertion-order fan-out above).
+    async fn invoke_peer(
+        &self,
+        peer: &PeerRef,
+        namespace: &str,
+        operation: &str,
+        input: Value,
+        parent: &OperationContext,
+        policy: AbortPolicy,
+    ) -> ResponseEnvelope {
+        let name = format!("{namespace}/{operation}");
+        if !parent.scoped_env.allows(&name) {
+            return ResponseEnvelope::not_found(name);
+        }
+        match peer {
+            PeerRef::Specific(peer_id) => {
+                // Route to this peer's sub-overlay only. No fallthrough —
+                // explicit routing must be honored or fail loudly (ADR-029 §2).
+                match self.connections.get(peer_id) {
+                    Some(conn_env) if conn_env.contains(&name) => {
+                        conn_env.invoke_with_policy(namespace, operation, input, parent, policy).await
+                    }
+                    _ => ResponseEnvelope::not_found(name),
+                }
+            }
+            PeerRef::Any => {
+                // Same as invoke_with_policy: session → peers in order → base.
+                self.invoke_with_policy(namespace, operation, input, parent, policy).await
+            }
+        }
+    }
+
     fn contains(&self, name: &str) -> bool {
-        // The composite contains the op if any layer does.
+        // The composite contains the op if any layer does (peer-agnostic).
         self.session.as_ref().map_or(false, |s| s.contains(name))
-            || self.connection.as_ref().map_or(false, |c| c.contains(name))
+            || self.connections.values().any(|c| c.contains(name))
             || self.base.contains(name)
+    }
+
+    fn peer_contains(&self, peer: &PeerId, name: &str) -> bool {
+        // Does the named peer's sub-overlay contain the op?
+        self.connections.get(peer).map_or(false, |c| c.contains(name))
     }
 }
 ```
@@ -500,8 +593,10 @@ The `contains()` method (review #003 C9) is the overlay-dispatch contract.
 It replaces the previous "sentinel or contains check — two-way door" framing,
 which was ambiguous enough to produce non-interoperable `OperationEnv` impls.
 The structural decision (composite trait object, overlay order, `Arc::clone`
-inheritance) is locked by ADR-024; the dispatch contract (`contains` probe
-before `invoke_with_policy`) is now locked too.
+inheritance) is locked by ADR-024; the peer-keyed overlay extension
+(`PeerCompositeEnv`, `invoke_peer`, `peer_contains`) is locked by ADR-029; the
+dispatch contract (`contains` probe before `invoke_with_policy`) is locked by
+both.
 
 Two things happen in `invoke()`:
 
@@ -510,7 +605,7 @@ Two things happen in `invoke()`:
 
 Future work may add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
 
-**`OperationEnv` must remain a trait.** This is a constraint, not a suggestion. The trait-based design enables registry layering (ADR-024): the CallAdapter composes the root env per call from the curated base + active connection/session overlays, and overlays wrap the base via trait layering. Session-scoped registries (OQ-19) and connection-scoped remote imports (ADR-017 `from_call`) are both overlays on the same base, using the same mechanism. Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close both the session-overlay and connection-overlay patterns. This is the same integration-point pattern as `IdentityProvider` (ADR-004). See OQ-19 and ADR-024.
+**`OperationEnv` must remain a trait.** This is a constraint, not a suggestion. The trait-based design enables registry layering (ADR-024): the CallAdapter composes the root env per call from the curated base + active peer-keyed connection overlays + session overlay, and overlays wrap the base via trait layering. Session-scoped registries (OQ-19) and connection-scoped remote imports (ADR-017 `from_call`) are both overlays on the same base, using the same mechanism. The peer-keyed extension (`PeerCompositeEnv`, `invoke_peer`, ADR-029) composes on top of the same trait — it overrides the new peer-routing methods, not the base dispatch. Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close both the session-overlay and connection-overlay patterns, and would prevent the peer-keyed routing model from composing. This is the same integration-point pattern as `IdentityProvider` (ADR-004). See OQ-19, ADR-024, and ADR-029.
 
 ### Service Discovery
 
@@ -686,10 +781,27 @@ See [open-questions.md](../../open-questions.md) for full details.
   `remote_safe`/`trusted_peer` are retired; peer authorization is
   `AccessControl::check(peer_identity)`, the existing mechanism. See
   [client-and-adapters.md](client-and-adapters.md) and ADR-029 §3.
-- **OQ-26..28** (OQ-26/27 stay two-way; OQ-28 cross-peer dissolved by ADR-029 /
-  same-peer stays): `OperationAdapter` error type, `from_call` re-import
-  trigger, `from_call` namespace collision. v1 defaults recorded in
+- **OQ-26** (resolved): `OperationAdapter` error type — `AdapterError`
+  variants: `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`,
+  `SamePeerCollision` (replaces flat `Conflict`). `#[non_exhaustive]`. See
   [client-and-adapters.md](client-and-adapters.md).
+- **OQ-27** (resolved): `from_call` re-import trigger — auto-re-import on
+  connection establishment. `CallConnection::refresh()` is a feature
+  addition, not an unmade decision. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-28** (resolved): `from_call` namespace collision — same-peer
+  collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
+  `namespace_prefix` is optional local-naming sugar. See
+  [client-and-adapters.md](client-and-adapters.md).
+- **OQ-29..37** are tracked in [client-and-adapters.md](client-and-adapters.md)
+  (they concern the `CallClient` / adapter surface and peer-graph routing,
+  not the registry layering this document covers). In brief: OQ-29
+  (CallClient TLS client-auth) resolved; OQ-30 (`PeerRef::Any` routing
+  policy) resolved; OQ-31 (`services/list-peers` re-export semantics)
+  resolved; OQ-32 (multi-hop federation) open (feature extension);
+  OQ-33 (PeerId source) resolved by ADR-030; OQ-34 (persistent peer
+  registry) resolved by ADR-030+033; OQ-35 (API key asymmetry) dissolved;
+  OQ-36 (concrete persistence adapter shapes) resolved by ADR-035;
+  OQ-37 (X.509 outgoing-only) resolved by ADR-034.
 
 ## References
 
@@ -699,4 +811,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-010: ALPN router and endpoint (static registration — applies to the `HandlerRegistry`, not the `OperationRegistry`; see ADR-024 for the distinction)
 - ADR-012: Call protocol stream model
 - ADR-024: Operation registry layering (curated + session/connection overlays; `OperationEnv` as trait-object integration point)
+- ADR-029: Peer-graph routing model (peer-keyed overlays + `PeerRef` routing; `PeerCompositeEnv` supersedes the singular-connection `CompositeOperationEnv`)
+- ADR-030: PeerEntry and Identity.id decoupling (`PeerId` source = `Identity.id` = `PeerEntry.peer_id`)
+- ADR-032: Forwarded-for identity (`forwarded_for` on `OperationContext` and `call.requested`; metadata only)
 - Reference implementation: `/workspace/@alkdev/alknet-main/crates/alknet-core/src/call/`

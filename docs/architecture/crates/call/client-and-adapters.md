@@ -245,21 +245,32 @@ invariant (below). The concrete shapes of `TlsIdentity`, `AuthToken`, and
 `RemoteIdentity` are implementation-detail two-way doors; the one-way
 constraints are that they come from `Capabilities`, not env vars (ADR-014).
 
-**v1 TLS client-auth gap** (OQ-29): v1 `connect()` builds the quinn client
-config with `with_no_client_auth()` and an `AcceptAnyServerCertVerifier` — the
-client does not present its TLS identity as a client cert, and does not pin the
-remote's expected identity from `credentials.remote_identity`. This is a
-two-way-door remainder: wiring the local node's RawKey/X509 identity as a
-rustls client-auth cert (for servers that verify client identity) and
-plugging `credentials.remote_identity` into a real `ServerCertVerifier` is
-additive. The one-way constraint (credentials from `Capabilities`, not env
-vars, ADR-014) is unaffected — the `auth_token` dimension flows through the
-call-protocol `auth_token` payload field, not TLS, so the no-env-vars
-invariant holds independently of this gap.
+**TLS client-auth presentation** (OQ-29 #1, wired): the client presents
+its Ed25519 key as an RFC 7250 raw public key client cert — the client-side
+equivalent of the server's `RawKeyCertResolver`. This is **wired now**, not
+additive: it is what activates the `PeerEntry` fingerprint → `peer_id`
+resolution path on quinn connections (ADR-030 §5). Without it, the ADR-029
+peer graph doesn't populate for quinn connections — `PeerId` resolution
+fails because the server has no client cert to extract a fingerprint from.
+The iroh path already works (iroh uses RFC 7250 raw keys and exchanges
+Ed25519 public keys during the TLS handshake automatically); the gap was
+quinn-only, and OQ-29 #1 resolves it by replacing `with_no_client_auth()`
+with presenting the key. The one-way constraint (credentials from
+`Capabilities`, not env vars, ADR-014) is unaffected — the `auth_token`
+dimension flows through the call-protocol `auth_token` payload field, not
+TLS, so the no-env-vars invariant holds independently of the TLS layer.
 
-**Outgoing X.509 and the peer model** (ADR-034): the client-side
-`ServerCertVerifier` is selected by whether the local node has a
-`PeerEntry` for the remote, not by key type alone. A pure-client
+**Remote-identity verification** (OQ-29 #2, additive): verifying the
+server's fingerprint against an expected value (`credentials.remote_identity`)
+is **additive** — the server-side fingerprint extraction is what matters for
+`PeerId`, not the client-side verification. The verifier for raw keys can
+start as "accept any, extract fingerprint" and add fingerprint-pinning later.
+This is a two-way-door remainder; the one-way constraint (credentials from
+`Capabilities`, not env vars) is unaffected.
+
+**Server cert verifier selection** (OQ-29 #2 + ADR-034 §3): the client-side
+`ServerCertVerifier` is selected by whether the local node has a `PeerEntry`
+for the remote, not by key type alone. A pure-client
 connection to a **public X.509 endpoint** (no `PeerEntry` on the local
 side — e.g., dialing `api.alk.dev` or a third-party API) uses
 `WebPkiServerVerifier` (CA verification), gets **no `PeerId`** on the
@@ -269,7 +280,9 @@ on such a connection land in the connection's Layer 2 overlay
 (ADR-024) and are invoked through the `CallConnection` handle directly,
 not via `PeerRef::Specific`. A connection to a **hub** (a `PeerEntry`
 with mixed Ed25519 + X.509 fingerprints) uses fingerprint pinning on
-both cert paths and does enter the peer graph. See
+both cert paths and does enter the peer graph. An unknown Ed25519
+raw-key remote fails closed (no CA to fall back to — raw-key remotes
+are always known peers). See
 [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md)
 for the verifier selection rule and the three-role naming.
 

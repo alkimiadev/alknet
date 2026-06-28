@@ -87,12 +87,17 @@ pub trait SessionOverlaySource: Send + Sync {
     /// The agent crate determines how to map a call to its session.
     fn overlay_for(&self, context: &OperationContext) -> Option<Arc<dyn OperationEnv + Send + Sync>>;
 }
+```
 
 The `CallAdapter` holds the static curated registry and an optional
 session-overlay source. Per-connection imported-ops overlays (Layer 2,
 ADR-024) are held with the connection and composed into the root
-`OperationContext.env` per incoming call. See ADR-024 for the layering
-model and `compose_root_env` below.
+`OperationContext.env` per incoming call. The composition env is peer-keyed
+(`PeerCompositeEnv`, ADR-029 §1) to handle head→N-workers routing — a head
+node with multiple worker connections holds a peer-keyed
+`HashMap<PeerId, connection_overlay>`, not one overlay. See ADR-024 for the
+layering model, ADR-029 for the peer-keyed extension, and `compose_root_env`
+below.
 
 ### CallConnection
 
@@ -237,13 +242,19 @@ The `payload` of a `call.requested` event has this shape:
 {
   "operationId": "/fs/readFile",
   "input": { ... },
-  "auth_token": "alk_..."    // optional — see Identity Resolution below
+  "auth_token": "alk_...",           // optional — see Identity Resolution below
+  "forwarded_for": {                 // optional (ADR-032) — present when a hub forwards a call
+    "id": "alice",
+    "scopes": ["fs:read", "docker:start"],
+    "resources": {}
+  }
 }
 ```
 
 - `operationId` — the operation to invoke, **with a leading slash** on the wire (e.g., `/fs/readFile`, `/agent/chat`, `/services/list`). This is the display form of the operation name. The registry stores names without the leading slash (`fs/readFile` — see [operation-registry.md](operation-registry.md#operationspec)); the wire format adds it. The `CallAdapter` strips the leading slash before registry lookup.
 - `input` — the operation input, matching the operation's `input_schema` (JSON Schema). Always a `serde_json::Value`.
 - `auth_token` — optional. If present, the `CallAdapter` resolves it via `IdentityProvider::resolve_from_token()` and the resulting `Identity` takes precedence over the connection-level identity for this request. See [Identity Resolution](#authcontext-and-identity-resolution) below.
+- `forwarded_for` — optional (ADR-032). Present when a `from_call` forwarding handler propagates the originator's identity to a spoke. Carries a serialized `Identity` (id, scopes, resources) — the end user the hub authenticated. **Metadata only** — `AccessControl::check` never reads it; the spoke authorizes the hub (its direct caller), not the end user. The hub may set `forwarded_for: None` if it doesn't want to disclose the originator. See [ADR-032](../../decisions/032-forwarded-for-identity.md).
 
 The `call.requested` payload does **not** carry an abort policy field. The abort policy (`abort-dependents` vs `continue-running`, ADR-016) is set on `OperationContext` and propagated through `OperationEnv::invoke()` — the composing handler decides the child's policy, not the wire caller. See [Abort Cascade and Nested Calls](#abort-cascade-and-nested-calls) below.
 
@@ -283,7 +294,7 @@ The `payload` field of `EventEnvelope` has a different shape per event type:
 
 | Event | `payload` shape |
 |-------|----------------|
-| `call.requested` | `{ "operationId": "/fs/readFile", "input": {...}, "auth_token": "alk_..." (optional) }` |
+| `call.requested` | `{ "operationId": "/fs/readFile", "input": {...}, "auth_token": "alk_..." (optional), "forwarded_for": { "id": "...", "scopes": [...], "resources": {} } (optional, ADR-032) }` |
 | `call.responded` | `{ "output": <Value> }` — the operation's output, matching `output_schema` |
 | `call.completed` | `{}` — empty object (subscription stream end signal) |
 | `call.aborted` | `{}` — empty object (cancellation signal; the `id` identifies which request) |
@@ -429,6 +440,7 @@ fn build_root_context(
     request_id: String,
     operation_name: &str,        // looked up in registry for the registration bundle
     identity: Option<Identity>,  // resolved per-request above (caller's identity)
+    forwarded_for: Option<Identity>,  // from call.requested.forwarded_for (ADR-032)
 ) -> OperationContext {
     let registration = self.registry.registration(operation_name);
     OperationContext {
@@ -440,18 +452,27 @@ fn build_root_context(
         // This is on the context for PROPAGATION to children via invoke(),
         // not for the root's own ACL (which uses identity above).
         handler_identity: registration.composition_authority.clone(),
+        // Forwarded-for identity (ADR-032): the originator when this call was
+        // forwarded by a from_call handler. Metadata only — AccessControl::check
+        // never reads it; ACL always authorizes `identity` (the direct caller).
+        // None when the call wasn't forwarded or the forwarder chose not to
+        // propagate it. Populated from the wire call.requested.forwarded_for
+        // field; NOT inherited by composed children (wire-ingress only).
+        forwarded_for,
         capabilities: registration.capabilities.clone(),  // from the registration bundle
         metadata: HashMap::new(),        // fresh per request
         deadline: Some(Instant::now() + self.default_timeout),  // root deadline (W7)
         scoped_env: registration.scoped_env.clone()
             .unwrap_or_else(ScopedOperationEnv::empty),  // from the bundle, empty for leaves
-        // Per-call env composition (ADR-024): the root env is a composite
-        // of the curated base + this connection's imported-ops overlay +
-        // the active session overlay (if any). The CallAdapter builds this
+        // Per-call env composition (ADR-024 + ADR-029): the root env is a
+        // PeerCompositeEnv — the curated base + this connection's imported-
+        // ops overlay (peer-keyed in the head's aggregation env, ADR-029 §1)
+        // + the active session overlay (if any). The CallAdapter builds this
         // composite per incoming call — same shape as per-call identity
-        // resolution via IdentityProvider. Handlers call env.invoke();
+        // resolution via IdentityProvider. Handlers call env.invoke() (peer-
+        // agnostic) or env.invoke_peer(peer, ...) (peer-specific, ADR-029 §2);
         // the composite routes to the right overlay.
-        env: self.compose_root_env(/* connection, session */),
+        env: self.compose_root_env(/* peer_id, connection_overlay, session */),
         abort_policy: AbortPolicy::default(),  // abort-dependents (ADR-016 Decision 6)
         internal: false,                 // external call — ACL against caller identity
     }
@@ -460,7 +481,7 @@ fn build_root_context(
 
 The `internal: false` here is what makes a wire call a wire call — ACL checks against the caller's resolved `identity`. When a handler subsequently calls `context.env.invoke(...)`, the `OperationEnv::invoke()` path (see [operation-registry.md](operation-registry.md#operationenv)) constructs a nested `OperationContext` with `internal: true`, switching authority to `handler_identity`. The two construction paths — `CallAdapter` for wire-originated, `OperationEnv::invoke()` for composition-originated — are the only places `internal` is set. Handlers cannot set it themselves (the field is module-private for writes — see [operation-registry.md](operation-registry.md#operationcontext) and ADR-015).
 
-The per-call `env` composition (ADR-024) is the operation-dispatch analogue of the per-call identity resolution the CallAdapter already does via `IdentityProvider`. Both are integration-point patterns: the trait object owns the routing, the CallAdapter supplies the right sources per call. A connection's imported-ops overlay is part of the root env only for calls arriving on that connection; a session overlay is part of the root env only when a session is active. See ADR-024.
+The per-call `env` composition (ADR-024 + ADR-029) is the operation-dispatch analogue of the per-call identity resolution the CallAdapter already does via `IdentityProvider`. Both are integration-point patterns: the trait object owns the routing, the CallAdapter supplies the right sources per call. A connection's imported-ops overlay is part of the root env only for calls arriving on that connection — and on a head node with multiple worker connections, the overlays are peer-keyed (`PeerCompositeEnv`, ADR-029 §1); a session overlay is part of the root env only when a session is active. See ADR-024, ADR-029, and the `PeerCompositeEnv` sketch in [operation-registry.md](operation-registry.md#operationenv).
 
 ### ResponseEnvelope
 
@@ -539,6 +560,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction. Client/adapter surface specced in [client-and-adapters.md](client-and-adapters.md) |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 | Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; `AccessControl`-based peer authorization; retires `remote_safe`/`trusted_peer` |
+| Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `call.requested` and `OperationContext`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details` |
 
 ## Open Questions
@@ -552,16 +574,45 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-25** (dissolved by ADR-029): `remote_safe` marking shape — moot;
   `remote_safe`/`trusted_peer` retired; peer authorization is
   `AccessControl::check(peer_identity)`.
-- **OQ-26..29** (OQ-26/27/29 open two-way; OQ-28 cross-peer dissolved / same-peer stays):
-  `OperationAdapter` error type, `from_call` re-import trigger, `from_call`
-  namespace collision, `CallClient` TLS client-auth. See
-  [client-and-adapters.md](client-and-adapters.md) and ADR-029.
-- **OQ-30..32** (open): `PeerRef::Any` routing policy, `services/list-peers`
-  re-export semantics, multi-hop federation. See ADR-029.
+- **OQ-26** (resolved): `OperationAdapter` error type — `AdapterError`
+  variants (`DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`,
+  `SamePeerCollision`); `#[non_exhaustive]`. See
+  [client-and-adapters.md](client-and-adapters.md).
+- **OQ-27** (resolved): `from_call` re-import trigger — auto-re-import on
+  connection establishment. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-28** (resolved): `from_call` namespace collision — same-peer collision
+  = error; cross-peer dissolved by ADR-029 (separate sub-overlays). See
+  [client-and-adapters.md](client-and-adapters.md).
+- **OQ-29** (resolved): `CallClient` TLS client-auth — wire quinn client-auth
+  (present Ed25519 key as raw public key client cert); key-type-aware server
+  cert verification; fingerprint normalization. See
+  [client-and-adapters.md](client-and-adapters.md).
+- **OQ-30** (resolved): `PeerRef::Any` routing policy — insertion-order
+  first-match. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-31** (resolved): `services/list-peers` re-export semantics — opt-in;
+  `services/list` is "own ops only." See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-32** (open, feature extension): Multi-hop federation — the one-hop
+  model is the architectural commitment; multi-hop is a feature extension
+  that doesn't break downstream. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-33** (resolved by ADR-030): `PeerId` source — `Identity.id` from
+  `IdentityProvider` resolution (= `PeerEntry.peer_id`, stable across key
+  rotation), not a connection-assigned UUID.
+- **OQ-34** (resolved by ADR-030 + ADR-033): Persistent peer registry —
+  the storage boundary is `core trait + in-memory default`; persistence
+  adapters are separate crates.
+- **OQ-37** (resolved by ADR-034): X.509 outgoing-only case — three remote
+  roles named (public X.509 endpoint, transport relay, hub); pure-client
+  X.509 connections are not in the peer graph on the client side. See
+  [client-and-adapters.md](client-and-adapters.md).
 
 ## References
 
 - [operation-registry.md](operation-registry.md) — OperationSpec, Handler, AccessControl, service discovery
+- [client-and-adapters.md](client-and-adapters.md) — CallClient, from_call, OperationAdapter, peer-keyed composition env
 - ADR-005: irpc as call protocol foundation
 - ADR-012: Call protocol stream model
+- ADR-029: Peer-graph routing model (peer-keyed overlays + `PeerRef` routing)
+- ADR-030: PeerEntry and Identity.id decoupling (`PeerId` source)
+- ADR-032: Forwarded-for identity (`forwarded_for` on `call.requested` and `OperationContext`)
+- ADR-034: Outgoing-only X.509 and the three peer roles
 - Reference implementation: `/workspace/@alkdev/alknet-main/crates/alknet-core/src/call/`
