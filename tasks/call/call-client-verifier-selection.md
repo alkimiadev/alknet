@@ -1,7 +1,7 @@
 ---
 id: call/call-client-verifier-selection
 name: Wire CallClient TLS client-auth and server cert verifier selection by PeerEntry presence (OQ-29, ADR-034)
-status: pending
+status: completed
 depends_on: [call/peer-composite-env]
 scope: moderate
 risk: high
@@ -174,4 +174,4 @@ pub struct RemoteIdentity { pub fingerprint: String }
 
 ## Summary
 
-> To be filled on completion
+Wired CallClient TLS client-auth (presents Ed25519 key as RFC 7250 raw public key client cert, replacing with_no_client_auth) and server cert verifier selection by PeerEntry presence (ADR-034 §3). Replaced the AcceptAnyServerCertVerifier security hole with: Some(fingerprint) -> FingerprintPinVerifier (ed25519:<hex> raw key extraction + SHA256:<hex> DER hash, with handshake signature verification); None -> WebPkiServerVerifier (CA verification for public X.509 endpoints; Ed25519 raw-key remotes fail closed). Extracted shared fingerprint logic into a new pub alknet_core::fingerprint module (reused by endpoint server-side and call_client client-side). remote_identity: None kept load-bearing (not defaulted). 11 unit tests + updated 2 integration tests to pin the self-signed server fingerprint. 135 core tests + 252 call unit tests + 2 integration tests pass, clippy clean, fmt clean.
