@@ -287,6 +287,10 @@ impl OperationEnv for PeerCompositeEnv {
             .get(peer)
             .is_some_and(|c| c.contains(name))
     }
+
+    fn peer_ids(&self) -> Vec<PeerId> {
+        self.connection_order.clone()
+    }
 }
 
 #[cfg(test)]
