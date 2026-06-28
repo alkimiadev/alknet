@@ -1,4 +1,4 @@
-//! `CallClient`: the outbound connection opener (ADR-017 §1, ADR-028).
+//! `CallClient`: the outbound connection opener (ADR-017 §1).
 //!
 //! Opens a QUIC connection to a remote node on ALPN `alknet/call`, performs
 //! credential setup, and produces a [`CallConnection`] running the shared
@@ -10,8 +10,7 @@
 //! After establishment the connection is symmetric (ADR-017 §2): both sides
 //! can send and receive `call.requested`. The `CallClient` is both a caller
 //! (initiates outgoing calls via `CallConnection::call()`/`subscribe()`/
-//! `abort()`) and a callee (dispatches incoming calls against its
-//! peer-scoped view of the registry).
+//! `abort()`) and a callee (dispatches incoming calls against its registry).
 //!
 //! See `docs/architecture/crates/call/client-and-adapters.md` for the spec.
 
@@ -23,7 +22,7 @@ use alknet_core::config::TlsIdentity;
 use alknet_core::types::Connection;
 
 use crate::protocol::connection::CallConnection;
-use crate::protocol::dispatch::{Dispatcher, RemoteFilter};
+use crate::protocol::dispatch::Dispatcher;
 use crate::registry::registration::OperationRegistry;
 
 /// Expected identity of the remote node (ADR-017 §7). The concrete shape is
@@ -87,21 +86,15 @@ pub enum ClientError {
 
 /// Outbound `alknet/call` connection opener (the #1 gap, ADR-017 §1).
 ///
-/// The peer-scoped registry view is a dispatch-time read over the single
-/// Layer-0 registry (ADR-028 §5) — not a copy. In default mode
-/// (`trusted_peer: false`) only registrations with `remote_safe: true`
-/// dispatch to the remote peer, and `services/list` hides non-remote-safe
-/// ops (ADR-028 Assumption 2). In trusted-peer mode (`trusted_peer: true`,
-/// explicit opt-in per ADR-028 §3) all `External` ops dispatch and list.
+/// Peer authorization flows through the existing `AccessControl::check` gate
+/// in `OperationRegistry::invoke` (ADR-029 §3) — no parallel `remote_safe`/
+/// `trusted_peer` gate.
 pub struct CallClient {
     registry: Arc<OperationRegistry>,
     identity_provider: Arc<dyn IdentityProvider>,
-    trusted_peer: bool,
 }
 
 impl CallClient {
-    /// Default-deny mode: only `remote_safe: true` ops dispatch/list to the
-    /// remote peer (ADR-028).
     pub fn new(
         registry: Arc<OperationRegistry>,
         identity_provider: Arc<dyn IdentityProvider>,
@@ -109,20 +102,6 @@ impl CallClient {
         Self {
             registry,
             identity_provider,
-            trusted_peer: false,
-        }
-    }
-
-    /// Trusted-peer mode: expose all `External` ops to the remote peer,
-    /// ignoring the `remote_safe` marking. Explicit opt-in per ADR-028 §3.
-    pub fn trusted_peer(
-        registry: Arc<OperationRegistry>,
-        identity_provider: Arc<dyn IdentityProvider>,
-    ) -> Self {
-        Self {
-            registry,
-            identity_provider,
-            trusted_peer: true,
         }
     }
 
@@ -134,10 +113,6 @@ impl CallClient {
         &self.identity_provider
     }
 
-    pub fn is_trusted_peer(&self) -> bool {
-        self.trusted_peer
-    }
-
     /// Open a QUIC connection to `addr` on ALPN `alknet/call`, perform
     /// credential handshake, and return a `CallConnection` running the shared
     /// dispatch loop. Credentials come from `Capabilities` (ADR-014), not env
@@ -147,8 +122,7 @@ impl CallClient {
     /// is live until the remote closes the connection or the caller drops it.
     /// The caller can immediately use `call()`/`subscribe()`/`abort()` on the
     /// returned connection, and the remote peer can call back into this
-    /// `CallClient`'s peer-scoped registry view (connection symmetry,
-    /// ADR-017 §2).
+    /// `CallClient`'s registry (connection symmetry, ADR-017 §2).
     #[cfg(feature = "quinn")]
     pub async fn connect(
         &self,
@@ -188,11 +162,6 @@ impl CallClient {
         let dispatcher = Dispatcher::new(
             Arc::clone(&self.registry),
             Arc::clone(&self.identity_provider),
-            if self.trusted_peer {
-                RemoteFilter::trusted()
-            } else {
-                RemoteFilter::default_deny()
-            },
         );
         let run_conn = Arc::clone(&call_connection);
         tokio::spawn(async move {
@@ -297,7 +266,6 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCertVerifier 
 mod tests {
     use super::*;
     use crate::protocol::connection::CallConnection;
-    use crate::protocol::dispatch::{Dispatcher, RemoteFilter};
     use crate::protocol::wire::ResponseEnvelope;
     use crate::registry::registration::{
         make_handler, Handler, HandlerRegistration, OperationProvenance,
@@ -366,42 +334,21 @@ mod tests {
         }
     }
 
-    fn registry_with_remote_safe_and_caps() -> Arc<OperationRegistry> {
+    fn registry_with_caps() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        // remote_safe: false, carries a google api-key capability
         registry.register(HandlerRegistration::new(
-            external_spec("secret/run"),
+            external_spec("pub/run"),
             caps_inspect_handler(),
             OperationProvenance::Local,
             None,
             None,
-            Capabilities::new().with_api_key("google", "secret-key".to_string()),
+            Capabilities::new().with_api_key("google", "pub-key".to_string()),
         ));
-        // remote_safe: true, carries a google api-key capability
-        registry.register(
-            HandlerRegistration::new(
-                external_spec("pub/run"),
-                caps_inspect_handler(),
-                OperationProvenance::Local,
-                None,
-                None,
-                Capabilities::new().with_api_key("google", "pub-key".to_string()),
-            )
-            .remote_safe(true),
-        );
         Arc::new(registry)
     }
 
-    fn dispatcher(registry: &Arc<OperationRegistry>, trusted_peer: bool) -> Dispatcher {
-        Dispatcher::new(
-            Arc::clone(registry),
-            Arc::new(NoopIdentityProvider),
-            if trusted_peer {
-                RemoteFilter::trusted()
-            } else {
-                RemoteFilter::default_deny()
-            },
-        )
+    fn dispatcher(registry: &Arc<OperationRegistry>) -> Dispatcher {
+        Dispatcher::new(Arc::clone(registry), Arc::new(NoopIdentityProvider))
     }
 
     async fn dispatch(d: &Dispatcher, conn: &Arc<CallConnection>, op: &str) -> ResponseEnvelope {
@@ -411,24 +358,6 @@ mod tests {
             serde_json::json!({ "operationId": op, "input": {} }),
         )
         .await
-    }
-
-    #[test]
-    fn call_client_new_is_default_deny() {
-        let registry = Arc::new(OperationRegistry::new());
-        let client = CallClient::new(Arc::clone(&registry), Arc::new(NoopIdentityProvider));
-        assert!(!client.is_trusted_peer(), "new() is default-deny");
-    }
-
-    #[test]
-    fn call_client_trusted_peer_is_trusted() {
-        let registry = Arc::new(OperationRegistry::new());
-        let client =
-            CallClient::trusted_peer(Arc::clone(&registry), Arc::new(NoopIdentityProvider));
-        assert!(
-            client.is_trusted_peer(),
-            "trusted_peer() is trusted-peer mode"
-        );
     }
 
     #[test]
@@ -445,94 +374,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_deny_non_remote_safe_op_returns_not_found() {
-        let registry = registry_with_remote_safe_and_caps();
-        let d = dispatcher(&registry, false);
-        let conn = Arc::new(CallConnection::new(stub_connection()));
-        let response = dispatch(&d, &conn, "secret/run").await;
-        match response.result {
-            Err(e) => assert_eq!(e.code, "NOT_FOUND"),
-            other => panic!("expected NOT_FOUND for non-remote-safe op, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn default_deny_remote_safe_op_dispatches() {
-        let registry = registry_with_remote_safe_and_caps();
-        let d = dispatcher(&registry, false);
-        let conn = Arc::new(CallConnection::new(stub_connection()));
-        let response = dispatch(&d, &conn, "pub/run").await;
-        assert!(
-            response.result.is_ok(),
-            "remote_safe op must dispatch in default-deny mode"
-        );
-    }
-
-    #[tokio::test]
-    async fn trusted_peer_dispatches_non_remote_safe_op() {
-        let registry = registry_with_remote_safe_and_caps();
-        let d = dispatcher(&registry, true);
-        let conn = Arc::new(CallConnection::new(stub_connection()));
-        let response = dispatch(&d, &conn, "secret/run").await;
-        assert!(
-            response.result.is_ok(),
-            "trusted-peer mode dispatches non-remote-safe ops"
-        );
-    }
-
-    /// The load-bearing security invariant (ADR-028 Context): a remote
-    /// peer's call to a non-remote-safe op must NOT populate
-    /// `OperationContext.capabilities` from the local registration bundle.
-    /// This test asserts the handler is never reached for non-remote-safe
-    /// ops in default-deny mode (NOT_FOUND before dispatch), so capabilities
-    /// are never populated — verified by the handler not running.
-    #[tokio::test]
-    async fn default_deny_non_remote_safe_does_not_populate_capabilities() {
-        let registry = registry_with_remote_safe_and_caps();
-        let d = dispatcher(&registry, false);
-        let conn = Arc::new(CallConnection::new(stub_connection()));
-        let response = dispatch(&d, &conn, "secret/run").await;
-        match response.result {
-            Err(e) => assert_eq!(e.code, "NOT_FOUND"),
-            Ok(_) => panic!("non-remote-safe op must not dispatch (would populate capabilities)"),
-        }
-    }
-
-    /// A remote-safe op's call DOES populate capabilities (the security
-    /// argument is about *non-remote-safe* ops, not all ops). The handler
-    /// inspects capabilities and reports whether the google key was injected.
-    #[tokio::test]
-    async fn remote_safe_op_populates_capabilities_for_handler() {
-        let registry = registry_with_remote_safe_and_caps();
-        let d = dispatcher(&registry, false);
+    async fn external_op_dispatches_and_populates_capabilities() {
+        let registry = registry_with_caps();
+        let d = dispatcher(&registry);
         let conn = Arc::new(CallConnection::new(stub_connection()));
         let response = dispatch(&d, &conn, "pub/run").await;
         let out = response.result.expect("ok");
         assert_eq!(
             out["has_google_capability"],
             serde_json::json!(true),
-            "remote_safe op must have its capabilities populated"
+            "an External op's call must populate capabilities for the handler"
         );
     }
 
     #[tokio::test]
-    async fn trusted_peer_populates_capabilities_for_non_remote_safe() {
-        let registry = registry_with_remote_safe_and_caps();
-        let d = dispatcher(&registry, true);
-        let conn = Arc::new(CallConnection::new(stub_connection()));
-        let response = dispatch(&d, &conn, "secret/run").await;
-        let out = response.result.expect("ok");
-        assert_eq!(
-            out["has_google_capability"],
-            serde_json::json!(true),
-            "trusted-peer mode populates capabilities for all External ops"
-        );
-    }
-
-    #[tokio::test]
-    async fn default_deny_unknown_op_returns_not_found() {
+    async fn unknown_op_returns_not_found() {
         let registry = Arc::new(OperationRegistry::new());
-        let d = dispatcher(&registry, false);
+        let d = dispatcher(&registry);
         let conn = Arc::new(CallConnection::new(stub_connection()));
         let response = dispatch(&d, &conn, "no/such").await;
         match response.result {
@@ -543,13 +401,10 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_dispatch_returns_live_call_connection() {
-        let registry = registry_with_remote_safe_and_caps();
+        let registry = registry_with_caps();
         let client = CallClient::new(Arc::clone(&registry), Arc::new(NoopIdentityProvider));
         let conn = client.spawn_dispatch(stub_connection());
-        // The returned CallConnection is usable: it has an empty overlay and
-        // the underlying connection reports the alknet/call ALPN.
         assert_eq!(conn.connection().remote_alpn(), b"alknet/call");
-        // The dispatch task is spawned; dropping the connection closes it.
         std::mem::drop(conn);
     }
 

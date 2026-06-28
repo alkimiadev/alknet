@@ -441,9 +441,8 @@ mod tests {
     #[test]
     fn from_call_provenance_is_from_call_and_leaf_fields() {
         // Verify the registration shape produced by from_call: provenance
-        // FromCall, no composition authority, no scoped_env, empty caps,
-        // remote_safe false (default). Uses a synthetic spec to avoid the
-        // transport round-trip.
+        // FromCall, no composition authority, no scoped_env, empty caps.
+        // Uses a synthetic spec to avoid the transport round-trip.
         let spec = OperationSpec::new(
             "worker/echo",
             OperationType::Query,
@@ -468,9 +467,5 @@ mod tests {
         assert_eq!(reg.provenance, OperationProvenance::FromCall);
         assert!(reg.composition_authority.is_none());
         assert!(reg.scoped_env.is_none());
-        assert!(
-            !reg.remote_safe,
-            "FromCall leaves default remote_safe false (ADR-028 §4)"
-        );
     }
 }

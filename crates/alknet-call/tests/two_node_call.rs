@@ -1,9 +1,7 @@
 //! Integration test: two-node `alknet/call` round-trip over a real QUIC
 //! loopback. A `CallAdapter` server accepts, a `CallClient` connects, and
 //! the client calls back into the server (connection symmetry, ADR-017 §2).
-//! Verifies the shared dispatch loop works end-to-end and that the
-//! peer-scoped default-deny filter (ADR-028) is enforced over a real
-//! connection.
+//! Verifies the shared dispatch loop works end-to-end.
 
 #![cfg(feature = "quinn")]
 
@@ -117,21 +115,18 @@ async fn build_raw_quinn_server(
     (bound_addr, join)
 }
 
-/// Build the server's registry: a remote_safe echo op, a non-remote-safe
-/// secret op, and the services/list + services/schema discovery handlers.
+/// Build the server's registry: an echo op, a secret op, and the
+/// services/list + services/schema discovery handlers.
 fn build_server_registry() -> Arc<OperationRegistry> {
     let mut registry = OperationRegistry::new();
-    registry.register(
-        HandlerRegistration::new(
-            external_spec("server/echo"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        )
-        .remote_safe(true),
-    );
+    registry.register(HandlerRegistration::new(
+        external_spec("server/echo"),
+        echo_handler(),
+        OperationProvenance::Local,
+        None,
+        None,
+        Capabilities::new(),
+    ));
     registry.register(HandlerRegistration::new(
         external_spec("server/secret"),
         echo_handler(),
@@ -144,17 +139,14 @@ fn build_server_registry() -> Arc<OperationRegistry> {
     let list_handler = services_list_handler(Arc::clone(&discovery_registry));
     let schema_handler = services_schema_handler(Arc::clone(&discovery_registry));
     let mut full = OperationRegistry::new();
-    full.register(
-        HandlerRegistration::new(
-            external_spec("server/echo"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        )
-        .remote_safe(true),
-    );
+    full.register(HandlerRegistration::new(
+        external_spec("server/echo"),
+        echo_handler(),
+        OperationProvenance::Local,
+        None,
+        None,
+        Capabilities::new(),
+    ));
     full.register(HandlerRegistration::new(
         external_spec("server/secret"),
         echo_handler(),
@@ -187,20 +179,17 @@ async fn two_node_call_round_trip() {
     let server_registry = build_server_registry();
     let (server_addr, _server_join) = build_raw_quinn_server(Arc::clone(&server_registry)).await;
 
-    // Client side: a CallClient in default-deny mode with its own ops so the
-    // server can call back (connection symmetry).
+    // Client side: a CallClient with its own ops so the server can call back
+    // (connection symmetry).
     let mut client_registry = OperationRegistry::new();
-    client_registry.register(
-        HandlerRegistration::new(
-            external_spec("client/echo"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        )
-        .remote_safe(true),
-    );
+    client_registry.register(HandlerRegistration::new(
+        external_spec("client/echo"),
+        echo_handler(),
+        OperationProvenance::Local,
+        None,
+        None,
+        Capabilities::new(),
+    ));
     let client_registry = Arc::new(client_registry);
     let client = CallClient::new(Arc::clone(&client_registry), Arc::new(NoopIdentityProvider));
 
@@ -212,7 +201,7 @@ async fn two_node_call_round_trip() {
     .expect("connect did not time out")
     .expect("connect succeeds");
 
-    // Outbound call: client -> server's remote_safe op.
+    // Outbound call: client -> server's echo op.
     let response = tokio::time::timeout(
         Duration::from_secs(5),
         conn.call("server/echo", serde_json::json!({"hi": 1})),
@@ -221,13 +210,12 @@ async fn two_node_call_round_trip() {
     .expect("call did not time out");
     assert_eq!(response.result, Ok(serde_json::json!({"hi": 1})));
 
-    // The peer-scoped default-deny behavior (a CallClient hiding its
-    // non-remote-safe ops from a remote peer that calls back) is exercised by
-    // the unit tests in `client/call_client.rs` against the shared
-    // `Dispatcher`. This integration test focuses on the QUIC connect path +
-    // shared dispatch loop working end-to-end (the call above proves the
-    // CallClient opened a real connection, the shared loop dispatched, and the
-    // CallConnection::call() round-tripped).
+    // Peer authorization is enforced by the AccessControl gate in
+    // OperationRegistry::invoke (ADR-029 §3) — exercised by the unit tests in
+    // `registry/registration.rs`. This integration test focuses on the QUIC
+    // connect path + shared dispatch loop working end-to-end (the call above
+    // proves the CallClient opened a real connection, the shared loop
+    // dispatched, and the CallConnection::call() round-tripped).
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -4,9 +4,9 @@
 //! connect path produce a [`CallConnection`] and hand it to the same dispatch
 //! loop here (ADR-017 §1): the loop reads `EventEnvelope` frames off accepted
 //! bidirectional streams, dispatches `call.requested` events against the
-//! operation registry (with optional peer-scoped filtering per ADR-028), and
-//! writes the response back on the same stream. The connection-establishment
-//! half differs (accept vs dial); the dispatch half is shared.
+//! operation registry, and writes the response back on the same stream. The
+//! connection-establishment half differs (accept vs dial); the dispatch half
+//! is shared.
 //!
 //! See `docs/architecture/crates/call/call-protocol.md` and
 //! `docs/architecture/crates/call/client-and-adapters.md` for the spec.
@@ -35,40 +35,6 @@ use crate::registry::registration::OperationRegistry;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const SWEEPER_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Peer-scoped registry filter state (ADR-028). When `trusted_peer` is false
-/// (the default-deny mode for a `CallClient`), incoming dispatch hides ops
-/// whose `HandlerRegistration.remote_safe` is false, and `services/list` hides
-/// them too. When `trusted_peer` is true (the explicit opt-in for trusted
-/// peers), the filter is bypassed: all `External` ops dispatch and list.
-///
-/// For the `CallAdapter` (local accept path), `trusted_peer` is `true` by
-/// convention — a direct QUIC client is not a filtered `CallClient` peer in
-/// the ADR-028 sense; the accept path keeps listing all `External` ops.
-#[derive(Clone, Copy)]
-pub struct RemoteFilter {
-    pub trusted_peer: bool,
-}
-
-impl RemoteFilter {
-    /// Default-deny mode: only `remote_safe: true` ops dispatch/list.
-    pub fn default_deny() -> Self {
-        Self {
-            trusted_peer: false,
-        }
-    }
-
-    /// Trusted-peer mode: all `External` ops dispatch/list regardless of
-    /// `remote_safe`.
-    pub fn trusted() -> Self {
-        Self { trusted_peer: true }
-    }
-
-    /// Returns whether `registration` is dispatchable to the remote peer.
-    pub fn allows(&self, remote_safe: bool) -> bool {
-        self.trusted_peer || remote_safe
-    }
-}
-
 /// Shared dispatcher for an established `CallConnection`. Constructed by
 /// both `CallAdapter` (accept path) and `CallClient` (connect path) and used
 /// to run the dispatch loop. Holds no per-connection state; the
@@ -78,21 +44,18 @@ pub struct Dispatcher {
     pub identity_provider: Arc<dyn IdentityProvider>,
     pub session_source: Option<Arc<dyn SessionOverlaySource + Send + Sync>>,
     pub default_timeout: Duration,
-    pub remote_filter: RemoteFilter,
 }
 
 impl Dispatcher {
     pub fn new(
         registry: Arc<OperationRegistry>,
         identity_provider: Arc<dyn IdentityProvider>,
-        remote_filter: RemoteFilter,
     ) -> Self {
         Self {
             registry,
             identity_provider,
             session_source: None,
             default_timeout: DEFAULT_TIMEOUT,
-            remote_filter,
         }
     }
 
@@ -205,19 +168,6 @@ impl Dispatcher {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let operation_name = Self::strip_leading_slash(operation_id).to_string();
-
-        // Peer-scoped default-deny filter (ADR-028). When the caller is a
-        // remote peer (default-deny mode), an op marked `remote_safe: false`
-        // is hidden from dispatch — return NOT_FOUND, same posture as
-        // `Visibility::Internal` per ADR-015. Critically, this returns *before*
-        // any capability material reaches the handler, so a non-remote-safe
-        // op's `Capabilities` are never populated for a remote peer's call
-        // (ADR-028 Context — the security argument for default-deny).
-        if let Some(registration) = self.registry.registration(&operation_name) {
-            if !self.remote_filter.allows(registration.remote_safe) {
-                return ResponseEnvelope::not_found(request_id, &operation_name);
-            }
-        }
 
         let connection_identity = connection.connection().identity().cloned();
         let identity = self.resolve_identity(connection_identity, &payload);
@@ -345,7 +295,6 @@ impl Clone for Dispatcher {
             identity_provider: Arc::clone(&self.identity_provider),
             session_source: self.session_source.clone(),
             default_timeout: self.default_timeout,
-            remote_filter: self.remote_filter,
         }
     }
 }

@@ -17,11 +17,10 @@ use crate::registry::spec::OperationSpec;
 /// Build a [`HandlerRegistration`] from a JSON Schema-described operation.
 ///
 /// Schema-only: no real handler is attached — a placeholder returns a
-/// `NOT_FOUND`-style error if ever invoked (schema-only ops are `Internal`
-/// and `remote_safe: false`, so dispatch should never reach them; the
-/// placeholder fails loudly on bugs). `provenance` is `FromJsonSchema`;
-/// `composition_authority` and `scoped_env` are `None`; `capabilities` is
-/// empty.
+/// `NOT_FOUND`-style error if ever invoked (schema-only ops are `Internal`,
+/// so dispatch should never reach them; the placeholder fails loudly on
+/// bugs). `provenance` is `FromJsonSchema`; `composition_authority` and
+/// `scoped_env` are `None`; `capabilities` is empty.
 pub fn from_jsonschema(spec: OperationSpec, _schema: Value) -> HandlerRegistration {
     let handler = make_handler(|_input: Value, context: OperationContext| async move {
         ResponseEnvelope::error(
@@ -132,7 +131,6 @@ mod tests {
         assert_eq!(bundle.provenance, OperationProvenance::FromJsonSchema);
         assert!(bundle.composition_authority.is_none());
         assert!(bundle.scoped_env.is_none());
-        assert!(!bundle.remote_safe);
     }
 
     #[tokio::test]

@@ -33,12 +33,6 @@ pub struct HandlerRegistration {
     pub composition_authority: Option<CompositionAuthority>,
     pub scoped_env: Option<ScopedOperationEnv>,
     pub capabilities: Capabilities,
-    /// Whether this op is exposed to `CallClient` peers. Defaults to `false`
-    /// across all provenance (ADR-028 §4) — default-deny. The `CallClient`
-    /// dispatch path filters on this field (trusted-peer mode bypasses it,
-    /// ADR-028 §3). Data-only here; the filtering behavior is wired in the
-    /// `CallClient` task, not here.
-    pub remote_safe: bool,
 }
 
 impl HandlerRegistration {
@@ -57,15 +51,7 @@ impl HandlerRegistration {
             composition_authority,
             scoped_env,
             capabilities,
-            remote_safe: false,
         }
-    }
-
-    /// Chainable setter for `remote_safe` (ADR-028). Flips this op to be
-    /// exposed to `CallClient` peers in default-deny mode.
-    pub fn remote_safe(mut self, remote_safe: bool) -> Self {
-        self.remote_safe = remote_safe;
-        self
     }
 }
 
@@ -93,18 +79,6 @@ impl OperationRegistry {
         self.operations
             .values()
             .filter(|r| r.spec.visibility == Visibility::External)
-            .map(|r| &r.spec)
-            .collect()
-    }
-
-    /// List `External` op specs, additionally filtered by `remote_safe` for
-    /// peer-scoped serving (ADR-028 Assumption 2). When `trusted_peer` is true,
-    /// the `remote_safe` filter is bypassed (all `External` ops listed).
-    pub fn list_operations_peer_scoped(&self, trusted_peer: bool) -> Vec<&OperationSpec> {
-        self.operations
-            .values()
-            .filter(|r| r.spec.visibility == Visibility::External)
-            .filter(|r| trusted_peer || r.remote_safe)
             .map(|r| &r.spec)
             .collect()
     }
@@ -152,19 +126,16 @@ impl Default for OperationRegistry {
 
 pub struct OperationRegistryBuilder {
     operations: HashMap<String, HandlerRegistration>,
-    last_name: Option<String>,
 }
 
 impl OperationRegistryBuilder {
     pub fn new() -> Self {
         Self {
             operations: HashMap::new(),
-            last_name: None,
         }
     }
 
     fn store(mut self, registration: HandlerRegistration) -> Self {
-        self.last_name = Some(registration.spec.name.clone());
         self.operations
             .insert(registration.spec.name.clone(), registration);
         self
@@ -217,23 +188,6 @@ impl OperationRegistryBuilder {
 
     pub fn with(self, registration: HandlerRegistration) -> Self {
         self.store(registration)
-    }
-
-    /// Mark the most-recently-registered op as `remote_safe: true` (ADR-028).
-    /// Chainable right after a `with_local` / `with_leaf` / `with_leaf_provenance`
-    /// / `with` call. Panics if nothing has been registered yet (programming
-    /// error, not a runtime condition).
-    pub fn remote_safe(mut self) -> Self {
-        let name = self
-            .last_name
-            .clone()
-            .expect("remote_safe() called before any registration");
-        let last = self
-            .operations
-            .get_mut(&name)
-            .expect("last-registered op must be present");
-        last.remote_safe = true;
-        self
     }
 
     pub fn build(self) -> OperationRegistry {
@@ -775,127 +729,5 @@ mod tests {
         assert_eq!(reg.provenance, OperationProvenance::Local);
         assert_eq!(reg.composition_authority.as_ref().unwrap().label, "agent");
         assert!(reg.scoped_env.as_ref().unwrap().allows("fs/readFile"));
-    }
-
-    #[test]
-    fn handler_registration_default_remote_safe_is_false() {
-        let reg = HandlerRegistration::new(
-            external_spec("echo", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        );
-        assert!(
-            !reg.remote_safe,
-            "remote_safe must default to false (ADR-028 §4)"
-        );
-    }
-
-    #[test]
-    fn handler_registration_remote_safe_setter_flips_field() {
-        let reg = HandlerRegistration::new(
-            external_spec("echo", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        )
-        .remote_safe(true);
-        assert!(reg.remote_safe);
-    }
-
-    #[test]
-    fn all_provenance_variants_default_remote_safe_false() {
-        for provenance in [
-            OperationProvenance::Local,
-            OperationProvenance::Session,
-            OperationProvenance::FromOpenAPI,
-            OperationProvenance::FromMCP,
-            OperationProvenance::FromCall,
-            OperationProvenance::FromJsonSchema,
-        ] {
-            let reg = HandlerRegistration::new(
-                external_spec("op", AccessControl::default()),
-                echo_handler(),
-                provenance,
-                None,
-                None,
-                Capabilities::new(),
-            );
-            assert!(
-                !reg.remote_safe,
-                "provenance {provenance:?} must default remote_safe to false (ADR-028 §4)"
-            );
-        }
-    }
-
-    #[test]
-    fn builder_remote_safe_marks_last_inserted() {
-        let registry = OperationRegistryBuilder::new()
-            .with_local(
-                external_spec("first", AccessControl::default()),
-                echo_handler(),
-                None,
-                None,
-                Capabilities::new(),
-            )
-            .with_leaf(
-                external_spec("second", AccessControl::default()),
-                echo_handler(),
-                Capabilities::new(),
-            )
-            .remote_safe()
-            .build();
-        assert!(
-            !registry.registration("first").unwrap().remote_safe,
-            "first op untouched by remote_safe()"
-        );
-        assert!(
-            registry.registration("second").unwrap().remote_safe,
-            "remote_safe() marks the most-recently-registered op"
-        );
-    }
-
-    #[test]
-    fn builder_existing_call_sites_compile_unchanged() {
-        // Verifies the field addition does not require changes to existing
-        // call-site shapes (defaults to false).
-        let registry = OperationRegistryBuilder::new()
-            .with_local(
-                external_spec("a", AccessControl::default()),
-                echo_handler(),
-                Some(CompositionAuthority::new("agent", ["fs:read".to_string()])),
-                Some(ScopedOperationEnv::new(["fs/readFile"])),
-                Capabilities::new(),
-            )
-            .with_leaf(
-                external_spec("b", AccessControl::default()),
-                echo_handler(),
-                Capabilities::new(),
-            )
-            .with_leaf_provenance(
-                external_spec("c", AccessControl::default()),
-                echo_handler(),
-                OperationProvenance::FromCall,
-                Capabilities::new(),
-            )
-            .with(HandlerRegistration::new(
-                external_spec("d", AccessControl::default()),
-                echo_handler(),
-                OperationProvenance::Session,
-                None,
-                None,
-                Capabilities::new(),
-            ))
-            .build();
-        for name in ["a", "b", "c", "d"] {
-            assert!(
-                !registry.registration(name).unwrap().remote_safe,
-                "{name} should default remote_safe false without explicit setter"
-            );
-        }
     }
 }

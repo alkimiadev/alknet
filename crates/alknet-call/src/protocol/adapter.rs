@@ -18,11 +18,9 @@ use alknet_core::types::{Connection, HandlerError, ProtocolHandler};
 use async_trait::async_trait;
 
 use super::connection::CallConnection;
-use super::dispatch::{Dispatcher, RemoteFilter};
+use super::dispatch::Dispatcher;
 use crate::registry::context::OperationContext;
 use crate::registry::registration::OperationRegistry;
-
-pub use super::dispatch::RemoteFilter as AdapterRemoteFilter;
 
 #[cfg(test)]
 use super::wire::ResponseEnvelope;
@@ -47,11 +45,8 @@ impl CallAdapter {
         registry: Arc<OperationRegistry>,
         identity_provider: Arc<dyn IdentityProvider>,
     ) -> Self {
-        // The accept path is not peer-scoped-filtered: a direct QUIC client is
-        // not a CallClient peer in the ADR-028 filtered sense, so the accept
-        // path lists/dispatches all External ops (trusted-peer posture).
         Self {
-            dispatcher: Dispatcher::new(registry, identity_provider, RemoteFilter::trusted()),
+            dispatcher: Dispatcher::new(registry, identity_provider),
         }
     }
 
