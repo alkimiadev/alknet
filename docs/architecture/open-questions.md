@@ -414,73 +414,52 @@ is a feature extension, not an unmade architecture decision.
 ### OQ-29: CallClient TLS Client-Auth and Remote-Identity Verification
 
 - **Origin**: [client-and-adapters.md](crates/call/client-and-adapters.md), ADR-017 §7
-- **Status**: **open — load-bearing on ADR-030** (not "additive" as previously framed)
+- **Status**: **resolved** (2026-06-27 by ADR-030 §6 + this decision)
 - **Door type**: One-way (identity model interaction), two-way (mechanism)
-- **Priority**: **high** (was medium; promoted — this is the activation path
-  for ADR-030's `PeerEntry` fingerprint → `peer_id` resolution)
-- **Resolution**: **Previously framed as "additive — two-way-door
-  remainder." That framing is incorrect.** ADR-030 makes `PeerId =
-  Identity.id = PeerEntry.peer_id` on the fingerprint path. But the
-  fingerprint path requires the client to present a TLS client cert, and
-  the current `CallClient::connect()` uses `with_no_client_auth()` — no
-  client cert is presented, no fingerprint is extracted by the server's
-  `AcceptAnyCertVerifier`, and `IdentityProvider::resolve_from_fingerprint`
-  returns `None`. The peer gets no `PeerId` from the fingerprint path.
+- **Priority**: ~~high~~ → resolved
+- **Resolution**: **Three things are decided:**
 
-  The `auth_token` path (`resolve_from_token`) still works, but it
-  resolves to `Identity.id = ApiKeyEntry.prefix` (the API-key identity
-  path), **not** to `PeerEntry.peer_id`. So with TLS client-auth unwired,
-  a calling peer's `PeerId` is either `None` (no client cert) or an
-  API-key prefix (if an `auth_token` is used) — neither is the stable
-  `PeerEntry.peer_id` that ADR-030 commits. The PeerEntry path is dormant
-  until client-auth is wired.
+  1. **Wire quinn client-auth.** The client presents its Ed25519 key as an
+     RFC 7250 raw public key client cert (the client-side equivalent of
+     the server's `RawKeyCertResolver`). The server's
+     `AcceptAnyCertVerifier` already requests client certs and extracts
+     the fingerprint — the gap was entirely on the client side
+     (`with_no_client_auth()` → present the key). This activates the
+     `PeerEntry` fingerprint → `peer_id` resolution path on quinn
+     connections.
 
-  This is not a "two-way-door remainder" — it's the activation path for
-  ADR-030's primary use case (stable `peer_id` across key rotation for
-  peer-keyed overlays). The decision to make is:
+  2. **Key-type-aware server cert verification.** The client's
+     `ServerCertVerifier` depends on the remote's identity type:
+     - **Ed25519 raw key** (the common case): accept the cert, extract the
+       fingerprint, match against `PeerEntry.fingerprints`. The fingerprint
+       IS the trust anchor — no CA needed. (Same model as iroh.)
+     - **X.509** (domain-facing endpoints, ACME): verify against a CA
+       (rustls's `WebPkiServerVerifier` with the platform root store or a
+       configured CA). `AcceptAnyServerCertVerifier` is a security hole for
+       X.509 — it's only safe for raw keys.
+     - The verifier choice is driven by `CallCredentials.remote_identity`,
+       which carries the expected key type.
 
-  - **(a)** Wire TLS client-auth as part of the ADR-029 migration, so the
-    fingerprint → `PeerEntry` → `peer_id` path is live from day one. The
-    server's `AcceptAnyCertVerifier` already requests (but doesn't verify)
-    client certs; the client's `with_no_client_auth()` is the gap. Wiring
-    the local node's `RawKey`/`X509` identity as a rustls client-auth cert
-    is the missing piece. Remote-identity verification (plugging
-    `credentials.remote_identity` into a real `ServerCertVerifier`) is
-    genuinely additive — the server-side fingerprint extraction is what
-    matters for `PeerId`, not the client-side verification of the server.
+  3. **Fingerprint normalization** (ADR-030 §6): the quinn path extracts
+     the raw Ed25519 public key from the SPKI cert and formats it as
+     `ed25519:<hex>`, matching iroh. The same key has the same fingerprint
+     regardless of transport. X.509 fingerprints stay as `SHA256:<hex of
+     DER>`.
 
-  - **(b)** Ship the ADR-029 migration with `auth_token`-only peer identity
-    and treat TLS client-auth as a follow-up. This means `PeerCompositeEnv`
-    keys on `Identity.id = ApiKeyEntry.prefix` (the token prefix) until
-    client-auth is wired, then switches to `PeerEntry.peer_id` when it is.
-    The switch is a behavior change for any deployment that built on the
-    token-prefix identity — the `PeerId` changes from the prefix to the
-    `peer_id`. This is the "compounds into a mess" path.
+  **The iroh path already works** — iroh uses RFC 7250 raw keys, both
+  sides automatically exchange Ed25519 public keys during the TLS
+  handshake, and `extract_iroh_client_fingerprint` already gets the
+  `NodeId`. No client-auth wiring needed for iroh (direct or relay). The
+  gap was quinn-only.
 
-  - **(c)** Extend `PeerEntry` to also cover `auth_token`-based peer
-    identity — a peer entry keyed by token prefix (or a `PeerEntry.token`
-    field) instead of (or alongside) fingerprint. This unifies the two
-    identity paths under `PeerEntry`, so the `PeerId` is stable regardless
-    of which credential path the peer used. This is a design change to
-    ADR-030, not just an implementation choice.
+  **What's genuinely additive** (not blocking the ADR-029 migration):
+  remote-identity verification (the client verifying the server's
+  fingerprint against an expected value) is additive — the server-side
+  fingerprint extraction is what matters for `PeerId`, not the client-side
+  verification. The verifier for raw keys can start as "accept any, extract
+  fingerprint" and add fingerprint-pinning later.
 
-  **The X.509 / raw-key wrinkle:** the vast majority of end users will use
-  Ed25519 raw keys (RFC 7250) — the same key type as SSH keys, native to
-  iroh's `NodeId` model. The fingerprint format for raw keys is
-  `ed25519:<hex>`. For X.509 (public-facing endpoints like
-  `api.alk.dev`, relays), the fingerprint is `SHA256:<hex of DER>` — a
-  different format, a different key type, but the same `PeerEntry.fingerprint`
-  field. The `IdentityProvider::resolve_from_fingerprint` path is
-  format-agnostic (it's a string match against `PeerEntry.fingerprint`),
-  so both key types work once client-auth is wired. The wrinkle is on the
-  client side: presenting an Ed25519 raw key as a TLS client cert uses a
-  different rustls path than presenting an X.509 cert. Both are supported
-  by rustls; the `CallCredentials.tls_identity` field already carries the
-  `TlsIdentity` enum (RawKey / X509). The wiring is per-variant.
-
-  **Not decided yet.** This OQ is promoted to high priority and requires a
-  decision before the ADR-029 migration lands. The previous "additive,
-  two-way-door remainder" framing is struck.
+  See ADR-030 §6 for the fingerprint normalization details.
 - **Cross-references**: ADR-014, ADR-017, ADR-027, ADR-029, ADR-030,
   [client-and-adapters.md](crates/call/client-and-adapters.md),
   [endpoint.md](crates/core/endpoint.md), [auth.md](crates/core/auth.md)
@@ -615,28 +594,30 @@ is a feature extension, not an unmade architecture decision.
 
 ## Theme: Storage and Adapters
 
-### OQ-35: API Key Identity vs Peer Identity
+### OQ-35: ~~API Key Identity vs Peer Identity~~ (Dissolved)
 
 - **Origin**: ADR-030 §"API keys" (the asymmetry between the two auth paths)
-- **Status**: resolved (recorded by ADR-030, not a blocker)
-- **Door type**: One-way (the asymmetry is deliberate, not an oversight)
-- **Priority**: medium
-- **Resolution**: The fingerprint auth path gets the `PeerEntry`
-  id-decoupling treatment (`Identity.id = peer_id`, stable across key
-  rotation); the API-key auth path does not (`Identity.id = prefix`,
-  changes with the key). This is deliberate:
+- **Status**: **dissolved** (2026-06-27 — the framing was wrong)
+- **Door type**: ~~One-way~~
+- **Priority**: ~~medium~~
+- **Resolution**: **Dissolved.** The original framing ("the fingerprint
+  path gets `PeerEntry` id-decoupling, the API-key path doesn't — the
+  asymmetry is deliberate") was based on a false distinction between "peer
+  bearer" and "auth bearer" tokens. The correct framing is the three
+  credential types (Ed25519, X.509, bearer token) and whether the token
+  needs a stable logical id across rotation:
 
-  - Node identity (fingerprint path) must survive key rotation — the
-    same logical node rotates its TLS key, and every ACL entry / routing
-    reference to it should stay stable. `PeerEntry` provides this.
-  - Bearer-token identity (API-key path) IS the token — rotating the key
-    means a new prefix and a new identity, by design (revocation is the
-    rotation mechanism for API keys). Decoupling the API key identity
-    from the prefix would solve a problem API keys don't have.
+  - `PeerEntry` supports multiple credential paths: `fingerprints: Vec<String>`
+    (Ed25519 and/or X.509) + `auth_token_hash: Option<String>` (bearer
+    token). All resolve to the same `peer_id`.
+  - `ApiKeyEntry` is for bearer tokens that ARE the identity (rotation =
+    new identity, no stable logical id needed).
 
-  The asymmetry is documented in `auth.md` ("API keys vs peer entries")
-  and in ADR-030 §"API keys" so it's explicit, not an oversight. See
-  [auth.md](crates/core/auth.md) for the table comparing the two paths.
+  A bearer token that is one credential path among several for a stable
+  peer goes in `PeerEntry.auth_token_hash`. A bearer token that IS the
+  identity stays in `ApiKeyEntry`. The distinction is whether the token
+  needs a stable logical id across rotation, not "peer bearer vs auth
+  bearer." See ADR-030 §"Bearer tokens."
 - **Cross-references**: ADR-030, [auth.md](crates/core/auth.md),
   [config.md](crates/core/config.md)
 
@@ -680,3 +661,61 @@ is a feature extension, not an unmade architecture decision.
   persistence adapter shapes are the open exploration.
 - **Cross-references**: ADR-030, ADR-031, ADR-033, OQ-34,
   [auth.md](crates/core/auth.md), [config.md](crates/core/config.md)
+
+## Theme: TLS Identity
+
+### OQ-37: X.509 Outgoing-Only Case (Three Auth Types)
+
+- **Origin**: ADR-030 §"Bearer tokens" (the three credential types), the
+  discussion that X.509 is fundamentally different from Ed25519
+- **Status**: open (lingering — the X.509 server-identity case needs design)
+- **Door type**: One-way (how X.509 server identity integrates with the
+  peer model)
+- **Priority**: medium
+- **Resolution**: The three credential types are: Ed25519 raw key (the
+  common case, normalized to `ed25519:<hex>` across quinn/iroh), X.509
+  (domain-facing endpoints, ACME, `SHA256:<hex>`), and bearer token
+  (`PeerEntry.auth_token_hash` or `ApiKeyEntry`).
+
+  Ed25519 and bearer token are resolved (ADR-030 + OQ-29). The X.509 case
+  that remains open is **outgoing-only**: a client connects to a public
+  X.509 endpoint (e.g., `api.alk.dev`). The client must verify the server
+  cert against a CA (rustls's `WebPkiServerVerifier`) — the
+  `AcceptAnyServerCertVerifier` is a security hole for X.509. The server
+  may or may not require a client cert (most public X.509 endpoints
+  won't — browsers can't easily do TLS client-auth).
+
+  What's resolved:
+  - The `PeerEntry.fingerprints` field accepts X.509 fingerprints
+    (`SHA256:<hex of DER>`) alongside Ed25519 fingerprints.
+  - The client-side verifier is key-type-aware (OQ-29): raw keys use
+    fingerprint-matching, X.509 uses CA verification.
+
+  What's open:
+  - How does the outgoing X.509 case interact with `PeerEntry`? If a
+    client connects to `api.alk.dev` (X.509, no client-auth), the client
+    doesn't present a cert, so the server has no fingerprint to resolve.
+    The client authenticates via `auth_token` (the bearer-token path).
+    The server's `PeerEntry` for this client uses `auth_token_hash`, not
+    `fingerprints`. This works — but the server's `PeerEntry` might not
+    have a fingerprint at all for an HTTP-only client.
+  - Conversely, if the server requires X.509 client-auth (mutual TLS),
+    the client presents its X.509 cert, the server extracts the
+    `SHA256:<hex>` fingerprint, and `PeerEntry.fingerprints` matches it.
+    This works too.
+  - The open question is whether there are cases where X.509 server
+    identity needs to be part of the `PeerEntry` model (the server's
+    identity, not the client's) — e.g., for the client to know "I'm
+    connected to `api.alk.dev`, which is peer-id `api-server`." Currently
+    `PeerEntry` is about the *remote* peer's credentials, as seen by the
+    *local* node. For an outgoing connection, the local node is the
+    client, and `PeerEntry` describes the server. This may need a
+    design pass to make sure the model is symmetric.
+
+  Not blocking the ADR-029 migration — the Ed25519 path is the primary
+  use case and it's resolved. The X.509 outgoing-only case is a real
+  question but it's downstream (the HTTP crate phase, when
+  `from_openapi`/`from_mcp` handlers connect to X.509 endpoints).
+- **Cross-references**: ADR-027, ADR-029, ADR-030, OQ-29,
+  [client-and-adapters.md](crates/call/client-and-adapters.md),
+  [endpoint.md](crates/core/endpoint.md), [auth.md](crates/core/auth.md)

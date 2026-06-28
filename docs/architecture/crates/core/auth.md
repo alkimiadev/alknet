@@ -110,22 +110,27 @@ pub struct Identity {
 ```
 
 This is the same structure as the reference implementation (`alknet-main/crates/alknet-core/src/auth/identity.rs`), minus the russh dependency. The `id` field is ALPN-agnostic:
-- SSH key / TLS cert auth (fingerprint path): the `PeerEntry.peer_id` (ADR-030) — a stable logical name like `"worker-a"`, **not** the fingerprint. The fingerprint is the *credential*; the `peer_id` is the *identity*. Decoupling them means key rotation changes the credential but not the identity, so ACL entries and routing references stay stable.
-- API key auth: `"alk_test"` (key prefix) — the prefix IS the identity; rotation = new identity (see "API keys vs peer entries" below).
+- Ed25519 raw key / TLS cert auth (fingerprint path): the `PeerEntry.peer_id` (ADR-030) — a stable logical name like `"worker-a"`, **not** the fingerprint. The fingerprint is the *credential*; the `peer_id` is the *identity*. Decoupling them means key rotation changes the credential but not the identity, so ACL entries and routing references stay stable.
+- Bearer token auth (auth_token path): if the token is one credential path for a `PeerEntry`, `Identity.id = peer_id` (stable). If the token IS the identity (`ApiKeyEntry`), `Identity.id = prefix` (changes with the key). See "Credential Types" below.
 - Composition path: the `CompositionAuthority` label (ADR-022) — e.g., `"agent-chat"`.
 
-### API keys vs peer entries
+### Credential Types
 
-The fingerprint and API-key auth paths have different identity semantics, by design (ADR-030):
+The alknet auth model has three credential types. A `PeerEntry` can use any combination — all resolve to the same `peer_id`:
 
-| Axis | Fingerprint (PeerEntry) | API key (ApiKeyEntry) |
-|------|-------------------------|------------------------|
-| Identity source | TLS handshake / SSH key | Bearer token in protocol frame |
-| Key rotation | Same logical node, new material | New identity (revocation = new key) |
-| `Identity.id` | `peer_id` (stable across rotation) | `prefix` (changes with the key) |
-| `Identity.resources` | Populated from `PeerEntry.resources` | Empty (resources are composition-only) |
+| Credential type | `PeerEntry` field | Fingerprint format | Trust model |
+|-----------------|-------------------|--------------------|----|
+| Ed25519 raw key (RFC 7250) | `fingerprints[i]` | `ed25519:<hex of 32-byte pub key>` | Fingerprint IS the trust anchor (no CA) |
+| X.509 cert | `fingerprints[i]` | `SHA256:<hex of DER>` | CA verification (WebPKI) |
+| Bearer token (peer credential) | `auth_token_hash` | SHA-256 hash of token | Token hash match |
 
-An API key's prefix IS the identity — rotating the key means a new prefix and a new identity, by design (revocation is the rotation mechanism for API keys). Decoupling the API key identity from the prefix would solve a problem API keys don't have: they're bearer tokens, not node identities. The fingerprint path gets the `PeerEntry` treatment because node identity must survive key rotation; the API-key path doesn't because bearer-token identity IS the token. The asymmetry is deliberate, not an oversight — see ADR-030 §"API keys".
+Ed25519 fingerprints are normalized to `ed25519:<hex>` across quinn and iroh (ADR-030 §6) — the same key has the same fingerprint regardless of transport.
+
+Bearer tokens have two paths:
+- `PeerEntry.auth_token_hash` — the token is one credential path among several for a stable logical peer. Rotation = update the hash, `peer_id` stays stable.
+- `ApiKeyEntry` (separate) — the token IS the identity. Rotation = new identity (new prefix). No stable logical id.
+
+The distinction is whether the token needs a stable logical id across rotation (`PeerEntry`) or not (`ApiKeyEntry`). See ADR-030 §"Bearer tokens."
 
 ## AuthToken
 
@@ -169,43 +174,48 @@ pub struct ConfigIdentityProvider {
 The "Config" prefix indicates that identities are resolved from configuration (as opposed to a database or external service). This reads from `ArcSwap<DynamicConfig>`, which is hot-reloadable — not from `StaticConfig`. An alternative name would be `DynamicConfigIdentityProvider` to make this clearer, but `ConfigIdentityProvider` is consistent with the reference implementation and the naming is unlikely to cause confusion in practice.
 
 How it resolves:
-- **Fingerprint**: Look up in `DynamicConfig::auth.peers` for the matching `PeerEntry` (by `fingerprint`). If found and `enabled`, return `Identity { id: peer.peer_id, scopes: peer.scopes, resources: peer.resources }`. The `Identity.id` is the stable `peer_id`, **not** the fingerprint — key rotation changes the fingerprint but not the `peer_id`, so ACL entries and routing references stay stable (ADR-030).
-- **Token**: Parse as UTF-8. If it starts with `alk_`, look up in `DynamicConfig::auth.api_keys` by prefix match + SHA-256 hash. If found and not expired, return `Identity { id: prefix, scopes: entry.scopes, resources: {} }`. The `Identity.id` is the key prefix — API key rotation = new identity (see "API keys vs peer entries" above).
+- **Fingerprint**: Look up in `DynamicConfig::auth.peers` for the matching `PeerEntry` (by any entry in `fingerprints`). If found and `enabled`, return `Identity { id: peer.peer_id, scopes: peer.scopes, resources: peer.resources }`. The `Identity.id` is the stable `peer_id`, **not** the fingerprint — key rotation changes the fingerprint but not the `peer_id`, so ACL entries and routing references stay stable (ADR-030).
+- **Token**: Hash the token and look up in `DynamicConfig::auth.peers` for a matching `auth_token_hash`. If found, return `Identity { id: peer.peer_id, ... }` — the same `peer_id` as the fingerprint path. If no `PeerEntry` matches, fall through to `ApiKeyEntry` lookup by prefix match + SHA-256 hash. If found and not expired, return `Identity { id: prefix, scopes: entry.scopes, resources: {} }` — the token IS the identity, `Identity.id` is the key prefix.
 
-See [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) for the `PeerEntry` model and the id-fingerprint decoupling rationale.
+See [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) for the `PeerEntry` model, the multi-credential resolution, and the fingerprint normalization rationale.
 
 ### Resource-scoped ACLs
 
-`Identity.resources` is populated on three paths:
+`Identity.resources` is populated on two paths:
 
 | Path | Source of `resources` | Use case |
 |------|----------------------|----------|
-| Fingerprint resolution (`ConfigIdentityProvider`) | `PeerEntry.resources` (ADR-030) | External fingerprint-authenticated callers with per-peer resource binding |
-| API key resolution (`ConfigIdentityProvider`) | Empty (by design) | API keys grant scopes only; resource-scoped access is composition-only |
+| `PeerEntry` resolution (fingerprint or auth_token) | `PeerEntry.resources` (ADR-030) | External authenticated callers with per-peer resource binding |
 | Composition (`CompositionAuthority::as_identity`, ADR-015/022) | `CompositionAuthority.resources` | Internal composition calls with declared resource binding |
 
-An `OperationSpec` that declares `resource_type`/`resource_action` will return `FORBIDDEN` when the caller authenticated via API key (because `Identity.resources` is empty), but succeeds when the caller authenticated via fingerprint with matching `PeerEntry.resources`, or via composition with matching `CompositionAuthority.resources`. The API-key limitation is deliberate (see "API keys vs peer entries" above); the fingerprint path's resource binding is the ADR-030 change that lifts the pre-ADR-030 limitation.
+`ApiKeyEntry`-resolved identities have empty `resources` — API keys grant scopes only. An `OperationSpec` that declares `resource_type`/`resource_action` returns `FORBIDDEN` when the caller authenticated via `ApiKeyEntry`, but succeeds when the caller authenticated via `PeerEntry` (fingerprint or auth_token) with matching `resources`.
 
 Changes to `DynamicConfig` via `ConfigReloadHandle` are reflected immediately — `ConfigIdentityProvider` reads from `ArcSwap` on every call.
 
 ### Fingerprint string format
 
-`tls_client_fingerprint` and `PeerEntry.fingerprint` use a prefixed-hex
-format. The prefix identifies the key type; the body is the hex-encoded
-hash or raw key bytes. `AuthPolicy::resolve_identity_from_fingerprint`
-scans `peers` for a matching `fingerprint` field — no normalization — so
+`tls_client_fingerprint` and `PeerEntry.fingerprints` entries use a
+prefixed-hex format. The prefix identifies the key type; the body is the
+hex-encoded key material. `AuthPolicy::resolve_identity_from_fingerprint`
+scans `peers` for a matching `fingerprints` entry — no normalization — so
 the extractor and the operator config must use the same format.
 
 | Transport | Source | Format |
 |-----------|--------|--------|
+| iroh (direct or relay) | peer `NodeId` (Ed25519 public key) | `ed25519:<lowercase hex of 32-byte pub key>` |
+| quinn (RFC 7250 raw key) | SPKI cert → extract raw Ed25519 pub key | `ed25519:<lowercase hex of 32-byte pub key>` (normalized — ADR-030 §6) |
 | quinn (X.509) | leaf client cert DER | `SHA256:<hex of SHA-256(cert_der)>` |
-| iroh (raw Ed25519) | peer `NodeId` | `ed25519:<lowercase hex of 32-byte pub key>` |
+
+Ed25519 raw keys produce `ed25519:<hex>` regardless of transport (quinn or
+iroh) — the same key has the same fingerprint. X.509 certs produce
+`SHA256:<hex of DER>` — the DER hash, since X.509 doesn't have a "raw
+public key" form.
 
 When no client cert is presented (the current default — server uses
 `with_no_client_auth()`), the fingerprint is `None` and identity remains
-unresolved at the endpoint layer. A follow-up task will switch the server
-config to request-but-not-require client certs so fingerprints flow for
-peers that present them.
+unresolved at the endpoint layer. The `CallClient` TLS client-auth wiring
+(OQ-29, resolved) presents the client's Ed25519 key as a raw public key
+client cert so the server can extract the fingerprint.
 
 ### Server-side client cert request
 
@@ -321,7 +331,9 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 
 ## Open Questions
 
-- **OQ-35**: API key identity vs peer identity — the asymmetry between the fingerprint path (gets `PeerEntry` id-decoupling) and the API-key path (doesn't) is deliberate. See ADR-030 §"API keys" and "API keys vs peer entries" above.
+- **OQ-29** (resolved): `CallClient` TLS client-auth — wire quinn client-auth (present Ed25519 key as raw public key client cert); key-type-aware server cert verification (raw key = fingerprint match, X.509 = CA verification); fingerprint normalization (`ed25519:` across quinn/iroh). See OQ-29 in open-questions.md.
+- **OQ-35** (dissolved): the "API key asymmetry" framing was wrong; `PeerEntry` supports multiple credential paths (fingerprints + auth_token_hash), `ApiKeyEntry` is for tokens that ARE the identity. See OQ-35 in open-questions.md.
+- **OQ-37** (open): X.509 outgoing-only case — the three auth types and how X.509 server identity fits the peer model. Not blocking the ADR-029 migration. See OQ-37 in open-questions.md.
 
 ## Security Constraints
 

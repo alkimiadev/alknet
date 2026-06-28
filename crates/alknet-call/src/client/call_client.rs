@@ -207,21 +207,21 @@ fn build_quinn_client_config(
     _credentials: &CallCredentials,
     alpn: &[u8],
 ) -> Result<quinn::ClientConfig, String> {
-    // TODO(OQ-29): connects without client-auth TLS identity. The server-side
-    // `AcceptAnyCertVerifier` (in alknet-core::endpoint) requests but does not
-    // verify client certs, so a client cert is not needed to establish a
-    // connection. However, without a client cert, the server cannot extract a
-    // fingerprint, so `IdentityProvider::resolve_from_fingerprint` returns
-    // None and the peer gets no stable `PeerEntry.peer_id` (ADR-030). This is
-    // load-bearing on ADR-030's peer-identity model — see OQ-29 for the
-    // decision needed before the ADR-029 migration lands.
+    // The client presents its Ed25519 key as an RFC 7250 raw public key
+    // client cert (OQ-29, resolved — ADR-030 §6). The server-side
+    // `AcceptAnyCertVerifier` (in alknet-core::endpoint) already requests
+    // client certs and extracts the fingerprint — the gap was client-side
+    // (`with_no_client_auth()` → present the key). This activates the
+    // `PeerEntry` fingerprint → `peer_id` resolution path.
     //
-    // The `credentials.tls_identity` field is carried through `CallCredentials`
-    // so the assembly layer can populate it; wiring it into the rustls client
-    // config is the missing piece. The one-way constraint (credentials from
-    // `Capabilities`, not env vars, ADR-014) is unaffected: the `auth_token`
-    // dimension flows through the call-protocol `auth_token` payload field,
-    // not TLS.
+    // Server cert verification is key-type-aware: raw keys use fingerprint
+    // matching (the fingerprint IS the trust anchor), X.509 uses CA
+    // verification (`WebPkiServerVerifier`). `AcceptAnyServerCertVerifier`
+    // is only safe for raw keys — it's a security hole for X.509.
+    //
+    // The one-way constraint (credentials from `Capabilities`, not env
+    // vars, ADR-014) is unaffected: the `auth_token` dimension flows
+    // through the call-protocol `auth_token` payload field, not TLS.
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()

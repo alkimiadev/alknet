@@ -112,20 +112,19 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Resolved by the storage/repo-pattern ADRs (ADR-030–033):**
 - **OQ-33**: ~~PeerId stability~~ — **resolved by ADR-030** (logical id; source is `Identity.id` = `PeerEntry.peer_id`, stable across key rotation; UUID workaround removed)
 - **OQ-34**: ~~Persistent peer registry~~ — **resolved by ADR-030 + ADR-031 + ADR-033** (storage boundary: core defines repo traits + in-memory defaults; persistence adapters are separate crates)
-- **OQ-35**: API key identity vs peer identity — resolved (recorded by ADR-030; the asymmetry between fingerprint and API-key paths is deliberate)
+- **OQ-35**: ~~API key asymmetry~~ — **dissolved** (the framing was wrong; `PeerEntry` supports multiple credential paths)
 
 **Resolved by the call-completion / ADR-029 work:**
 - **OQ-27**: ~~`from_call` re-import trigger~~ — **resolved** (auto-re-import on connection establishment; `refresh()` is a feature addition)
 - **OQ-28**: ~~`from_call` namespace collision~~ — **resolved** (same-peer collision = error; cross-peer dissolved by ADR-029)
+- **OQ-29**: ~~CallClient TLS client-auth~~ — **resolved** (wire quinn client-auth; key-type-aware server cert verification; fingerprint normalization to `ed25519:` across quinn/iroh)
 - **OQ-30**: ~~`PeerRef::Any` routing policy~~ — **resolved** (insertion-order first-match; richer routing is a feature extension)
 - **OQ-31**: ~~`services/list-peers` re-export semantics~~ — **resolved** (opt-in `services/list-peers`; `services/list` is "own ops only")
 
-**Open (requires decision before ADR-029 migration lands):**
-- **OQ-29**: `CallClient` TLS client-auth — **promoted to high priority, load-bearing on ADR-030**. Not "additive" as previously framed — it's the activation path for the `PeerEntry` fingerprint → `peer_id` resolution. Without it, `PeerCompositeEnv` keys on `None` or the API-key prefix, not the stable `peer_id`. See OQ-29 for the three options (wire client-auth with the migration / ship token-only / extend PeerEntry to cover auth_token).
-
 **Open (feature extensions, not blocking):**
 - **OQ-32**: Multi-hop federation — the one-hop model is the architectural commitment; multi-hop is a feature extension that doesn't break downstream
-- **OQ-36**: Concrete adapter shapes — the repo/adapter pattern is committed (ADR-033); concrete adapter shapes are deferred for exploration. Note: the trait shapes and in-memory adapters must ship with core (per the project's clarification) — the deferral is for the persistence adapters (SQLite, etc.), not the core traits
+- **OQ-36**: Concrete persistence adapter shapes — the repo/adapter pattern is committed (ADR-033); in-memory adapters ship with core; persistence adapters (SQLite, etc.) are deferred for exploration
+- **OQ-37**: X.509 outgoing-only case — the three auth types (Ed25519, X.509, bearer token) and how X.509 server identity fits the peer model. Not blocking the ADR-029 migration; downstream (HTTP crate phase)
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

@@ -57,12 +57,14 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 | OQ-26 | OperationAdapter error type (AdapterError variants) | **resolved** | `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`; `#[non_exhaustive]` |
 | OQ-27 | from_call re-import trigger | **resolved** | Auto-re-import on connection establishment; `refresh()` is a feature addition |
 | OQ-28 | from_call namespace collision | **resolved** | Same-peer collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays) |
-| OQ-29 | CallClient TLS client-auth | **open (high, load-bearing on ADR-030)** | NOT "additive" — activates the `PeerEntry` fingerprint → `peer_id` path. Requires decision before ADR-029 migration. |
+| OQ-29 | CallClient TLS client-auth | **resolved** | Wire quinn client-auth; key-type-aware server cert verification; fingerprint normalization |
 | OQ-30 | `PeerRef::Any` routing policy | **resolved** | Insertion-order first-match; richer routing is a feature extension |
 | OQ-31 | `services/list-peers` re-export semantics | **resolved** | Opt-in `services/list-peers`; `services/list` is "own ops only" |
 | OQ-32 | Multi-hop federation | open (feature extension) | One-hop model is the commitment; multi-hop is a feature extension, not a deferral |
 | OQ-33 | PeerId — crypto identity vs stable logical id | **resolved** (ADR-030) | `PeerId = Identity.id = PeerEntry.peer_id` (stable across key rotation) |
 | OQ-34 | Persistent peer registry | **resolved** (ADR-030+033) | Core trait + in-memory default; persistence adapters are separate crates |
+| OQ-35 | ~~API key asymmetry~~ | **dissolved** | `PeerEntry` supports multiple credential paths; `ApiKeyEntry` is for tokens that ARE the identity |
+| OQ-37 | X.509 outgoing-only case | open | Three auth types; how X.509 server identity fits the peer model. Not blocking. |
 
 ## Key Design Principles
 

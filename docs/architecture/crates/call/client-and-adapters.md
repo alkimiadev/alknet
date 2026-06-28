@@ -631,15 +631,12 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer
   collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
   `namespace_prefix` is optional local-naming sugar.
-- **OQ-29** (open, **high priority, load-bearing on ADR-030**): `CallClient`
-  TLS client-auth — NOT "additive" as previously framed. ADR-030's
-  `PeerEntry` fingerprint → `peer_id` resolution requires the client to
-  present a TLS client cert; `with_no_client_auth()` means no fingerprint,
-  no `PeerEntry` resolution, no stable `peer_id`. The `auth_token` path
-  resolves to `Identity.id = ApiKeyEntry.prefix`, not `peer_id`. See OQ-29
-  for the three options (wire client-auth with the migration / ship
-  token-only / extend PeerEntry to cover auth_token). Requires a decision
-  before the ADR-029 migration lands.
+- **OQ-29** (resolved): `CallClient` TLS client-auth — wire quinn
+  client-auth (present Ed25519 key as raw public key client cert);
+  key-type-aware server cert verification (raw key = fingerprint match,
+  X.509 = CA verification); fingerprint normalization (`ed25519:` across
+  quinn/iroh). The iroh path already works; the gap was quinn-only.
+  See OQ-29 in open-questions.md.
 - **OQ-30** (resolved): `PeerRef::Any` routing policy — insertion-order
   first-match. A richer `RoutingPolicy` is a feature extension.
 - **OQ-31** (resolved): `services/list-peers` — opt-in; `services/list`
@@ -657,14 +654,17 @@ See [open-questions.md](../../open-questions.md) for full details.
   the storage boundary is `core trait + in-memory default` (config-backed
   `ConfigIdentityProvider` now; persistence adapters additive in separate
   crates). See OQ-34 in open-questions.md.
-- **OQ-35** (recorded by ADR-030): API key identity vs peer identity — the
-  asymmetry between the fingerprint path (gets `PeerEntry` id-decoupling)
-  and the API-key path (doesn't) is deliberate. See OQ-35 in
-  open-questions.md.
+- **OQ-35** (dissolved): the "API key asymmetry" framing was wrong;
+  `PeerEntry` supports multiple credential paths (fingerprints +
+  auth_token_hash), `ApiKeyEntry` is for tokens that ARE the identity.
+  See OQ-35 in open-questions.md.
 - **OQ-36** (open, deferred for exploration): Concrete persistence adapter
   shapes — the repo/adapter pattern is committed (ADR-033); the in-memory
   adapters ship with core; the persistence adapter shapes (SQLite, etc.)
   are deferred for exploration. See OQ-36 in open-questions.md.
+- **OQ-37** (open): X.509 outgoing-only case — the three auth types and
+  how X.509 server identity fits the peer model. Not blocking the
+  ADR-029 migration. See OQ-37 in open-questions.md.
 
 ## References
 

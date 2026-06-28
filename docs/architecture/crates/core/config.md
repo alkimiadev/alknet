@@ -195,39 +195,48 @@ fingerprint → `PeerEntry` → `Identity { id: peer_id, ... }`, so
 ```rust
 pub struct PeerEntry {
     /// Stable logical peer id ("worker-a", "alice"). Does NOT change on
-    /// key rotation. This becomes Identity.id on resolution.
+    /// key rotation. This becomes Identity.id on resolution, regardless of
+    /// which credential path resolved the identity.
     pub peer_id: String,
 
-    /// Current cryptographic material — the fingerprint the endpoint
-    /// extracts from the TLS handshake (SHA256:... for X.509, ed25519:...
-    /// for RFC 7250 raw keys). Changes on key rotation.
-    pub fingerprint: String,
+    /// TLS fingerprints for this peer — one or more. A peer may have
+    /// multiple keys (e.g., an Ed25519 raw key for P2P and an X.509 cert
+    /// for domain-facing). Resolution matches against any entry.
+    /// Format: "ed25519:<hex of 32-byte pub key>" for RFC 7250 raw keys
+    /// (normalized across quinn and iroh — ADR-030 §6), "SHA256:<hex>" for
+    /// X.509 certs (DER hash). Changes on key rotation.
+    pub fingerprints: Vec<String>,
+
+    /// Optional: bearer-token authentication for this peer. A peer that
+    /// also authenticates via auth_token (e.g., HTTP clients that can't
+    /// do TLS client-auth) stores the SHA-256 hash of the token here.
+    /// Resolution via resolve_from_token matches this field and returns
+    /// the same Identity { id: peer_id, ... } as the fingerprint path.
+    pub auth_token_hash: Option<String>,
 
     /// Authorization scopes granted to this peer. Resolved into
     /// Identity.scopes.
     pub scopes: Vec<String>,
 
     /// Named resource lists granted to this peer. Resolved into
-    /// Identity.resources. Populated from config (ADR-030 lifts the
-    /// pre-ADR-030 limitation that fingerprint-resolved identities had
-    /// empty resources).
+    /// Identity.resources.
     pub resources: HashMap<String, Vec<String>>,
 
     /// Human-readable display name for logs / UIs. Optional.
     pub display_name: Option<String>,
 
-    /// Whether this peer is authorized at all. false = the fingerprint
-    /// is recognized but the peer is disabled (token-revoked-equivalent
-    /// for fingerprints). Resolution returns None.
+    /// Whether this peer is authorized at all. false = recognized but
+    /// disabled (revoked). Resolution returns None.
     pub enabled: bool,
 }
 ```
 
 See [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md)
-for the `PeerEntry` model, the id-fingerprint decoupling rationale, and
-the key-rotation story (vault rotates locally; the remote side updates
-the `PeerEntry.fingerprint` field; the `peer_id` and all ACL / routing
-references stay stable).
+for the `PeerEntry` model, the multi-credential resolution path, the
+fingerprint normalization rationale, and the key-rotation story (vault
+rotates locally; the remote side updates the `PeerEntry.fingerprints` or
+`auth_token_hash` field; the `peer_id` and all ACL / routing references
+stay stable).
 
 Certificate authority entries for cert-based auth are omitted from
 `AuthPolicy` until alknet-ssh is implemented, to avoid referencing an

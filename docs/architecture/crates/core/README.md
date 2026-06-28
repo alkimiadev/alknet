@@ -43,8 +43,9 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | OQ-11 | Handler-level auth resolution observability | resolved | Handlers store resolved identity on Connection; two identity scopes (connection-level for observability, per-request for ACL) |
 | OQ-33 | PeerId — logical id vs crypto identity | resolved by ADR-030 | `PeerId` = `Identity.id` = `PeerEntry.peer_id` (stable across key rotation) |
 | OQ-34 | Persistent peer registry (storage boundary) | resolved by ADR-030+031+033 | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
-| OQ-35 | API key identity vs peer identity | resolved (recorded by ADR-030) | The asymmetry between fingerprint and API-key paths is deliberate |
-| OQ-36 | Concrete adapter shapes | open (deferred for exploration) | The repo/adapter pattern is committed (ADR-033); concrete adapter shapes are not |
+| OQ-35 | ~~API key asymmetry~~ | dissolved | `PeerEntry` supports multiple credential paths; `ApiKeyEntry` is for tokens that ARE the identity |
+| OQ-36 | Concrete persistence adapter shapes | open (deferred for exploration) | The repo/adapter pattern is committed (ADR-033); in-memory adapters ship with core; persistence adapters deferred |
+| OQ-37 | X.509 outgoing-only case | open | Three auth types; how X.509 server identity fits the peer model. Not blocking. |
 
 ## Key Design Principles
 
