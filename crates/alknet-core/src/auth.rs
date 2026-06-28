@@ -152,7 +152,7 @@ mod tests {
         }
     }
 
-    fn config_with_fingerprint(peer_id: &str, fingerprint: &str) -> DynamicConfig {
+    fn config_with_peer_entry(peer_id: &str, fingerprint: &str) -> DynamicConfig {
         DynamicConfig {
             auth: AuthPolicy {
                 peers: vec![peer_entry_with_fingerprint(peer_id, fingerprint)],
@@ -170,6 +170,14 @@ mod tests {
             },
             rate_limits: RateLimitConfig::default(),
         }
+    }
+
+    fn compute_token_hash(token: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let result = hasher.finalize();
+        format!("sha256:{}", hex::encode(result))
     }
 
     #[test]
@@ -213,7 +221,7 @@ mod tests {
 
     #[test]
     fn fingerprint_resolution_known_returns_some() {
-        let (provider, _) = make_provider(config_with_fingerprint("worker-a", "SHA256:abc123"));
+        let (provider, _) = make_provider(config_with_peer_entry("worker-a", "SHA256:abc123"));
         let identity = provider
             .resolve_from_fingerprint("SHA256:abc123")
             .expect("known fingerprint resolves");
@@ -224,7 +232,7 @@ mod tests {
 
     #[test]
     fn fingerprint_resolution_unknown_returns_none() {
-        let (provider, _) = make_provider(config_with_fingerprint("worker-a", "SHA256:abc123"));
+        let (provider, _) = make_provider(config_with_peer_entry("worker-a", "SHA256:abc123"));
         assert!(provider
             .resolve_from_fingerprint("SHA256:unknown")
             .is_none());
@@ -326,7 +334,7 @@ mod tests {
         let (provider, arc_swap) = make_provider(DynamicConfig::default());
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
 
-        let new_config = config_with_fingerprint("worker-a", "SHA256:abc123");
+        let new_config = config_with_peer_entry("worker-a", "SHA256:abc123");
         arc_swap.store(Arc::new(new_config));
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
@@ -335,7 +343,7 @@ mod tests {
     #[test]
     fn config_reload_removes_fingerprint_access_immediately() {
         let (provider, arc_swap) =
-            make_provider(config_with_fingerprint("worker-a", "SHA256:abc123"));
+            make_provider(config_with_peer_entry("worker-a", "SHA256:abc123"));
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
 
         arc_swap.store(Arc::new(DynamicConfig::default()));
@@ -352,7 +360,7 @@ mod tests {
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
 
-        handle.reload(config_with_fingerprint("worker-a", "SHA256:abc123"));
+        handle.reload(config_with_peer_entry("worker-a", "SHA256:abc123"));
 
         assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_some());
     }
@@ -363,6 +371,94 @@ mod tests {
         fn assert_not_store<T>() {}
         assert_provider::<ConfigIdentityProvider>();
         assert_not_store::<ConfigIdentityProvider>();
+    }
+
+    #[test]
+    fn token_resolution_via_peer_entry_auth_token_hash_returns_peer_id() {
+        let token_str = "peer-bearer-secret";
+        let mut entry = peer_entry_with_fingerprint("worker-a", "SHA256:abc123");
+        entry.auth_token_hash = Some(compute_token_hash(token_str));
+        let config = DynamicConfig {
+            auth: AuthPolicy {
+                peers: vec![entry],
+                api_keys: Vec::new(),
+            },
+            rate_limits: RateLimitConfig::default(),
+        };
+        let (provider, _) = make_provider(config);
+        let token = AuthToken {
+            raw: token_str.as_bytes().to_vec(),
+        };
+        let identity = provider
+            .resolve_from_token(&token)
+            .expect("matching PeerEntry.auth_token_hash resolves");
+        assert_eq!(identity.id, "worker-a");
+        assert_eq!(identity.scopes, vec!["relay:connect".to_string()]);
+    }
+
+    #[test]
+    fn token_resolution_falls_through_to_api_key_when_no_peer_entry_matches() {
+        let api_token = "alk_test_secret";
+        let mut entry = peer_entry_with_fingerprint("worker-a", "SHA256:abc123");
+        entry.auth_token_hash = Some(compute_token_hash("different-token"));
+        let api_entry = ApiKeyEntry {
+            prefix: "alk_test".to_string(),
+            hash: compute_api_key_hash(api_token),
+            scopes: vec!["admin".to_string()],
+            description: "fall-through key".to_string(),
+            expires_at: None,
+        };
+        let config = DynamicConfig {
+            auth: AuthPolicy {
+                peers: vec![entry],
+                api_keys: vec![api_entry],
+            },
+            rate_limits: RateLimitConfig::default(),
+        };
+        let (provider, _) = make_provider(config);
+        let token = AuthToken {
+            raw: api_token.as_bytes().to_vec(),
+        };
+        let identity = provider
+            .resolve_from_token(&token)
+            .expect("api key fall-through resolves");
+        assert_eq!(identity.id, "alk_test");
+        assert_eq!(identity.scopes, vec!["admin".to_string()]);
+    }
+
+    #[test]
+    fn disabled_peer_entry_returns_none_on_fingerprint_resolution() {
+        let mut entry = peer_entry_with_fingerprint("worker-a", "SHA256:abc123");
+        entry.enabled = false;
+        let config = DynamicConfig {
+            auth: AuthPolicy {
+                peers: vec![entry],
+                api_keys: Vec::new(),
+            },
+            rate_limits: RateLimitConfig::default(),
+        };
+        let (provider, _) = make_provider(config);
+        assert!(provider.resolve_from_fingerprint("SHA256:abc123").is_none());
+    }
+
+    #[test]
+    fn disabled_peer_entry_returns_none_on_token_resolution() {
+        let token_str = "peer-bearer-secret";
+        let mut entry = peer_entry_with_fingerprint("worker-a", "SHA256:abc123");
+        entry.auth_token_hash = Some(compute_token_hash(token_str));
+        entry.enabled = false;
+        let config = DynamicConfig {
+            auth: AuthPolicy {
+                peers: vec![entry],
+                api_keys: Vec::new(),
+            },
+            rate_limits: RateLimitConfig::default(),
+        };
+        let (provider, _) = make_provider(config);
+        let token = AuthToken {
+            raw: token_str.as_bytes().to_vec(),
+        };
+        assert!(provider.resolve_from_token(&token).is_none());
     }
 }
 
