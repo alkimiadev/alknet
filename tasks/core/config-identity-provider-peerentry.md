@@ -1,7 +1,7 @@
 ---
 id: core/config-identity-provider-peerentry
 name: Rewrite ConfigIdentityProvider resolution to use PeerEntry multi-credential path (ADR-030)
-status: pending
+status: completed
 depends_on: [core/peer-entry-model]
 scope: narrow
 risk: medium
@@ -111,4 +111,4 @@ expect `Identity.id == fingerprint`. These must migrate to the `PeerEntry` model
 
 ## Summary
 
-> To be filled on completion
+ConfigIdentityProvider already delegates to AuthPolicy::resolve_identity_from_fingerprint and resolve_identity_from_token (PeerEntry.auth_token_hash → fall through to ApiKeyEntry). Migrated auth.rs tests to PeerEntry model: renamed config_with_fingerprint → config_with_peer_entry, added tests for token resolution via PeerEntry.auth_token_hash (returns peer_id), fall-through to ApiKeyEntry (returns prefix), and disabled PeerEntry returning None on both fingerprint and token paths. ConfigIdentityProvider stays read-only (no IdentityStore impl), ArcSwap-backed. 130 tests pass, clippy clean, fmt clean.
