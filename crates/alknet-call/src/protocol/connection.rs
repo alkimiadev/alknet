@@ -83,11 +83,19 @@ impl CallConnection {
     }
 
     pub async fn call(&self, operation_id: &str, input: Value) -> ResponseEnvelope {
-        let request_id = generate_request_id();
         let payload = serde_json::json!({
             "operationId": operation_id,
             "input": input,
         });
+        self.call_with_payload(payload).await
+    }
+
+    /// Invoke a remote op with a caller-constructed `call.requested` payload.
+    /// The payload MUST include `operationId` and `input`; the caller may add
+    /// `forwarded_for` (ADR-032) and `auth_token` (ADR-017 §7) for the hub
+    /// forwarding path used by `from_call`.
+    pub async fn call_with_payload(&self, payload: Value) -> ResponseEnvelope {
+        let request_id = generate_request_id();
 
         let (send, recv) = match self.connection.open_bi().await {
             Ok(pair) => pair,

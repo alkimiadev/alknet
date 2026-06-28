@@ -42,9 +42,12 @@ pub enum AdapterError {
     #[error("unauthorized: {message}")]
     Unauthorized { message: String },
 
-    /// Namespace collision in `from_call` (DC-3); reused for other adapters.
-    #[error("conflict: {message}")]
-    Conflict { message: String },
+    /// Same-peer namespace collision in `from_call` (ADR-029 §5; OQ-26).
+    /// Cross-peer collision dissolves (same name on different peers lives in
+    /// separate sub-overlays); same-peer collision stays an error — a peer
+    /// shouldn't expose two ops with the same name.
+    #[error("same-peer collision: {message}")]
+    SamePeerCollision { message: String },
 }
 
 /// Import a set of operations as `HandlerRegistration` bundles.
