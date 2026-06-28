@@ -1,7 +1,7 @@
 ---
 id: call/from-call-forwarded-for
 name: Wire from_call forwarding handler to populate forwarded_for and use peer-keyed registration (ADR-029 §5, ADR-032)
-status: pending
+status: completed
 depends_on: [call/operation-context-forwarded-for, call/peer-composite-env]
 scope: narrow
 risk: low
@@ -111,4 +111,4 @@ renames to `SamePeerCollision` (OQ-26).
 
 ## Summary
 
-> To be filled on completion
+Wired the from_call forwarding handler to populate forwarded_for on the call.requested payload from context.identity (ADR-032 §3), added CallConnection::call_with_payload for caller-constructed payloads, renamed AdapterError::Conflict → SamePeerCollision (OQ-26, ADR-029 §5 same-peer-only collision rule), updated FromCallConfig::namespace_prefix doc to reflect it's optional local-naming sugar (defaults None), and extracted build_bundles/build_forwarded_payload for unit-testable collision and forwarding logic. 9 new unit tests covering forwarded_for populated/omitted, same-peer collision (with and without prefix), cross-peer same-name no-collision, distinct names, prefix application, and operation filter. 241 unit + 2 integration tests pass, clippy clean, fmt clean.
