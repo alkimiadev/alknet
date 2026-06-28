@@ -1,7 +1,7 @@
 ---
 id: call/retire-remote-safe
 name: Retire remote_safe/trusted_peer/RemoteFilter — peer authorization via AccessControl (ADR-029 §3)
-status: pending
+status: completed
 depends_on: [core/review-core-sync]
 scope: moderate
 risk: medium
@@ -122,4 +122,4 @@ mechanism throughout.
 
 ## Summary
 
-> To be filled on completion
+Removed ADR-028 peer-authorization machinery from alknet-call: HandlerRegistration.remote_safe field + setter, OperationRegistryBuilder::remote_safe(), OperationRegistry::list_operations_peer_scoped(), services_list_handler_peer_scoped(), RemoteFilter struct + Dispatcher.remote_filter field + Dispatcher::new() RemoteFilter param + remote_filter.allows() gate in dispatch_requested, CallClient.trusted_peer field + trusted_peer() constructor + is_trusted_peer(), AdapterRemoteFilter re-export, and all ADR-028 tests across registration.rs, discovery.rs, call_client.rs, from_jsonschema.rs, from_call.rs, two_node_call.rs. Peer authorization now flows solely through AccessControl::check in OperationRegistry::invoke (ADR-029 §3). 192 unit tests + 2 integration tests pass, clippy clean, fmt clean.
