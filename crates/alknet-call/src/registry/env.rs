@@ -95,6 +95,7 @@ impl OperationEnv for LocalOperationEnv {
                 .as_ref()
                 .and_then(|ca| ca.as_identity()),
             handler_identity: registration.composition_authority.clone(),
+            forwarded_for: None,
             capabilities: parent.capabilities.clone(),
             metadata: HashMap::new(),
             abort_policy: policy,
@@ -262,6 +263,7 @@ mod tests {
         make_handler(|_input, context| async move {
             let internal = context.is_internal();
             let id = context.identity.as_ref().map(|i| i.id.clone());
+            let forwarded_for_id = context.forwarded_for.as_ref().map(|i| i.id.clone());
             let metadata_empty = context.metadata.is_empty();
             let parent_set = context.parent_request_id.is_some();
             ResponseEnvelope::ok(
@@ -269,6 +271,7 @@ mod tests {
                 serde_json::json!({
                     "internal": internal,
                     "identity_id": id,
+                    "forwarded_for_id": forwarded_for_id,
                     "metadata_empty": metadata_empty,
                     "parent_set": parent_set,
                 }),
@@ -283,11 +286,30 @@ mod tests {
         scoped_env: ScopedOperationEnv,
         env: Arc<dyn OperationEnv + Send + Sync>,
     ) -> OperationContext {
+        root_context_with_forwarded_for(
+            request_id,
+            identity,
+            handler_identity,
+            None,
+            scoped_env,
+            env,
+        )
+    }
+
+    fn root_context_with_forwarded_for(
+        request_id: &str,
+        identity: Option<Identity>,
+        handler_identity: Option<CompositionAuthority>,
+        forwarded_for: Option<Identity>,
+        scoped_env: ScopedOperationEnv,
+        env: Arc<dyn OperationEnv + Send + Sync>,
+    ) -> OperationContext {
         OperationContext {
             request_id: request_id.to_string(),
             parent_request_id: None,
             identity,
             handler_identity,
+            forwarded_for,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
             scoped_env,
@@ -420,6 +442,41 @@ mod tests {
             .await;
         let out = response.result.expect("ok");
         assert_eq!(out["metadata_empty"], Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn local_env_child_does_not_inherit_forwarded_for() {
+        let registry = registry_with(
+            "child/run",
+            Visibility::External,
+            inspect_handler(),
+            None,
+            None,
+        );
+        let env = Arc::new(LocalOperationEnv::new(Arc::clone(&registry)));
+        let scoped = ScopedOperationEnv::new(["child/run"]);
+        let forwarded = Identity {
+            id: "alice".to_string(),
+            scopes: vec![],
+            resources: HashMap::new(),
+        };
+        let ctx = root_context_with_forwarded_for(
+            "root-ff",
+            None,
+            None,
+            Some(forwarded),
+            scoped,
+            env.clone(),
+        );
+        assert!(ctx.forwarded_for.is_some());
+        let response = env
+            .invoke("child", "run", serde_json::json!({}), &ctx)
+            .await;
+        let out = response.result.expect("ok");
+        assert!(
+            out["forwarded_for_id"].is_null(),
+            "composed child must NOT inherit forwarded_for (wire-ingress only, ADR-032)"
+        );
     }
 
     struct ProbeEnv {

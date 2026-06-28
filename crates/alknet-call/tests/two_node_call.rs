@@ -272,6 +272,7 @@ async fn from_call_discovers_and_forwards_over_quic_loopback() {
         parent_request_id: None,
         identity: None,
         handler_identity: None,
+        forwarded_for: None,
         capabilities: Capabilities::new(),
         metadata: Default::default(),
         scoped_env: scoped,

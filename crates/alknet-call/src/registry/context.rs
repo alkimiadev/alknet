@@ -13,6 +13,16 @@ pub struct OperationContext {
     pub parent_request_id: Option<String>,
     pub identity: Option<Identity>,
     pub handler_identity: Option<CompositionAuthority>,
+    /// The original caller when this call was forwarded by a `from_call`
+    /// handler (ADR-032). **Metadata only** — `AccessControl::check` never
+    /// reads it; the ACL always authorizes `identity` (the direct caller).
+    /// Handlers may read it for logging, auditing, per-user rate limiting,
+    /// or application context. Populated from
+    /// `call.requested.forwarded_for` by the dispatch path; set to `None`
+    /// for composed children (wire-ingress only, not composition-ingress).
+    /// The forwarder's claim, not a verified identity — a malicious hub can
+    /// lie (same property as HTTP `X-Forwarded-For`). See ADR-032.
+    pub forwarded_for: Option<Identity>,
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
     pub scoped_env: ScopedOperationEnv,

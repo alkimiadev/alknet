@@ -254,6 +254,7 @@ mod tests {
             parent_request_id: None,
             identity,
             handler_identity,
+            forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
             scoped_env,

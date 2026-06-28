@@ -106,10 +106,16 @@ impl CallAdapter {
         request_id: String,
         operation_name: &str,
         identity: Option<Identity>,
+        forwarded_for: Option<Identity>,
         connection: &CallConnection,
     ) -> OperationContext {
-        self.dispatcher
-            .build_root_context(request_id, operation_name, identity, connection)
+        self.dispatcher.build_root_context(
+            request_id,
+            operation_name,
+            identity,
+            forwarded_for,
+            connection,
+        )
     }
 
     #[cfg(test)]
@@ -402,7 +408,8 @@ mod tests {
         let adapter = CallAdapter::new(registry, provider);
         let conn = CallConnection::new(stub_connection());
 
-        let context = adapter.build_root_context("req-1".to_string(), "echo/run", None, &conn);
+        let context =
+            adapter.build_root_context("req-1".to_string(), "echo/run", None, None, &conn);
 
         assert!(!context.is_internal());
         assert!(context.parent_request_id.is_none());
@@ -427,7 +434,8 @@ mod tests {
         let adapter = CallAdapter::new(registry, provider);
         let conn = CallConnection::new(stub_connection());
 
-        let context = adapter.build_root_context("req-2".to_string(), "agent/run", None, &conn);
+        let context =
+            adapter.build_root_context("req-2".to_string(), "agent/run", None, None, &conn);
 
         assert!(context.scoped_env.allows("fs/readFile"));
         assert!(!context.scoped_env.allows("other/op"));
@@ -445,7 +453,8 @@ mod tests {
         let adapter = CallAdapter::new(registry.clone(), provider);
         let conn = CallConnection::new(stub_connection());
 
-        let context = adapter.build_root_context("req-3".to_string(), "fs/readFile", None, &conn);
+        let context =
+            adapter.build_root_context("req-3".to_string(), "fs/readFile", None, None, &conn);
 
         assert!(context.env.contains("fs/readFile"));
     }
@@ -506,7 +515,8 @@ mod tests {
         let adapter = CallAdapter::new(registry, provider).with_session_source(session_source);
         let conn = CallConnection::new(stub_connection());
 
-        let context = adapter.build_root_context("req-4".to_string(), "fs/readFile", None, &conn);
+        let context =
+            adapter.build_root_context("req-4".to_string(), "fs/readFile", None, None, &conn);
 
         assert!(context.env.contains("agent/chat"));
         assert!(context.env.contains("fs/readFile"));
@@ -549,7 +559,7 @@ mod tests {
             .set_identity(peer_identity)
             .expect("identity not yet set");
 
-        let context = adapter.build_root_context("req-5".to_string(), "fs/readFile", None, &conn);
+        let context = adapter.build_root_context("req-5".to_string(), "fs/readFile", None, None, &conn);
 
         let scoped = ScopedOperationEnv::new(["worker/exec"]);
         let invoke_ctx = OperationContext {
@@ -557,6 +567,7 @@ mod tests {
             parent_request_id: None,
             identity: None,
             handler_identity: None,
+            forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
             scoped_env: scoped,
@@ -605,7 +616,7 @@ mod tests {
         );
         conn.register_imported(imported);
 
-        let context = adapter.build_root_context("req-6".to_string(), "fs/readFile", None, &conn);
+        let context = adapter.build_root_context("req-6".to_string(), "fs/readFile", None, None, &conn);
 
         let scoped = ScopedOperationEnv::new(["worker/exec"]);
         let invoke_ctx = OperationContext {
@@ -613,6 +624,7 @@ mod tests {
             parent_request_id: None,
             identity: None,
             handler_identity: None,
+            forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
             scoped_env: scoped,
@@ -891,7 +903,8 @@ mod tests {
         let adapter = CallAdapter::new(registry, provider);
         let conn = CallConnection::new(stub_connection());
 
-        let context = adapter.build_root_context("req-7".to_string(), "missing/op", None, &conn);
+        let context =
+            adapter.build_root_context("req-7".to_string(), "missing/op", None, None, &conn);
 
         assert!(!context.scoped_env.allows("missing/op"));
         assert!(context.handler_identity.is_none());
@@ -923,6 +936,220 @@ mod tests {
             }
             other => panic!("expected NOT_FOUND, got {other:?}"),
         }
+    }
+
+    fn inspect_forwarded_for_handler() -> crate::registry::registration::Handler {
+        make_handler(|_input, context| async move {
+            let identity_id = context.identity.as_ref().map(|i| i.id.clone());
+            let forwarded_for_id = context.forwarded_for.as_ref().map(|i| i.id.clone());
+            ResponseEnvelope::ok(
+                context.request_id,
+                serde_json::json!({
+                    "identity_id": identity_id,
+                    "forwarded_for_id": forwarded_for_id,
+                }),
+            )
+        })
+    }
+
+    #[test]
+    fn build_root_context_populates_forwarded_for_from_argument() {
+        let registry = registry_with(
+            "echo/run",
+            Visibility::External,
+            AccessControl::default(),
+            echo_handler(),
+        );
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = CallConnection::new(stub_connection());
+
+        let forwarded = identity_with_scopes("alice", &["fs:read"]);
+        let context = adapter.build_root_context(
+            "req-ff-1".to_string(),
+            "echo/run",
+            None,
+            Some(forwarded.clone()),
+            &conn,
+        );
+
+        assert_eq!(
+            context.forwarded_for.as_ref().map(|i| &i.id),
+            Some(&"alice".to_string())
+        );
+        assert_eq!(
+            context.forwarded_for.as_ref().map(|i| i.scopes.clone()),
+            Some(forwarded.scopes.clone())
+        );
+    }
+
+    #[test]
+    fn build_root_context_missing_forwarded_for_is_none() {
+        let registry = registry_with(
+            "echo/run",
+            Visibility::External,
+            AccessControl::default(),
+            echo_handler(),
+        );
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = CallConnection::new(stub_connection());
+
+        let context =
+            adapter.build_root_context("req-ff-2".to_string(), "echo/run", None, None, &conn);
+
+        assert!(context.forwarded_for.is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_populates_forwarded_for_from_payload() {
+        let registry = registry_with(
+            "inspect/run",
+            Visibility::External,
+            AccessControl::default(),
+            inspect_forwarded_for_handler(),
+        );
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = Arc::new(CallConnection::new(stub_connection()));
+
+        let payload = serde_json::json!({
+            "operationId": "/inspect/run",
+            "input": {},
+            "forwarded_for": {
+                "id": "alice",
+                "scopes": ["fs:read", "docker:start"],
+                "resources": {},
+            },
+        });
+        let response = adapter
+            .dispatch_requested(&conn, "req-ff-3".to_string(), payload)
+            .await;
+
+        let out = response.result.expect("ok");
+        assert_eq!(out["forwarded_for_id"], Value::String("alice".into()));
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_missing_forwarded_for_yields_none() {
+        let registry = registry_with(
+            "inspect/run",
+            Visibility::External,
+            AccessControl::default(),
+            inspect_forwarded_for_handler(),
+        );
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = Arc::new(CallConnection::new(stub_connection()));
+
+        let payload = serde_json::json!({
+            "operationId": "/inspect/run",
+            "input": {},
+        });
+        let response = adapter
+            .dispatch_requested(&conn, "req-ff-4".to_string(), payload)
+            .await;
+
+        let out = response.result.expect("ok");
+        assert!(out["forwarded_for_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_malformed_forwarded_for_yields_none() {
+        let registry = registry_with(
+            "inspect/run",
+            Visibility::External,
+            AccessControl::default(),
+            inspect_forwarded_for_handler(),
+        );
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = Arc::new(CallConnection::new(stub_connection()));
+
+        let payload = serde_json::json!({
+            "operationId": "/inspect/run",
+            "input": {},
+            "forwarded_for": "not-an-object",
+        });
+        let response = adapter
+            .dispatch_requested(&conn, "req-ff-5".to_string(), payload)
+            .await;
+
+        let out = response.result.expect("ok");
+        assert!(out["forwarded_for_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_forwarded_for_does_not_satisfy_acl() {
+        let registry = registry_with(
+            "admin/run",
+            Visibility::External,
+            AccessControl {
+                required_scopes: vec!["admin".to_string()],
+                ..Default::default()
+            },
+            inspect_forwarded_for_handler(),
+        );
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = Arc::new(CallConnection::new(stub_connection()));
+
+        let payload = serde_json::json!({
+            "operationId": "/admin/run",
+            "input": {},
+            "forwarded_for": {
+                "id": "alice",
+                "scopes": ["admin"],
+                "resources": {},
+            },
+        });
+        let response = adapter
+            .dispatch_requested(&conn, "req-ff-6".to_string(), payload)
+            .await;
+
+        match response.result {
+            Err(e) => {
+                assert_eq!(e.code, "FORBIDDEN");
+                assert_eq!(e.message, "authentication required");
+            }
+            other => panic!("expected FORBIDDEN (forwarded_for must not authorize), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_forwarded_for_present_with_satisfied_acl() {
+        let registry = registry_with(
+            "admin/run",
+            Visibility::External,
+            AccessControl {
+                required_scopes: vec!["admin".to_string()],
+                ..Default::default()
+            },
+            inspect_forwarded_for_handler(),
+        );
+        let token_identity = identity_with_scopes("hub", &["admin"]);
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("alk_hub", token_identity));
+        let adapter = CallAdapter::new(registry, provider);
+        let conn = Arc::new(CallConnection::new(stub_connection()));
+
+        let payload = serde_json::json!({
+            "operationId": "/admin/run",
+            "input": {},
+            "auth_token": "alk_hub",
+            "forwarded_for": {
+                "id": "alice",
+                "scopes": ["fs:read"],
+                "resources": {},
+            },
+        });
+        let response = adapter
+            .dispatch_requested(&conn, "req-ff-7".to_string(), payload)
+            .await;
+
+        let out = response.result.expect("ok");
+        assert_eq!(out["identity_id"], Value::String("hub".into()));
+        assert_eq!(out["forwarded_for_id"], Value::String("alice".into()));
     }
 
     fn encode_frame(envelope: &EventEnvelope) -> Vec<u8> {

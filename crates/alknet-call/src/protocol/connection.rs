@@ -283,6 +283,7 @@ impl OperationEnv for OverlayOperationEnv {
                 .as_ref()
                 .and_then(|ca| ca.as_identity()),
             handler_identity: composition_authority,
+            forwarded_for: None,
             capabilities: parent.capabilities.clone(),
             metadata: HashMap::new(),
             abort_policy: policy,
@@ -431,6 +432,7 @@ mod tests {
             parent_request_id: None,
             identity: None,
             handler_identity: Some(CompositionAuthority::new("agent", ["fs:read".to_string()])),
+            forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
             scoped_env,

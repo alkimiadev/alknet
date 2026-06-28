@@ -55,11 +55,12 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{DynamicConfig, PeerEntry};
 use crate::store::StoreError;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Identity {
     pub id: String,
     pub scopes: Vec<String>,

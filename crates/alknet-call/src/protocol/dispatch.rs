@@ -127,6 +127,7 @@ impl Dispatcher {
         request_id: String,
         operation_name: &str,
         identity: Option<Identity>,
+        forwarded_for: Option<Identity>,
         connection: &CallConnection,
     ) -> OperationContext {
         let registration = self.registry.registration(operation_name);
@@ -152,6 +153,7 @@ impl Dispatcher {
             parent_request_id: None,
             identity: identity.clone(),
             handler_identity: composition_authority,
+            forwarded_for,
             capabilities,
             metadata: HashMap::new(),
             deadline: Some(Instant::now() + self.default_timeout),
@@ -179,10 +181,19 @@ impl Dispatcher {
         let connection_identity = connection.connection().identity().cloned();
         let identity = self.resolve_identity(connection_identity, &payload);
 
+        let forwarded_for = payload
+            .get("forwarded_for")
+            .and_then(|v| serde_json::from_value::<Identity>(v.clone()).ok());
+
         let input = payload.get("input").cloned().unwrap_or(Value::Null);
 
-        let context =
-            self.build_root_context(request_id.clone(), &operation_name, identity, connection);
+        let context = self.build_root_context(
+            request_id.clone(),
+            &operation_name,
+            identity,
+            forwarded_for,
+            connection,
+        );
 
         self.registry.invoke(&operation_name, input, context).await
     }
