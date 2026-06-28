@@ -38,6 +38,18 @@ pub trait OperationEnv: Send + Sync {
     fn contains(&self, _name: &str) -> bool {
         true
     }
+
+    fn peer_ids(&self) -> Vec<PeerId> {
+        Vec::new()
+    }
+
+    fn peer_contains(&self, _peer: &PeerId, name: &str) -> bool {
+        self.contains(name)
+    }
+
+    fn peer_operations(&self, _peer: &PeerId) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub struct LocalOperationEnv {

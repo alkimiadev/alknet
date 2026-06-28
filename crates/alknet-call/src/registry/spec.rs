@@ -42,6 +42,12 @@ pub enum AccessResult {
     Forbidden(String),
 }
 
+impl AccessResult {
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, AccessResult::Allowed)
+    }
+}
+
 impl AccessControl {
     pub fn has_restrictions(&self) -> bool {
         !self.required_scopes.is_empty()
