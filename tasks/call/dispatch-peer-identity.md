@@ -1,7 +1,7 @@
 ---
 id: call/dispatch-peer-identity
 name: Wire dispatch_requested to resolve peer Identity and run AccessControl::check (ADR-029 §3, ADR-030 §5)
-status: pending
+status: completed
 depends_on: [call/peer-composite-env, call/retire-remote-safe]
 scope: narrow
 risk: medium
@@ -126,4 +126,4 @@ async fn dispatch_requested(&self, connection: &Arc<CallConnection>,
 
 ## Summary
 
-> To be filled on completion
+Wired dispatch_requested to resolve peer Identity and run AccessControl::check as the sole authorization gate. Verified no RemoteFilter/remote_safe/trusted_peer remnants. PeerId for a connection comes from connection.identity().id (IdentityProvider resolution); connections with no resolved identity get no PeerId and are not attached to PeerCompositeEnv. Added peer_ids() override on PeerCompositeEnv. Added forwarded_for extraction from call.requested payload (already on develop from operation-context-forwarded-for task). 8 unit tests in dispatch.rs covering: authorized peer dispatch, unauthorized peer FORBIDDEN, Internal op NOT_FOUND, no-identity connection, identity-keyed peer overlay, forwarded_for extraction, default-ACL, and absence of forwarded_for. Coordinator resolved merge conflicts (duplicate forwarded_for fields from concurrent task merge) and added missing peer_ids() override. 230 unit + 2 integration tests pass, clippy clean.
