@@ -40,6 +40,7 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
 | [037](../../decisions/037-mcp-stdio-transport-exclusion.md) | MCP Stdio Transport Exclusion | Streamable HTTP only; stdio not built |
 | [038](../../decisions/038-http3-and-webtransport-as-first-class.md) | HTTP/3 and WebTransport as First-Class HTTP Transports | `h3` in scope, not deferred |
 | [039](../../decisions/039-http-server-and-client-host-colocated.md) | HTTP Server and Client Host Colocated in alknet-http | One crate for server + client host (shared HTTP deps, shared mapping) |
+| [040](../../decisions/040-webtransport-alpn-stream-proxy.md) | WebTransport ALPN-Stream-Proxy | Browser → WebTransport stream → any ALPN handler (SSH, git, SFTP) via WASM parser |
 
 ## Relevant Open Questions
 
@@ -52,7 +53,7 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
 | OQ-24 | Operation error schemas | resolved | `from_openapi`/`to_openapi` error fidelity |
 | OQ-26 | OperationAdapter error type | resolved | `AdapterError` variants reused by HTTP adapters |
 | OQ-37 | X.509 outgoing-only / three peer roles | resolved | Browsers are not peers; hub with mixed fingerprints |
-| OQ-38 | WebTransport relay-as-proxy scope | open (scope, not deferral) | Does the proxy live in `alknet-http` or a separate relay crate? |
+| OQ-38 | WebTransport standalone relay service scope | open (scope, not deferral) | The standalone relay (future `alknet-relay`, fork of iroh-relay) — distinct from the in-process ALPN-stream-proxy (ADR-040) |
 | OQ-39 | `to_openapi` published-spec versioning | open | Versioning strategy for generated OpenAPI specs |
 | OQ-40 | reqwest client config and connection pooling | open | Two-way-door: pooling/retry config shape |
 
@@ -85,7 +86,12 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
 6. **HTTP/3 + WebTransport is a first-class transport, not a deferral.**
    The browser streaming path uses QUIC streams directly. See
    [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md).
-7. **`h3` requires X.509.** Browsers don't support RFC 7250 raw keys
+7. **The `h3` handler is an ALPN-stream-proxy for browsers.** A browser
+   with a WASM parser can reach any ALPN handler (SSH, git, SFTP) via
+   WebTransport — no install, no native client, no VPN. SSH-over-
+   WebTransport is HTTPS-shaped at the network layer (anti-censorship).
+   See [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md).
+8. **`h3` requires X.509.** Browsers don't support RFC 7250 raw keys
    (ADR-027). A node serving WebTransport must have an X.509 identity.
    This is a browser limitation, not an alknet decision.
 
