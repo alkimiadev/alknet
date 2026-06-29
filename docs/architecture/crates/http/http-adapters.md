@@ -193,27 +193,65 @@ source other than `OperationContext.capabilities`. See
 pub fn to_openapi(registry: &OperationRegistry) -> OpenAPISpec;
 ```
 
-`to_openapi` generates an OpenAPI document from the local registry's
-`External` operations:
+`to_openapi` generates an OpenAPI document with a **fixed gateway
+endpoint set** that gates access to the full operation registry — not
+one path per operation. This is the OpenAPI gateway pattern (ADR-042):
+the same principle as the MCP gateway (ADR-041) applied to OpenAPI. The
+external client (a code generator, a human developer, a `fetch`-based
+client) calls `/search` to discover operations, `/schema` to learn an
+operation's input shape, `/call` to invoke. See
+[ADR-042](../../decisions/042-openapi-gateway-pattern.md) for the
+rationale (the flat→structured split problem, the per-caller API
+surface problem).
 
-1. For each `External` operation in the registry, generate an OpenAPI
-   path entry:
-   - Path: `/{service}/{op}` (the operation path, ADR-036 — the HTTP
-     path IS the operation path).
-   - Method: the operation's `OperationType` → HTTP method (`Query`→GET,
-     `Mutation`→POST by default, `Subscription`→GET with
-     `text/event-stream` response).
-   - `operationId`: the operation name.
-   - `parameters` / `requestBody` / `responses`: built from the
-     operation's `input_schema` / `output_schema` / `error_schemas`.
-2. The `components.schemas` section holds the reusable schemas
-   referenced by `$ref` from the paths.
-3. The `info` section carries the API title, version, and description.
+#### The gateway endpoint set
 
-This is a pure projection — it consumes the registry and produces a
-spec. It does not modify the registry; it does not register operations;
-it is not an `OperationAdapter`. The HTTP server serves the generated
-spec at `GET /openapi.json` (or a configured path).
+`to_openapi` generates 5 fixed endpoints:
+
+| OpenAPI path | Call protocol | HTTP method | Purpose |
+|--------------|--------------|-------------|---------|
+| `/search` | `services/list` | `GET` | List/search operations (AccessControl-filtered). Names + descriptions. |
+| `/schema` | `services/schema` | `GET` | Get an operation's full `OperationSpec`. |
+| `/call` | `call.requested` (Query/Mutation) | `POST` | Invoke an operation. Flat JSON body `{ operation, input }`. |
+| `/batch` | multiple `call.requested` | `POST` | Invoke multiple operations. Array of `{ operation, input }`. |
+| `/subscribe` | `call.requested` (Subscription) | `GET` (SSE) | Invoke a streaming operation. `text/event-stream`. |
+
+The input is always a flat JSON body — no path/query/body split to
+reverse-engineer. JSON Schema for the input/output is already in the
+`OperationSpec`; the gateway wraps it in OpenAPI's schema format without
+splitting parameters.
+
+`/subscribe` is the one endpoint the MCP gateway excludes (ADR-041 —
+MCP tool calls are request/response). OpenAPI/SSE supports streaming;
+the gateway's `/subscribe` uses the same SSE projection ADR-036
+describes — `call.responded` → SSE `data:` frames, `call.completed` →
+stream close.
+
+#### Per-caller API surface
+
+The `/search` endpoint's results are `AccessControl::check(identity)`-
+filtered — the client sees only the operations it is authorized to call.
+The generated OpenAPI doc describes the 5 gateway endpoints (stable,
+same for every caller); the per-caller operation surface is discovered
+through `/search`, not preloaded into the doc. This is the key
+advantage over a traditional per-operation-paths OpenAPI doc: the
+per-caller API surface is the default (the Gitea failure mode — dumping
+admin ops to every caller — is structurally impossible). See ADR-042 §3.
+
+#### Pure projection
+
+`to_openapi` is a pure projection — it consumes the registry and
+produces a spec. It does not modify the registry; it does not register
+operations; it is not an `OperationAdapter`. The HTTP server serves the
+generated spec at `GET /openapi.json` (or a configured path).
+
+#### Traditional per-operation-paths projection (additive)
+
+A deployment that wants a traditional REST OpenAPI doc (per-operation
+paths with split parameters) can build it as a separate projection with
+HTTP-specific metadata (which fields are path params, etc.). The
+gateway pattern is the default `to_openapi` projection; the traditional
+projection is additive, not a replacement. See ADR-042 §5.
 
 ### Error Fidelity (ADR-023)
 
@@ -229,18 +267,30 @@ protocol-level codes (`NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`,
 // → ErrorDefinition { code: "HTTP_404", http_status: Some(404), schema: NotFoundError }
 ```
 
-`to_openapi` projects `error_schemas` back to OpenAPI response
-definitions:
+`to_openapi` projects `error_schemas` to the gateway endpoint's
+response definitions. The `/call` endpoint's responses include the
+operation-level errors (mapped by `http_status`), plus the protocol-
+level errors:
 
 ```yaml
+# /call endpoint responses
 responses:
-  '200': { schema: <output_schema> }
-  '404': { schema: <error_schemas[i].schema> }   # where http_status = 404
-  '429': { schema: <error_schemas[j].schema> }   # where http_status = 429
+  '200': { schema: <output_schema for the called operation> }
+  '400': { schema: <INVALID_INPUT error> }
+  '401': { schema: <no bearer token> }
+  '403': { schema: <FORBIDDEN — insufficient scopes> }
+  '404': { schema: <NOT_FOUND — operation not registered or Internal> }
+  '422': { schema: <operation-level error with http_status=422> }
+  '429': { schema: <operation-level error with http_status=429> }
+  '500': { schema: <INTERNAL> }
+  '504': { schema: <TIMEOUT> }
 ```
 
-This makes the adapter contract from ADR-017 faithful on the error axis —
-no silent dropping of error contracts. See ADR-023.
+The operation-level errors (with `http_status`) are surfaced on the
+`/call` endpoint's response — the gateway propagates the called
+operation's `error_schemas` as response definitions. This makes the
+adapter contract from ADR-017 faithful on the error axis — no silent
+dropping of error contracts. See ADR-023.
 
 ## Why
 
@@ -253,10 +303,17 @@ its errors are typed. The agent crate's LLM provider calls go through
 invariant makes aisdk's env-var reads unreachable.
 
 `to_openapi` is how external systems discover the alknet operation
-surface. An API gateway, a client generator, or a human developer reads
-the OpenAPI doc to learn what operations exist and how to call them.
-The generated spec is a compatibility contract (ADR-017 Consequences) —
-once published, the mapping is one-way.
+surface. A client generator, a human developer, or a `fetch`-based
+client reads the OpenAPI doc to learn the gateway's shape (5 fixed
+endpoints), then calls `/search` to discover what *it* can call
+(per-caller, AccessControl-filtered) and `/schema` to learn an
+operation's input shape. The gateway pattern avoids the flat→structured
+split that a traditional per-operation-paths projection would require,
+and makes the per-caller API surface the default (the Gitea failure
+mode — dumping admin ops to every caller — is structurally impossible).
+See [ADR-042](../../decisions/042-openapi-gateway-pattern.md). The
+generated spec is a compatibility contract (ADR-017 Consequences) —
+once published, the 5-endpoint gateway shape is one-way.
 
 ## Constraints
 
@@ -296,6 +353,7 @@ once published, the mapping is one-way.
 | Error fidelity (`HTTP_<status>` codes) | [ADR-023](../../decisions/023-operation-error-schemas.md) | No collision with protocol codes; `to_openapi` projects back |
 | No-env-vars credential injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Handler reads `context.capabilities`, not env vars |
 | HTTP path = operation path | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `to_openapi` paths mirror `/{service}/{op}` |
+| `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered |
 
 ## Open Questions
 
