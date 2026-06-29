@@ -40,9 +40,10 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
 | [037](../../decisions/037-mcp-stdio-transport-exclusion.md) | MCP Stdio Transport Exclusion | Streamable HTTP only; stdio not built |
 | [038](../../decisions/038-http3-and-webtransport-as-first-class.md) | HTTP/3 and WebTransport as First-Class HTTP Transports | `h3` in scope, not deferred |
 | [039](../../decisions/039-http-server-and-client-host-colocated.md) | HTTP Server and Client Host Colocated in alknet-http | One crate for server + client host (shared HTTP deps, shared mapping) |
-| [040](../../decisions/040-webtransport-alpn-stream-proxy.md) | WebTransport ALPN-Stream-Proxy | Browser → WebTransport stream → any ALPN handler (SSH, git, SFTP) via WASM parser |
+| [040](../../decisions/040-webtransport-alpn-stream-proxy.md) | WebTransport ALPN-Stream-Proxy | The substrate's mechanism for non-call ALPNs (SSH, git, SFTP) — browser → WebTransport stream → target ALPN handler via WASM parser |
 | [041](../../decisions/041-mcp-tool-gateway-pattern.md) | MCP Tool-Gateway Pattern for to_mcp | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation; Subscription excluded |
 | [042](../../decisions/042-openapi-gateway-pattern.md) | OpenAPI Gateway Pattern for to_openapi | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered |
+| [043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | WebTransport as a Bidirectional ALPN Transport Substrate | WebTransport carries ALPNs as bidirectional streams; call protocol is the first/canonical target (needs no WASM parser); both sides can initiate calls; no-`PeerId` non-peer clients use a connection-local overlay |
 
 ## Relevant Open Questions
 
@@ -69,9 +70,14 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
    [overview.md](overview.md).
 2. **The HTTP surface is a projection of the call protocol.** An HTTP
    request at `POST /fs/readFile` becomes a `call.requested` for
-   `/fs/readFile`. The HTTP path IS the operation path; `to_openapi`
-   describes this surface, it does not define a second one. See
-   [ADR-036](../../decisions/036-http-to-call-operation-mapping.md).
+   `/fs/readFile`. The HTTP path IS the operation path on the
+   **direct-call surface**. `to_openapi` *describes* a different surface
+   — the 5-endpoint gateway (`/search`, `/schema`, `/call`, `/batch`,
+   `/subscribe`) that gates discovery and invocation behind a fixed
+   entry set. See [ADR-036](../../decisions/036-http-to-call-operation-mapping.md)
+   (direct-call surface) and [ADR-042](../../decisions/042-openapi-gateway-pattern.md)
+   (`to_openapi` gateway, superseding ADR-036's original `to_openapi`
+   clause).
 3. **Standard ALPNs, not alknet ALPNs.** `h2`, `http/1.1`, `h3` are
    IANA-registered ALPN strings. Any HTTP client (browser, curl, axios)
    connects without knowing about alknet — the TLS handshake negotiates
@@ -89,13 +95,27 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
    The browser streaming path uses QUIC streams directly. See
    [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md).
 7. **The `h3` handler is an ALPN-stream-proxy for browsers.** A browser
-   with a WASM parser can reach any ALPN handler (SSH, git, SFTP) via
-   WebTransport — no install, no native client, no VPN. SSH-over-
-   WebTransport is HTTPS-shaped at the network layer (anti-censorship).
-   See [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md).
+   with a WASM parser can reach any non-call ALPN handler (SSH, git,
+   SFTP) via WebTransport — no install, no native client, no VPN. The
+   call protocol needs no proxy (it speaks EventEnvelope directly);
+   the ALPN-stream-proxy is the substrate's mechanism for the protocols
+   that need a client-side parser. SSH-over-WebTransport is
+   HTTPS-shaped at the network layer (anti-censorship). See
+   [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md)
+   and [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md).
 8. **`h3` requires X.509.** Browsers don't support RFC 7250 raw keys
    (ADR-027). A node serving WebTransport must have an X.509 identity.
    This is a browser limitation, not an alknet decision.
+9. **WebTransport is a bidirectional ALPN transport substrate.**
+   WebTransport carries ALPN protocols as bidirectional streams; the
+   call protocol is the first/canonical target (JSON-RPC over QUIC
+   streams, needs no WASM parser, runs in Deno/Node/browsers/native
+   Rust). Both sides of a WebTransport call-protocol session can
+   initiate calls — the call protocol's bidirectionality applies
+   unchanged. The HTTP/1.1 + HTTP/2 surface is the one-directional
+   projection (HTTP is request/response); WebTransport restores the
+   bidirectional call model. See
+   [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md).
 
 ## References
 

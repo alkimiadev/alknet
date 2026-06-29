@@ -6,11 +6,17 @@ last_updated: 2026-06-29
 # WebTransport — the h3 ALPN handler
 
 The `HttpAdapter` registration for the `h3` ALPN: HTTP/3 and
-WebTransport. This document covers the WebTransport session/stream
-handling, the browser streaming path, the ALPN-stream-proxy (browser
-access to any ALPN handler via WebTransport), and the relationship to
-the `h2`/`http/1.1` server. The `h3` support is a first-class transport,
-not a deferral (ADR-038).
+WebTransport. WebTransport is a **bidirectional ALPN transport
+substrate** (ADR-043) — it carries ALPN protocols as bidirectional
+streams, with the call protocol as the first/canonical target (needs no
+WASM parser) and the ALPN-stream-proxy (ADR-040) as the mechanism for
+non-call ALPNs (SSH, git, SFTP) that need a client-side parser. This
+document covers the WebTransport session/stream handling, the
+substrate's three stream destinations, the no-`PeerId` connection-local
+overlay for non-peer clients, and the relationship to the `h2`/
+`http/1.1` server (the one-directional projection WebTransport restores
+bidirectionality for). The `h3` support is a first-class transport
+(ADR-038).
 
 ## What
 
@@ -20,18 +26,32 @@ enabled. It serves two things on a single `h3` connection:
 
 1. **HTTP/3 requests** — the standard HTTP/3 over QUIC framing. An
    HTTP/3 request is dispatched through the same axum `Router` as `h2`/
-   `http/1.1` requests (ADR-036 — the HTTP path IS the operation path).
-   From the axum router's perspective, an HTTP/3 request is just
+   `http/1.1` requests (ADR-036 — the HTTP path IS the operation path
+   on the direct-call surface; ADR-042 — the gateway endpoints). From
+   the axum router's perspective, an HTTP/3 request is just
    another HTTP request; the framing difference is handled below the
-   router.
-2. **WebTransport sessions** — the browser streaming path. A WebTransport
-   session is a long-lived connection over which the browser opens
-   bidirectional and unidirectional streams. Streams within a session
-   target one of three destinations (see [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md)):
-   - The call protocol (`EventEnvelope` → the call `Dispatcher`),
+   router. The HTTP/3 request path is the **one-directional projection**
+   (client→server calls only — HTTP is request/response; see
+   [http-server.md](http-server.md) §"One-directional projection").
+2. **WebTransport sessions** — the **bidirectional** path. WebTransport
+   is a transport substrate that carries ALPN protocols as
+   bidirectional streams (ADR-043), not a browser→hub one-way path. A
+   WebTransport session is a long-lived connection over which either
+   side can open bidirectional and unidirectional streams. Streams
+   within a session target one of three destinations (see
+   [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md)):
+   - The call protocol (`EventEnvelope` → the call `Dispatcher`) — the
+     canonical target; needs no WASM parser because the EventEnvelope
+     framing is platform/language/runtime agnostic (JSON-RPC over QUIC
+     streams). Both sides can initiate calls — the call protocol's
+     bidirectionality applies unchanged (ADR-043 §2,
+     [../call/call-protocol.md](../call/call-protocol.md) §
+     "Bidirectional Calls").
    - An ALPN handler proxy (the stream is handed to another ALPN
-     handler like `SshAdapter` — the browser runs a WASM parser for the
-     target protocol), or
+     handler like `SshAdapter` — the client runs a WASM parser for the
+     target protocol). This is the substrate's mechanism for non-call
+     ALPNs (SSH, git, SFTP) that need a parser on the client side
+     (ADR-043 §4).
    - Another sub-protocol (declared at CONNECT time).
 
 The ALPN-stream-proxy is what makes the browser a universal alknet
@@ -39,23 +59,38 @@ client: with a WASM parser for SSH (or SFTP, git), a browser can reach
 any ALPN handler via WebTransport, no install, no native client, no
 VPN. This is the "VPN-like without being a VPN" use case the project
 was originally built for, now on a clean foundation. See
-[ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md).
+[ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) and
+the substrate framing in [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md).
 
 ### Why h3 is a first-class transport
 
-WebTransport is the browser streaming transport. QUIC streams are cheap
-(multiplexed over one connection, no head-of-line blocking), and
-WebTransport is supported in major browsers. The call protocol's
-subscription/streaming model maps onto WebTransport streams with no
-translation loss — a `call.responded` stream over a WebTransport
-bidirectional stream is the native representation, not an SSE
-translation (which is the projection for `h2`/`http/1.1` clients per
-ADR-036).
+WebTransport is the bidirectional streaming transport for the call
+protocol and a transport substrate for any ALPN. QUIC streams are
+cheap (multiplexed over one connection, no head-of-line blocking), and
+WebTransport is supported in major browsers and beyond (Deno, Node,
+native Rust). The call protocol's subscription/streaming model maps
+onto WebTransport streams with no translation loss — a `call.responded`
+stream over a WebTransport bidirectional stream is the native
+representation, not an SSE translation (which is the projection for
+`h2`/`http/1.1` clients per ADR-036).
 
-The Phase 0 research framing ("defer h3/WebTransport past v1") was a
-residual of the "two-way door as deferral" anti-pattern (ADR-009 §"What
-this framework is NOT"). WebTransport is in scope, in this crate, as a
-first-class transport. See ADR-038.
+More importantly, **WebTransport restores the call protocol's
+bidirectionality** that the HTTP/1.1 + HTTP/2 surface structurally
+cannot carry. HTTP is request/response — the client initiates, the
+server responds; the server→client *call* direction has no HTTP
+expression (see [http-server.md](http-server.md) §"One-directional
+projection"). WebTransport is a long-lived connection over which either
+side can open bidirectional streams and send `call.requested` in either
+direction — the call protocol's native bidirectionality applies
+unchanged (ADR-043 §2). WebTransport is also supported beyond browsers
+(Deno, Node, native Rust via `wtransport`), and the call protocol —
+JSON-RPC over QUIC streams — is platform/language/runtime agnostic, so
+call-protocol-over-WebTransport is a general bidirectional RPC
+substrate, not a browser-only path (ADR-043 §1).
+
+WebTransport is in scope, in this crate, as a first-class transport
+(ADR-038). See [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md)
+for the substrate framing.
 
 ## Architecture
 
@@ -90,7 +125,7 @@ HTTP/3 request and a WebTransport stream.
 ### WebTransport session and stream handling
 
 Once a WebTransport session is established (via extended CONNECT), the
-browser creates bidirectional streams within it. The handler dispatches
+client creates bidirectional streams within it. The handler dispatches
 each stream to one of three destinations, determined by the session's
 CONNECT path (the routing key, declared at CONNECT time — not by peeking
 the first application frame):
@@ -102,14 +137,28 @@ the first application frame):
   for `EventEnvelope` and [../call/client-and-adapters.md](../call/client-and-adapters.md)
   §"Shared Dispatcher" for the `Dispatcher` — the same dispatch loop
   the `CallAdapter` uses for `alknet/call` connections, ADR-012,
-  stream-agnostic correlation). The browser speaks the EventEnvelope
+  stream-agnostic correlation). The client speaks the EventEnvelope
   wire format directly over the WebTransport stream.
+
+  **Bidirectionality (ADR-043 §2):** the call-protocol session inherits
+  the call protocol's native bidirectionality — both sides can initiate
+  calls. The client calls operations on the hub; the hub can call
+  operations registered on the client's side, over the same session,
+  using the same `PendingRequestMap` and `EventEnvelope` framing as
+  `alknet/call` (see [../call/call-protocol.md](../call/call-protocol.md)
+  §"Bidirectional Calls"). The browser case (ADR-034 §4) is the common
+  case where the client registers no operations of its own, so the
+  server→client call direction is unused — that is a use-case scoping,
+  not an architectural limitation. A non-browser WebTransport client
+  (Deno, Node, a peer preferring WebTransport) that registers
+  operations receives calls from the hub over the same session.
 - **`/alknet/<name>` → ALPN-handler proxy session.** Each bidirectional
   stream is handed to the target ALPN handler (e.g., `SshAdapter` for
   `/alknet/ssh`, `GitAdapter` for `/alknet/git`) as a `Connection`
-  wrapping the WebTransport stream. The browser runs a WASM parser for
+  wrapping the WebTransport stream. The client runs a WASM parser for
   the target protocol and speaks it directly over the stream. This is
-  the ALPN-stream-proxy — see
+  the substrate's mechanism for non-call ALPNs (ADR-043 §4) — the
+  ALPN-stream-proxy — see
   [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md).
   The `h3` handler looks up the target ALPN handler in the
   `HandlerRegistry` (`HttpAdapter` holds `Arc<HandlerRegistry>` for
@@ -124,14 +173,17 @@ the first application frame):
   confirmation for sessions that multiplex sub-protocols, not the
   routing mechanism.
 
-The browser's `WebTransport` JS API is the client side of this:
+The browser's `WebTransport` JS API is one client side of this:
 `new WebTransport('https://hub.example.com/alknet/ssh')` →
 `transport.createBidirectionalStream()` → the browser's WASM SSH client
 reads/writes the stream as a `BiStream` (ADR-007). No SSE translation,
 no HTTP framing — the target protocol speaks directly over the
 WebTransport stream. For the call-protocol session, the browser writes
 `EventEnvelope` frames; for an SSH session, the browser runs the WASM
-SSH parser.
+SSH parser. A non-browser client (Deno, Node, native Rust) speaks the
+same wire formats over the same substrate without a WASM parser — the
+call protocol needs no parser, and native ALPN clients (SSH, git) use
+native parsers rather than WASM.
 
 ### Subscription projection (native, not SSE)
 
@@ -143,14 +195,23 @@ closes the stream with an error frame. This is the native streaming
 projection; SSE (ADR-036) is the projection for `h2`/`http/1.1` clients
 that don't speak WebTransport.
 
-### ALPN-stream-proxy (ADR-040)
+### ALPN-stream-proxy (ADR-040, repositioned by ADR-043 §4)
 
 The ALPN-stream-proxy is the `h3` handler's third stream destination and
-the browser's gateway to every ALPN handler. A browser opens a
-WebTransport session to `/alknet/ssh` (or `/alknet/git`, `/alknet/sftp`),
-and the `h3` handler hands each bidirectional stream within that session
-to the target ALPN handler as a `Connection`. The browser runs a WASM
-parser for the target protocol and speaks it directly over the stream.
+the substrate's mechanism for non-call ALPNs — the protocols (SSH, git,
+SFTP) that need a client-side parser, unlike the call protocol which
+speaks EventEnvelope directly. ADR-040 framed it as "the browser's
+gateway to every ALPN handler"; ADR-043 §4 repositions it as the
+substrate's non-call-ALPN mechanism, of which the browser use case is
+the primary (but not the only) instance. The decision in ADR-040 (the
+`HandlerRegistry` reference, path-based routing) stands unchanged; the
+framing is what ADR-043 refines.
+
+The browser use case: a browser opens a WebTransport session to
+`/alknet/ssh` (or `/alknet/git`, `/alknet/sftp`), and the `h3` handler
+hands each bidirectional stream within that session to the target ALPN
+handler as a `Connection`. The browser runs a WASM parser for the
+target protocol and speaks it directly over the stream.
 
 **Why this matters:** SSH-over-WebTransport is HTTPS-shaped at the
 network layer (WebTransport is HTTP/3 over QUIC over UDP, the same as
@@ -217,6 +278,43 @@ alknet peer (ADR-034 §4): it gets no `PeerId`, does not enter
 `PeerCompositeEnv`, and its "ops" are WebTransport streams served by
 the `h3` handler, not entries in the call-protocol peer-keyed overlay.
 
+### The no-`PeerId` connection-local overlay (ADR-043 §3)
+
+A non-peer WebTransport client (a browser, or any WebTransport client
+that is not a `PeerEntry`-bearing alknet peer) has **no `PeerId` on the
+hub's side**. The connection is served by the `h3` handler; the
+bearer-token-resolved `Identity` authorizes calls via
+`AccessControl::check`, but the connection does not enter
+`PeerCompositeEnv` and has no peer-keyed overlay entry. This is the
+**inbound mirror of ADR-034 §2** (the outgoing pure-client X.509 case:
+ops discovered land in "that connection's Layer 2 overlay" —
+connection-local, no `PeerId`). On the inbound WebTransport path, ops
+the client registers (if any) land in a connection-local Layer 2
+overlay on the hub side — same pattern, opposite direction.
+
+The `CallAdapter`'s `compose_root_env` builds the root
+`OperationContext.env` from:
+
+- the curated base (Layer 0),
+- **this connection's** local overlay (Layer 2 — connection-scoped, not
+  peer-keyed), and
+- the active session overlay (if any, ADR-024).
+
+There is no `PeerCompositeEnv` entry because there is no `PeerId` to key
+it. An implementer building `compose_root_env` for a WebTransport
+session applies the ADR-034 §2 connection-local-overlay pattern (mirror
+direction) and does not hunt for a `PeerId` that isn't there.
+
+The case where the WebTransport client *is* a `PeerEntry`-bearing
+alknet peer (a hub or spoke node that prefers WebTransport as its
+transport) is the symmetric case: the connection has a `PeerId`
+(resolved from the bearer token via
+`IdentityProvider::resolve_from_token` → `Identity.id` =
+`PeerEntry.peer_id`, ADR-030), and ops the peer registers land in the
+peer-keyed overlay, exactly as they would over `alknet/call`. The
+no-`PeerId` pattern above is the *non-peer* case; the peer case is
+unchanged from the `alknet/call` model. See ADR-043 §3.
+
 ### Stealth on h3
 
 The `h3` handler participates in the same stealth model as `h2`/
@@ -261,9 +359,20 @@ as a first-class transport.
   authenticates by bearer token, gets no `PeerId` (ADR-034 §4).
 - **WebTransport streams target one of three destinations** (the
   session's CONNECT path is the routing key): the call protocol
-  (`EventEnvelope` → `Dispatcher`), an ALPN handler proxy (→
-  `HandlerRegistry` lookup → target handler's `handle()`), or another
-  sub-protocol. See ADR-040.
+  (`EventEnvelope` → `Dispatcher`, bidirectional — both sides can
+  initiate calls), an ALPN handler proxy (→ `HandlerRegistry` lookup
+  → target handler's `handle()`, the substrate's non-call-ALPN
+  mechanism), or another sub-protocol. See ADR-040 and ADR-043.
+- **The call-protocol WebTransport session is bidirectional.** Both
+  sides can initiate calls, inheriting the call protocol's native
+  bidirectionality (ADR-043 §2). The browser case where the client
+  registers no ops is a use-case scoping, not an architectural
+  limitation.
+- **Non-peer WebTransport clients use a connection-local overlay.**
+  A WebTransport client with no `PeerId` (browser, or any non-peer
+  client) has its registered ops land in a connection-local Layer 2
+  overlay, not the peer-keyed `PeerCompositeEnv`. This is the inbound
+  mirror of ADR-034 §2. See ADR-043 §3.
 - **The ALPN-stream-proxy requires `Arc<HandlerRegistry>` on
   `HttpAdapter`.** The `h3` handler looks up ALPN handlers in the
   registry; the `h2`/`http/1.1` path does not use it. The registry is
@@ -280,7 +389,8 @@ as a first-class transport.
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | `h3`/WebTransport is first-class | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | In scope, not deferred; browser streaming uses QUIC streams |
-| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | Browser → WebTransport stream → any ALPN handler (SSH, git, SFTP) via WASM parser |
+| WebTransport is a bidirectional ALPN transport substrate | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | Carries ALPNs as bidirectional streams; call protocol is the first/canonical target (needs no WASM parser); both sides can initiate calls |
+| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | The substrate's mechanism for non-call ALPNs (SSH, git, SFTP) — browser → WebTransport stream → target ALPN handler via WASM parser |
 | Browsers require X.509 | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | `h3` needs X.509 (browser limitation) |
 | Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Bearer token, no `PeerId` |
 | WebTransport streams → call protocol directly | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | Stream-agnostic; WebTransport stream = QUIC bidirectional stream |
@@ -302,10 +412,16 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md)
   — the decision that `h3` is in scope
+- [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md)
+  — the substrate framing: WebTransport carries ALPNs as bidirectional
+  streams; call protocol is the first target; bidirectionality; the
+  no-`PeerId` connection-local overlay
 - [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) —
   the HTTP-to-call mapping (the HTTP/3 request path uses the same
   axum `Router`)
 - [overview.md](overview.md) — crate overview, feature gates
 - [http-server.md](http-server.md) — the `h2`/`http/1.1` companion
+  (§"One-directional projection" — the lossy HTTP/1.1+HTTP/2 surface
+  WebTransport restores bidirectionality for)
 - `/workspace/wtransport/` — pure-Rust WebTransport reference
   implementation (the `h3` feature's candidate dependency)

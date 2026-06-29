@@ -214,7 +214,7 @@ This keeps the peer graph populated only by full alknet nodes (role 3
 hubs and role-3-style spoke nodes), never by browsers or pure HTTP
 clients.
 
-### 5. WebTransport relay-as-proxy is deferred with h3 / WebTransport
+### 5. WebTransport relay-as-proxy is a transport-only feature, scoped separately
 
 A **WebTransport proxy** that terminates the browser's WebTransport
 connection and proxies encrypted traffic to a hub's P2P endpoint
@@ -231,13 +231,18 @@ is a real feature, especially for the browser-to-P2P-peer case. It is
   Ed25519 identity is the same `ed25519:<hex>` whether the client
   connected directly or through the proxy.
 
-WebTransport support is already deferred past v1 in the alknet-http
-Phase 0 findings (decision point DH-2, "h3/WebTransport — in v1 or
-deferred?"). The WebTransport-relay-as-proxy feature
-belongs in that same deferral bucket — it lands when `h3` /
-WebTransport lands, and it does not require any change to the auth
-model in this ADR. It is recorded here so it is not lost; it is not an
-open question for the auth model.
+> **Amendment (wording only — the decision stands):** An earlier draft
+> of this section framed the relay-as-proxy as belonging to an
+> "h3/WebTransport deferral bucket" and "lands when `h3` /
+> WebTransport lands." That framing was a residual of the "two-way door
+> as deferral" anti-pattern (ADR-009 §"What this framework is NOT")
+> that [ADR-038](038-http3-and-webtransport-as-first-class.md) was later
+> written to reject — `h3`/WebTransport is a first-class transport, in
+> scope, not deferred. The *auth-model* decision in this §5 (the proxy
+> is transport-only; it does not change identity resolution) is
+> unchanged. The *scope* question (does the proxy belong in
+> `alknet-http` or a separate relay crate?) is tracked as OQ-38 — a
+> genuine scope question, not a deferral.
 
 ### 6. On-chain / smart-contract peer discovery fits the OQ-36 adapter pattern
 
@@ -300,9 +305,10 @@ It is noted here only to confirm it does not reopen OQ-37.
   WebTransport/HTTPS) is confirmed to need no new types — ADR-030's
   `fingerprints: Vec<String>` already covers it.
 - The WebTransport-relay-as-proxy and on-chain-discovery use cases are
-  recorded with clear homes (h3/WebTransport deferral bucket; OQ-36
-  adapter pattern) so they don't get lost and don't reopen the auth
-  model.
+  recorded with clear homes (the relay-as-proxy is a transport-only
+  feature whose scope is tracked as OQ-38; the on-chain discovery
+  follows the OQ-36 adapter pattern) so they don't get lost and don't
+  reopen the auth model.
 
 **Negative:**
 - The `alknet-http` and `alknet-call` client paths must branch on
@@ -389,8 +395,13 @@ It is noted here only to confirm it does not reopen OQ-37.
   repo/adapter pattern (trait in core, adapter additive in a separate
   crate)
 - `docs/research/alknet-http/phase-0-findings.md` — DH-2 (h3 /
-  WebTransport deferred past v1); the WebTransport-relay-as-proxy
-  feature noted in this ADR's §5 belongs in that deferral bucket
+  WebTransport; the original "deferred past v1" framing is rejected by
+  ADR-038); the WebTransport-relay-as-proxy feature noted in this ADR's
+  §5 is a transport-only feature whose scope is tracked as OQ-38
+- [ADR-038](038-http3-and-webtransport-as-first-class.md) — `h3` /
+  WebTransport is a first-class transport, not deferred (amends the
+  "deferral bucket" wording in this ADR's §5; the auth-model decision
+  stands)
 - `docs/research/references/iroh/iroh/04-sub-crates.md` — iroh's
   transport relay (`iroh-relay`), referenced to distinguish it from
   alknet's hub role

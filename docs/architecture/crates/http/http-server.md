@@ -30,10 +30,11 @@ pub struct HttpAdapter {
 }
 
 /// The stealth decoy surface for paths that are not registered
-/// operations (and not `/healthz`, `/openapi.json`, or the MCP route).
-/// Set by the assembly layer at `HttpAdapter` construction. The
-/// existence of the decoy path is fixed by ADR-010; the variant is a
-/// two-way-door config default.
+/// operations (and not `/healthz`, `/openapi.json`, the `to_openapi`
+/// gateway endpoints `/search`/`/schema`/`/call`/`/batch`/`/subscribe`,
+/// or the MCP route). Set by the assembly layer at `HttpAdapter`
+/// construction. The existence of the decoy path is fixed by ADR-010;
+/// the variant is a two-way-door config default.
 pub enum DecoyConfig {
     /// Serve a fake `404 Not Found` (the default — matches the reference
     /// implementation's "fake nginx 404").
@@ -99,10 +100,25 @@ identity provider through the router's state.
 The axum `Router` is the single routing surface for HTTP requests. It
 contains:
 
-- The call-protocol projection routes (`POST /{service}/{op}` →
-  `call.requested` dispatch — ADR-036).
+- **The direct-call surface** (`POST /{service}/{op}` → `call.requested`
+  dispatch — ADR-036). This is the HTTP projection of the call protocol's
+  `/{service}/{op}` operation path; an HTTP client that knows the
+  operation name calls it directly.
+- **The `to_openapi` gateway endpoints** (`/search`, `/schema`, `/call`,
+  `/batch`, `/subscribe` — ADR-042). These are the fixed 5-endpoint
+  gateway that an OpenAPI consumer uses to discover and invoke
+  operations without knowing operation names up front. `/call` and
+  `/subscribe` dispatch through the same `OperationRegistry::invoke()`
+  as the direct-call surface; `/search` and `/schema` dispatch the
+  `services/list` / `services/schema` discovery ops. The gateway and
+  the direct-call surface coexist on the same router — they are two
+  projections of the same operation registry, not two registries.
 - `GET /healthz` (raw route, no auth, no call protocol).
-- `GET /openapi.json` (serves the `to_openapi` projection).
+- `GET /openapi.json` (serves the `to_openapi` projection — the OpenAPI
+  document that *describes* the 5 gateway endpoints. Post-ADR-042 this
+  is the gateway's description doc, not a per-operation REST spec; the
+  doc describes the 5 fixed endpoints, and the per-caller operation
+  surface is discovered via `/search`, not preloaded into `paths`).
 - The stealth decoy fallback (unknown paths).
 - (Feature-gated) `POST /mcp` (the `to_mcp` streamable HTTP service —
   [http-mcp.md](http-mcp.md)).
@@ -154,6 +170,32 @@ A `Subscription` operation served over `h2`/`http/1.1` projects its
 This is the HTTP/1.1 + HTTP/2 streaming projection. Over WebTransport
 (`h3`), the subscription projects directly onto a WebTransport
 bidirectional stream — no SSE framing (see [webtransport.md](webtransport.md)).
+
+### One-directional projection (HTTP request/response)
+
+The HTTP/1.1 + HTTP/2 surface is a **lossy, one-directional projection**
+of the call protocol. HTTP is request/response: the client initiates,
+the server responds. The call protocol is bidirectional — both sides can
+initiate calls (see
+[../call/call-protocol.md](../call/call-protocol.md) §"Bidirectional
+Calls": the server can call operations on the client just as the client
+calls operations on the server). The HTTP projection carries only the
+client→server call direction; the server→client call direction has no
+HTTP expression (there is no HTTP mechanism for the server to initiate a
+request to the client). `Subscription` streaming is the one partial
+exception — the server streams `call.responded` frames back over the
+SSE response — but even there, the *call* is client-initiated; only the
+*results* flow server→client.
+
+This is a structural property of HTTP, not a design choice in this
+crate. WebTransport (`h3`) restores the bidirectional call model: a
+WebTransport session is a long-lived connection over which either side
+can open bidirectional streams and send `call.requested` events in
+either direction — the call protocol's native bidirectionality applies
+unchanged. See [webtransport.md](webtransport.md) and ADR-043. The
+HTTP/1.1 + HTTP/2 surface is the projection for clients that only speak
+HTTP; WebTransport is the surface for clients that can speak the call
+protocol in both directions.
 
 ### Auth
 
@@ -219,8 +261,9 @@ routes. `healthz` is the one exception. See ADR-036.
 ### Stealth decoy
 
 For paths that are not registered operations (and not `/healthz`,
-`/openapi.json`, or the MCP route), the HTTP handler serves a decoy. The
-decoy is configurable (`DecoyConfig`):
+`/openapi.json`, the `to_openapi` gateway endpoints `/search`/`/schema`/
+`/call`/`/batch`/`/subscribe`, or the MCP route), the HTTP handler serves
+a decoy. The decoy is configurable (`DecoyConfig`):
 
 - A fake `404 Not Found` (the default — matches the reference
   implementation's "fake nginx 404").
@@ -235,9 +278,13 @@ config is a two-way-door default (an operator picks what to serve); the
 
 ## Constraints
 
-- **The HTTP path IS the operation path.** `POST /fs/readFile` →
-  `call.requested` for `fs/readFile`. No second routing table. See
-  ADR-036.
+- **The HTTP path IS the operation path on the direct-call surface.**
+  `POST /fs/readFile` → `call.requested` for `fs/readFile`. No second
+  routing table for the direct-call surface. See ADR-036. The
+  `to_openapi` gateway (`/search`, `/schema`, `/call`, `/batch`,
+  `/subscribe`) is a separate fixed-endpoint surface (ADR-042) that
+  coexists with the direct-call surface on the same axum `Router`; it
+  does not replace it.
 - **`External` operations only.** `Internal` operations return `404`
   on the HTTP handler.
 - **Bearer-only auth.** `Authorization: Bearer` →
@@ -256,7 +303,8 @@ config is a two-way-door default (an operator picks what to serve); the
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| Direct path mapping (HTTP path = operation path) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `POST /{service}/{op}` → `call.requested` |
+| Direct path mapping (HTTP path = operation path) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `POST /{service}/{op}` → `call.requested` (direct-call surface) |
+| `to_openapi` gateway endpoints on the router | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | `/search`/`/schema`/`/call`/`/batch`/`/subscribe` coexist with the direct-call surface |
 | SSE projection for subscriptions over h2/http1.1 | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `call.responded` stream → SSE frames |
 | `/healthz` is a raw route | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | No auth, no call protocol |
 | Stealth decoy | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | HTTP handler on standard ALPNs serves decoy |

@@ -352,8 +352,8 @@ once published, the 5-endpoint gateway shape is one-way.
 | `from_openapi` provenance is a leaf | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | `composition_authority: None`, `scoped_env: None` |
 | Error fidelity (`HTTP_<status>` codes) | [ADR-023](../../decisions/023-operation-error-schemas.md) | No collision with protocol codes; `to_openapi` projects back |
 | No-env-vars credential injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Handler reads `context.capabilities`, not env vars |
-| HTTP path = operation path | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `to_openapi` paths mirror `/{service}/{op}` |
-| `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered |
+| HTTP path = operation path (direct-call surface) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `POST /{service}/{op}` → `call.requested` (the direct-call surface; not what `to_openapi` describes) |
+| `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered. Supersedes ADR-036's original `to_openapi` "paths mirror `/{service}/{op}`" clause |
 
 ## Open Questions
 

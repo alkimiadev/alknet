@@ -40,8 +40,14 @@ WebTransport stream. So the browser:
 The hub's `h3` handler needs to hand that WebTransport stream to the
 target ALPN handler (e.g., `SshAdapter`) as if it were a QUIC stream
 arriving on that ALPN. The `h3` handler becomes an **ALPN-stream-proxy**:
-a browser-side gateway that gives browsers access to any ALPN handler
-via WebTransport.
+a WebTransport-client-side gateway (browser or otherwise) that gives
+WebTransport clients access to any non-call ALPN handler via WebTransport.
+> Repositioned by [ADR-043](043-webtransport-bidirectional-alpn-substrate.md)
+> §4: the proxy is the substrate's mechanism for non-call ALPNs (SSH,
+> git, SFTP) that need a client-side parser, distinct from the call
+> protocol which speaks EventEnvelope directly and needs no proxy. The
+> browser is the primary use case; the decision (the `HandlerRegistry`
+> reference, path-based routing) is unchanged.
 
 ### Why this matters
 
@@ -275,6 +281,10 @@ Two layers, same as a native `alknet/ssh` connection.
 - [ADR-038](038-http3-and-webtransport-as-first-class.md) — `h3` is
   first-class (this ADR adds the ALPN-stream-proxy as the third stream
   destination)
+- [ADR-043](043-webtransport-bidirectional-alpn-substrate.md) §4 —
+  repositions this ADR's framing: the proxy is the substrate's mechanism
+  for non-call ALPNs (not the browser's gateway to every ALPN). The
+  decision stands; the framing is refined.
 - `crates/http/webtransport.md` — the spec that implements this proxy
 - `crates/core/endpoint.md` — `HandlerRegistry` (the registry the
   `h3` handler gains a reference to)

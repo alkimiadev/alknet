@@ -54,6 +54,24 @@ headers, streaming, SSE), so they belong in one crate. See
 [ADR-039](../../decisions/039-http-server-and-client-host-colocated.md)
 for the colocation decision.
 
+A note on the "from/to" direction model: the `from_openapi`/`to_openapi`
+and `from_mcp`/`to_mcp` adapters are *inherently directional* because
+OpenAPI and MCP are client/server protocols — one side serves, the
+other calls. That directionality is a property of those protocols, not
+of the call protocol itself. The call protocol is bidirectional (see
+[../call/call-protocol.md](../call/call-protocol.md) §"Bidirectional
+Calls": both sides can initiate calls). The HTTP/1.1 + HTTP/2 surface
+inherits HTTP's request/response constraint and projects the call
+protocol one-directionally (client→server calls only — see
+[http-server.md](http-server.md) §"One-directional projection").
+WebTransport (`h3`) is the HTTP-family transport that restores the
+call protocol's native bidirectionality — it is a transport substrate
+for the call protocol (and, via the ALPN-stream-proxy, for any ALPN),
+not a browser→hub one-way path. See [webtransport.md](webtransport.md)
+and ADR-043. The "from/to" naming of the OpenAPI/MCP adapters should not
+be read as a statement about the call protocol's directionality; it is
+a statement about OpenAPI's and MCP's directionality.
+
 ## Dependencies
 
 ```
@@ -205,9 +223,10 @@ verified against this invariant. See ADR-014 and
 | MCP stdio transport exclusion | [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md) | Streamable HTTP only; stdio is not built (RCE vector) |
 | HTTP/3 + WebTransport first-class | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | `h3` in scope, not deferred; browser streaming uses QUIC streams |
 | HTTP server + client host colocated | [ADR-039](../../decisions/039-http-server-and-client-host-colocated.md) | One crate for server + adapters (shared HTTP deps, shared mapping) |
-| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | Browser → WebTransport stream → any ALPN handler (SSH, git, SFTP) via WASM parser |
+| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | The substrate's mechanism for non-call ALPNs (SSH, git, SFTP) — browser → WebTransport stream → target ALPN handler via WASM parser |
 | `to_mcp` tool-gateway pattern | [ADR-041](../../decisions/041-mcp-tool-gateway-pattern.md) | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation |
 | `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe); per-caller AccessControl-filtered |
+| WebTransport bidirectional ALPN substrate | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | WebTransport carries ALPNs as bidirectional streams; call protocol is the first target; both sides can initiate calls; non-peer clients use a connection-local overlay |
 | `alknet-call` is protocol-foundation | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | `alknet-http` depends on `alknet-call` (types, not peer handler) |
 | Bearer auth via `resolve_from_token` | [ADR-004](../../decisions/004-auth-as-shared-core.md) | HTTP handler credential source + resolution (settled) |
 | Stealth mode = HTTP handler on standard ALPNs | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Decoy for unknown paths (settled) |

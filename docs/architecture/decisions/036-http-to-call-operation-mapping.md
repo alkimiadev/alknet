@@ -57,6 +57,21 @@ spec's `paths` mirror the `/{service}/{op}` operation paths. An external
 client reading the OpenAPI doc learns the same routes the HTTP handler
 serves; there is no second mapping.
 
+> **Amendment (superseded by [ADR-042](042-openapi-gateway-pattern.md) on
+> the `to_openapi` clause):** The paragraph above described the original
+> "per-operation-paths projection" — `to_openapi` generating one OpenAPI
+> path entry per `External` operation, mirroring `/{service}/{op}`. ADR-042
+> replaces this with the **gateway pattern**: `to_openapi` generates 5
+> fixed gateway endpoints (`/search`, `/schema`, `/call`, `/batch`,
+> `/subscribe`) instead of one path per operation. The "no second routing
+> table" property is preserved (the gateway endpoints are fixed; the
+> per-caller operation surface is discovered via `/search`, not preloaded
+> into a generated path set). The direct-call surface (`POST
+> /{service}/{op}`) that this ADR defines is **unchanged** — ADR-042 only
+> changes what `to_openapi` *describes*, not what the HTTP handler
+> *serves*. A traditional per-operation-paths OpenAPI projection remains
+> available as an additive alternative (ADR-042 §5).
+
 ### HTTP method semantics
 
 The call protocol's `OperationType` (`Query`, `Mutation`, `Subscription`,
@@ -191,6 +206,10 @@ without auth before identity is resolvable.
   `to_openapi` as a projection; published-spec compatibility contract
 - [ADR-023](023-operation-error-schemas.md) — error schema fidelity in
   `from_openapi`/`to_openapi`; HTTP status mapping
+- [ADR-042](042-openapi-gateway-pattern.md) — supersedes this ADR's
+  `to_openapi` clause (the per-operation-paths projection is replaced by
+  the 5-endpoint gateway pattern; the direct-call surface this ADR
+  defines is unchanged)
 - OQ-13 (resolved) — operation path format `/{service}/{op}`
 - `docs/research/alknet-http/phase-0-findings.md` DH-3 — the decision this
   ADR resolves
