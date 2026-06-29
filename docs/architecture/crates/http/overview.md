@@ -206,6 +206,7 @@ verified against this invariant. See ADR-014 and
 | HTTP/3 + WebTransport first-class | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | `h3` in scope, not deferred; browser streaming uses QUIC streams |
 | HTTP server + client host colocated | [ADR-039](../../decisions/039-http-server-and-client-host-colocated.md) | One crate for server + adapters (shared HTTP deps, shared mapping) |
 | WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | Browser → WebTransport stream → any ALPN handler (SSH, git, SFTP) via WASM parser |
+| `to_mcp` tool-gateway pattern | [ADR-041](../../decisions/041-mcp-tool-gateway-pattern.md) | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation |
 | `alknet-call` is protocol-foundation | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | `alknet-http` depends on `alknet-call` (types, not peer handler) |
 | Bearer auth via `resolve_from_token` | [ADR-004](../../decisions/004-auth-as-shared-core.md) | HTTP handler credential source + resolution (settled) |
 | Stealth mode = HTTP handler on standard ALPNs | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Decoy for unknown paths (settled) |

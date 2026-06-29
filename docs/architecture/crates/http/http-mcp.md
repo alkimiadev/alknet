@@ -129,10 +129,17 @@ pub fn to_mcp_service(
 ) -> StreamableHttpService<...>;
 ```
 
-`to_mcp` exposes the local registry's `External` operations as MCP tools
-over streamable HTTP, using rmcp's `StreamableHttpService` (an
-axum-compatible tower service). The rmcp
-`simple_auth_streamhttp.rs` server example shows the pattern:
+`to_mcp` exposes the local registry's operations as a **fixed gateway
+tool set** over streamable HTTP — not one MCP tool per operation. This
+is the tool-gateway pattern (ADR-041): the LLM has a few tools in
+context (search, schema, call, batch), not hundreds, and discovers
+operations on demand through the gateway. See
+[ADR-041](../../decisions/041-mcp-tool-gateway-pattern.md) for the
+rationale (the tool-bloat problem, the `memory`/`worktree` tool pattern
+that informed the design).
+
+The rmcp `simple_auth_streamhttp.rs` server example shows the
+streamable-HTTP-service-into-axum-`Router` pattern:
 
 ```rust
 // From the rmcp example:
@@ -148,25 +155,59 @@ let protected_mcp_router = Router::new()
     .layer(middleware::from_fn_with_state(token_store, auth_middleware));
 ```
 
-`alknet-http`'s `to_mcp` follows the same pattern: the local operations
-are exposed as an MCP server (an rmcp `Service` impl that wraps the
-`OperationRegistry`), the `StreamableHttpService` nests into the axum
-`Router` at `/mcp`, and a Bearer auth middleware gates access (the
-`simple_auth_streamhttp.rs` `auth_middleware` + `extract_token` pattern).
+`alknet-http`'s `to_mcp` follows the same axum integration pattern,
+but the rmcp `Service` impl is a gateway service (4 fixed tools) rather
+than a per-operation tool registry.
 
-The `to_mcp` service:
+#### The gateway tool set
 
-1. On MCP `tools/list`: returns the local registry's `External`
-   operations as MCP tools (name, description, `inputSchema`).
-2. On MCP `tools/call`: dispatches to the `OperationRegistry::invoke()`
-   — the same dispatch path the HTTP server uses for HTTP requests
-   (ADR-036). The MCP tool call becomes a `call.requested` internally.
-   The result is mapped back to the MCP `tools/call` response shape
-   (`structuredContent` or `content` blocks).
+`to_mcp` exposes four MCP tools that gate access to the full operation
+registry:
+
+| MCP tool | Call protocol operation | Purpose |
+|----------|------------------------|---------|
+| `search` | `services/list` | List/search available operations (filtered by the caller's `AccessControl`). Returns names + descriptions, not full schemas. |
+| `schema` | `services/schema` | Get an operation's full `OperationSpec` (input/output JSON Schemas, error schemas). |
+| `call` | `call.requested` (Query/Mutation) | Invoke an operation by name with a JSON input. Returns the output or a typed error (ADR-023). |
+| `batch` | multiple `call.requested` | Invoke multiple operations in one tool call (correlated request IDs, OQ-14). |
+
+The LLM calls `search` to discover operations, `schema` to learn an
+operation's input shape, `call` to invoke. Same pattern as `man
+<command>` — discover on demand, don't preload. See ADR-041 for the
+rationale.
+
+#### `Subscription` exclusion
+
+The gateway exposes only `Query` and `Mutation` operations
+(request/response). `Subscription` operations (streaming) are filtered
+out of `search` results and cannot be invoked via `call` — MCP tool
+calls are request/response by protocol design; streaming subscriptions
+don't fit the LLM tool-call pattern. See ADR-041 §2.
+
+#### `to_mcp` service behavior
+
+1. On MCP `tools/list`: returns the fixed gateway tool set (4 tools:
+   `search`, `schema`, `call`, `batch`), not the registry's
+   operations. The gateway tools have stable names and schemas; the
+   registry's operations are discovered through `search`.
+2. On MCP `tools/call`:
+   - `search` → dispatches `services/list` (filtered by the caller's
+     `AccessControl`), returns operation names + descriptions.
+   - `schema` → dispatches `services/schema`, returns the
+     `OperationSpec`.
+   - `call` → dispatches `OperationRegistry::invoke()` (the same
+     dispatch path the HTTP server uses, ADR-036). The result is
+     mapped to an MCP `CallToolResult` (`structuredContent` for the
+     output, or `isError: true` for a `CallError` with typed
+     `details` per ADR-023).
+   - `batch` → dispatches multiple `call.requested` events, returns
+     an array of results.
 3. Auth: the Bearer middleware resolves the token via
    `IdentityProvider::resolve_from_token()`, same as the HTTP server's
    auth (ADR-004). The MCP client authenticates by bearer token; no
    `PeerId` (browsers and MCP clients are not alknet peers — ADR-034 §4).
+   `AccessControl` gates `search` results and `call` dispatch — the
+   LLM sees only what it's authorized to call.
 
 ### No-Env-Vars
 
@@ -185,6 +226,16 @@ composition pattern as `from_openapi` and `from_call`. `to_mcp` lets
 external MCP clients (an editor, an AI tool) discover and call alknet
 operations through the MCP protocol, without those clients needing to
 speak EventEnvelope.
+
+`to_mcp` uses the **tool-gateway pattern** (ADR-041): a fixed set of
+meta-tools (`search`, `schema`, `call`, `batch`) gates access to the
+full operation registry, so the LLM has a few tools in context instead
+of hundreds. This addresses the tool-bloat problem — an LLM connecting
+to a node with 200 operations gets 4 MCP tools, not 200, and discovers
+operations on demand through `search` + `schema`. Same pattern as the
+`memory` and `worktree` tools (one entry point, large dataset behind
+it), and the same principle as Linux's `man` command (don't preload all
+documentation; query on demand).
 
 The streamable-HTTP-only constraint (ADR-037) is a security position:
 alknet does not import the MCP stdio RCE vector. The streamable HTTP
@@ -213,6 +264,7 @@ every other HTTP request.
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | MCP stdio transport excluded | [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md) | Streamable HTTP only; stdio is not built |
+| `to_mcp` tool-gateway pattern | [ADR-041](../../decisions/041-mcp-tool-gateway-pattern.md) | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation; Subscription excluded |
 | `from_mcp` is an `OperationAdapter` | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Async trait; produces `HandlerRegistration` bundles |
 | `to_mcp` is a projection | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Consumes the registry, doesn't produce entries |
 | Adapter-registered ops are `Internal` | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `from_mcp` ops are composition material |

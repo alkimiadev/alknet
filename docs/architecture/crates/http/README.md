@@ -41,6 +41,7 @@ on standard ALPNs, and hosts the HTTP-backed call-protocol adapters
 | [038](../../decisions/038-http3-and-webtransport-as-first-class.md) | HTTP/3 and WebTransport as First-Class HTTP Transports | `h3` in scope, not deferred |
 | [039](../../decisions/039-http-server-and-client-host-colocated.md) | HTTP Server and Client Host Colocated in alknet-http | One crate for server + client host (shared HTTP deps, shared mapping) |
 | [040](../../decisions/040-webtransport-alpn-stream-proxy.md) | WebTransport ALPN-Stream-Proxy | Browser → WebTransport stream → any ALPN handler (SSH, git, SFTP) via WASM parser |
+| [041](../../decisions/041-mcp-tool-gateway-pattern.md) | MCP Tool-Gateway Pattern for to_mcp | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation; Subscription excluded |
 
 ## Relevant Open Questions
 
