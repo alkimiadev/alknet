@@ -49,7 +49,7 @@ alknet-core
 ├── alknet-git        (depends on alknet-core, gix)
 ├── alknet-sftp       (depends on alknet-core, russh-sftp)
 ├── alknet-msg        (depends on alknet-core)
-├── alknet-http       (depends on alknet-core, axum)
+├── alknet-http       (depends on alknet-core, alknet-call, axum, reqwest, wtransport, rmcp)
 ├── alknet-dns        (depends on alknet-core, hickory-proto)
 │
 ├── alknet-napi       (depends on alknet-call, napi-rs)
@@ -101,7 +101,7 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 | `alknet/msg` | MessageAdapter | E2E encrypted messaging, mixnet |
 | `alknet/http` | HttpAdapter | axum REST API, dashboard, MCP endpoint |
 | `alknet/dns` | DnsAdapter | DNS over QUIC/TLS, pkrr service discovery |
-| `h3` | HttpAdapter (WebTransport upgrade) | Browser-compatible WebTransport, then ALPN upgrade |
+| `h3` | HttpAdapter (HTTP/3 + WebTransport) | Browser-compatible WebTransport + HTTP/3 (first-class, ADR-038) |
 | `h2` / `http/1.1` | HttpAdapter | Standard HTTP for browsers, curl |
 
 > **Note**: `alknet/agent` is not in the ALPN registry. The agent service is a future consumer that builds on top of `alknet-call` (it depends on `alknet-call`, not `alknet-core` directly — see ADR-003). It uses the call protocol for tool dispatch and exposes agent operations (e.g., `/agent/chat`) as call-protocol operations in the `OperationRegistry`, not as a separate ALPN. The agent is a mental model that informed the core architecture (capabilities, scoped env, abort cascade) but is not specced yet — its design will change as it's built out against the implemented core crates.

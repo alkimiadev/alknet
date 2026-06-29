@@ -73,3 +73,30 @@ alknet-napi is a thin projection layer — it exposes the Rust call protocol cli
 - ADR-002: ProtocolHandler trait
 - ADR-004: Auth as shared core (IdentityProvider)
 - ADR-005: irpc as call protocol foundation
+
+## Amendments
+
+### Amendment 1 (2026-06-29): `alknet-call` is a protocol-foundation crate
+
+The Decision table lists `alknet-call` as a handler crate that "depends
+on alknet-core, irpc." The dependency-flow diagram and the "No handler
+crate depends on another handler crate" rule were written before
+`alknet-http` (which implements `from_openapi`/`from_mcp`/`to_openapi`/
+`to_mcp` and therefore needs `alknet-call`'s `OperationSpec`, `Handler`,
+`HandlerRegistration`, and `OperationAdapter` trait) was specced.
+
+**Clarification:** `alknet-call` is both a handler crate (it implements
+`ProtocolHandler` on ALPN `alknet/call`) *and* the protocol-foundation
+crate that `alknet-agent`, `alknet-napi`, and `alknet-http` consume for
+the operation registry, adapter contract, and call client. The "no
+handler crate depends on another handler crate" rule applies to peer
+handler crates (e.g., `alknet-http` does not depend on `alknet-ssh`);
+`alknet-call` is a protocol-foundation crate in the same spirit that
+`alknet-core` is, just at a different layer (operations/RPC vs.
+transport/auth/config).
+
+`alknet-http` depending on `alknet-call` is "HTTP uses the call protocol
+types," not "HTTP depends on SSH." This is within the spirit of this
+ADR's decomposition. The `alknet-call` → `alknet-http` edge is recorded
+in the `alknet-http` spec (`crates/http/overview.md`) and in the adapter
+location map (`crates/call/client-and-adapters.md`).

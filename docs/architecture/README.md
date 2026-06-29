@@ -18,7 +18,9 @@ The storage and auth strategy research (`docs/research/alknet-storage-strategy/f
 
 The alknet-call crate is **implemented and reviewed** — both the server-side core and the client/adapter surface (207 lib + 2 integration tests passing). The alknet-core and alknet-call crate specs are in draft; the alknet-vault crate specs are stable.
 
-**Next step**: The storage/repo-pattern ADRs (030–033) are accepted and amend the core and call specs. The next implementation phase is the ADR-029 migration (peer-keyed overlays, `PeerRef` routing, retire `remote_safe`/`trusted_peer`) with the ADR-030 `PeerEntry` change and the ADR-032 `forwarded_for` field folded in — the `OperationContext`, `from_call` handler, and `AuthPolicy` are all under edit, making this the cheapest window. After that: alknet-http (Phase 0 findings in `docs/research/alknet-http/`), which consumes the `CredentialStore` trait and the `OperationAdapter` contract.
+**alknet-http specs drafted.** The alknet-http crate (HTTP interface — `h2`/`http/1.1`/`h3` server + `from_openapi`/`to_openapi`/`from_mcp`/`to_mcp` adapters) now has architecture specs: [crates/http/](crates/http/) (overview, http-server, http-adapters, http-mcp, webtransport) and four new ADRs — [ADR-036](decisions/036-http-to-call-operation-mapping.md) (HTTP-to-call mapping), [ADR-037](decisions/037-mcp-stdio-transport-exclusion.md) (MCP stdio exclusion), [ADR-038](decisions/038-http3-and-webtransport-as-first-class.md) (HTTP/3 + WebTransport as first-class, correcting the Phase 0 deferral framing), [ADR-039](decisions/039-http-server-and-client-host-colocated.md) (HTTP server + client host colocated in one crate). ADR-003 Amendment 1 clarifies that `alknet-call` is a protocol-foundation crate (the `alknet-http` → `alknet-call` dependency edge). The specs are in draft; implementation has not started. Three open questions carried: OQ-38 (WebTransport relay-as-proxy scope), OQ-39 (`to_openapi` published-spec versioning), OQ-40 (reqwest client config).
+
+**Next step**: The storage/repo-pattern ADRs (030–033) are accepted and amend the core and call specs. The next implementation phase is the ADR-029 migration (peer-keyed overlays, `PeerRef` routing, retire `remote_safe`/`trusted_peer`) with the ADR-030 `PeerEntry` change and the ADR-032 `forwarded_for` field folded in — the `OperationContext`, `from_call` handler, and `AuthPolicy` are all under edit, making this the cheapest window. After that: alknet-http implementation (specs drafted, ADRs 036–038 proposed), which consumes the `CredentialStore` trait and the `OperationAdapter` contract. The alknet-ssh crate (the other post-core crate, specced in parallel) proceeds independently — it depends on `alknet-core`, not `alknet-call`.
 
 ## Architecture Documents
 
@@ -35,6 +37,12 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, EventEnvelope framing, stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
 | [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery, irpc integration |
 | [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (outbound connection opener), from_call / from_jsonschema, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern |
+| [crates/http/README.md](crates/http/README.md) | draft | alknet-http crate index |
+| [crates/http/overview.md](crates/http/overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
+| [crates/http/http-server.md](crates/http/http-server.md) | draft | HttpAdapter for h2/http1.1, axum over QUIC, Bearer auth, stealth, /healthz |
+| [crates/http/http-adapters.md](crates/http/http-adapters.md) | draft | from_openapi (reqwest) and to_openapi (projection); no-env-vars injection point |
+| [crates/http/http-mcp.md](crates/http/http-mcp.md) | draft | from_mcp / to_mcp (feature-gated), streamable-HTTP-only, stdio exclusion |
+| [crates/http/webtransport.md](crates/http/webtransport.md) | draft | h3/WebTransport handler — the browser streaming path |
 | [crates/vault/README.md](crates/vault/README.md) | stable | alknet-vault crate index |
 | [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | stable | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
 | [crates/vault/encryption.md](crates/vault/encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
@@ -80,6 +88,10 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [033](decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Accepted |
 | [034](decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Outgoing-Only X.509 and the Three Peer Roles | Accepted |
 | [035](decisions/035-concrete-persistence-adapter-shapes.md) | Concrete Persistence Adapter Shapes — Read/Write Split, honker+SQLite | Accepted |
+| [036](decisions/036-http-to-call-operation-mapping.md) | HTTP-to-Call Operation Mapping | Proposed |
+| [037](decisions/037-mcp-stdio-transport-exclusion.md) | MCP Stdio Transport Exclusion | Proposed |
+| [038](decisions/038-http3-and-webtransport-as-first-class.md) | HTTP/3 and WebTransport as First-Class HTTP Transports | Proposed |
+| [039](decisions/039-http-server-and-client-host-colocated.md) | HTTP Server and Client Host Colocated in alknet-http | Proposed |
 
 ## Open Questions
 
@@ -127,6 +139,9 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-32**: Multi-hop federation — the one-hop model is the architectural commitment; multi-hop is a feature extension that doesn't break downstream
 - **OQ-36**: ~~Concrete persistence adapter shapes~~ — **resolved by ADR-035** (read-sync / write-async / honker-NOTIFY cache invalidation; `alknet-store-sqlite` crate; `IdentityStore` write trait; `CredentialStore::put`/`delete` async)
 - **OQ-37**: ~~X.509 outgoing-only case~~ — **resolved by ADR-034** (three remote roles named: public X.509 endpoint, transport relay, hub; `PeerEntry` asymmetry is correct; client-side verifier selection by `PeerEntry` presence)
+- **OQ-38**: WebTransport relay-as-proxy scope — does the proxy live in `alknet-http` or a separate relay crate? (scope question, not deferral; ADR-038 brought h3 into scope)
+- **OQ-39**: `to_openapi` published-spec versioning — versioning strategy for generated OpenAPI specs (one-way after first publication)
+- **OQ-40**: reqwest client config and connection pooling — two-way-door config shape for the outbound HTTP client
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

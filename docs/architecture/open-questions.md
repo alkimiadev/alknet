@@ -736,13 +736,14 @@ is a feature extension, not an unmade architecture decision.
   all (no CA fallback) and fails closed — same model as iroh.
 
   **Downstream, not blocking, recorded so they don't get lost:**
-  WebTransport relay-as-proxy (browser → proxy → P2P hub) is deferred
-  with the rest of h3/WebTransport (alknet-http DH-2); ADR-030 §6's
-  fingerprint normalization already keeps the proxied path clean. On-
-  chain / smart-contract peer discovery (relays syncing git repos via
-  iroh gossip) is a *source* of `PeerEntry` records, fits the OQ-36
-  repo/adapter pattern (`alknet-peer-store-onchain` implementing
-  `IdentityProvider`), and does not change the auth model.
+  WebTransport relay-as-proxy (browser → proxy → P2P hub) is the
+  remaining scope question tracked as OQ-38 (h3/WebTransport itself is
+  now in scope, ADR-038); ADR-030 §6's fingerprint normalization already
+  keeps the proxied path clean. On-chain / smart-contract peer
+  discovery (relays syncing git repos via iroh gossip) is a *source* of
+  `PeerEntry` records, fits the OQ-36 repo/adapter pattern
+  (`alknet-peer-store-onchain` implementing `IdentityProvider`), and
+  does not change the auth model.
 
   Not blocking the ADR-029 migration — the Ed25519 path is the primary
   use case and was already resolved; this ADR closes the X.509
@@ -750,3 +751,93 @@ is a feature extension, not an unmade architecture decision.
 - **Cross-references**: ADR-027, ADR-029, ADR-030, ADR-033, ADR-034,
   OQ-29, OQ-36, [client-and-adapters.md](crates/call/client-and-adapters.md),
   [endpoint.md](crates/core/endpoint.md), [auth.md](crates/core/auth.md)
+
+## Theme: alknet-http
+
+### OQ-38: WebTransport Relay-as-Proxy Scope
+
+- **Origin**: [ADR-034](decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+  §5, [webtransport.md](crates/http/webtransport.md)
+- **Status**: open (scope, not deferral)
+- **Door type**: One-way (crate boundary), two-way (mechanism)
+- **Priority**: low
+- **Resolution**: A WebTransport proxy that terminates the browser's
+  WebTransport connection and forwards encrypted traffic to a P2P hub's
+  Ed25519 endpoint (so the hub need not expose its own public X.509
+  cert) is a real feature for the browser-to-P2P-peer case. ADR-034 §5
+  recorded it in the h3/WebTransport bucket; ADR-038 brought h3/
+  WebTransport into scope, so this OQ is now the remaining scope
+  question: does the proxy live in `alknet-http` (as a mode of the `h3`
+  handler) or in a separate relay crate?
+
+  This is a genuine scope question, not a deferral. The proxy use case
+  is not yet concrete enough to decide the crate boundary — no
+  deployment has asked for it yet, and the design (transport-only
+  proxy, no auth-model change per ADR-034 §5) is clear but the home is
+  not. The decision is made when the browser-to-P2P-peer proxy use
+  case becomes concrete; until then it is tracked here, not deferred
+  with "v1/later" language. The proxy does not change the auth model
+  (bearer token + `PeerEntry.auth_token_hash`; proxy is transport-
+  only), so it does not block any other ADR.
+- **Cross-references**: ADR-027, ADR-030, ADR-034, ADR-038,
+  [webtransport.md](crates/http/webtransport.md)
+
+### OQ-39: `to_openapi` Published-Spec Versioning
+
+- **Origin**: [ADR-017](decisions/017-call-protocol-client-and-adapter-contract.md)
+  Consequences, [http-adapters.md](crates/http/http-adapters.md)
+- **Status**: open
+- **Door type**: One-way (after first publication), two-way (before)
+- **Priority**: medium
+- **Resolution**: ADR-017 Consequences notes that published `to_*`
+  specs are compatibility contracts: once a generated OpenAPI spec is
+  published and external clients build against it, the mapping
+  semantics (e.g., subscriptions → SSE long-poll, error codes → HTTP
+  statuses) become a de facto contract. Changing the mapping later
+  breaks every client. `to_openapi` mapping choices are two-way *before*
+  first publication but one-way *after*.
+
+  The versioning strategy for generated OpenAPI specs needs
+  specifying: version the generated spec (e.g., an OpenAPI `info.version`
+  tied to the registry's `External` operation set version) and emit a
+  spec version marker so consumers can detect mapping changes. The
+  exact versioning scheme (semver tied to operation additions/changes,
+  a content-hash, a monotonically-increasing counter) is a two-way-door
+  implementation detail before first publication; the one-way constraint
+  is that the version marker is emitted and consumers can detect
+  breaking changes. This is the "published artifact is a contract"
+  blind spot in ADR-009's framework (it classifies doors by reversal
+  cost in the codebase, not by compatibility cost for external
+  consumers).
+- **Cross-references**: ADR-009, ADR-017, ADR-023, ADR-036,
+  [http-adapters.md](crates/http/http-adapters.md)
+
+### OQ-40: reqwest Client Config and Connection Pooling
+
+- **Origin**: [http-adapters.md](crates/http/http-adapters.md),
+  [http-mcp.md](crates/http/http-mcp.md), the alknet-http Phase 0
+  findings DH-7
+- **Status**: open
+- **Door type**: Two-way
+- **Priority**: low
+- **Resolution**: `alknet-http` maintains a shared `reqwest::Client`
+  (constructed once, reused across all `from_openapi`/`from_mcp`
+  forwarding handlers) with connection pooling, keep-alive, and TLS.
+  The aisdk `core/client.rs` reference shows the pattern worth
+  referencing: `OnceLock<reqwest::Client>`, retry logic (exponential
+  backoff, `Retry-After` header), and separate streaming vs
+  non-streaming clients.
+
+  The exact pooling/retry config (pool size, retry policy, timeout
+  defaults, hot-reloadability via `DynamicConfig`) is a two-way-door
+  implementation detail. The one-way constraints are: (1)
+  `alknet-http` owns its `reqwest::Client` (no env-var-based client
+  config, no shared global client), (2) credential injection happens
+  per-request (from `OperationContext.capabilities`), not at client
+  construction (the client is shared across all operations, the
+  credentials are per-call), and (3) TLS for outbound calls uses the
+  system trust store by default (custom CA bundle + client certs are
+  an optional config for self-hosted API gateways). This OQ tracks the
+  two-way-door config shape; the constraints are settled.
+- **Cross-references**: ADR-014, ADR-017,
+  [http-adapters.md](crates/http/http-adapters.md)
