@@ -17,7 +17,8 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | Document | Status | Description |
 |----------|--------|-------------|
 | [overview.md](overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
-| [http-server.md](http-server.md) | draft | `HttpAdapter` (`ProtocolHandler` for `h2`/`http/1.1` + WS upgrade), axum over QUIC, Bearer auth, stealth, `/healthz`, WebSocket browser path |
+| [http-server.md](http-server.md) | draft | `HttpAdapter` (`ProtocolHandler` for `h2`/`http/1.1` + WS upgrade route), axum over QUIC, Bearer auth, stealth, `/healthz`; WS hands off to the native session spec |
+| [websocket.md](websocket.md) | draft | WebSocket browser bidirectional path — native `EventEnvelope` call-protocol session (not the gateway shape, ADR-048); framing, dispatch, bidirectionality, connection-local Layer 2 overlay, browsers-are-not-peers rationale, streaming (native `call.responded`, no SSE), deferred `from_wss` adapter |
 | [http-adapters.md](http-adapters.md) | draft | `from_openapi` (reqwest client) and `to_openapi` (OpenAPI projection); no-env-vars invariant point |
 | [http-mcp.md](http-mcp.md) | draft | `from_mcp` / `to_mcp` (feature-gated), streamable-HTTP-only, stdio exclusion |
 | [webtransport.md](webtransport.md) | deferred | `h3`/WebTransport handler — **deferred per ADR-044**; spec kept intact for revival |
@@ -51,6 +52,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | to_openapi Gateway-Spec Versioning | Published gateway doc carries `info.version` (semver) tracking the gateway endpoint contract, not the operation set; consumers detect breaking changes via the major version |
 | [046](../../decisions/046-assembly-layer-custom-http-routes.md) | Assembly-Layer Custom HTTP Routes on HttpAdapter | `extra_routes: Option<Router>` at construction; deployments add raw HTTP endpoints (e.g., OAI-compatible proxy, or a REST-like per-operation projection) that coexist with the default surface; default surface takes precedence on collision |
 | [047](../../decisions/047-remove-direct-call-http-surface.md) | Remove the Direct-Call HTTP Surface; Gateway Is the Sole Invoke Path | `POST /{service}/{op}` direct-call surface removed; the 5 gateway endpoints are the sole invoke path; per-caller `AccessControl`-filtered `/search` is the discovery; ADR-036's non-routing clauses survive |
+| [048](../../decisions/048-websocket-native-session-not-gateway.md) | WebSocket Carries the Native Call-Protocol Session, Not the Gateway Shape | WS is the native `EventEnvelope` session; the gateway endpoints (`/search`/`/schema`/`/call`/`/batch`/`/subscribe`) are HTTP-only and do not appear on WS; discovery via `services/list`/`services/schema` as call-protocol ops |
 
 ## Relevant Open Questions
 
@@ -107,16 +109,25 @@ protocol), and hosts the HTTP-backed call-protocol adapters
    arbitrary executable = RCE. Streamable HTTP is network-isolated,
    auth-gatable, and runs under alknet's auth model. See
    [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md).
-6. **WebSocket is the browser bidirectional path.** A browser upgrades
-   an HTTP/1.1 or HTTP/2 request to WebSocket and speaks the call
+6. **WebSocket is the browser bidirectional path, and it carries the
+   native call-protocol session, not the gateway shape.** A browser
+   upgrades an HTTP/1.1 or HTTP/2 request to WebSocket and speaks the call
    protocol over binary WS messages — full-duplex, both sides can
    initiate calls (the call protocol's native bidirectionality, ADR-012).
-   HTTP/3 + WebTransport (`h3`) is deferred per
+   The `to_openapi` gateway endpoints (`/search`/`/schema`/`/call`/`/batch`/
+   `/subscribe`, ADR-042/047) are the HTTP one-directional projection and
+   **do not appear on the WebSocket path** — WS is the call protocol's
+   own native session, with discovery via `services/list`/`services/schema`
+   as ordinary call-protocol ops (ADR-048). HTTP/3 + WebTransport (`h3`)
+   is deferred per
    [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md)
    — a scope decision (the browser bidirectional path doesn't require
-   WebTransport's stream model; WebSocket suffices). The reversal
-   trigger is a concrete ALPN-stream-proxy use case (a browser running
-   a WASM SSH/SFTP/git client).
+   WebTransport's stream model; WebSocket suffices). The reversal trigger
+   is a concrete ALPN-stream-proxy use case (a browser running a WASM
+   SSH/SFTP/git client). See [websocket.md](websocket.md) for the full
+   spec, including the deferred `from_wss` adapter (out of scope — a
+   future `from_call`-aligned importer over WS, not needed for the v1
+   browser-client case).
 7. **Browsers are not alknet peers.** A browser over WebSocket (or, when
    it revives, WebTransport) authenticates by bearer token, gets no
    `PeerId`, and its registered ops land in a connection-local Layer 2

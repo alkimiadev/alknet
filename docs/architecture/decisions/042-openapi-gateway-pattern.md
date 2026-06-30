@@ -219,7 +219,8 @@ require it for the common case.
    browser bidirectional path, ADR-044), subscriptions project onto the
    WS connection directly as binary messages — the gateway's `/subscribe`
    is the `h2`/`http/1.1` SSE path; the WebSocket path is the native
-   call-protocol session (`http-server.md` §"WebSocket browser path").
+   call-protocol session (`websocket.md`; the gateway shape does not
+   appear on WS per [ADR-048](048-websocket-native-session-not-gateway.md)).
    WebTransport (`h3`, deferred per ADR-044) would project onto
    WebTransport streams; the deferred design is at
    `webtransport.md`.

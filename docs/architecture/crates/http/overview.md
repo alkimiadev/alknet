@@ -157,11 +157,15 @@ alknet-call (lean — no HTTP client, no HTTP server)
 └── CallClient                   (outbound connection opener)
 
 alknet-http (owns HTTP server + HTTP client)
-├── HttpAdapter                  (axum server — inbound HTTP on h2/http1.1 + WS upgrade)
+├── HttpAdapter                  (axum server — inbound HTTP on h2/http1.1 + WS upgrade route)
+├── [WS upgrade → native session] (hands the WS message stream to the shared Dispatcher —
+│                                not an adapter; see websocket.md, ADR-048)
 ├── from_openapi                 (parse OpenAPI doc + reqwest forwarding handler)
 ├── to_openapi                   (generate OpenAPI doc from local registry)
 ├── from_mcp   (feature-gated)   (import remote MCP tools over streamable HTTP — reqwest)
-└── to_mcp     (feature-gated)   (expose local ops as MCP tools over streamable HTTP — axum)
+├── to_mcp     (feature-gated)   (expose local ops as MCP tools over streamable HTTP — axum)
+└── from_wss   (out of scope)    (future: import a remote alknet node's ops over WS —
+                                 from_call-aligned, same-protocol; see websocket.md §"Future")
 ```
 
 `alknet-call` never sees the HTTP client. The `from_openapi`/`from_mcp`
@@ -223,10 +227,16 @@ verified against this invariant. See ADR-014 and
 ## Architecture (component pointers)
 
 - **[http-server.md](http-server.md)** — the `HttpAdapter` for `h2`/
-  `http/1.1` (+ WebSocket upgrade): how axum is run over a QUIC
+  `http/1.1` (+ the WS upgrade route): how axum is run over a QUIC
   bidirectional stream, Bearer auth resolution, the `/healthz` raw route,
-  stealth decoy, the HTTP-to-call dispatch (ADR-036), and the WebSocket
-  browser bidirectional path (ADR-044).
+  stealth decoy, the HTTP-to-call dispatch (ADR-036/042/047), and the
+  WS upgrade route (which hands off to the native call-protocol session).
+- **[websocket.md](websocket.md)** — the WebSocket browser bidirectional
+  path: native `EventEnvelope` call-protocol session (not the gateway
+  shape, ADR-048), framing, dispatch via the shared `Dispatcher`,
+  bidirectionality, connection-local Layer 2 overlay, the
+  browsers-are-not-peers rationale, streaming (native `call.responded`,
+  no SSE), and the deferred `from_wss` adapter.
 - **[http-adapters.md](http-adapters.md)** — `from_openapi` (parse
   OpenAPI, build forwarding handlers with `reqwest`) and `to_openapi`
   (generate an OpenAPI doc from the registry's `External` operations).
@@ -244,6 +254,7 @@ verified against this invariant. See ADR-014 and
 | HTTP-to-call operation mapping | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | ~~Direct path mapping~~ — **routing superseded by ADR-047**; gateway `/call` is the sole invoke path; ADR-036's non-routing clauses survive (SSE, auth, `/healthz`, stealth, error mapping) |
 | MCP stdio transport exclusion | [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md) | Streamable HTTP only; stdio is not built (RCE vector) |
 | Defer h3/WebTransport; browsers use WebSocket | [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md) | `h3`/WebTransport deferred (scope, not hedging); browser bidirectional path uses WebSocket; ADR-038 superseded, ADR-040/043 parked |
+| WebSocket carries the native session, not the gateway shape | [ADR-048](../../decisions/048-websocket-native-session-not-gateway.md) | WS is the native `EventEnvelope` session; the gateway endpoints are HTTP-only; discovery via `services/list`/`services/schema` as call-protocol ops; subscriptions as native `call.responded` events (no SSE) |
 | HTTP server + client host colocated | [ADR-039](../../decisions/039-http-server-and-client-host-colocated.md) | One crate for server + adapters (shared HTTP deps, shared mapping) |
 | ~~HTTP/3 + WebTransport first-class~~ | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | **Superseded by ADR-044** (anti-pattern correction stands; specific decision reversed) |
 | ~~WebTransport ALPN-stream-proxy~~ | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | **Parked** per ADR-044; revives unchanged when WebTransport revives |

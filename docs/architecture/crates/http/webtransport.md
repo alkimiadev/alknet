@@ -9,7 +9,7 @@ last_updated: 2026-06-30
 > This spec is kept intact for revival. `h3`/WebTransport is not
 > implemented in the initial `alknet-http` release; the browser
 > bidirectional path uses WebSocket (see
-> [http-server.md](http-server.md) §"WebSocket browser path"). ADR-038
+> [websocket.md](websocket.md)). ADR-038
 > is superseded; ADR-040 and ADR-043 are parked (their decisions revive
 > unchanged when WebTransport revives). The reversal trigger is a
 > concrete deployment needing the ALPN-stream-proxy (a browser running
