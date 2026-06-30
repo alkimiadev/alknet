@@ -277,8 +277,9 @@ every other HTTP request.
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-40** (open): reqwest client config — the shared `reqwest::Client`
-  used by `from_mcp` (same client as `from_openapi`).
+- **OQ-40** (resolved): reqwest client config — the shared
+  `ClientWithMiddleware` used by `from_mcp` (same client as
+  `from_openapi`).
 
 ## References
 

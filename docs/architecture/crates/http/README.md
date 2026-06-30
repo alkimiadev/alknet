@@ -62,7 +62,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | OQ-37 | X.509 outgoing-only / three peer roles | resolved | Browsers are not peers; hub with mixed fingerprints |
 | OQ-38 | WebTransport standalone relay service scope | open (scope, not deferral) | The standalone relay (future `alknet-relay`, fork of iroh-relay) — distinct from the in-process ALPN-stream-proxy (ADR-040) |
 | OQ-39 | `to_openapi` published-spec versioning | open | Versioning strategy for generated OpenAPI specs |
-| OQ-40 | reqwest client config and connection pooling | open | Two-way-door: pooling/retry config shape |
+| OQ-40 | reqwest client config and connection pooling | resolved | `ClientWithMiddleware` + `RetryTransientMiddleware` + inlined `RetryAfterMiddleware`; rebuild-and-swap hot-reload |
 
 ## Key Design Principles
 

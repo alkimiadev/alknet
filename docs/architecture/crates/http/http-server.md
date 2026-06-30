@@ -394,9 +394,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-39** (open): `to_openapi` published-spec versioning — the
   generated OpenAPI spec is a compatibility contract (ADR-017
   Consequences); the versioning strategy needs specifying.
-- **OQ-40** (open): reqwest client config and connection pooling —
-  two-way-door config shape for the outbound HTTP client used by
-  `from_openapi`/`from_mcp`.
+- **OQ-40** (resolved): reqwest client config and connection pooling —
+  `ClientWithMiddleware` + middleware stack; the outbound HTTP client
+  used by `from_openapi`/`from_mcp`.
 
 ## References
 

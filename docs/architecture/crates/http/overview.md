@@ -274,8 +274,8 @@ See [open-questions.md](../../open-questions.md) for full details.
   live in `alknet-http` or a separate relay crate?
 - **OQ-39** (open): `to_openapi` published-spec versioning — versioning
   strategy for generated OpenAPI specs.
-- **OQ-40** (open): reqwest client config and connection pooling —
-  two-way-door config shape.
+- **OQ-40** (resolved): reqwest client config and connection pooling —
+  `ClientWithMiddleware` + middleware stack (retry + Retry-After).
 
 ## References
 

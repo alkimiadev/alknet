@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-29
+last_updated: 2026-06-30
 ---
 
 # Alknet Architecture
@@ -127,6 +127,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-22**: Key rotation — version-indexed derivation paths; `rotate` method re-encrypts (ADR-021)
 - **OQ-23**: Handler identity registration path — registration bundle with provenance, composition authority, scoped env, capabilities (ADR-022)
 - **OQ-24**: Operation error schemas — declared domain errors with typed `details` payload; adapter fidelity for `from_openapi`/`to_openapi` (ADR-023)
+- **OQ-40**: reqwest client config and connection pooling — `ClientWithMiddleware` + `RetryTransientMiddleware` + inlined `RetryAfterMiddleware`; rebuild-and-swap hot-reload; per-request credential injection; agent-crate SSE normalization sits on top of the client, doesn't replace it
 
 **Resolved by the storage/repo-pattern ADRs (ADR-030–033):**
 - **OQ-33**: ~~PeerId stability~~ — **resolved by ADR-030** (logical id; source is `Identity.id` = `PeerEntry.peer_id`, stable across key rotation; UUID workaround removed)
@@ -146,7 +147,6 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-37**: ~~X.509 outgoing-only case~~ — **resolved by ADR-034** (three remote roles named: public X.509 endpoint, transport relay, hub; `PeerEntry` asymmetry is correct; client-side verifier selection by `PeerEntry` presence)
 - **OQ-38**: WebTransport standalone relay service scope — the standalone relay (future `alknet-relay`, fork of iroh-relay with WebTransport proxy fallback) is distinct from the in-process ALPN-stream-proxy (ADR-040); scope question, not deferral
 - **OQ-39**: `to_openapi` published-spec versioning — versioning strategy for generated OpenAPI specs (one-way after first publication)
-- **OQ-40**: reqwest client config and connection pooling — two-way-door config shape for the outbound HTTP client
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable

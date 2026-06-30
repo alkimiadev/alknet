@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-29
+last_updated: 2026-06-30
 ---
 
 # HTTP Adapters — from_openapi and to_openapi
@@ -130,7 +130,7 @@ The forwarding handler is the `Arc<dyn Handler>` stored in the
    - Headers: `Content-Type: application/json` + the auth header built
      from `context.capabilities` (see No-Env-Vars below).
    - Body: the `body` field of the input (for `Mutation`/`Subscription`).
-3. Sends the request via the shared `reqwest::Client` (see HTTP Client
+3. Sends the request via the shared HTTP client (see HTTP Client
    below).
 4. For a `Query`/`Mutation`: parses the response body (JSON, text, or
    binary — same content-type branching as the TS `createHTTPOperation`),
@@ -146,22 +146,69 @@ the registry dispatches. `alknet-call` never sees `reqwest`.
 
 ### HTTP client (reqwest)
 
-`alknet-http` maintains a shared `reqwest::Client` (constructed once,
-reused across all `from_openapi`/`from_mcp` forwarding handlers). The
-client handles connection pooling, keep-alive, and TLS. The aisdk
-`core/client.rs` reference shows the pattern worth referencing: a shared
-client with `OnceLock<reqwest::Client>`, retry logic (exponential
-backoff, `Retry-After` header), and separate streaming vs non-streaming
-clients. `alknet-http` owns its HTTP client; it does not inherit aisdk's.
+`alknet-http` maintains a shared HTTP client, constructed once and reused
+across all `from_openapi`/`from_mcp` forwarding handlers. The client owns
+connection pooling, keep-alive, TLS, and a retry stack. The shared type is
+`reqwest_middleware::ClientWithMiddleware`, not a bare `reqwest::Client` —
+both retry and Retry-After are middleware on the stack, and middleware
+requires the `ClientWithMiddleware` wrapper.
 
-The retry/pooling config comes from `StaticConfig` or `DynamicConfig`
-(hot-reloadable). The credential injection happens per-request (from
-`OperationContext.capabilities`), not at client construction — the
-client is shared across all operations, the credentials are per-call.
+The middleware stack has two layers:
 
-The exact pooling/retry config is a two-way-door implementation detail
-(OQ-40); the one-way constraint is that `alknet-http` owns its `reqwest`
-client (no env-var-based client config, no shared global client).
+1. **`RetryTransientMiddleware`** (from `reqwest-retry`) — exponential
+   backoff on transient failures (connection errors, 5xx). The "retry N
+   times with increasing intervals" part. Configured via an
+   `ExponentialBackoff` policy at client construction.
+2. **Inlined `RetryAfterMiddleware`** — parses the `Retry-After` header
+   on 429/503 and sleeps before the next request to that URL. The
+   "respect what the server told you" part. Inlined (MIT, ~50 lines of
+   real logic) from `melotic/reqwest-retry-after`, not pulled as a
+   dependency: the crate is complementary to `reqwest-retry` (whose
+   default strategy does not honor `Retry-After`), and inlining lets
+   the upstream's unbounded `HashMap<Url, SystemTime>` storage be
+   bounded for a long-running process.
+
+Pooling, keep-alive, and TLS come from `reqwest::ClientBuilder` defaults;
+outbound TLS uses the system trust store (standard HTTPS to external APIs
+like OpenAI, Anthropic). Custom CA bundle + client certs are an optional
+config for self-hosted API gateways (two-way-door implementation detail;
+the credential comes from `Capabilities`, the TLS trust comes from the
+system).
+
+Credential injection happens per-request (from
+`OperationContext.capabilities`), not at client construction — the client
+is shared across all operations, the credentials are per-call.
+
+Hot-reload of the pooling/retry config is **rebuild-and-swap**: a config
+change rebuilds the `ClientWithMiddleware` and swaps it via `ArcSwap`
+(the same pattern `ConfigIdentityProvider` uses, ADR-035). A rebuild
+drops the connection pool / keep-alive state, which is acceptable — a
+config change wanting a fresh pool is the case that triggers it. The
+retry policy is baked into the middleware at `ClientBuilder::build()`
+time; live policy mutation is not supported by `reqwest-retry`, so cheap
+per-policy updates are not part of the model.
+
+The exact pooling/retry config (pool size, retry count, timeout
+defaults, hot-reloadability via `DynamicConfig`) is a two-way-door
+implementation detail (OQ-40, now resolved); the one-way constraint is
+that `alknet-http` owns its HTTP client (no env-var-based client config,
+no shared global client).
+
+**Downstream layering boundary.** The agent crate's provider SSE
+normalization (replicating the solid part of aisdk's pattern — the
+Vercel-UI-message normalization that maps different providers' SSE to a
+common shape) sits on top of this `ClientWithMiddleware`: it consumes the
+`reqwest::Response` stream the forwarding handler produces and emits
+`call.responded` events. It does not replace the client or own
+transport/pooling/retry. `alknet-http` owns transport; the agent crate
+owns provider-specific SSE → Vercel-UI-message mapping. The aisdk
+`core/client.rs` reference for HTTP client construction is *not* carried
+forward — its env-var config and hand-rolled retry are the anti-patterns
+discarded in favor of the middleware stack above. The
+`@alkdev/operations/src/from_openapi.ts` SSE *normalization* pattern is
+separate and stays referenced in the Forwarding Handler section above
+(the `parseSSEFrames`, `createHTTPOperation`, content-type branching
+patterns).
 
 ### No-Env-Vars credential injection
 
@@ -332,9 +379,12 @@ once published, the 5-endpoint gateway shape is one-way.
   generated spec's versioning (tied to the registry's `External`
   operation set version) must be emitted so consumers can detect mapping
   changes (ADR-017 Consequences, OQ-39).
-- **`alknet-http` owns its `reqwest::Client`.** Shared across all
-  forwarding handlers, constructed once. No env-var-based client config.
-  Pooling/retry config is a two-way door (OQ-40).
+- **`alknet-http` owns its HTTP client.** Shared across all forwarding
+  handlers, constructed once. The shared type is
+  `reqwest_middleware::ClientWithMiddleware` (middleware stack:
+  `RetryTransientMiddleware` + inlined `RetryAfterMiddleware`). No
+  env-var-based client config. Pooling/retry config is a two-way door,
+  resolved in OQ-40.
 - **TLS for outbound calls uses the system trust store by default.**
   Standard HTTPS to external APIs (OpenAI, Anthropic). Custom CA bundle
   + client certs are an optional config for self-hosted API gateways.
@@ -363,9 +413,10 @@ See [open-questions.md](../../open-questions.md) for full details.
   versioning strategy for generated OpenAPI specs (tied to the
   registry's `External` operation set version). One-way after first
   publication.
-- **OQ-40** (open): reqwest client config and connection pooling —
-  two-way-door: the exact pooling/retry config shape, hot-reloadable
-  via `DynamicConfig`.
+- **OQ-40** (resolved): reqwest client config and connection pooling —
+  `ClientWithMiddleware` + `RetryTransientMiddleware` + inlined
+  `RetryAfterMiddleware`; rebuild-and-swap hot-reload; per-request
+  credential injection. Two-way-door config shape, now resolved.
 
 ## References
 
@@ -379,6 +430,11 @@ See [open-questions.md](../../open-questions.md) for full details.
   `OperationAdapter` trait, `AdapterError` variants (OQ-26), no-env-vars
   invariant
 - `/workspace/@alkdev/operations/src/from_openapi.ts` — TypeScript prior
-  art (parsing, SSE, auth headers, `createHTTPOperation`)
-- `/workspace/aisdk/src/core/client.rs` — HTTP client reference (pooling,
-  retry, streaming vs non-streaming)
+  art (parsing, SSE, auth headers, `createHTTPOperation`,
+  `parseSSEFrames` — the SSE normalization patterns, not the client
+  construction)
+- `reqwest-retry` crate (https://docs.rs/reqwest-retry/) —
+  `RetryTransientMiddleware` / `ExponentialBackoff` retry policy
+- `melotic/reqwest-retry-after`
+  (https://github.com/melotic/reqwest-retry-after) — `RetryAfterMiddleware`
+  source (MIT, inlined, not a dependency)
