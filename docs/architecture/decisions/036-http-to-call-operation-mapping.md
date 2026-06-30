@@ -2,7 +2,13 @@
 
 ## Status
 
-Proposed
+Proposed — **routing decision superseded by
+[ADR-047](047-remove-direct-call-http-surface.md)** (the direct-call
+surface `POST /{service}/{op}` is removed; the gateway `/call` is the
+sole invoke path). ADR-036's other clauses — SSE projection, Bearer
+auth, `/healthz`, stealth decoy, error mapping, `External`-only
+dispatch — remain in force (see ADR-047 §"What survives from
+ADR-036"). The `to_openapi` clause was already superseded by ADR-042.
 
 ## Context
 
@@ -42,6 +48,15 @@ routing table that has to be kept in sync with the registry.
 
 ## Decision
 
+> **Routing decision superseded by
+> [ADR-047](047-remove-direct-call-http-surface.md).** The direct-call
+> surface defined below (`POST /{service}/{op}` → `call.requested`) is
+> removed — the gateway's `/call` endpoint (ADR-042) is the sole invoke
+> path over HTTP. This section is retained as the historical record of
+> the original decision; ADR-047 records the reversal and what survives.
+> The `to_openapi` clause below was already superseded by ADR-042 (see
+> the amendment in this section).
+
 **Direct path mapping is the default HTTP surface; `to_openapi` is the
 discovery/projection layer, not a parallel router.**
 
@@ -68,10 +83,16 @@ serves; there is no second mapping.
 > table" property is preserved (the gateway endpoints are fixed; the
 > per-caller operation surface is discovered via `/search`, not preloaded
 > into a generated path set). The direct-call surface (`POST
-> /{service}/{op}`) that this ADR defines is **unchanged** — ADR-042 only
-> changes what `to_openapi` *describes*, not what the HTTP handler
-> *serves*. A traditional per-operation-paths OpenAPI projection remains
-> available as an additive alternative (ADR-042 §5).
+> /{service}/{op}`) that this ADR defines was **unchanged at the time**
+> — ADR-042 only changed what `to_openapi` *describes*, not what the
+> HTTP handler *serves*. **The direct-call surface was later removed by
+> [ADR-047](047-remove-direct-call-http-surface.md)** (the gateway
+> `/call` is the sole invoke path; the simplified contract is a few
+> fixed endpoints, not a per-operation REST tree). A traditional
+> per-operation-paths OpenAPI projection remains available as an
+> additive alternative (ADR-042 §5), and a deployment that wants the
+> former direct-call HTTP surface builds it as a custom route
+> projection (ADR-046).
 
 ### HTTP method semantics
 
@@ -212,7 +233,11 @@ without auth before identity is resolvable.
 - [ADR-042](042-openapi-gateway-pattern.md) — supersedes this ADR's
   `to_openapi` clause (the per-operation-paths projection is replaced by
   the 5-endpoint gateway pattern; the direct-call surface this ADR
-  defines is unchanged)
+  defines is unchanged — *at the time*; ADR-047 later removes it)
+- [ADR-047](047-remove-direct-call-http-surface.md) — supersedes this
+  ADR's routing decision (the direct-call surface is removed; the
+  gateway `/call` is the sole invoke path). This ADR's non-routing
+  clauses survive.
 - OQ-13 (resolved) — operation path format `/{service}/{op}`
 - `docs/research/alknet-http/phase-0-findings.md` DH-3 — the decision this
   ADR resolves

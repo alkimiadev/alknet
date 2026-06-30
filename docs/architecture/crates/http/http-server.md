@@ -29,6 +29,11 @@ pub struct HttpAdapter {
     /// (stealth decoy). Configurable: a static site, a fake 404, a
     /// redirect. Two-way-door default (ADR-010).
     decoy: DecoyConfig,
+    /// Deployment-specific routes added by the assembly layer (ADR-046).
+    /// None = the default surface only. Custom routes are raw HTTP, not
+    /// call-protocol operations; they coexist with the default surface and
+    /// are not described by `to_openapi`.
+    extra_routes: Option<Router>,
 }
 
 /// The stealth decoy surface for paths that are not registered
@@ -105,63 +110,83 @@ identity provider through the router's state.
 The axum `Router` is the single routing surface for HTTP requests. It
 contains:
 
-- **The direct-call surface** (`POST /{service}/{op}` → `call.requested`
-  dispatch — ADR-036). This is the HTTP projection of the call protocol's
-  `/{service}/{op}` operation path; an HTTP client that knows the
-  operation name calls it directly.
 - **The `to_openapi` gateway endpoints** (`/search`, `/schema`, `/call`,
-  `/batch`, `/subscribe` — ADR-042). These are the fixed 5-endpoint
-  gateway that an OpenAPI consumer uses to discover and invoke
-  operations without knowing operation names up front. `/call` and
-  `/subscribe` dispatch through the same `OperationRegistry::invoke()`
-  as the direct-call surface; `/search` and `/schema` dispatch the
-  `services/list` / `services/schema` discovery ops. The gateway and
-  the direct-call surface coexist on the same router — they are two
-  projections of the same operation registry, not two registries.
+  `/batch`, `/subscribe` — ADR-042). These 5 fixed endpoints are the
+  sole invoke path over HTTP: an HTTP client invokes an operation via
+  `POST /call` with `{ "operation": "/{service}/{op}", "input": {...} }`,
+  discovers available operations via `GET /search`
+  (`AccessControl`-filtered), and learns an operation's shape via `GET
+  /schema`. `/subscribe` is the SSE streaming invoke path. There is no
+  per-operation `POST /{service}/{op}` direct-call surface — the
+  gateway is the invoke path (ADR-047 supersedes ADR-036's direct-call
+  surface; the simplified contract is a few fixed endpoints, not a
+  per-operation REST tree). `/call` and `/subscribe` dispatch through
+  `OperationRegistry::invoke()`; `/search` and `/schema` dispatch the
+  `services/list` / `services/schema` discovery ops.
 - `GET /healthz` (raw route, no auth, no call protocol).
 - `GET /openapi.json` (serves the `to_openapi` projection — the OpenAPI
-  document that *describes* the 5 gateway endpoints. Post-ADR-042 this
-  is the gateway's description doc, not a per-operation REST spec; the
-  doc describes the 5 fixed endpoints, and the per-caller operation
-  surface is discovered via `/search`, not preloaded into `paths`).
+  document that *describes* the 5 gateway endpoints. The doc describes
+  the 5 fixed endpoints, and the per-caller operation surface is
+  discovered via `/search`, not preloaded into `paths`. The doc carries
+  `info.version` (semver) tracking the gateway endpoint contract —
+  consumers detect breaking changes via the major version (ADR-045)).
 - The stealth decoy fallback (unknown paths).
 - (Feature-gated) `POST /mcp` (the `to_mcp` streamable HTTP service —
   [http-mcp.md](http-mcp.md)).
+- **Deployment-specific custom routes** (ADR-046). The assembly layer
+  may inject an `axum::Router` of extra routes at `HttpAdapter`
+  construction — e.g., an OpenAI-compatible proxy at
+  `/v1/chat/completions` that dispatches into the registry. These are
+  raw HTTP, not call-protocol operations: not in the
+  `OperationRegistry`, not discoverable via `/search`, not described
+  by `to_openapi`. The default surface's reserved paths take precedence
+  on collision; custom routes namespace away from the reserved set
+  naturally (`/v1/...`). A deployment that passes no extra routes gets
+  exactly the default surface above. A deployment that wants a
+  REST-like per-operation HTTP surface (the former direct-call shape)
+  builds it as a custom route projection (ADR-047 §4). See ADR-046 and
+  §"Custom routes" below.
 
 A single HTTP/2 or HTTP/1.1 connection multiplexes multiple requests
 over the one bidirectional stream (HTTP/2 multiplexing is native;
 HTTP/1.1 is sequential). The axum router handles each request on a
 tokio task; the hyper driver manages the connection lifetime.
 
-### HTTP-to-call dispatch (ADR-036)
+### HTTP-to-call dispatch (the gateway's `/call`; ADR-042, ADR-047)
 
-An HTTP request at `POST /fs/readFile` (or `GET /services/list`, or any
-`/{service}/{op}` path matching a registered `External` operation) is
-dispatched to the call protocol:
+An HTTP client invokes an operation via the gateway's `/call` endpoint:
 
-1. The axum route handler extracts the operation name from the path
-   (`/fs/readFile` → `fs/readFile`, stripping the leading slash — the
-   registry form).
+1. The axum route handler for `POST /call` reads the JSON body
+   `{ "operation": "/fs/readFile", "input": {...} }`.
 2. It resolves the caller's identity from the `Authorization: Bearer`
    header via `identity_provider.resolve_from_token(&AuthToken { raw:
    token_bytes })`.
-3. It parses the request body as the operation input (JSON).
-4. It constructs the root `OperationContext` (caller identity, the
+3. It constructs the root `OperationContext` (caller identity, the
    registration bundle's capabilities, the connection's env composition)
    and dispatches through the `OperationRegistry::invoke()` — the same
    dispatch path the `CallAdapter` uses for `alknet/call` wire requests.
-5. The response (`ResponseEnvelope`) is serialized as the HTTP response
+4. The response (`ResponseEnvelope`) is serialized as the HTTP response
    body (JSON). Errors map to HTTP status codes (see Error Mapping
    below).
 
-`Internal` operations (ADR-015) return `404` on the HTTP handler,
-matching the call protocol's `NOT_FOUND` for wire calls to Internal
-ops — the HTTP handler dispatches only `External` operations.
+`Internal` operations (ADR-015) return `404` (`NOT_FOUND`) — the gateway
+dispatches only `External` operations, and the caller discovers which
+`External` operations it can call via the `AccessControl`-filtered
+`/search` endpoint. This is the per-caller API surface property that
+the direct-call surface (removed, ADR-047) lacked: an HTTP client cannot
+stub its toe on a path for an operation it can't call, because there is
+no per-operation path — `/search` tells it what it can call, `/call`
+invokes it, and the `AccessControl` check runs on `/call` regardless.
 
-### Streaming projection (SSE)
+`/batch` follows the same dispatch path with an array of
+`{ operation, input }` pairs (OQ-14); `/subscribe` follows it with the
+SSE streaming projection (below).
 
-A `Subscription` operation served over `h2`/`http/1.1` projects its
-`call.responded` stream as Server-Sent Events. The axum route handler:
+### Streaming projection (SSE — the gateway's `/subscribe`)
+
+A `Subscription` operation invoked via the gateway's `/subscribe`
+endpoint projects its `call.responded` stream as Server-Sent Events.
+The axum route handler:
 
 - Sets `Content-Type: text/event-stream`.
 - For each `call.responded` event, writes an SSE `data:` frame (the
@@ -333,10 +358,10 @@ routes. `healthz` is the one exception. See ADR-036.
 
 ### Stealth decoy
 
-For paths that are not registered operations (and not `/healthz`,
-`/openapi.json`, the `to_openapi` gateway endpoints `/search`/`/schema`/
-`/call`/`/batch`/`/subscribe`, or the MCP route), the HTTP handler serves
-a decoy. The decoy is configurable (`DecoyConfig`):
+For paths that are not the gateway endpoints (`/search`, `/schema`,
+`/call`, `/batch`, `/subscribe`), `/healthz`, `/openapi.json`, the MCP
+route, or a custom route per ADR-046), the HTTP handler serves a decoy.
+The decoy is configurable (`DecoyConfig`):
 
 - A fake `404 Not Found` (the default — matches the reference
   implementation's "fake nginx 404").
@@ -347,19 +372,71 @@ The decoy is the stealth surface: a port scanner or a client that
 doesn't offer alknet ALPNs connects on `h2`/`http/1.1` and sees the
 decoy. Real services use `alknet/ssh`, `alknet/call`, etc. The decoy
 config is a two-way-door default (an operator picks what to serve); the
-*existence* of the stealth path is fixed by ADR-010.
+*existence* of the stealth path is fixed by ADR-010. Custom routes
+(ADR-046) take precedence over the decoy — a path matched by a custom
+route is served by it, not the decoy; the decoy is the fallback for
+paths matched by neither the default surface nor a custom route.
+
+### Custom routes (ADR-046)
+
+A deployment that needs HTTP endpoints outside the default surface
+(direct-call + gateway + `/healthz` + `/openapi.json` + MCP) injects
+them as an `axum::Router` at `HttpAdapter` construction. The classic use
+case: an OpenAI-compatible proxy at `/v1/chat/completions` that wraps a
+call-protocol operation (the deployment parses the OAI request, invokes
+an `openai/chat` or `agent/chat` op via `OperationRegistry::invoke()`,
+reformats the response as an OAI response). The hub is a standard
+alknet node *plus* a deployment-specific HTTP surface.
+
+Custom routes:
+
+- Are **raw HTTP**, not call-protocol operations — not registered in the
+  `OperationRegistry`, not discoverable via `/search`, not in the
+  `to_openapi` gateway doc.
+- **May** dispatch into the registry via
+  `OperationRegistry::invoke()` with a proper `OperationContext`
+  (caller identity from the resolved bearer token) — the OAI proxy
+  does this. Or they may be pure HTTP (a webhook receiver, a static
+  asset server) that never touches the registry.
+- Run under the **default Bearer-auth middleware**; a route that wants
+  different auth applies its own axum middleware (the deployment owns
+  its custom routes' middleware stack).
+- **Do not collide** with the reserved default-surface paths
+  (`/{service}/{op}`, `/search`, `/schema`, `/call`, `/batch`,
+  `/subscribe`, `/healthz`, `/openapi.json`, the MCP route) — the
+  default surface wins on collision; custom routes namespace away
+  naturally (`/v1/...`).
+- Are **not versioned** by `to_openapi` (ADR-045 versions the gateway
+  contract, not custom routes). The deployment versions its own custom
+  routes however it wants.
+- Are **immutable after construction** (matches OQ-04 / ADR-010's
+  static-registration constraint; the `HttpAdapter` router is built once
+  at startup).
+
+The extension point is additive: a deployment that passes `None` gets
+exactly the default surface. The mechanism (the constructor parameter)
+is the one-way door — once downstream deployments build against it, it's
+a contract (ADR-046). The specific routes a deployment adds are a
+two-way door (add/remove freely). See
+[ADR-046](../../decisions/046-assembly-layer-custom-http-routes.md).
 
 ## Constraints
 
-- **The HTTP path IS the operation path on the direct-call surface.**
-  `POST /fs/readFile` → `call.requested` for `fs/readFile`. No second
-  routing table for the direct-call surface. See ADR-036. The
-  `to_openapi` gateway (`/search`, `/schema`, `/call`, `/batch`,
-  `/subscribe`) is a separate fixed-endpoint surface (ADR-042) that
-  coexists with the direct-call surface on the same axum `Router`; it
-  does not replace it.
+- **The gateway is the sole invoke path over HTTP (ADR-042, ADR-047).**
+  The 5 gateway endpoints (`/search`, `/schema`, `/call`, `/batch`,
+  `/subscribe`) are the only way to invoke operations over HTTP. There
+  is no per-operation `POST /{service}/{op}` direct-call surface — the
+  simplified contract is a few fixed endpoints, not a per-operation
+  REST tree. A client invokes an operation via `POST /call` with
+  `{ "operation": "/{service}/{op}", "input": {...} }`; it discovers
+  what it can call via the `AccessControl`-filtered `/search`. The
+  per-caller API surface is the default (the Gitea failure mode — every
+  operation gets a path, every caller sees the full surface — is
+  structurally impossible). A deployment that wants a REST-like
+  per-operation HTTP surface builds it as a custom route projection
+  (ADR-046, ADR-047 §4).
 - **`External` operations only.** `Internal` operations return `404`
-  on the HTTP handler.
+  on the gateway's `/call`, matching the call protocol's `NOT_FOUND`.
 - **Bearer-only auth.** `Authorization: Bearer` →
   `resolve_from_token`. Other HTTP auth schemes are not implemented.
 - **No secret material in HTTP responses.** The call protocol carries no
@@ -372,28 +449,41 @@ config is a two-way-door default (an operator picks what to serve); the
   messages. `h3`/WebTransport is deferred (ADR-044); the ALPN-stream-proxy
   (ADR-040) is not available in v1. The `h3` ALPN and its feature gate are
   not implemented in the initial release.
+- **Custom routes are raw HTTP, not call-protocol operations
+  (ADR-046).** The assembly layer injects an `axum::Router` of extra
+  routes at `HttpAdapter` construction. They are not in the
+  `OperationRegistry`, not discoverable via `/search`, not in the
+  `to_openapi` doc. They may dispatch into the registry via
+  `OperationRegistry::invoke()` (the OAI-compatible proxy pattern) or
+  be pure HTTP. The default surface's reserved paths take precedence on
+  collision. A deployment that passes no extra routes gets the default
+  surface unchanged.
 
 ## Design Decisions
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| Direct path mapping (HTTP path = operation path) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `POST /{service}/{op}` → `call.requested` (direct-call surface) |
-| `to_openapi` gateway endpoints on the router | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | `/search`/`/schema`/`/call`/`/batch`/`/subscribe` coexist with the direct-call surface |
-| SSE projection for subscriptions over h2/http1.1 | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `call.responded` stream → SSE frames |
+| ~~Direct path mapping (HTTP path = operation path)~~ | ~~[ADR-036](../../decisions/036-http-to-call-operation-mapping.md)~~ | **Superseded by ADR-047** — direct-call surface removed; gateway `/call` is the sole invoke path |
+| Gateway is the sole invoke path over HTTP | [ADR-042](../../decisions/042-openapi-gateway-pattern.md), [ADR-047](../../decisions/047-remove-direct-call-http-surface.md) | 5 fixed gateway endpoints (`/search`/`/schema`/`/call`/`/batch`/`/subscribe`); `POST /call` with `{ operation, input }` is the invoke path; per-caller `AccessControl`-filtered `/search` is the discovery; no per-operation HTTP paths |
+| `to_openapi` published-spec versioning | [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | `/openapi.json` carries `info.version` (semver) tracking the gateway contract, not the operation set |
+| SSE projection for subscriptions (`/subscribe`) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) §Streaming, [ADR-042](../../decisions/042-openapi-gateway-pattern.md) §2 | `call.responded` stream → SSE frames; the gateway's `/subscribe` endpoint is the entry point |
 | `/healthz` is a raw route | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | No auth, no call protocol |
-| Stealth decoy | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | HTTP handler on standard ALPNs serves decoy |
+| Stealth decoy | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | HTTP handler on standard ALPNs serves decoy for non-gateway, non-custom, non-`/healthz` paths |
 | Bearer auth via `resolve_from_token` | [ADR-004](../../decisions/004-auth-as-shared-core.md) | HTTP handler credential source (settled) |
 | WebSocket is the browser bidirectional path | [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md) | Browsers upgrade to WS; `EventEnvelope` over binary messages; `h3`/WebTransport deferred |
 | Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) §4 (amended by ADR-044 §5) | Bearer token, no `PeerId`, connection-local overlay (addressability vs. bidirectionality) |
 | Error mapping (call codes → HTTP status) | [ADR-023](../../decisions/023-operation-error-schemas.md) | Protocol/operation codes distinct; `HTTP_<status>` prefix for imported |
+| Custom HTTP routes from the assembly layer | [ADR-046](../../decisions/046-assembly-layer-custom-http-routes.md) | `extra_routes: Option<Router>` at construction; raw HTTP, not operations; default surface takes precedence on collision |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-39** (open): `to_openapi` published-spec versioning — the
-  generated OpenAPI spec is a compatibility contract (ADR-017
-  Consequences); the versioning strategy needs specifying.
+- **OQ-39** (resolved): `to_openapi` published-spec versioning —
+  resolved by [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md):
+  `info.version` semver tracks the gateway endpoint contract (not the
+  operation set); the per-caller operation surface is discovered via
+  `/search` and does not bump the version.
 - **OQ-40** (resolved): reqwest client config and connection pooling —
   `ClientWithMiddleware` + middleware stack; the outbound HTTP client
   used by `from_openapi`/`from_mcp`.
@@ -406,10 +496,20 @@ See [open-questions.md](../../open-questions.md) for full details.
   — WebSocket is the v1 browser bidirectional path; `h3`/WebTransport
   deferred. States the "browser is not a peer" rationale (addressability
   vs. bidirectionality) that ADR-034 §4 closes without arguing.
+  References the `@alkdev/pubsub` WebSocket prior art (the
+  `EventEnvelope { type, id, payload }` client/server the call
+  protocol's envelope was derived from).
 - [overview.md](overview.md) — crate overview, adapter location map
 - [webtransport.md](webtransport.md) — the deferred `h3` ALPN handler
   (kept intact for revival)
 - [http-adapters.md](http-adapters.md) — `from_openapi`/`to_openapi`
+- [../call/call-protocol.md](../call/call-protocol.md) — `EventEnvelope`
+  wire format, `Dispatcher` (stream-agnostic; runs over WS unchanged),
+  the `@alkdev/pubsub` prior-art note
+- `/workspace/@alkdev/pubsub/src/event-target-websocket-client.ts`,
+  `/workspace/@alkdev/pubsub/src/event-target-websocket-server.ts` —
+  TypeScript prior art for the WS browser path (the
+  `EventEnvelope { type, id, payload }` over WS binary messages)
 - [../core/auth.md](../core/auth.md) — `IdentityProvider`, Bearer →
   `resolve_from_token`
 - [../core/endpoint.md](../core/endpoint.md) — stealth mode as ALPN

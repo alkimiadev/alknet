@@ -39,7 +39,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [023](../../decisions/023-operation-error-schemas.md) | Operation Error Schemas | `from_openapi`/`to_openapi` error fidelity; `HTTP_<status>` error codes |
 | [027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign | Browsers require X.509; applies to WebTransport (deferred) and any browser-facing TLS |
 | [034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Outgoing-Only X.509 and Three Peer Roles | Browsers are not alknet peers (§4 amended by ADR-044 §5 with the addressability rationale) |
-| [036](../../decisions/036-http-to-call-operation-mapping.md) | HTTP-to-Call Operation Mapping | Direct path mapping; `to_openapi` is projection, not router |
+| [036](../../decisions/036-http-to-call-operation-mapping.md) | HTTP-to-Call Operation Mapping | ~~Direct path mapping~~ — **routing superseded by ADR-047**; non-routing clauses survive (SSE projection, Bearer auth, `/healthz`, stealth, error mapping) |
 | [037](../../decisions/037-mcp-stdio-transport-exclusion.md) | MCP Stdio Transport Exclusion | Streamable HTTP only; stdio not built |
 | [038](../../decisions/038-http3-and-webtransport-as-first-class.md) | HTTP/3 and WebTransport as First-Class HTTP Transports | **Superseded by ADR-044** (anti-pattern correction stands; specific decision reversed) |
 | [039](../../decisions/039-http-server-and-client-host-colocated.md) | HTTP Server and Client Host Colocated in alknet-http | One crate for server + client host (shared HTTP deps, shared mapping) |
@@ -48,6 +48,9 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [042](../../decisions/042-openapi-gateway-pattern.md) | OpenAPI Gateway Pattern for to_openapi | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered |
 | [043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | WebTransport as a Bidirectional ALPN Transport Substrate | **Parked** per ADR-044; §2/§3 transfer to WebSocket for v1 |
 | [044](../../decisions/044-defer-webtransport-browsers-use-websocket.md) | Defer h3/WebTransport; Browsers Use WebSocket | `h3`/WebTransport deferred (scope); browser bidirectional path uses WebSocket; "browser is not a peer" rationale |
+| [045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | to_openapi Gateway-Spec Versioning | Published gateway doc carries `info.version` (semver) tracking the gateway endpoint contract, not the operation set; consumers detect breaking changes via the major version |
+| [046](../../decisions/046-assembly-layer-custom-http-routes.md) | Assembly-Layer Custom HTTP Routes on HttpAdapter | `extra_routes: Option<Router>` at construction; deployments add raw HTTP endpoints (e.g., OAI-compatible proxy, or a REST-like per-operation projection) that coexist with the default surface; default surface takes precedence on collision |
+| [047](../../decisions/047-remove-direct-call-http-surface.md) | Remove the Direct-Call HTTP Surface; Gateway Is the Sole Invoke Path | `POST /{service}/{op}` direct-call surface removed; the 5 gateway endpoints are the sole invoke path; per-caller `AccessControl`-filtered `/search` is the discovery; ADR-036's non-routing clauses survive |
 
 ## Relevant Open Questions
 
@@ -61,7 +64,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | OQ-26 | OperationAdapter error type | resolved | `AdapterError` variants reused by HTTP adapters |
 | OQ-37 | X.509 outgoing-only / three peer roles | resolved | Browsers are not peers; hub with mixed fingerprints |
 | OQ-38 | WebTransport standalone relay service scope | open (scope, not deferral) | The standalone relay (future `alknet-relay`, fork of iroh-relay) — distinct from the in-process ALPN-stream-proxy (ADR-040) |
-| OQ-39 | `to_openapi` published-spec versioning | open | Versioning strategy for generated OpenAPI specs |
+| OQ-39 | `to_openapi` published-spec versioning | resolved | `info.version` semver tracks the gateway endpoint contract (ADR-045); per-caller operation set discovered via `/search`, not in the doc |
 | OQ-40 | reqwest client config and connection pooling | resolved | `ClientWithMiddleware` + `RetryTransientMiddleware` + inlined `RetryAfterMiddleware`; rebuild-and-swap hot-reload |
 
 ## Key Design Principles
@@ -72,16 +75,25 @@ protocol), and hosts the HTTP-backed call-protocol adapters
    forwarding) uses `reqwest`. Both directions share the same HTTP
    dependencies, which is why they live in one crate rather than being
    split. See [overview.md](overview.md).
-2. **The HTTP surface is a projection of the call protocol.** An HTTP
-   request at `POST /fs/readFile` becomes a `call.requested` for
-   `/fs/readFile`. The HTTP path IS the operation path on the
-   **direct-call surface**. `to_openapi` *describes* a different surface
-   — the 5-endpoint gateway (`/search`, `/schema`, `/call`, `/batch`,
-   `/subscribe`) that gates discovery and invocation behind a fixed
-   entry set. See [ADR-036](../../decisions/036-http-to-call-operation-mapping.md)
-   (direct-call surface) and [ADR-042](../../decisions/042-openapi-gateway-pattern.md)
-   (`to_openapi` gateway, superseding ADR-036's original `to_openapi`
-   clause).
+2. **The HTTP surface is the 5-endpoint gateway — a few fixed
+   endpoints, not a per-operation REST tree.** An HTTP client invokes an
+   operation via `POST /call` with `{ "operation": "/fs/readFile",
+   "input": {...} }`, discovers what it can call via
+   `AccessControl`-filtered `GET /search`, and learns an operation's
+   shape via `GET /schema`. There is no per-operation `POST /{service}/{op}`
+   direct-call surface (removed by ADR-047; the per-caller API surface is
+   the default — the "dump the full API regardless of privs" failure mode
+   is structurally impossible). `to_openapi` *describes* this gateway
+   surface (5 fixed endpoints; per-caller operations discovered via
+   `/search`, not preloaded into the doc). A deployment that wants a
+   REST-like per-operation HTTP surface builds it as a custom route
+   projection (ADR-046). See
+   [ADR-042](../../decisions/042-openapi-gateway-pattern.md) (gateway
+   pattern), [ADR-047](../../decisions/047-remove-direct-call-http-surface.md)
+   (direct-call surface removed; ADR-036's routing superseded, non-routing
+   clauses survive), and
+   [ADR-046](../../decisions/046-assembly-layer-custom-http-routes.md)
+   (custom routes extension point).
 3. **Standard ALPNs, not alknet ALPNs.** `h2`, `http/1.1` are
    IANA-registered ALPN strings. Any HTTP client (browser, curl, axios)
    connects without knowing about alknet — the TLS handshake negotiates

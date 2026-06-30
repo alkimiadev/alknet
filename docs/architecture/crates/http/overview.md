@@ -241,14 +241,15 @@ verified against this invariant. See ADR-014 and
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| HTTP-to-call operation mapping | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | Direct path mapping; `to_openapi` is projection, not router |
+| HTTP-to-call operation mapping | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | ~~Direct path mapping~~ — **routing superseded by ADR-047**; gateway `/call` is the sole invoke path; ADR-036's non-routing clauses survive (SSE, auth, `/healthz`, stealth, error mapping) |
 | MCP stdio transport exclusion | [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md) | Streamable HTTP only; stdio is not built (RCE vector) |
 | Defer h3/WebTransport; browsers use WebSocket | [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md) | `h3`/WebTransport deferred (scope, not hedging); browser bidirectional path uses WebSocket; ADR-038 superseded, ADR-040/043 parked |
 | HTTP server + client host colocated | [ADR-039](../../decisions/039-http-server-and-client-host-colocated.md) | One crate for server + adapters (shared HTTP deps, shared mapping) |
 | ~~HTTP/3 + WebTransport first-class~~ | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | **Superseded by ADR-044** (anti-pattern correction stands; specific decision reversed) |
 | ~~WebTransport ALPN-stream-proxy~~ | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | **Parked** per ADR-044; revives unchanged when WebTransport revives |
 | `to_mcp` tool-gateway pattern | [ADR-041](../../decisions/041-mcp-tool-gateway-pattern.md) | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation |
-| `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe); per-caller AccessControl-filtered |
+| `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md), [ADR-047](../../decisions/047-remove-direct-call-http-surface.md) | 5 fixed gateway endpoints are the sole HTTP invoke path (no per-operation `POST /{service}/{op}`); per-caller AccessControl-filtered `/search` is the discovery |
+| Assembly-layer custom HTTP routes | [ADR-046](../../decisions/046-assembly-layer-custom-http-routes.md) | `extra_routes: Option<Router>` at construction; deployments add raw HTTP endpoints (e.g., OAI-compatible proxy, or a REST-like per-operation projection) that coexist with the default surface; default surface takes precedence on collision |
 | ~~WebTransport bidirectional ALPN substrate~~ | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | **Parked** per ADR-044; §2/§3 transfer to WebSocket for v1; §4/§5 revive with WebTransport |
 | `alknet-call` is protocol-foundation | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | `alknet-http` depends on `alknet-call` (types, not peer handler) |
 | Bearer auth via `resolve_from_token` | [ADR-004](../../decisions/004-auth-as-shared-core.md) | HTTP handler credential source + resolution (settled) |
@@ -272,8 +273,10 @@ See [open-questions.md](../../open-questions.md) for full details.
   mixed-fingerprint `PeerEntry`.
 - **OQ-38** (open, scope): WebTransport relay-as-proxy — does the proxy
   live in `alknet-http` or a separate relay crate?
-- **OQ-39** (open): `to_openapi` published-spec versioning — versioning
-  strategy for generated OpenAPI specs.
+- **OQ-39** (resolved): `to_openapi` published-spec versioning —
+  `info.version` semver tracks the gateway endpoint contract, not the
+  operation set (ADR-045); per-caller operations discovered via
+  `/search`.
 - **OQ-40** (resolved): reqwest client config and connection pooling —
   `ClientWithMiddleware` + middleware stack (retry + Retry-After).
 
@@ -284,6 +287,14 @@ See [open-questions.md](../../open-questions.md) for full details.
   location map, no-env-vars invariant
 - `/workspace/@alkdev/operations/src/from_openapi.ts`,
   `/workspace/@alkdev/operations/src/from_mcp.ts` — TypeScript prior art
+  for the HTTP adapters (the SSE normalization, auth-header, and
+  `createHTTPOperation` patterns)
+- `/workspace/@alkdev/pubsub/src/event-target-websocket-client.ts`,
+  `/workspace/@alkdev/pubsub/src/event-target-websocket-server.ts` —
+  TypeScript prior art for the WebSocket browser path (the
+  `EventEnvelope { type, id, payload }` over WS binary messages; the
+  call protocol's envelope is a refined superset — see ADR-044
+  §"Concrete prior art")
 - `/workspace/rust-sdk/` — MCP Rust SDK (rmcp); streamable HTTP examples
 - `/workspace/wtransport/` — pure-Rust WebTransport reference
   (read during research; not a dependency — see ADR-044 §"Research note"

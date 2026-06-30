@@ -130,10 +130,11 @@ Once published, the gateway endpoint set (5 endpoints) and the
 request/response shapes are a compatibility contract (ADR-017
 Consequences). Adding endpoints is additive (non-breaking); removing or
 renaming is a one-way door. The initial 5-endpoint set is the published
-contract. The versioning strategy for the generated doc is tracked as
-OQ-39 (same as the per-operation-paths versioning question — the
-gateway pattern doesn't eliminate the versioning concern, it simplifies
-it to 5 stable endpoints instead of a per-operation surface).
+contract. The versioning strategy for the generated doc was tracked as
+OQ-39 (now **resolved by [ADR-045](045-to-openapi-gateway-spec-versioning.md)**:
+`info.version` semver tracks the gateway endpoint contract, not the
+operation set) — the gateway pattern simplifies versioning to 5 stable
+endpoints instead of a per-operation surface.
 
 ### 5. A traditional per-operation-paths projection is additive, not replacement
 
@@ -244,5 +245,6 @@ require it for the common case.
   pattern for `to_mcp` (4 tools; `subscribe` excluded because MCP tool
   calls are request/response)
 - OQ-39 — `to_openapi` published-spec versioning (simplified by the
-  gateway pattern to 5 stable endpoints)
+  gateway pattern to 5 stable endpoints; **resolved by
+  [ADR-045](045-to-openapi-gateway-spec-versioning.md)**)
 - `crates/http/http-adapters.md` — the spec that implements the gateway

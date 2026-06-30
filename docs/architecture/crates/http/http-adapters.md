@@ -376,9 +376,12 @@ once published, the 5-endpoint gateway shape is one-way.
 - **`to_openapi` is a pure projection.** It consumes the registry, does
   not produce entries for it. Not an `OperationAdapter`.
 - **Published `to_openapi` specs are compatibility contracts.** The
-  generated spec's versioning (tied to the registry's `External`
-  operation set version) must be emitted so consumers can detect mapping
-  changes (ADR-017 Consequences, OQ-39).
+  generated gateway doc carries `info.version` (semver) tracking the
+  **gateway endpoint contract**, not the operation set — per-caller
+  operation changes (add/remove/modify, schema changes) do not bump
+  the version (the operation set is discovered via `/search`, not
+  preloaded into the doc). Consumers detect breaking changes via the
+  major version (ADR-017 Consequences, ADR-045, resolves OQ-39).
 - **`alknet-http` owns its HTTP client.** Shared across all forwarding
   handlers, constructed once. The shared type is
   `reqwest_middleware::ClientWithMiddleware` (middleware stack:
@@ -402,17 +405,21 @@ once published, the 5-endpoint gateway shape is one-way.
 | `from_openapi` provenance is a leaf | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | `composition_authority: None`, `scoped_env: None` |
 | Error fidelity (`HTTP_<status>` codes) | [ADR-023](../../decisions/023-operation-error-schemas.md) | No collision with protocol codes; `to_openapi` projects back |
 | No-env-vars credential injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Handler reads `context.capabilities`, not env vars |
-| HTTP path = operation path (direct-call surface) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | `POST /{service}/{op}` → `call.requested` (the direct-call surface; not what `to_openapi` describes) |
+| HTTP path = operation path (~~direct-call surface~~) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) → superseded by [ADR-047](../../decisions/047-remove-direct-call-http-surface.md) | ~~`POST /{service}/{op}` → `call.requested`~~ — removed; the gateway `/call` with `{ operation, input }` is the sole invoke path; `to_openapi` describes the gateway, not a per-operation surface |
 | `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered. Supersedes ADR-036's original `to_openapi` "paths mirror `/{service}/{op}`" clause |
+| `to_openapi` published-spec versioning | [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | `info.version` semver tracks the gateway endpoint contract, not the operation set; consumers detect breaking changes via the major version |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-39** (open): `to_openapi` published-spec versioning — the
-  versioning strategy for generated OpenAPI specs (tied to the
-  registry's `External` operation set version). One-way after first
-  publication.
+- **OQ-39** (resolved): `to_openapi` published-spec versioning —
+  resolved by [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md):
+  `info.version` semver tracks the gateway endpoint contract (major =
+  breaking gateway change, minor = additive, patch = wording); the
+  per-caller operation set is discovered via `/search` and does not bump
+  the version. The additive traditional per-operation-paths projection
+  (ADR-042 §5) versions independently, out of scope.
 - **OQ-40** (resolved): reqwest client config and connection pooling —
   `ClientWithMiddleware` + `RetryTransientMiddleware` + inlined
   `RetryAfterMiddleware`; rebuild-and-swap hot-reload; per-request

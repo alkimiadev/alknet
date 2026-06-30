@@ -98,6 +98,61 @@ protocol bidirectionally," their answer was WSS, not WebTransport. Aligning
 with that precedent is not cutting against competent practice — it is
 matching it.
 
+### Concrete prior art: `@alkdev/pubsub`
+
+The WebSocket path is not speculative — there is working prior art in the
+same workspace. The `@alkdev/pubsub` package (`/workspace/@alkdev/pubsub/`)
+already has a WebSocket client (`event-target-websocket-client.ts`) and
+server (`event-target-websocket-server.ts`) built on a generalized "event
+target" abstraction with an `EventEnvelope { type, id, payload }` shape.
+The alknet call protocol's `EventEnvelope` was derived from this envelope
+(refined with typed event names `call.requested`/`call.responded`/etc. and
+structured payloads); the sibling `@alkdev/operations` package
+(`/workspace/@alkdev/operations/`) shares the lineage and uses the
+`path.do.op` (dot-separated) vs alknet's `path/to/op` (slash-separated)
+convention — a minor, mechanical delta. Syncing the pubsub/operations
+WebSocket client to the alknet call protocol's envelope is a small adjustment
+(~a day of work: the envelope shape, the event-name typing, the path
+separator), not a from-scratch browser-client build. This is why the
+WebSocket path opens doors quickly: the browser (and Node) client is
+mostly already written.
+
+### The tradeoff between two use cases, not "good enough for now"
+
+It is worth being precise about *why* WSS is the right choice here, because
+"good enough until it isn't" undersells the decision. The two browser-reach
+use cases have different right tools:
+
+- **The call protocol from a browser (bidirectional).** WSS is *genuinely
+  the right tool*, not a stopgap. The call protocol multiplexes by request
+  ID (ADR-012), not by stream — it does not need WebTransport's per-stream
+  multiplexing. A WebSocket is a full-duplex, long-lived, framed-message
+  channel; the call protocol's `EventEnvelope` framing fits a WS binary
+  message cleanly (one envelope = one message). For this use case,
+  WebTransport's stream model is engineering sophistication the call protocol
+  has no use for. WSS is not "good enough" — it is well-matched.
+- **The generalized ALPN router/proxy (a browser reaching a non-call ALPN
+  — SSH/SFTP/git via WASM).** WebTransport's native multi-stream model is
+  *genuinely the right tool* here, and WSS is *probably worse* for it. A
+  browser reaching a non-call ALPN over WSS would have to multiplex logical
+  streams over one WS frame stream by application-level framing — doable
+  (ADR-043 §"SSH/SFTP/git-over-WSS-from-a-browser is technically possible"),
+  but it re-implements at the application layer what WebTransport gives at
+  the transport layer. This is the use case WebTransport was built for, and
+  it is the speculative one (Finding 3) — the consumers (WASM SSH/SFTP/git
+  parsers) do not exist yet.
+
+So the deferral is not "use the worse tool now, upgrade to the better tool
+later." It is "use the right tool for the use case we *have* (call protocol
+from a browser → WSS), and defer building the tool for the use case we
+*don't have yet* (generalized ALPN proxy → WebTransport)." When WebTransport
+arrives, the two coexist (§Reversal point 3): WSS stays as the simpler
+call-protocol path; WebTransport adds the ALPN-stream-proxy path. Neither
+replaces the other. This is "good enough is good enough until it isn't" in
+the precise sense: WSS is good enough for the call-protocol case *because
+it is the right tool*, and the case where WebTransport would be better is
+a case we don't have yet.
+
 ## Decision
 
 ### 1. Defer `h3`/WebTransport. Browsers reach the call protocol over WebSocket.
@@ -241,9 +296,12 @@ by reference to this section.
   is a real deployment needing it.
 - WebSocket is a single stream; it lacks WebTransport's native multi-stream
   multiplexing. For the call protocol this is fine (correlation is by request
-  ID, not by stream — ADR-012), but it means a future migration to
-  WebTransport would be a genuine upgrade, not a no-op. The migration path
-  is the spec that already exists (`webtransport.md`).
+  ID, not by stream — ADR-012), and WSS is the well-matched tool for that use
+  case (see §"The tradeoff between two use cases"). Where WebTransport's
+  stream model would matter is the ALPN-stream-proxy (ADR-040) — the
+  speculative use case whose deferral this ADR commits. The migration path
+  is the spec that already exists (`webtransport.md`), and when WebTransport
+  arrives it coexists with WSS rather than replacing it.
 - ADR-043's "WebTransport restores bidirectionality" framing (§5) becomes
   "WebSocket restores bidirectionality" for v1. The framing transfer is clean
   (§3 above), but the prose in `http-server.md` and the ADRs must reflect it.
@@ -290,11 +348,15 @@ from scratch. See `webtransport.md` §"Research note" for the cross-reference.
 1. **The call protocol's `EventEnvelope` framing fits a WebSocket binary
    message boundary cleanly.** An `EventEnvelope` is a self-delimited JSON
    object; one envelope per WS binary message. No streaming deserializer
-   across message boundaries is needed. This is verified by implementation
-   when the WS browser path is built, not by a separate research spike — the
-   call protocol spec (`call-protocol.md`) and the EventEnvelope shape
-   already make this property clear, and WebSocket binary messages are a
-   standard byte-framed transport.
+   across message boundaries is needed. This is already verified by prior
+   art: the `@alkdev/pubsub` WebSocket client/server
+   (`/workspace/@alkdev/pubsub/src/event-target-websocket-client.ts`,
+   `event-target-websocket-server.ts`) carries the same
+   `{ type, id, payload }` envelope over WS binary messages — the alknet
+   `EventEnvelope` is a refined superset of that shape (typed event names,
+   structured payloads). The call protocol spec (`call-protocol.md`) and
+   the EventEnvelope shape make the property clear, and the pubsub prior
+   art demonstrates it concretely.
 
 2. **WebSocket upgrade over HTTP/1.1 or HTTP/2 is supported by the axum/
    hyper stack natively.** `axum::extract::ws` provides the upgrade handler;
