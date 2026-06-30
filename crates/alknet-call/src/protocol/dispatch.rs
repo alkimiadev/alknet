@@ -403,18 +403,6 @@ mod tests {
         )
     }
 
-    fn internal_spec(name: &str, acl: AccessControl) -> OperationSpec {
-        OperationSpec::new(
-            name,
-            OperationType::Query,
-            Visibility::Internal,
-            serde_json::json!({}),
-            serde_json::json!({}),
-            vec![],
-            acl,
-        )
-    }
-
     fn registry_with(name: &str, visibility: Visibility, acl: AccessControl) -> OperationRegistry {
         let mut registry = OperationRegistry::new();
         registry.register(HandlerRegistration::new(

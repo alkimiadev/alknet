@@ -532,7 +532,7 @@ mod tests {
         );
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let adapter = CallAdapter::new(registry, provider);
-        let mut conn = CallConnection::new(stub_connection());
+        let conn = CallConnection::new(stub_connection());
         let imported = HandlerRegistration::new(
             OperationSpec::new(
                 "worker/exec",
@@ -598,7 +598,7 @@ mod tests {
         );
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let adapter = CallAdapter::new(registry, provider);
-        let mut conn = CallConnection::new(stub_connection());
+        let conn = CallConnection::new(stub_connection());
         let imported = HandlerRegistration::new(
             OperationSpec::new(
                 "worker/exec",
