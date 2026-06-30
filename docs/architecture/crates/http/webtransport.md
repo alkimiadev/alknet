@@ -1,9 +1,42 @@
 ---
-status: draft
-last_updated: 2026-06-29
+status: deferred
+last_updated: 2026-06-30
 ---
 
 # WebTransport — the h3 ALPN handler
+
+> **DEFERRED per [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md).**
+> This spec is kept intact for revival. `h3`/WebTransport is not
+> implemented in the initial `alknet-http` release; the browser
+> bidirectional path uses WebSocket (see
+> [http-server.md](http-server.md) §"WebSocket browser path"). ADR-038
+> is superseded; ADR-040 and ADR-043 are parked (their decisions revive
+> unchanged when WebTransport revives). The reversal trigger is a
+> concrete deployment needing the ALPN-stream-proxy (a browser running
+> a WASM SSH/SFTP/git client to reach a non-call ALPN). Two transfers
+> apply during the deferment: ADR-043 §2 (call-protocol bidirectionality)
+> and §3 (the no-`PeerId` connection-local overlay) apply over WebSocket
+> unchanged; ADR-040 (the ALPN-stream-proxy) and ADR-043 §4 (the
+> non-call-ALPN substrate) do not — they require WebTransport's stream
+> model and revive with it.
+>
+> **Research note (for revival):** `wtransport` (v0.7.1, the reference
+> implementation read during initial research) is *probably not* the
+> right dependency choice at revival time, despite being a complete and
+> readable implementation. The load-bearing integration concern is that
+> the `h3` handler must route HTTP/3 requests through the same axum
+> `Router` as `h2`/`http/1.1` (ADR-036), and `wtransport` owns its own
+> HTTP serving path — bridging its request type into the `http::Request`
+> axum consumes is cross-ecosystem adapter work. The hyperium stack
+> (`h3` + `h3-quinn` + `h3-webtransport` + `h3-datagram`) operates at
+> the stream level and produces `http::Request` types natively, which is
+> a better fit for the axum integration — but its server-side
+> WebTransport API needs verification before commitment (the axum-bridge
+> feasibility is the load-bearing claim and is not yet confirmed against
+> actual crate APIs, only against READMEs and design philosophy). This
+> research is **not** run now (WebTransport is deferred); it is recorded
+> here so the revival does not re-derive the question from scratch. See
+> ADR-044 §"Research note (for revival)" for the cross-reference.
 
 The `HttpAdapter` registration for the `h3` ALPN: HTTP/3 and
 WebTransport. WebTransport is a **bidirectional ALPN transport
@@ -386,13 +419,19 @@ as a first-class transport.
 
 ## Design Decisions
 
+> **Note:** This table reflects the design as written for revival. ADR-038
+> is **superseded by [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md)**;
+> ADR-040 and ADR-043 are **parked** (implementation deferred per ADR-044).
+> The decisions revive unchanged when WebTransport revives — see the
+> header note and ADR-044 for the scope rationale and reversal trigger.
+
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| `h3`/WebTransport is first-class | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | In scope, not deferred; browser streaming uses QUIC streams |
-| WebTransport is a bidirectional ALPN transport substrate | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | Carries ALPNs as bidirectional streams; call protocol is the first/canonical target (needs no WASM parser); both sides can initiate calls |
-| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | The substrate's mechanism for non-call ALPNs (SSH, git, SFTP) — browser → WebTransport stream → target ALPN handler via WASM parser |
-| Browsers require X.509 | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | `h3` needs X.509 (browser limitation) |
-| Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Bearer token, no `PeerId` |
+| ~~`h3`/WebTransport is first-class~~ | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | **Superseded by ADR-044** (scope deferral); originally "in scope, not deferred; browser streaming uses QUIC streams" |
+| WebTransport is a bidirectional ALPN transport substrate | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | **Parked** per ADR-044. Carries ALPNs as bidirectional streams; call protocol is the first/canonical target (needs no WASM parser); both sides can initiate calls |
+| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | **Parked** per ADR-044. The substrate's mechanism for non-call ALPNs (SSH, git, SFTP) — browser → WebTransport stream → target ALPN handler via WASM parser |
+| Browsers require X.509 | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | `h3` needs X.509 (browser limitation; applies when WebTransport revives) |
+| Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) §4 (amended by ADR-044 §5) | Bearer token, no `PeerId` (rationale in ADR-044 §5) |
 | WebTransport streams → call protocol directly | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | Stream-agnostic; WebTransport stream = QUIC bidirectional stream |
 | `BiStream` is a trait (WASM door) | [ADR-007](../../decisions/007-bistream-type-definition.md) | Browser implements `BiStream` over WebTransport stream; WASM parser speaks the protocol |
 | Stealth on h3 | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Unknown paths get the decoy |

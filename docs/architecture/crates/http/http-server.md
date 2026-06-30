@@ -1,15 +1,17 @@
 ---
 status: draft
-last_updated: 2026-06-29
+last_updated: 2026-06-30
 ---
 
 # HTTP Server
 
 The `HttpAdapter` — the `ProtocolHandler` for `h2` and `http/1.1` (and
-`h3`, covered in [webtransport.md](webtransport.md)). This document
+WebSocket upgrade — see §"WebSocket browser path"). The `h3`/WebTransport
+path is deferred per [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md);
+the deferred spec is at [webtransport.md](webtransport.md). This document
 covers how axum is run over a QUIC bidirectional stream, Bearer auth
-resolution, the HTTP-to-call dispatch, the `/healthz` raw route, and
-stealth decoy.
+resolution, the HTTP-to-call dispatch, the `/healthz` raw route, stealth
+decoy, and the WebSocket browser path.
 
 ## What
 
@@ -54,12 +56,15 @@ impl ProtocolHandler for HttpAdapter {
 }
 ```
 
-The `HttpAdapter` registers for multiple ALPNs (`http/1.1`, `h2`, `h3`).
+The `HttpAdapter` registers for multiple ALPNs (`http/1.1`, `h2`).
 The endpoint's `HandlerRegistry` maps each ALPN byte string to the same
 adapter instance; `handle()` branches on `connection.remote_alpn()` to
 pick the HTTP framing. For `http/1.1` and `h2`, the framing is hyper's
-HTTP/1.1 or HTTP/2 over a QUIC bidirectional stream; for `h3`, it's the
-WebTransport/HTTP/3 path (see [webtransport.md](webtransport.md)).
+HTTP/1.1 or HTTP/2 over a QUIC bidirectional stream. WebSocket upgrade
+(§"WebSocket browser path") layers on top of the same hyper connection
+driver — a WS upgrade is an HTTP/1.1 or HTTP/2 request that switches
+protocols. The `h3` ALPN is deferred (ADR-044); the deferred handler
+design is at [webtransport.md](webtransport.md).
 
 ## Why
 
@@ -167,9 +172,12 @@ A `Subscription` operation served over `h2`/`http/1.1` projects its
   sends `call.aborted` for the in-flight subscription, which cascades
   to descendants per ADR-016.
 
-This is the HTTP/1.1 + HTTP/2 streaming projection. Over WebTransport
-(`h3`), the subscription projects directly onto a WebTransport
-bidirectional stream — no SSE framing (see [webtransport.md](webtransport.md)).
+This is the HTTP/1.1 + HTTP/2 streaming projection. Over WebSocket
+(§"WebSocket browser path" below), the subscription projects directly
+onto the WS connection — `call.responded` events as binary WS messages,
+no SSE framing. WebTransport (`h3`, deferred per ADR-044) would project
+onto WebTransport bidirectional streams; see
+[webtransport.md](webtransport.md).
 
 ### One-directional projection (HTTP request/response)
 
@@ -188,14 +196,79 @@ SSE response — but even there, the *call* is client-initiated; only the
 *results* flow server→client.
 
 This is a structural property of HTTP, not a design choice in this
-crate. WebTransport (`h3`) restores the bidirectional call model: a
-WebTransport session is a long-lived connection over which either side
-can open bidirectional streams and send `call.requested` events in
-either direction — the call protocol's native bidirectionality applies
-unchanged. See [webtransport.md](webtransport.md) and ADR-043. The
-HTTP/1.1 + HTTP/2 surface is the projection for clients that only speak
-HTTP; WebTransport is the surface for clients that can speak the call
-protocol in both directions.
+crate. **WebSocket restores the bidirectional call model for browsers**
+(see §"WebSocket browser path" below): a WS connection is a long-lived
+full-duplex channel over which either side can send `call.requested`
+frames in either direction — the call protocol's native bidirectionality
+applies unchanged (ADR-012 — stream-agnostic correlation; a WS message
+stream is another `BiStream`-satisfying transport). WebTransport (`h3`)
+would restore it via native multi-stream multiplexing, but WebTransport
+is deferred per ADR-044 — WebSocket is the v1 browser bidirectional path.
+The HTTP/1.1 + HTTP/2 surface is the projection for clients that only
+speak HTTP; WebSocket is the surface for browser clients that speak the
+call protocol in both directions.
+
+### WebSocket browser path (ADR-044)
+
+A browser connecting to a hub upgrades an HTTP/1.1 or HTTP/2 request to
+WebSocket (RFC 6455). The resulting full-duplex WS connection carries
+call-protocol `EventEnvelope` frames as binary WebSocket messages — one
+envelope per message. The browser authenticates by bearer token on the
+upgrade request (the HTTP `Authorization` header), resolved by the hub's
+`IdentityProvider::resolve_from_token`, same as any HTTP request. The WS
+connection is then a **bidirectional call-protocol session**:
+
+- The browser opens the WS connection to `/alknet/call` (or `/`).
+- The handler hands the WS message stream to the call protocol's
+  `Dispatcher` — the same dispatch loop the `CallAdapter` uses for
+  `alknet/call` QUIC connections (ADR-012, stream-agnostic correlation).
+- The browser writes `EventEnvelope` frames as binary WS messages; the
+  handler reads them and dispatches via `OperationRegistry::invoke()`.
+- Responses (`call.responded`, `call.error`, `call.completed`,
+  `call.aborted`) are written back as binary WS messages.
+
+**Bidirectionality:** the WS call-protocol session inherits the call
+protocol's native bidirectionality — both sides can initiate calls
+(ADR-043 §2, transferred to WebSocket per ADR-044 §3). The browser calls
+operations on the hub; the hub can call operations registered on the
+browser's side, over the same session, using the same `PendingRequestMap`
+and `EventEnvelope` framing as `alknet/call`. The browser case where the
+client registers no operations of its own is the common case — the
+server→client call direction is unused because the browser has nothing
+to call. That is a use-case scoping, not an architectural limitation.
+
+**No SSE translation.** A `Subscription` operation served over WebSocket
+projects its `call.responded` stream directly as binary WS messages — no
+SSE `data:` framing. `call.completed` closes the stream; `call.aborted`
+closes it with an error frame. This is the native streaming projection
+for the WS path; SSE (ADR-036) is the projection for `h2`/`http/1.1`
+clients that don't upgrade to WebSocket.
+
+**Browsers are not alknet peers.** A browser over WebSocket authenticates
+by bearer token, gets no `PeerId`, does not enter `PeerCompositeEnv`, and
+its registered ops (if any) land in a connection-local Layer 2 overlay —
+the inbound mirror of ADR-034 §2. The rationale (addressability vs.
+bidirectionality) is stated in ADR-044 §5 and amends ADR-034 §4 by
+reference. In short: "peer" means an addressable node in the
+call-protocol peer graph (stable `PeerId`, `PeerRef::Specific`-reachable,
+identity stable across reconnects), not "any endpoint that exchanges
+calls during a live session." A browser is the second thing but not the
+first — it has no stable cryptographic identity of its own (it presents
+a bearer token the hub issued; nothing to pin), it is ephemeral (close
+the tab → connection dies → the connection-local overlay dies with it),
+and it is not addressable from other nodes (another alknet node has no
+way to reach "the browser currently connected to hub-A"; the hub holds
+it as a live `CallConnection` handle, not a peer-graph entry). The
+connection-local overlay is what gives the browser bidirectional-call
+capability *without* peer-graph membership.
+
+**What WebSocket does not provide (deferred to WebTransport, ADR-044):**
+the ALPN-stream-proxy (ADR-040) — a browser running a WASM parser for
+SSH/SFTP/git to reach a non-call ALPN — requires WebTransport's
+multi-stream model and is the speculative use case whose deferral is
+ADR-044's reversal trigger. WebSocket carries the call protocol from a
+browser; it does not carry the non-call-ALPN substrate. A browser cannot
+reach SSH/SFTP/git ALPNs in the v1 release. See ADR-044.
 
 ### Auth
 
@@ -294,10 +367,11 @@ config is a two-way-door default (an operator picks what to serve); the
   Capabilities are used for outbound calls (`from_openapi`), never
   serialized into HTTP response bodies.
 - **`/healthz` is raw.** No auth, no call protocol. The one raw route.
-- **The `h3` ALPN is a first-class transport.** The `HttpAdapter`
-  registers for `h3` when the `h3` feature is enabled (ADR-038). The
-  `h3` handler is covered in [webtransport.md](webtransport.md); this
-  document covers the `h2`/`http/1.1` path.
+- **WebSocket is the browser bidirectional path (ADR-044).** A browser
+  upgrades an HTTP request to WS and speaks the call protocol over binary
+  messages. `h3`/WebTransport is deferred (ADR-044); the ALPN-stream-proxy
+  (ADR-040) is not available in v1. The `h3` ALPN and its feature gate are
+  not implemented in the initial release.
 
 ## Design Decisions
 
@@ -309,7 +383,8 @@ config is a two-way-door default (an operator picks what to serve); the
 | `/healthz` is a raw route | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | No auth, no call protocol |
 | Stealth decoy | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | HTTP handler on standard ALPNs serves decoy |
 | Bearer auth via `resolve_from_token` | [ADR-004](../../decisions/004-auth-as-shared-core.md) | HTTP handler credential source (settled) |
-| `h3` is first-class (not deferred) | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | The `h3` ALPN handler lives in this crate |
+| WebSocket is the browser bidirectional path | [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md) | Browsers upgrade to WS; `EventEnvelope` over binary messages; `h3`/WebTransport deferred |
+| Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) §4 (amended by ADR-044 §5) | Bearer token, no `PeerId`, connection-local overlay (addressability vs. bidirectionality) |
 | Error mapping (call codes → HTTP status) | [ADR-023](../../decisions/023-operation-error-schemas.md) | Protocol/operation codes distinct; `HTTP_<status>` prefix for imported |
 
 ## Open Questions
@@ -327,10 +402,13 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) — the
   HTTP-to-call mapping this server implements
-- [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md)
-  — the `h3`/WebTransport companion to this server
+- [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md)
+  — WebSocket is the v1 browser bidirectional path; `h3`/WebTransport
+  deferred. States the "browser is not a peer" rationale (addressability
+  vs. bidirectionality) that ADR-034 §4 closes without arguing.
 - [overview.md](overview.md) — crate overview, adapter location map
-- [webtransport.md](webtransport.md) — the `h3` ALPN handler
+- [webtransport.md](webtransport.md) — the deferred `h3` ALPN handler
+  (kept intact for revival)
 - [http-adapters.md](http-adapters.md) — `from_openapi`/`to_openapi`
 - [../core/auth.md](../core/auth.md) — `IdentityProvider`, Bearer →
   `resolve_from_token`

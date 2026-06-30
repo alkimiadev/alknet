@@ -7,7 +7,8 @@ Proposed
 ## Context
 
 `alknet-http` implements `ProtocolHandler` for the standard HTTP ALPNs (`h2`,
-`http/1.1`, `h3`). An inbound HTTP request that targets an alknet operation
+`http/1.1`; `h3`/WebTransport is deferred per
+[ADR-044](044-defer-webtransport-browsers-use-websocket.md)). An inbound HTTP request that targets an alknet operation
 must become a call-protocol `call.requested` dispatch — the HTTP handler is a
 *projection* of the call protocol, not a parallel routing layer. The
 question is how an HTTP request maps to an operation invocation.
@@ -96,9 +97,11 @@ A `Subscription` operation served over HTTP/1.1 or HTTP/2 projects its
 `call.responded` stream as Server-Sent Events. Each `call.responded` event
 becomes an SSE `data:` frame; `call.completed` closes the SSE stream;
 `call.aborted` closes the stream with an SSE error event. This is the
-HTTP/1.1 + HTTP/2 streaming projection. Over WebTransport (`h3`), the
-subscription projects directly onto a WebTransport bidirectional stream —
-no SSE framing is needed (see ADR-038 for the WebTransport path).
+HTTP/1.1 + HTTP/2 streaming projection. Over WebSocket (the v1 browser
+bidirectional path, ADR-044), the subscription projects directly onto the
+WS connection — `call.responded` events as binary WS messages, no SSE
+framing. WebTransport (`h3`) would project onto WebTransport bidirectional
+streams but is deferred per ADR-044.
 
 ### Auth
 

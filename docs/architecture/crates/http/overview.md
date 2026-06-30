@@ -1,13 +1,14 @@
 ---
 status: draft
-last_updated: 2026-06-29
+last_updated: 2026-06-30
 ---
 
 # alknet-http — Overview
 
-The HTTP interface crate: serves inbound HTTP on standard ALPNs and hosts
-the HTTP-backed call-protocol adapters. This document covers the crate's
-two roles, its dependency edges, and the adapter location map. Component
+The HTTP interface crate: serves inbound HTTP on standard ALPNs (with
+WebSocket upgrade for browser bidirectional access) and hosts the
+HTTP-backed call-protocol adapters. This document covers the crate's two
+roles, its dependency edges, and the adapter location map. Component
 details are in the sibling documents.
 
 ## What
@@ -16,11 +17,14 @@ details are in the sibling documents.
 architecture. It serves two roles in one crate:
 
 1. **HTTP server** — a `ProtocolHandler` (`HttpAdapter`) that accepts
-   HTTP/2, HTTP/1.1, and HTTP/3 (WebTransport) connections on the
-   standard IANA ALPNs (`h2`, `http/1.1`, `h3`). It serves REST APIs, the
+   HTTP/2 and HTTP/1.1 connections on the standard IANA ALPNs (`h2`,
+   `http/1.1`), plus WebSocket upgrade (for browser bidirectional
+   access to the call protocol). It serves REST APIs, the
    `to_openapi`/`to_mcp` projections of local call-protocol operations,
    the `/healthz` operational endpoint, and the decoy surface for
-   stealth mode.
+   stealth mode. HTTP/3 + WebTransport (`h3` ALPN) is deferred per
+   [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md);
+   the deferred handler design is at [webtransport.md](webtransport.md).
 2. **HTTP client host** — the home of the HTTP-transport-backed call
    adapters: `from_openapi` (import external HTTP APIs as call
    operations, using `reqwest` for outbound calls) and `from_mcp` (import
@@ -42,7 +46,9 @@ crates that need to expose an HTTP interface. A downstream consumer (the
 CLI binary, a hub deployment, a browser-facing service) wires
 `HttpAdapter` into the `HandlerRegistry` for the standard HTTP ALPNs and
 gets a full HTTP surface: REST projection of the call protocol, OpenAPI
-discovery, MCP tool exposure, and WebTransport for browsers.
+discovery, MCP tool exposure, and WebSocket for browser bidirectional
+access to the call protocol. (WebTransport is deferred per ADR-044; the
+deferred browser-streaming path is at [webtransport.md](webtransport.md).)
 
 The key architectural insight that shapes the crate: **HTTP is both a
 server surface and a client transport for adapters.** The server side
@@ -64,13 +70,15 @@ Calls": both sides can initiate calls). The HTTP/1.1 + HTTP/2 surface
 inherits HTTP's request/response constraint and projects the call
 protocol one-directionally (client→server calls only — see
 [http-server.md](http-server.md) §"One-directional projection").
-WebTransport (`h3`) is the HTTP-family transport that restores the
-call protocol's native bidirectionality — it is a transport substrate
-for the call protocol (and, via the ALPN-stream-proxy, for any ALPN),
-not a browser→hub one-way path. See [webtransport.md](webtransport.md)
-and ADR-043. The "from/to" naming of the OpenAPI/MCP adapters should not
-be read as a statement about the call protocol's directionality; it is
-a statement about OpenAPI's and MCP's directionality.
+**WebSocket is the HTTP-family transport that restores the call
+protocol's native bidirectionality for browsers** (ADR-044) — a WS
+connection is a long-lived full-duplex channel over which either side
+can send `call.requested` frames in either direction. WebTransport
+(`h3`, deferred) would restore it via native multi-stream multiplexing;
+WebSocket restores it via framed messages over one connection. The
+"from/to" naming of the OpenAPI/MCP adapters should not be read as a
+statement about the call protocol's directionality; it is a statement
+about OpenAPI's and MCP's directionality.
 
 ## Dependencies
 
@@ -79,12 +87,21 @@ alknet-http
 ├── alknet-core     (ProtocolHandler, Connection, AuthContext, IdentityProvider, Capabilities)
 ├── alknet-call     (OperationAdapter, OperationSpec, Handler, HandlerRegistration,
 │                    OperationRegistry, AdapterError, OperationProvenance)
-├── axum            (HTTP server — Router, extractors, middleware)
+├── axum            (HTTP server — Router, extractors, middleware, WebSocket upgrade)
 ├── reqwest         (HTTP client — from_openapi/from_mcp forwarding)
 ├── hyper           (HTTP/1.1 + HTTP/2 framing; axum is built on hyper)
-├── wtransport      (HTTP/3 + WebTransport — feature-gated behind `h3`)
 └── rmcp            (MCP streamable HTTP — feature-gated behind `mcp`)
 ```
+
+> **Note:** the `h3`/WebTransport dependency (`wtransport` or the
+> hyperium `h3` stack) is **not** in the v1 dependency tree —
+> `h3`/WebTransport is deferred per
+> [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md).
+> The `h3` feature gate and its dependency are absent from the initial
+> release; the browser bidirectional path uses WebSocket (native axum
+> support, no new dependency). The deferred dependency analysis is
+> recorded in ADR-044 §"Research note (for revival)" and
+> [webtransport.md](webtransport.md) §"Research note".
 
 ### The `alknet-call` dependency (ADR-003 Amendment 1)
 
@@ -108,21 +125,22 @@ know `reqwest` is involved.
 
 | ALPN | Handler | Transport | Browser? |
 |------|---------|-----------|----------|
-| `http/1.1` | `HttpAdapter` | HTTP/1.1 over QUIC stream | No |
-| `h2` | `HttpAdapter` | HTTP/2 over QUIC stream | No |
-| `h3` | `HttpAdapter` | HTTP/3 / WebTransport | Yes (X.509 required) |
+| `http/1.1` | `HttpAdapter` | HTTP/1.1 over QUIC stream (+ WS upgrade) | Yes (WS upgrade for bidirectional) |
+| `h2` | `HttpAdapter` | HTTP/2 over QUIC stream (+ WS upgrade) | Yes (WS upgrade for bidirectional) |
+| `h3` | — (deferred) | HTTP/3 / WebTransport | Deferred per ADR-044 |
 
 These are standard IANA ALPN strings, not `alknet/`-prefixed. Any HTTP
 client connects without knowing about alknet — the TLS handshake
 negotiates `h2` or `http/1.1` normally, and the `HttpAdapter` serves
 HTTP. This is the stealth mapping (ADR-010): clients that don't offer
 alknet ALPNs get the HTTP handler, just like port scanners in stealth
-mode.
+mode. A browser negotiates `h2` or `http/1.1` and upgrades to WebSocket
+for the bidirectional call-protocol path (ADR-044).
 
-The `HttpAdapter` registers for all three ALPNs (when the corresponding
-features are enabled). The endpoint's `HandlerRegistry` maps each ALPN to
-the same `HttpAdapter` instance; the handler branches on
-`connection.remote_alpn()` to pick the right framing.
+The `HttpAdapter` registers for `http/1.1` and `h2`. The endpoint's
+`HandlerRegistry` maps each ALPN to the same `HttpAdapter` instance;
+the handler branches on `connection.remote_alpn()` to pick the right
+framing. The `h3` ALPN is not registered in v1 (deferred per ADR-044).
 
 ## Adapter Location Map
 
@@ -139,7 +157,7 @@ alknet-call (lean — no HTTP client, no HTTP server)
 └── CallClient                   (outbound connection opener)
 
 alknet-http (owns HTTP server + HTTP client)
-├── HttpAdapter                  (axum server — inbound HTTP on h2/http1.1/h3)
+├── HttpAdapter                  (axum server — inbound HTTP on h2/http1.1 + WS upgrade)
 ├── from_openapi                 (parse OpenAPI doc + reqwest forwarding handler)
 ├── to_openapi                   (generate OpenAPI doc from local registry)
 ├── from_mcp   (feature-gated)   (import remote MCP tools over streamable HTTP — reqwest)
@@ -155,24 +173,27 @@ directions.
 
 ```toml
 [features]
-default = ["h2", "http1"]   # the non-browser HTTP surface
-h3 = ["dep:wtransport"]      # HTTP/3 + WebTransport (browser path; X.509 required)
+default = ["h2", "http1"]   # the HTTP surface (incl. WebSocket upgrade for browsers)
 mcp = ["dep:rmcp"]           # from_mcp / to_mcp (streamable HTTP only — ADR-037)
+# h3 (HTTP/3 + WebTransport) is deferred per ADR-044 — not in the v1
+# feature set. The browser bidirectional path uses WebSocket (native to
+# axum, no feature gate). When WebTransport revives, the `h3` feature
+# gate returns; see ADR-044 and webtransport.md.
 ```
 
 - `h2` + `http1` (default): the `axum` + `hyper` HTTP/1.1 + HTTP/2
-  server. This is the surface non-browser clients use.
-- `h3`: the `wtransport` (or quinn HTTP/3 extension) dependency. Adds
-  the `h3` ALPN handler and the WebTransport streaming path. See
-  [webtransport.md](webtransport.md) and
-  [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md).
+  server, including WebSocket upgrade for browser bidirectional access
+  (ADR-044). This is the surface all clients — including browsers, via
+  WS upgrade — use in v1.
 - `mcp`: the `rmcp` dependency with streamable HTTP transport features
   only. Adds `from_mcp`/`to_mcp`. See [http-mcp.md](http-mcp.md) and
   [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md).
 
-A deployment that only needs the REST surface (no browsers, no MCP) uses
-the default features. A browser-facing hub enables `h3`. A deployment
-that wants MCP tool import/export enables `mcp`.
+A deployment that only needs the REST surface (no MCP) uses the default
+features. A browser-facing hub also uses the default features — the
+browser bidirectional path is WebSocket, native to axum, no `h3` feature
+gate needed. A deployment that wants MCP tool import/export enables
+`mcp`.
 
 ## The No-Env-Vars Invariant
 
@@ -202,18 +223,19 @@ verified against this invariant. See ADR-014 and
 ## Architecture (component pointers)
 
 - **[http-server.md](http-server.md)** — the `HttpAdapter` for `h2`/
-  `http/1.1`: how axum is run over a QUIC bidirectional stream, Bearer
-  auth resolution, the `/healthz` raw route, stealth decoy, and the
-  HTTP-to-call dispatch (ADR-036).
+  `http/1.1` (+ WebSocket upgrade): how axum is run over a QUIC
+  bidirectional stream, Bearer auth resolution, the `/healthz` raw route,
+  stealth decoy, the HTTP-to-call dispatch (ADR-036), and the WebSocket
+  browser bidirectional path (ADR-044).
 - **[http-adapters.md](http-adapters.md)** — `from_openapi` (parse
   OpenAPI, build forwarding handlers with `reqwest`) and `to_openapi`
   (generate an OpenAPI doc from the registry's `External` operations).
   Error fidelity per ADR-023.
 - **[http-mcp.md](http-mcp.md)** — `from_mcp`/`to_mcp` (feature-gated),
   streamable HTTP only (ADR-037), the rmcp integration.
-- **[webtransport.md](webtransport.md)** — the `h3` ALPN handler,
-  WebTransport session/stream handling, the browser streaming path
-  (ADR-038).
+- **[webtransport.md](webtransport.md)** — the deferred `h3` ALPN
+  handler (HTTP/3 + WebTransport). **Deferred per ADR-044**; kept intact
+  for revival when a concrete ALPN-stream-proxy use case arrives.
 
 ## Design Decisions
 
@@ -221,12 +243,13 @@ verified against this invariant. See ADR-014 and
 |----------|-----|---------|
 | HTTP-to-call operation mapping | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) | Direct path mapping; `to_openapi` is projection, not router |
 | MCP stdio transport exclusion | [ADR-037](../../decisions/037-mcp-stdio-transport-exclusion.md) | Streamable HTTP only; stdio is not built (RCE vector) |
-| HTTP/3 + WebTransport first-class | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | `h3` in scope, not deferred; browser streaming uses QUIC streams |
+| Defer h3/WebTransport; browsers use WebSocket | [ADR-044](../../decisions/044-defer-webtransport-browsers-use-websocket.md) | `h3`/WebTransport deferred (scope, not hedging); browser bidirectional path uses WebSocket; ADR-038 superseded, ADR-040/043 parked |
 | HTTP server + client host colocated | [ADR-039](../../decisions/039-http-server-and-client-host-colocated.md) | One crate for server + adapters (shared HTTP deps, shared mapping) |
-| WebTransport ALPN-stream-proxy | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | The substrate's mechanism for non-call ALPNs (SSH, git, SFTP) — browser → WebTransport stream → target ALPN handler via WASM parser |
+| ~~HTTP/3 + WebTransport first-class~~ | [ADR-038](../../decisions/038-http3-and-webtransport-as-first-class.md) | **Superseded by ADR-044** (anti-pattern correction stands; specific decision reversed) |
+| ~~WebTransport ALPN-stream-proxy~~ | [ADR-040](../../decisions/040-webtransport-alpn-stream-proxy.md) | **Parked** per ADR-044; revives unchanged when WebTransport revives |
 | `to_mcp` tool-gateway pattern | [ADR-041](../../decisions/041-mcp-tool-gateway-pattern.md) | 4 fixed gateway tools (search/schema/call/batch), not one tool per operation |
 | `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe); per-caller AccessControl-filtered |
-| WebTransport bidirectional ALPN substrate | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | WebTransport carries ALPNs as bidirectional streams; call protocol is the first target; both sides can initiate calls; non-peer clients use a connection-local overlay |
+| ~~WebTransport bidirectional ALPN substrate~~ | [ADR-043](../../decisions/043-webtransport-bidirectional-alpn-substrate.md) | **Parked** per ADR-044; §2/§3 transfer to WebSocket for v1; §4/§5 revive with WebTransport |
 | `alknet-call` is protocol-foundation | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | `alknet-http` depends on `alknet-call` (types, not peer handler) |
 | Bearer auth via `resolve_from_token` | [ADR-004](../../decisions/004-auth-as-shared-core.md) | HTTP handler credential source + resolution (settled) |
 | Stealth mode = HTTP handler on standard ALPNs | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Decoy for unknown paths (settled) |
@@ -234,8 +257,8 @@ verified against this invariant. See ADR-014 and
 | `OperationAdapter` trait is async | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | HTTP adapters implement the async trait (settled) |
 | `to_*` adapters are projections | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `to_openapi`/`to_mcp` consume the registry, don't produce entries (settled) |
 | Error schema fidelity | [ADR-023](../../decisions/023-operation-error-schemas.md) | `from_openapi` maps HTTP status → `HTTP_<status>` codes; `to_openapi` projects back (settled) |
-| Browsers require X.509 | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | `h3`/WebTransport needs X.509 (settled) |
-| Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Browser over WebTransport/HTTPS = bearer token, no `PeerId` (settled) |
+| Browsers require X.509 | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | `h3`/WebTransport needs X.509 (settled; applies when WebTransport revives) |
+| Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) §4 (amended by ADR-044 §5) | Browser over WS/WebTransport = bearer token, no `PeerId` (settled; rationale in ADR-044 §5) |
 
 ## Open Questions
 
@@ -263,3 +286,5 @@ See [open-questions.md](../../open-questions.md) for full details.
   `/workspace/@alkdev/operations/src/from_mcp.ts` — TypeScript prior art
 - `/workspace/rust-sdk/` — MCP Rust SDK (rmcp); streamable HTTP examples
 - `/workspace/wtransport/` — pure-Rust WebTransport reference
+  (read during research; not a dependency — see ADR-044 §"Research note"
+  for why `wtransport` is probably not the right revival choice)

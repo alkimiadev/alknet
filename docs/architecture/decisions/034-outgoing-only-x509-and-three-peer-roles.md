@@ -203,8 +203,8 @@ A browser reaching a hub over WebTransport (or HTTPS) is served by the
 hub's `alknet-http` handler. The browser authenticates by **bearer
 token** (HTTP `Authorization`), resolved by the hub's
 `IdentityProvider::resolve_from_token` against the hub's
-`PeerEntry.auth_token_hash` or `ApiKeyEntry`. The browser is **not** an
-alknet peer on the hub's side either — it does not get a `PeerId`, does
+`PeerEntry.auth_token_hash` or `ApiKeyEntry`. The browser is **not an
+alknet peer on the hub's side either** — it does not get a `PeerId`, does
 not enter `PeerCompositeEnv`, and its "ops" are HTTP routes / WebTransport
 streams served by `alknet-http`, not entries in the call-protocol
 peer-keyed overlay. The hub's `PeerEntry` for the browser (if any) is
@@ -213,6 +213,29 @@ about authorizing the bearer token, not about peer-graph membership.
 This keeps the peer graph populated only by full alknet nodes (role 3
 hubs and role-3-style spoke nodes), never by browsers or pure HTTP
 clients.
+
+> **Amendment (rationale added by
+> [ADR-044](044-defer-webtransport-browsers-use-websocket.md) §5):** The
+> closure above is correct but states the conclusion without the
+> supporting argument. The distinction that makes it correct is:
+> **"peer" in alknet means an addressable node in the call-protocol peer
+> graph** — a stable `PeerId`, reachable via `PeerRef::Specific`, whose
+> ops land in `PeerCompositeEnv`, whose identity is stable across
+> reconnects. It does *not* mean "any endpoint that exchanges calls
+> during a live session." A browser is the second thing but not the
+> first, on three concrete grounds: (1) no stable cryptographic identity
+> of its own (it presents a bearer token the hub issued; nothing to
+> pin), (2) ephemeral (close the tab → connection dies → the
+> connection-local overlay dies with it; a `PeerEntry` keyed to a browser
+> would be dead within seconds), (3) not addressable from other nodes
+> (another alknet node has no way to reach "the browser currently
+> connected to hub-A"; the hub holds it as a live `CallConnection`
+> handle, not a peer-graph entry). The connection-local Layer 2 overlay
+> (ADR-043 §3, the inbound mirror of §2 above) is what gives the browser
+> bidirectional-call capability *without* peer-graph membership. This
+> rationale is transport-agnostic — it applies to WebSocket (the v1
+> browser path, ADR-044) and to WebTransport (when it revives) equally.
+> See ADR-044 §5 for the full statement.
 
 ### 5. WebTransport relay-as-proxy is a transport-only feature, scoped separately
 
@@ -237,12 +260,15 @@ is a real feature, especially for the browser-to-P2P-peer case. It is
 > WebTransport lands." That framing was a residual of the "two-way door
 > as deferral" anti-pattern (ADR-009 §"What this framework is NOT")
 > that [ADR-038](038-http3-and-webtransport-as-first-class.md) was later
-> written to reject — `h3`/WebTransport is a first-class transport, in
-> scope, not deferred. The *auth-model* decision in this §5 (the proxy
-> is transport-only; it does not change identity resolution) is
-> unchanged. The *scope* question (does the proxy belong in
-> `alknet-http` or a separate relay crate?) is tracked as OQ-38 — a
-> genuine scope question, not a deferral.
+> written to reject. ADR-038 has since been **superseded by
+> [ADR-044](044-defer-webtransport-browsers-use-websocket.md)**, which
+> re-defers `h3`/WebTransport as a genuine scope decision (the browser
+> bidirectional path uses WebSocket; WebTransport revives when a concrete
+> ALPN-stream-proxy use case arrives). The *auth-model* decision in this
+> §5 (the proxy is transport-only; it does not change identity
+> resolution) is unchanged by either ADR. The *scope* question (does the
+> proxy belong in `alknet-http` or a separate relay crate?) is tracked
+> as OQ-38 — a genuine scope question, not a deferral.
 
 ### 6. On-chain / smart-contract peer discovery fits the OQ-36 adapter pattern
 
@@ -340,11 +366,17 @@ It is noted here only to confirm it does not reopen OQ-37.
    intended — it is the same model iroh uses.
 
 2. **Browsers never enter the peer-keyed overlay.** A browser is
-   served by `alknet-http` (HTTP routes / WebTransport streams) and
-   authenticates by bearer token. The hub may have a `PeerEntry` for
-   the browser's token (to authorize it), but the browser is not a
-   `PeerId`-bearing peer. This is the explicit closure of the
-   "browser as peer" path — browsers are clients, not peers.
+   served by `alknet-http` (HTTP routes / WebTransport streams /, per
+   ADR-044, WebSocket) and authenticates by bearer token. The hub may
+   have a `PeerEntry` for the browser's token (to authorize it), but the
+   browser is not a `PeerId`-bearing peer. This is the explicit closure
+   of the "browser as peer" path — browsers are clients, not peers.
+   **The rationale** (addressability vs. bidirectionality — a browser
+   has no stable identity of its own, is ephemeral, and is not
+   addressable from other nodes) is stated in
+   [ADR-044](044-defer-webtransport-browsers-use-websocket.md) §5, which
+   amends §4 above by reference. The closure applies transport-
+   agnostically.
 
 3. **X.509 fingerprint pinning is only for known hubs.** Pinning an
    X.509 fingerprint for an arbitrary public API is brittle (cert
@@ -395,13 +427,19 @@ It is noted here only to confirm it does not reopen OQ-37.
   repo/adapter pattern (trait in core, adapter additive in a separate
   crate)
 - `docs/research/alknet-http/phase-0-findings.md` — DH-2 (h3 /
-  WebTransport; the original "deferred past v1" framing is rejected by
-  ADR-038); the WebTransport-relay-as-proxy feature noted in this ADR's
-  §5 is a transport-only feature whose scope is tracked as OQ-38
-- [ADR-038](038-http3-and-webtransport-as-first-class.md) — `h3` /
-  WebTransport is a first-class transport, not deferred (amends the
-  "deferral bucket" wording in this ADR's §5; the auth-model decision
-  stands)
+  WebTransport; the original "deferred past v1" framing was rejected by
+  ADR-038, which is now itself superseded by
+  [ADR-044](044-defer-webtransport-browsers-use-websocket.md) — a genuine
+  scope deferral); the WebTransport-relay-as-proxy feature noted in this
+  ADR's §5 is a transport-only feature whose scope is tracked as OQ-38
+- [ADR-038](038-http3-and-webtransport-as-first-class.md) — **superseded
+  by [ADR-044](044-defer-webtransport-browsers-use-websocket.md)**.
+  ADR-038 amended the "deferral bucket" wording in this ADR's §5 (the
+  auth-model decision stands); ADR-044 reverses ADR-038's "h3 in scope
+  now" decision as a scope deferral (the browser bidirectional path
+  uses WebSocket; WebTransport revives when a concrete ALPN-stream-proxy
+  use case arrives). The "browser is not a peer" closure in §4 above is
+  amended by ADR-044 §5 with the addressability rationale.
 - `docs/research/references/iroh/iroh/04-sub-crates.md` — iroh's
   transport relay (`iroh-relay`), referenced to distinguish it from
   alknet's hub role

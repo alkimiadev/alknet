@@ -2,7 +2,19 @@
 
 ## Status
 
-Proposed
+**Proposed — implementation deferred per [ADR-044](044-defer-webtransport-browsers-use-websocket.md).**
+
+This ADR's decision is correct and is not superseded. It revives unchanged
+when WebTransport revives. ADR-044 defers `h3`/WebTransport as a scope
+decision (the browser bidirectional path uses WebSocket for v1; the
+ALPN-stream-proxy is the speculative use case whose concrete need is the
+reversal trigger). The proxy is the primary WebTransport-specific feature —
+it requires WebTransport's stream model and does not transfer to WebSocket.
+When a real deployment needs a browser running a WASM SSH/SFTP/git client to
+reach a non-call ALPN, this ADR is un-parked and implemented as written.
+
+The `webtransport.md` spec is kept intact and marked `deferred` so the
+revival is unblocking already-written design, not re-deriving it.
 
 ## Context
 

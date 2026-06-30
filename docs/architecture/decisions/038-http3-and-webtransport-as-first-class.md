@@ -2,7 +2,24 @@
 
 ## Status
 
-Proposed
+**Superseded by [ADR-044](044-defer-webtransport-browsers-use-websocket.md).**
+
+This ADR's *correction* of the "two-way-door-as-deferral" anti-pattern
+(ADR-009 §"What this framework is NOT") stands as a document — the
+anti-pattern is real, and the reasoning that rejected deferral-as-hedging is
+correct. However, this ADR's *specific decision* — that `h3`/WebTransport is
+in scope now, not deferred — is reversed by ADR-044. ADR-044 is a
+**scope** decision (permitted by ADR-009: "not needed for the current
+scope"), not a hedging deferral: the browser bidirectional path uses
+WebSocket (RFC 6455, mature, native axum support), the ALPN-stream-proxy
+(ADR-040) is the speculative use case whose deferral is the reversal
+trigger, and the draft-standard + experimental-deps surface area is not
+justified by a concrete v1 requirement.
+
+ADR-040 and ADR-043 are **parked, not superseded** — their designs revive
+unchanged when WebTransport revives. See ADR-044 for the full scope rationale,
+the reversal trigger, and the research note on the wtransport-vs-hyperium
+dependency choice (recorded for the revival so it is not re-derived).
 
 ## Context
 

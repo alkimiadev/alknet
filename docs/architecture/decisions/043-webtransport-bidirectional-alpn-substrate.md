@@ -2,7 +2,28 @@
 
 ## Status
 
-Proposed
+**Proposed — implementation deferred per [ADR-044](044-defer-webtransport-browsers-use-websocket.md).**
+
+This ADR's decision is correct and is not superseded. It revives unchanged
+when WebTransport revives, **with two transfers to WebSocket that apply
+during the deferment**:
+
+- **§2 (call-protocol bidirectionality) transfers to WebSocket unchanged.**
+  WebSocket is full-duplex; the call protocol's bidirectionality applies over
+  a WS connection exactly as §2 describes for WebTransport. The browser case
+  where the client registers no ops remains a use-case scoping, not an
+  architectural limitation.
+- **§3 (the no-`PeerId` connection-local overlay) transfers to WebSocket
+  unchanged.** A browser over WSS has no `PeerId` on the hub's side for the
+  same reasons it has none over WebTransport (ADR-044 §5); the
+  connection-local Layer 2 overlay applies. The pattern is transport-agnostic.
+
+What does **not** transfer to WebSocket is §4 (the non-call-ALPN substrate
+mechanism / the ALPN-stream-proxy, ADR-040) and §5's WebTransport-specific
+framing. Those require WebTransport's stream model and revive with it.
+ADR-044 §3 states the transfer explicitly; ADR-044 §5 states the
+"browser is not a peer" rationale (addressability vs. bidirectionality)
+that this ADR's §3 relies on but does not argue.
 
 ## Context
 

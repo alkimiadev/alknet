@@ -214,11 +214,14 @@ require it for the common case.
    `/schema` at build time.
 
 4. **`subscribe` (SSE) is the streaming projection for the gateway.**
-   Over `h2`/`http/1.1`, subscriptions are SSE. Over WebTransport
-   (`h3`), subscriptions project onto WebTransport streams directly
-   (ADR-038) — the gateway's `/subscribe` is the `h2`/`http/1.1` path;
-   the WebTransport path is the native call-protocol session
-   (`webtransport.md`).
+   Over `h2`/`http/1.1`, subscriptions are SSE. Over WebSocket (the v1
+   browser bidirectional path, ADR-044), subscriptions project onto the
+   WS connection directly as binary messages — the gateway's `/subscribe`
+   is the `h2`/`http/1.1` SSE path; the WebSocket path is the native
+   call-protocol session (`http-server.md` §"WebSocket browser path").
+   WebTransport (`h3`, deferred per ADR-044) would project onto
+   WebTransport streams; the deferred design is at
+   `webtransport.md`.
 
 ## References
 
@@ -232,9 +235,11 @@ require it for the common case.
 - [ADR-036](036-http-to-call-operation-mapping.md) — the SSE projection
   for subscriptions over `h2`/`http/1.1` (the gateway's `/subscribe`
   endpoint uses the same SSE framing)
-- [ADR-038](038-http3-and-webtransport-as-first-class.md) — the
-  WebTransport streaming path (the gateway's `/subscribe` is the
-  `h2`/`http/1.1` path; WebTransport is native)
+- [ADR-044](044-defer-webtransport-browsers-use-websocket.md) —
+  WebSocket is the v1 browser bidirectional path; `h3`/WebTransport
+  deferred (the gateway's `/subscribe` is the `h2`/`http/1.1` SSE path;
+  the WS path is the native call-protocol session). ADR-038 is
+  superseded by ADR-044.
 - [ADR-041](041-mcp-tool-gateway-pattern.md) — the sibling gateway
   pattern for `to_mcp` (4 tools; `subscribe` excluded because MCP tool
   calls are request/response)
