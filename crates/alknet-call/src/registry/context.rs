@@ -6,7 +6,7 @@ use alknet_core::auth::Identity;
 use alknet_core::types::Capabilities;
 use serde_json::Value;
 
-use super::env::OperationEnv;
+use super::env::{OperationEnv, PeerId, PeerRef};
 
 pub struct OperationContext {
     pub request_id: String,
@@ -25,7 +25,7 @@ pub struct OperationContext {
     pub forwarded_for: Option<Identity>,
     pub capabilities: Capabilities,
     pub metadata: HashMap<String, Value>,
-    pub scoped_env: ScopedOperationEnv,
+    pub scoped_env: ScopedPeerEnv,
     pub env: Arc<dyn OperationEnv + Send + Sync>,
     pub abort_policy: AbortPolicy,
     pub deadline: Option<Instant>,
@@ -75,29 +75,65 @@ impl CompositionAuthority {
 }
 
 #[derive(Debug, Clone)]
-pub struct ScopedOperationEnv {
-    allowed: HashSet<String>,
+pub struct ScopedPeerEnv {
+    /// Peer-agnostic reachability — reachable via `PeerRef::Any` or
+    /// `PeerRef::Specific(any)`. The common case (peer-agnostic composition).
+    pub allowed_ops: HashSet<String>,
+    /// Peer-pinned reachability — `"peer-id/op-name"`, reachable only via
+    /// `PeerRef::Specific(that peer)`. Additive to `allowed_ops`; opt-in for
+    /// the disambiguation case (ADR-029 §4).
+    pub peer_pinned: HashSet<String>,
 }
 
-impl ScopedOperationEnv {
+impl ScopedPeerEnv {
     pub fn empty() -> Self {
         Self {
-            allowed: HashSet::new(),
+            allowed_ops: HashSet::new(),
+            peer_pinned: HashSet::new(),
         }
     }
 
     pub fn new(ops: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
-            allowed: ops.into_iter().map(|s| s.into()).collect(),
+            allowed_ops: ops.into_iter().map(|s| s.into()).collect(),
+            peer_pinned: HashSet::new(),
         }
     }
 
+    /// Peer-pinned reachability: `"peer-id/op-name"`. Reachable only via
+    /// `PeerRef::Specific(that peer)`. Additive to `new` — call `new` for the
+    /// peer-agnostic set, then `with_pinned` for the pinned set.
+    pub fn with_pinned(mut self, pinned: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.peer_pinned = pinned.into_iter().map(|s| s.into()).collect();
+        self
+    }
+
+    /// Peer-agnostic reachability — unchanged from `ScopedOperationEnv::allows`.
+    /// A name here is reachable via any routing path (`PeerRef::Any` or
+    /// `Specific`).
     pub fn allows(&self, name: &str) -> bool {
-        self.allowed.contains(name)
+        self.allowed_ops.contains(name)
+    }
+
+    /// Peer-pinned reachability — reachable only via `PeerRef::Specific(peer)`.
+    /// The entry shape is `"peer-id/op-name"` (ADR-029 §4, OQ-33).
+    pub fn allows_pinned(&self, peer: &PeerId, name: &str) -> bool {
+        self.peer_pinned.contains(&format!("{peer}/{name}"))
+    }
+
+    /// Does this scoped env permit `name` via `peer`? Used by the reachability
+    /// gate in `invoke_peer` / `invoke_with_policy`.
+    /// - `PeerRef::Any` → `allows(name)`
+    /// - `PeerRef::Specific(peer)` → `allows(name) || allows_pinned(peer, name)`
+    pub fn allows_via(&self, peer: &PeerRef, name: &str) -> bool {
+        match peer {
+            PeerRef::Any => self.allows(name),
+            PeerRef::Specific(p) => self.allows(name) || self.allows_pinned(p, name),
+        }
     }
 }
 
-impl Default for ScopedOperationEnv {
+impl Default for ScopedPeerEnv {
     fn default() -> Self {
         Self::empty()
     }
@@ -114,22 +150,106 @@ mod tests {
 
     #[test]
     fn scoped_env_allows_in_set() {
-        let env = ScopedOperationEnv::new(["fs/readFile", "agent/chat"]);
+        let env = ScopedPeerEnv::new(["fs/readFile", "agent/chat"]);
         assert!(env.allows("fs/readFile"));
         assert!(env.allows("agent/chat"));
     }
 
     #[test]
     fn scoped_env_disallows_not_in_set() {
-        let env = ScopedOperationEnv::new(["fs/readFile"]);
+        let env = ScopedPeerEnv::new(["fs/readFile"]);
         assert!(!env.allows("agent/chat"));
         assert!(!env.allows(""));
     }
 
     #[test]
     fn scoped_env_empty_allows_nothing() {
-        let env = ScopedOperationEnv::empty();
+        let env = ScopedPeerEnv::empty();
         assert!(!env.allows("fs/readFile"));
+    }
+
+    #[test]
+    fn scoped_peer_env_new_with_pinned_populates_both_fields() {
+        let env = ScopedPeerEnv::new(["fs/readFile"]).with_pinned(["worker-a/container/exec"]);
+        assert!(env.allowed_ops.contains("fs/readFile"));
+        assert!(env.peer_pinned.contains("worker-a/container/exec"));
+        assert!(!env.allowed_ops.contains("worker-a/container/exec"));
+        assert!(!env.peer_pinned.contains("fs/readFile"));
+    }
+
+    #[test]
+    fn scoped_peer_env_allows_checks_allowed_ops_only() {
+        let env = ScopedPeerEnv::empty().with_pinned(["worker-a/container/exec"]);
+        assert!(
+            !env.allows("container/exec"),
+            "pinned-only op not in allowed_ops"
+        );
+        let env2 = ScopedPeerEnv::new(["container/exec"]).with_pinned(["worker-a/container/exec"]);
+        assert!(
+            env2.allows("container/exec"),
+            "op in allowed_ops is allowed"
+        );
+    }
+
+    #[test]
+    fn scoped_peer_env_allows_pinned_checks_peer_pinned_shape() {
+        let env = ScopedPeerEnv::empty().with_pinned(["worker-a/container/exec"]);
+        assert!(env.allows_pinned(&"worker-a".to_string(), "container/exec"));
+        assert!(
+            !env.allows_pinned(&"worker-b".to_string(), "container/exec"),
+            "wrong peer"
+        );
+        assert!(
+            !env.allows_pinned(&"worker-a".to_string(), "other/op"),
+            "wrong op"
+        );
+    }
+
+    #[test]
+    fn scoped_peer_env_allows_via_any_uses_allowed_ops_only() {
+        let env = ScopedPeerEnv::new(["fs/readFile"]).with_pinned(["worker-a/container/exec"]);
+        assert!(
+            env.allows_via(&PeerRef::Any, "fs/readFile"),
+            "allowed op via Any"
+        );
+        assert!(
+            !env.allows_via(&PeerRef::Any, "container/exec"),
+            "pinned-only op NOT reachable via Any"
+        );
+    }
+
+    #[test]
+    fn scoped_peer_env_allows_via_specific_uses_allowed_ops_or_peer_pinned() {
+        let env = ScopedPeerEnv::new(["fs/readFile"]).with_pinned(["worker-a/container/exec"]);
+        assert!(
+            env.allows_via(&PeerRef::Specific("worker-a".to_string()), "container/exec"),
+            "pinned-only op reachable via Specific(pinned peer)"
+        );
+        assert!(
+            env.allows_via(&PeerRef::Specific("worker-a".to_string()), "fs/readFile"),
+            "allowed op reachable via Specific(any peer)"
+        );
+        assert!(
+            !env.allows_via(&PeerRef::Specific("worker-b".to_string()), "container/exec"),
+            "pinned-only op NOT reachable via Specific(wrong peer)"
+        );
+    }
+
+    #[test]
+    fn scoped_peer_env_op_in_both_sets_reachable_via_both_any_and_specific() {
+        let env = ScopedPeerEnv::new(["container/exec"]).with_pinned(["worker-a/container/exec"]);
+        assert!(
+            env.allows_via(&PeerRef::Any, "container/exec"),
+            "op in allowed_ops reachable via Any"
+        );
+        assert!(
+            env.allows_via(&PeerRef::Specific("worker-a".to_string()), "container/exec"),
+            "op in both sets reachable via Specific(peer)"
+        );
+        assert!(
+            env.allows_via(&PeerRef::Specific("worker-b".to_string()), "container/exec"),
+            "op in allowed_ops reachable via Specific(other peer) too"
+        );
     }
 
     #[test]

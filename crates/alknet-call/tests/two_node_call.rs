@@ -233,7 +233,7 @@ async fn two_node_call_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn from_call_discovers_and_forwards_over_quic_loopback() {
     use alknet_call::client::{from_call, FromCallConfig};
-    use alknet_call::registry::context::ScopedOperationEnv;
+    use alknet_call::registry::context::ScopedPeerEnv;
 
     let server_registry = build_server_registry();
     let (server_addr, server_fingerprint, _server_join) =
@@ -284,7 +284,7 @@ async fn from_call_discovers_and_forwards_over_quic_loopback() {
 
     // Build a minimal parent context to invoke the overlay env (mirrors how a
     // composing handler dispatches a child).
-    let scoped = ScopedOperationEnv::new(["server/echo"]);
+    let scoped = ScopedPeerEnv::new(["server/echo"]);
     let parent = alknet_call::registry::context::OperationContext {
         request_id: "parent-1".to_string(),
         parent_request_id: None,

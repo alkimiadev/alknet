@@ -581,7 +581,7 @@ mod tests {
     }
 
     fn test_context(identity: Option<Identity>) -> OperationContext {
-        use crate::registry::context::{AbortPolicy, ScopedOperationEnv};
+        use crate::registry::context::{AbortPolicy, ScopedPeerEnv};
         use std::collections::HashMap;
         use std::time::{Duration, Instant};
         OperationContext {
@@ -592,7 +592,7 @@ mod tests {
             forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
-            scoped_env: ScopedOperationEnv::empty(),
+            scoped_env: ScopedPeerEnv::empty(),
             env: Arc::new(NoopEnv),
             abort_policy: AbortPolicy::default(),
             deadline: Some(Instant::now() + Duration::from_secs(30)),

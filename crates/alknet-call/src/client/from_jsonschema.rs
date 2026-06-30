@@ -73,7 +73,7 @@ impl OperationAdapter for FromJsonSchema {
 mod tests {
     use super::*;
     use crate::client::from_jsonschema as from_jsonschema_fn;
-    use crate::registry::context::{AbortPolicy, ScopedOperationEnv};
+    use crate::registry::context::{AbortPolicy, ScopedPeerEnv};
     use crate::registry::env::OperationEnv;
     use crate::registry::spec::{AccessControl, OperationType, Visibility};
     use std::collections::HashMap;
@@ -117,7 +117,7 @@ mod tests {
             forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
-            scoped_env: ScopedOperationEnv::empty(),
+            scoped_env: ScopedPeerEnv::empty(),
             env: Arc::new(NoopEnv),
             abort_policy: AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),

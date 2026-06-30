@@ -23,9 +23,7 @@ use super::wire::{
     EVENT_ERROR, EVENT_RESPONDED,
 };
 use crate::protocol::wire::ResponseEnvelope;
-use crate::registry::context::{
-    generate_request_id, AbortPolicy, OperationContext, ScopedOperationEnv,
-};
+use crate::registry::context::{generate_request_id, AbortPolicy, OperationContext, ScopedPeerEnv};
 use crate::registry::env::OperationEnv;
 use crate::registry::registration::{Handler, HandlerRegistration};
 
@@ -280,7 +278,7 @@ impl OperationEnv for OverlayOperationEnv {
             scoped_env = registration
                 .scoped_env
                 .clone()
-                .unwrap_or_else(ScopedOperationEnv::empty);
+                .unwrap_or_else(ScopedPeerEnv::empty);
         }
 
         let context = OperationContext {
@@ -432,7 +430,7 @@ mod tests {
 
     fn root_context(
         request_id: &str,
-        scoped_env: ScopedOperationEnv,
+        scoped_env: ScopedPeerEnv,
         env: Arc<dyn OperationEnv + Send + Sync>,
     ) -> OperationContext {
         OperationContext {
@@ -487,7 +485,7 @@ mod tests {
         conn.register_imported(imported_registration("worker/exec"));
         let env = conn.overlay_env();
 
-        let scoped = ScopedOperationEnv::new(["worker/exec"]);
+        let scoped = ScopedPeerEnv::new(["worker/exec"]);
         let ctx = root_context("root-1", scoped, env.clone());
 
         let response = env
@@ -506,7 +504,7 @@ mod tests {
 
         assert!(!env.contains("worker/missing"));
 
-        let scoped = ScopedOperationEnv::new(["worker/missing"]);
+        let scoped = ScopedPeerEnv::new(["worker/missing"]);
         let ctx = root_context("root-2", scoped, env.clone());
 
         let response = env
@@ -525,7 +523,7 @@ mod tests {
         conn.register_imported(imported_registration("worker/exec"));
         let env = conn.overlay_env();
 
-        let scoped = ScopedOperationEnv::empty();
+        let scoped = ScopedPeerEnv::empty();
         let ctx = root_context("root-3", scoped, env.clone());
 
         let response = env
@@ -562,7 +560,7 @@ mod tests {
         ));
         let env = conn.overlay_env();
 
-        let scoped = ScopedOperationEnv::new(["worker/exec"]);
+        let scoped = ScopedPeerEnv::new(["worker/exec"]);
         let ctx = root_context("root-4", scoped, env.clone());
 
         let response = env

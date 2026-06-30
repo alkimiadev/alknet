@@ -323,7 +323,7 @@ pub fn services_schema_handler(registry: Arc<OperationRegistry>) -> Handler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::context::{CompositionAuthority, ScopedOperationEnv};
+    use crate::registry::context::{CompositionAuthority, ScopedPeerEnv};
     use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
     use alknet_core::types::Capabilities;
     use std::collections::HashMap;
@@ -389,7 +389,7 @@ mod tests {
             forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
-            scoped_env: ScopedOperationEnv::empty(),
+            scoped_env: ScopedPeerEnv::empty(),
             env: noop_env(),
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
@@ -409,7 +409,7 @@ mod tests {
             forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
-            scoped_env: ScopedOperationEnv::empty(),
+            scoped_env: ScopedPeerEnv::empty(),
             env: noop_env(),
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
@@ -674,7 +674,7 @@ mod tests {
             list_handler,
             OperationProvenance::Local,
             CompositionAuthority::none(),
-            ScopedOperationEnv::empty().into(),
+            ScopedPeerEnv::empty().into(),
             Capabilities::new(),
         ));
         discovery_registry.register(HandlerRegistration::new(
@@ -682,7 +682,7 @@ mod tests {
             schema_handler,
             OperationProvenance::Local,
             CompositionAuthority::none(),
-            ScopedOperationEnv::empty().into(),
+            ScopedPeerEnv::empty().into(),
             Capabilities::new(),
         ));
         let discovery = Arc::new(discovery_registry);
@@ -836,7 +836,7 @@ mod tests {
             forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
-            scoped_env: ScopedOperationEnv::empty(),
+            scoped_env: ScopedPeerEnv::empty(),
             env,
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
@@ -919,7 +919,7 @@ mod tests {
             forwarded_for: None,
             capabilities: Capabilities::new(),
             metadata: HashMap::new(),
-            scoped_env: ScopedOperationEnv::empty(),
+            scoped_env: ScopedPeerEnv::empty(),
             env,
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),

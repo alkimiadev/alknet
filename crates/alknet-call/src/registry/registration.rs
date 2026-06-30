@@ -6,7 +6,7 @@ use std::sync::Arc;
 use alknet_core::types::Capabilities;
 use serde_json::Value;
 
-use super::context::{CompositionAuthority, OperationContext, ScopedOperationEnv};
+use super::context::{CompositionAuthority, OperationContext, ScopedPeerEnv};
 use super::spec::{AccessResult, OperationSpec, Visibility};
 use crate::protocol::wire::ResponseEnvelope;
 
@@ -31,7 +31,7 @@ pub struct HandlerRegistration {
     pub handler: Handler,
     pub provenance: OperationProvenance,
     pub composition_authority: Option<CompositionAuthority>,
-    pub scoped_env: Option<ScopedOperationEnv>,
+    pub scoped_env: Option<ScopedPeerEnv>,
     pub capabilities: Capabilities,
 }
 
@@ -41,7 +41,7 @@ impl HandlerRegistration {
         handler: Handler,
         provenance: OperationProvenance,
         composition_authority: Option<CompositionAuthority>,
-        scoped_env: Option<ScopedOperationEnv>,
+        scoped_env: Option<ScopedPeerEnv>,
         capabilities: Capabilities,
     ) -> Self {
         Self {
@@ -146,7 +146,7 @@ impl OperationRegistryBuilder {
         spec: OperationSpec,
         handler: Handler,
         composition_authority: Option<CompositionAuthority>,
-        scoped_env: Option<ScopedOperationEnv>,
+        scoped_env: Option<ScopedPeerEnv>,
         capabilities: Capabilities,
     ) -> Self {
         let registration = HandlerRegistration::new(
@@ -247,7 +247,7 @@ mod tests {
         identity: Option<Identity>,
         handler_identity: Option<CompositionAuthority>,
         internal: bool,
-        scoped_env: ScopedOperationEnv,
+        scoped_env: ScopedPeerEnv,
     ) -> OperationContext {
         OperationContext {
             request_id: request_id.to_string(),
@@ -320,7 +320,7 @@ mod tests {
             None,
             Capabilities::new(),
         ));
-        let ctx = root_context("req-1", None, None, false, ScopedOperationEnv::empty());
+        let ctx = root_context("req-1", None, None, false, ScopedPeerEnv::empty());
         let response = registry
             .invoke("echo", serde_json::json!({"hi": 1}), ctx)
             .await;
@@ -339,7 +339,7 @@ mod tests {
             None,
             Capabilities::new(),
         ));
-        let ctx = root_context("req-2", None, None, false, ScopedOperationEnv::empty());
+        let ctx = root_context("req-2", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("secret", serde_json::json!({}), ctx).await;
         match response.result {
             Err(e) => {
@@ -361,7 +361,7 @@ mod tests {
             None,
             Capabilities::new(),
         ));
-        let ctx = root_context("req-3", None, None, true, ScopedOperationEnv::empty());
+        let ctx = root_context("req-3", None, None, true, ScopedPeerEnv::empty());
         let response = registry
             .invoke("secret", serde_json::json!({"x": 2}), ctx)
             .await;
@@ -372,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_op_returns_not_found() {
         let registry = OperationRegistry::new();
-        let ctx = root_context("req-4", None, None, false, ScopedOperationEnv::empty());
+        let ctx = root_context("req-4", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("missing", serde_json::json!({}), ctx).await;
         match response.result {
             Err(e) => assert_eq!(e.code, "NOT_FOUND"),
@@ -402,7 +402,7 @@ mod tests {
             Some(identity_with_scopes("caller", &["admin"])),
             None,
             false,
-            ScopedOperationEnv::empty(),
+            ScopedPeerEnv::empty(),
         );
         let response = registry.invoke("admin", serde_json::json!({}), ctx).await;
         assert!(response.result.is_ok());
@@ -430,7 +430,7 @@ mod tests {
             Some(identity_with_scopes("caller", &["user"])),
             None,
             false,
-            ScopedOperationEnv::empty(),
+            ScopedPeerEnv::empty(),
         );
         let response = registry.invoke("admin", serde_json::json!({}), ctx).await;
         match response.result {
@@ -459,7 +459,7 @@ mod tests {
             None,
             Capabilities::new(),
         ));
-        let ctx = root_context("req-7", None, None, false, ScopedOperationEnv::empty());
+        let ctx = root_context("req-7", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("admin", serde_json::json!({}), ctx).await;
         match response.result {
             Err(e) => {
@@ -493,7 +493,7 @@ mod tests {
             Some(identity_with_scopes("user", &["user"])),
             Some(composing_authority),
             true,
-            ScopedOperationEnv::empty(),
+            ScopedPeerEnv::empty(),
         );
         let response = registry.invoke("secret", serde_json::json!({}), ctx).await;
         assert!(
@@ -525,7 +525,7 @@ mod tests {
             Some(identity_with_scopes("user", &["admin"])),
             Some(weak_authority),
             true,
-            ScopedOperationEnv::empty(),
+            ScopedPeerEnv::empty(),
         );
         let response = registry.invoke("secret", serde_json::json!({}), ctx).await;
         match response.result {
@@ -560,7 +560,7 @@ mod tests {
             Some(identity_with_scopes("user", &["user"])),
             Some(CompositionAuthority::new("agent", ["admin".to_string()])),
             false,
-            ScopedOperationEnv::empty(),
+            ScopedPeerEnv::empty(),
         );
         let response = registry.invoke("gate", serde_json::json!({}), ctx).await;
         match response.result {
@@ -604,7 +604,7 @@ mod tests {
             None,
             Capabilities::new(),
         ));
-        let ctx = root_context("req-11", None, None, false, ScopedOperationEnv::empty());
+        let ctx = root_context("req-11", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("boom", serde_json::json!({}), ctx).await;
         match response.result {
             Err(e) => assert_eq!(e.code, "INTERNAL"),
@@ -619,7 +619,7 @@ mod tests {
                 external_spec("echo", AccessControl::default()),
                 echo_handler(),
                 CompositionAuthority::none(),
-                ScopedOperationEnv::empty().into(),
+                ScopedPeerEnv::empty().into(),
                 Capabilities::new(),
             )
             .build();
@@ -636,7 +636,7 @@ mod tests {
                 external_spec("agent", AccessControl::default()),
                 echo_handler(),
                 Some(CompositionAuthority::new("agent", ["fs:read".to_string()])),
-                Some(ScopedOperationEnv::new(["fs/readFile"])),
+                Some(ScopedPeerEnv::new(["fs/readFile"])),
                 Capabilities::new(),
             )
             .build();
@@ -687,7 +687,7 @@ mod tests {
             echo_handler(),
             OperationProvenance::Session,
             Some(CompositionAuthority::new("sandbox", [])),
-            Some(ScopedOperationEnv::new(["fs/readFile"])),
+            Some(ScopedPeerEnv::new(["fs/readFile"])),
             Capabilities::new(),
         );
         let registry = OperationRegistryBuilder::new().with(registration).build();
@@ -715,7 +715,7 @@ mod tests {
     fn registration_lookup_returns_bundle_fields() {
         let mut registry = OperationRegistry::new();
         let authority = CompositionAuthority::new("agent", ["fs:read".to_string()]);
-        let scoped = ScopedOperationEnv::new(["fs/readFile"]);
+        let scoped = ScopedPeerEnv::new(["fs/readFile"]);
         let caps = Capabilities::new().with_api_key("google", "k".to_string());
         registry.register(HandlerRegistration::new(
             external_spec("agent", AccessControl::default()),

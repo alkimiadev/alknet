@@ -28,7 +28,7 @@ use super::wire::{
     EVENT_ABORTED, EVENT_REQUESTED,
 };
 use crate::protocol::adapter::SessionOverlaySource;
-use crate::registry::context::{AbortPolicy, OperationContext, ScopedOperationEnv};
+use crate::registry::context::{AbortPolicy, OperationContext, ScopedPeerEnv};
 use crate::registry::env::{LocalOperationEnv, OperationEnv, PeerCompositeEnv};
 use crate::registry::registration::OperationRegistry;
 
@@ -135,14 +135,12 @@ impl Dispatcher {
             Some(r) => (
                 r.composition_authority.clone(),
                 r.capabilities.clone(),
-                r.scoped_env
-                    .clone()
-                    .unwrap_or_else(ScopedOperationEnv::empty),
+                r.scoped_env.clone().unwrap_or_else(ScopedPeerEnv::empty),
             ),
             None => (
                 None,
                 alknet_core::types::Capabilities::new(),
-                ScopedOperationEnv::empty(),
+                ScopedPeerEnv::empty(),
             ),
         };
 

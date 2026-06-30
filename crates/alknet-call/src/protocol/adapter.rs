@@ -164,7 +164,7 @@ mod tests {
     use crate::protocol::wire::{
         CallError, EventEnvelope, EVENT_COMPLETED, EVENT_ERROR, EVENT_RESPONDED,
     };
-    use crate::registry::context::{AbortPolicy, OperationContext, ScopedOperationEnv};
+    use crate::registry::context::{AbortPolicy, OperationContext, ScopedPeerEnv};
     use crate::registry::env::OperationEnv;
     use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
@@ -419,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn build_root_context_carries_capabilities_and_scoped_env() {
         let mut registry = OperationRegistry::new();
-        let scoped = ScopedOperationEnv::new(["fs/readFile"]);
+        let scoped = ScopedPeerEnv::new(["fs/readFile"]);
         let caps = Capabilities::new().with_api_key("google", "k".to_string());
         registry.register(HandlerRegistration::new(
             external_spec("agent/run", AccessControl::default()),
@@ -562,7 +562,7 @@ mod tests {
         let context =
             adapter.build_root_context("req-5".to_string(), "fs/readFile", None, None, &conn);
 
-        let scoped = ScopedOperationEnv::new(["worker/exec"]);
+        let scoped = ScopedPeerEnv::new(["worker/exec"]);
         let invoke_ctx = OperationContext {
             request_id: "req-5".to_string(),
             parent_request_id: None,
@@ -620,7 +620,7 @@ mod tests {
         let context =
             adapter.build_root_context("req-6".to_string(), "fs/readFile", None, None, &conn);
 
-        let scoped = ScopedOperationEnv::new(["worker/exec"]);
+        let scoped = ScopedPeerEnv::new(["worker/exec"]);
         let invoke_ctx = OperationContext {
             request_id: "req-6".to_string(),
             parent_request_id: None,
