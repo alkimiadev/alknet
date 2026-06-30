@@ -1,8 +1,10 @@
-# Metatensor: Schema-Driven Binary Tensor Format
+# alknet-tensor: Schema-Driven Binary Tensor Format (Metatensor)
 
 **Status:** Research / concept design. The schema layer is proven (TypeBox + jsonschema interop confirmed by API inspection); the offset computation and mmap layer are designed but not yet implemented.
-**Date:** 2026-06-20
+**Date:** 2026-06-20 (original), 2026-06-30 (reframed for crate split)
 **Scope:** A schema-driven binary tensor format extending safetensors, using TypeBox (JS) / jsonschema (Rust) as the layout specification language. Supports flat, struct, and blob tensor kinds for fixed-size, record-structured, and variable-length data. Memory-mappable, QUIC-streamable, and authorable via ujsx.
+
+**Crate note (2026-06-30):** This doc was originally titled `alknet-tensor/metatensor-format.md` and paired with `alknet-tensor/architecture-summary.md`. The crate-decomposition session split the original `alknet-tensor` concept into two crates: `alknet-tensor` (this doc — the pure binary format, no JS or wgpu dependency) and `alknet-compute` (the wgpu compute engine — now at `docs/research/alknet-compute/architecture-summary.md`, builds on `alknet-runtime` + `alknet-tensor`). A pure-Rust model server can use `alknet-tensor` for the format alone; `alknet-compute` is what bridges the format to wgpu buffers via `load_model`/`stream_model` ops registered on `alknet-runtime`'s registry.
 
 ---
 
@@ -417,4 +419,5 @@ Loading a tensor from mmap into a wgpu buffer: is it a copy (mmap → staging bu
 - **safetensor format reference:** `/workspace/research/typebox_research/metatensor/basic.ts` — 8-byte LE header length + JSON header + raw bytes; `TensorRef = {dtype, shape, data_offsets}`
 - **ujsx reconciler (verified on quickjs):** `/workspace/@alkdev/ujsx/src/host/{reconcile,config,fiber}.ts` — fiber-based reconciler, the typed-tree diff engine
 - **flowgraph (compute graph layer, uses ujsx):** `/workspace/@alkdev/flowgraph/` — `<Operation>`, `<Sequential>`, `<Parallel>`, `<Conditional>`, `<Map>` components; `GraphologyHostConfig` + `ReactiveHostConfig`
-- **alknet-tensor architecture (parent doc):** `/workspace/@alkdev/alknet/docs/research/alknet-tensor/architecture-summary.md` — the tensor compute architecture this format serves
+- **alknet-compute architecture (consumer of this format):** `docs/research/alknet-compute/architecture-summary.md` — the wgpu compute engine that builds on `alknet-runtime` and this format; registers the `load_model`/`stream_model` ops that bridge metatensor files to wgpu buffers
+- **alknet-runtime (substrate, sibling dependency):** `docs/research/alknet-runtime/summary.md` — the JS+wgpu substrate; this format crate does not depend on the runtime (pure-Rust path), but `alknet-compute` depends on both

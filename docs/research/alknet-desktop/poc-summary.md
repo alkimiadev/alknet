@@ -1,8 +1,10 @@
 # alknet-desktop: POC Research Summary
 
 **Status:** Research complete on the three highest-leverage unknowns; further POCs planned before spec.
-**Date:** 2026-06-20
+**Date:** 2026-06-20 (original), 2026-06-30 (crate-decomposition note added)
 **Scope:** Captures what the two completed POCs proved, what unknowns they closed, what remains open, and the architectural direction they jointly establish. Source material for the eventual `alknet-desktop` crate spec.
+
+**Crate note (2026-06-30):** The substrate this POC verified (rquickjs isolate, wgpu device, operations-protocol bridge, shared JS core bundle, sandbox/privilege model) has been extracted as `alknet-runtime` (`docs/research/alknet-runtime/summary.md`). `alknet-desktop` is now a consumer of `alknet-runtime`, not a from-scratch implementation of the substrate. The POC findings below remain valid — they verified the substrate that the runtime now embodies. The "End-to-end skeleton" POC (§Open Unknowns #3) is now scoped as: `alknet-desktop` crate that depends on `alknet-runtime` for the JS isolate + wgpu device + ops bridge, adds the winit window + wgpu surface + three.js shims + HostConfigs on top, and registers its render ops on the runtime's registry. A sibling crate, `alknet-compute` (`docs/research/alknet-compute/architecture-summary.md`), does the same for tensor compute; both share the runtime.
 
 ---
 
@@ -277,7 +279,7 @@ The two POCs answered the three biggest known-unknowns (headless WebGPU renderin
 
 1. **three.js loader op enumeration** — run GLTFLoader in a quickjs isolate with instrumented globals; produce the concrete op list.
 2. **Compositing design probe** — render three.js to a texture + SDF layer to a texture + compositor pass onto a wgpu surface, end-to-end, on llvmpipe. Answers the compositing shape question and exercises the v29 surface-from-handle API at the same time.
-3. **End-to-end skeleton** — `alknet-desktop` crate skeleton: Cargo.toml + lib.rs that opens a winit window, creates a wgpu v29 surface, loads the ujsx reconciler + operations registry via rquickjs, renders a hardcoded `<div>` tree to the surface via a no-op HostConfig, and exposes one UDF ("render") callable from the Rust side. Proves the full stack integrates before any spec is written.
+3. **End-to-end skeleton** — `alknet-desktop` crate skeleton: depends on `alknet-runtime` for the rquickjs isolate + wgpu device + ops bridge + shared JS core bundle (the 271 modules POC 2 verified), adds winit window + wgpu v29 surface + three.js browser-env shims + a no-op HostConfig, renders a hardcoded `<div>` tree to the surface, and exposes one UDF ("render") callable from the Rust side via the runtime's ops bridge. Proves the full stack (runtime + desktop) integrates before any spec is written.
 
 ---
 
