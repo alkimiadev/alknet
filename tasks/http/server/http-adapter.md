@@ -1,7 +1,7 @@
 ---
 id: http/server/http-adapter
 name: Implement HttpAdapter (ProtocolHandler for h2/http1.1) — axum over QUIC stream, ALPN branching, custom routes
-status: pending
+status: completed
 depends_on: [http/crate-init, http/gateway/gateway-dispatch-spine]
 scope: broad
 risk: high
@@ -214,4 +214,9 @@ framing. The `h3` ALPN is not registered in v1 (deferred per ADR-044).
 
 ## Summary
 
-> To be filled on completion
+> Implemented HttpAdapter (ProtocolHandler for h2/http1.1) in src/server/adapter.rs.
+> Axum-over-QUIC bridge via hyper-util auto Builder. DecoyConfig enum
+> (NotFound/StaticSite/Redirect). with_extra_routes merge (ADR-046). Router state
+> holds Arc<OperationRegistry> + Arc<dyn IdentityProvider>. Placeholder 501 handlers
+> for gateway endpoints/healthz/openapi.json/MCP (later tasks fill in). h3 ALPN not
+> registered (ADR-044). 78 tests pass. Clippy clean on default + no-default-features.
