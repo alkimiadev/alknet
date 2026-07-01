@@ -708,7 +708,10 @@ mod tests {
         let registry = registry_with_caps();
         let client = CallClient::new(Arc::clone(&registry), Arc::new(NoopIdentityProvider));
         let conn = client.spawn_dispatch(stub_connection());
-        assert_eq!(conn.connection().remote_alpn(), b"alknet/call");
+        assert_eq!(
+            conn.connection().expect("quic connection present").remote_alpn(),
+            b"alknet/call"
+        );
         std::mem::drop(conn);
     }
 
