@@ -9,6 +9,7 @@
 pub mod adapter;
 pub mod auth;
 pub mod decoy;
+pub mod gateway_routes;
 pub mod healthz;
 
 pub use adapter::{DecoyConfig, HttpAdapter};
