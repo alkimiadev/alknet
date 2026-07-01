@@ -1,7 +1,7 @@
 ---
 id: http/adapters/to-openapi
 name: Implement to_openapi gateway projection (5-endpoint OpenAPI doc, info.version semver, ADR-042/045)
-status: pending
+status: completed
 depends_on: [http/server/gateway-endpoints, http/gateway/gateway-dispatch-spine]
 scope: moderate
 risk: medium
@@ -185,4 +185,11 @@ out of scope.
 
 ## Summary
 
-> To be filled on completion
+> Implemented to_openapi(registry: &OperationRegistry) -> OpenAPISpec in src/adapters/
+> to_openapi.rs — pure projection generating fixed 5-endpoint gateway doc (/search,
+> /schema, /call, /batch, /subscribe) with info.version = 1.0.0 (ADR-045). /call responses
+> carry protocol-level errors (400/401/403/404/500/504) + operation-level errors from
+> registry error_schemas mapped by http_status (ADR-023). Per-caller operation surface
+> NOT preloaded (discovered via /search, ADR-042). /subscribe response is text/event-stream.
+> Wired GET /openapi.json in adapter.rs replacing placeholder 501. 16 new tests. 230
+> total tests pass. Clippy clean. Formatting fixed during merge.

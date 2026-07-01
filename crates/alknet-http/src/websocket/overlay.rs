@@ -315,7 +315,10 @@ mod tests {
         let ctx = hub_root_context(
             "hub-acl-ok",
             &["ui/dragged"],
-            Some(CompositionAuthority::new("hub", vec!["ui:write".to_string()])),
+            Some(CompositionAuthority::new(
+                "hub",
+                vec!["ui:write".to_string()],
+            )),
             env.clone(),
         );
 
@@ -342,7 +345,10 @@ mod tests {
         let ctx = hub_root_context(
             "hub-acl-deny",
             &["ui/dragged"],
-            Some(CompositionAuthority::new("hub", vec!["ui:read".to_string()])),
+            Some(CompositionAuthority::new(
+                "hub",
+                vec!["ui:read".to_string()],
+            )),
             env.clone(),
         );
 
@@ -499,10 +505,12 @@ mod tests {
         assert!(conn.pending().lock().contains("ws-sub-root"));
         assert!(conn.pending().lock().contains("ws-sub-child"));
 
-        let failed = conn
-            .pending()
-            .lock()
-            .fail_all(alknet_call::protocol::wire::CallError::internal("connection closed"));
+        let failed =
+            conn.pending()
+                .lock()
+                .fail_all(alknet_call::protocol::wire::CallError::internal(
+                    "connection closed",
+                ));
         assert!(failed.contains(&"ws-sub-root".to_string()));
         assert!(failed.contains(&"ws-sub-child".to_string()));
         assert!(conn.pending().lock().is_empty());
@@ -526,10 +534,12 @@ mod tests {
             )
         };
 
-        let failed = conn
-            .pending()
-            .lock()
-            .fail_all(alknet_call::protocol::wire::CallError::internal("connection closed"));
+        let failed =
+            conn.pending()
+                .lock()
+                .fail_all(alknet_call::protocol::wire::CallError::internal(
+                    "connection closed",
+                ));
         assert!(failed.contains(&"hub-call-inflight".to_string()));
 
         let result = tokio::time::timeout(Duration::from_millis(100), rx).await;
@@ -566,7 +576,10 @@ mod tests {
             .await;
         let envelope: EventEnvelope = response.into();
         assert_eq!(envelope.r#type, EVENT_RESPONDED);
-        assert_eq!(envelope.payload.get("output"), Some(&serde_json::json!({ "v": 9 })));
+        assert_eq!(
+            envelope.payload.get("output"),
+            Some(&serde_json::json!({ "v": 9 }))
+        );
     }
 
     #[tokio::test]
@@ -667,10 +680,10 @@ mod tests {
 
     #[tokio::test]
     async fn browser_identity_resolved_at_upgrade_is_stored_on_connection() {
-        let provider = Arc::new(
-            StaticIdentityProvider::new()
-                .with_token("browser-token", identity_with_scopes("browser-user", &["ui:read"])),
-        );
+        let provider = Arc::new(StaticIdentityProvider::new().with_token(
+            "browser-token",
+            identity_with_scopes("browser-user", &["ui:read"]),
+        ));
         let registry = echo_registry();
         let dp = dispatcher(registry, Arc::clone(&provider) as Arc<dyn IdentityProvider>);
 
