@@ -87,7 +87,7 @@ The gateway endpoint set (initial, two-way-door extensible):
 | `/schema` | `services/schema` | `GET` | Get an operation's full `OperationSpec` (input/output JSON Schemas, error schemas). |
 | `/call` | `call.requested` (Query/Mutation) | `POST` | Invoke an operation by name with a JSON input. Returns the output or a typed error (ADR-023). |
 | `/batch` | multiple `call.requested` | `POST` | Invoke multiple operations in one request (correlated request IDs, OQ-14). Returns an array of results. |
-| `/subscribe` | `call.requested` (Subscription) | `GET` (SSE) | Invoke a streaming operation. Returns `text/event-stream` — each `call.responded` is an SSE frame, `call.completed` closes the stream. |
+| `/subscribe` | `call.requested` (Subscription) | `POST` (SSE) | Invoke a streaming operation. Body `{ operation, input }` (same shape as `/call`); response is `text/event-stream` — each `call.responded` is an SSE frame, `call.completed` closes the stream. |
 
 Five endpoints. The client calls `/search` to find operations, `/schema`
 to learn the input shape, `/call` (or `/subscribe` for streaming) to
@@ -99,12 +99,23 @@ as JSON. No path/query/body split to reverse-engineer.
 
 The OpenAPI gateway includes `subscribe` (which the MCP gateway excludes
 — ADR-041, MCP tool calls are request/response). The `subscribe`
-endpoint maps `Subscription` operations onto SSE: `GET /subscribe` with
+endpoint maps `Subscription` operations onto SSE: `POST /subscribe` with
+a `{ operation, input }` JSON body (same shape as `/call`) and
 `Accept: text/event-stream`, each `call.responded` event is an SSE
 `data:` frame, `call.completed` closes the stream, `call.aborted` closes
 with an error frame. This is the same SSE projection ADR-036 describes
 for `h2`/`http/1.1` clients — the gateway's `subscribe` endpoint is the
 single SSE entry point instead of per-operation SSE streams.
+
+`POST` (not `GET`) is used because `/subscribe` is an invoke endpoint
+that carries `{ operation, input }` in the request body, the same flat
+JSON body shape the rest of the gateway uses. A `GET` request has no
+body, so it cannot carry the operation name and input. The SSE response
+is negotiated via `Accept: text/event-stream` on the `POST`, not via the
+method. (Browsers using `EventSource` cannot `POST`, but browsers use
+WebSocket for the bidirectional path — ADR-044; the HTTP gateway's
+`/subscribe` is for non-browser HTTP clients, and `fetch` +
+`ReadableStream` handles POST-SSE cleanly.)
 
 ### 3. The generated OpenAPI doc is per-caller (AccessControl-filtered)
 

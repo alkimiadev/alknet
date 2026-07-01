@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # HTTP Adapters — from_openapi and to_openapi
@@ -50,7 +50,11 @@ impl OperationAdapter for FromOpenAPI {
 /// implementation detail (openapiv3::OpenApi, a local alknet-http
 /// type, or a serde_json::Value-based parse); the one-way constraint is
 /// that `from_openapi` accepts a standard OpenAPI 3.x JSON/YAML doc and
-/// `to_openapi` produces one. Both directions share the same type.
+/// `to_openapi` produces one. Both directions share the same Rust type,
+/// but not the same document shape: `from_openapi` consumes traditional
+/// per-operation-paths docs (one path per operation), while `to_openapi`
+/// produces the 5-endpoint gateway doc (ADR-042). The type is shared;
+/// the shape is not.
 pub struct OpenAPISpec {
     pub info: OpenAPIInfo,
     pub paths: BTreeMap<String, PathItem>,
@@ -261,7 +265,7 @@ surface problem).
 | `/schema` | `services/schema` | `GET` | Get an operation's full `OperationSpec`. |
 | `/call` | `call.requested` (Query/Mutation) | `POST` | Invoke an operation. Flat JSON body `{ operation, input }`. |
 | `/batch` | multiple `call.requested` | `POST` | Invoke multiple operations. Array of `{ operation, input }`. |
-| `/subscribe` | `call.requested` (Subscription) | `GET` (SSE) | Invoke a streaming operation. `text/event-stream`. |
+| `/subscribe` | `call.requested` (Subscription) | `POST` (SSE) | Invoke a streaming operation. Body `{ operation, input }` (same shape as `/call`); response is `text/event-stream`. |
 
 The input is always a flat JSON body — no path/query/body split to
 reverse-engineer. JSON Schema for the input/output is already in the
@@ -299,6 +303,17 @@ paths with split parameters) can build it as a separate projection with
 HTTP-specific metadata (which fields are path params, etc.). The
 gateway pattern is the default `to_openapi` projection; the traditional
 projection is additive, not a replacement. See ADR-042 §5.
+
+#### Shared dispatch spine with `to_mcp`
+
+`to_openapi`'s `/call` endpoint and `to_mcp`'s `call` tool share the
+same dispatch spine (resolve identity → build `OperationContext` →
+`OperationRegistry::invoke()` → map `ResponseEnvelope`). The
+wire-framing, discovery, streaming, and server-integration layers are
+per-gateway. See [http-mcp.md](http-mcp.md) §"Shared dispatch spine
+with `to_openapi`" and
+`docs/research/alknet-http-gateway-factoring/findings.md` for the
+factoring recommendation (thin shared struct, not a trait).
 
 ### Error Fidelity (ADR-023)
 

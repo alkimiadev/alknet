@@ -51,7 +51,7 @@ own explicit decision record:
 | Invoke shape | `POST /call` with `{ "operation": "/fs/readFile", "input": {...} }` | `call.requested` event with `{ operation, input }` payload (the call protocol's native shape) |
 | Discovery | `GET /search` (gateway endpoint) | `services/list` as an ordinary call-protocol op |
 | Schema | `GET /schema` (gateway endpoint) | `services/schema` as an ordinary call-protocol op |
-| Streaming | `GET /subscribe` (SSE frames) | `call.responded` events as binary WS messages (no SSE) |
+| Streaming | `POST /subscribe` (SSE frames) | `call.responded` events as binary WS messages (no SSE) |
 | Dispatcher | axum route handler → `OperationRegistry::invoke()` | shared `Dispatcher` (ADR-012, stream-agnostic) |
 | Multiplexing | HTTP/2 native; HTTP/1.1 sequential | By request ID (ADR-012), not by stream |
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # HTTP Server
@@ -117,7 +117,9 @@ contains:
   `POST /call` with `{ "operation": "/{service}/{op}", "input": {...} }`,
   discovers available operations via `GET /search`
   (`AccessControl`-filtered), and learns an operation's shape via `GET
-  /schema`. `/subscribe` is the SSE streaming invoke path. There is no
+  /  schema`. `POST /subscribe` is the SSE streaming invoke path (body
+  `{ operation, input }`, same shape as `/call`, response
+  `text/event-stream`). There is no
   per-operation `POST /{service}/{op}` direct-call surface — the
   gateway is the invoke path (ADR-047 supersedes ADR-036's direct-call
   surface; the simplified contract is a few fixed endpoints, not a
@@ -185,9 +187,11 @@ SSE streaming projection (below).
 
 ### Streaming projection (SSE — the gateway's `/subscribe`)
 
-A `Subscription` operation invoked via the gateway's `/subscribe`
+A `Subscription` operation invoked via the gateway's `POST /subscribe`
 endpoint projects its `call.responded` stream as Server-Sent Events.
-The axum route handler:
+The request body is `{ operation, input }` (the same flat JSON shape as
+`/call`); the response is `text/event-stream` (negotiated via
+`Accept: text/event-stream` on the `POST`). The axum route handler:
 
 - Sets `Content-Type: text/event-stream`.
 - For each `call.responded` event, writes an SSE `data:` frame (the
@@ -341,7 +345,7 @@ paths matched by neither the default surface nor a custom route.
 ### Custom routes (ADR-046)
 
 A deployment that needs HTTP endpoints outside the default surface
-(direct-call + gateway + `/healthz` + `/openapi.json` + MCP) injects
+(gateway + `/healthz` + `/openapi.json` + MCP) injects
 them as an `axum::Router` at `HttpAdapter` construction. The classic use
 case: an OpenAI-compatible proxy at `/v1/chat/completions` that wraps a
 call-protocol operation (the deployment parses the OAI request, invokes
@@ -363,10 +367,14 @@ Custom routes:
   different auth applies its own axum middleware (the deployment owns
   its custom routes' middleware stack).
 - **Do not collide** with the reserved default-surface paths
-  (`/{service}/{op}`, `/search`, `/schema`, `/call`, `/batch`,
+  (`/search`, `/schema`, `/call`, `/batch`,
   `/subscribe`, `/healthz`, `/openapi.json`, the MCP route) — the
   default surface wins on collision; custom routes namespace away
-  naturally (`/v1/...`).
+  naturally (`/v1/...`). (ADR-047 removed the direct-call
+  `POST /{service}/{op}` surface, so `/{service}/{op}` is no longer a
+  reserved path; a deployment that builds a per-operation projection as
+  a custom route is the one case where `/{service}/{op}` patterns
+  appear, subject to the same collision rule.)
 - Are **not versioned** by `to_openapi` (ADR-045 versions the gateway
   contract, not custom routes). The deployment versions its own custom
   routes however it wants.

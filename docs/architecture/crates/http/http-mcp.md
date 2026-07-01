@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-29
+last_updated: 2026-07-01
 ---
 
 # HTTP MCP — from_mcp and to_mcp
@@ -84,9 +84,21 @@ The adapter:
      extension, a `Subscription` mapping would be added.)
    - `spec.visibility` = `Internal` (adapter-registered, ADR-015).
    - `spec.input_schema` = the tool's `inputSchema` (JSON Schema).
-   - `spec.output_schema` = the tool's `outputSchema`, or
-     `Type.Unknown()` if absent (the TS `from_mcp.ts` shows this
-     fallback).
+    - `spec.output_schema` = depends on whether the tool declares
+      `outputSchema` (MCP 2025-06-18+):
+      - **`outputSchema` present** → `output_schema` = the declared
+        schema (converted from JSON Schema). The result arrives in
+        `CallToolResult.structured_content` and is composable with
+        local operations (the data matches the declared type).
+      - **`outputSchema` absent** (older MCP servers) → `output_schema`
+        = the MCP `ContentBlock` union (`text | image | audio |
+        resource | resource_link` — a well-defined MCP type, *not*
+        `Type.Unknown()`). The result arrives in
+        `CallToolResult.content` as a `Vec<ContentBlock>`. The common
+        sub-case is a single `Text` block (which older servers often
+        fill with JSON-stringified data), but the *type* is the
+        `ContentBlock` union regardless of what the text contains.
+        See "Output handling" below.
    - `spec.error_schemas` = the MCP tool's error description mapped to
      `ErrorDefinition` (ADR-023 — MCP tool definitions carry error
      descriptions; the adapter maps them).
@@ -107,10 +119,9 @@ At call time, the `from_mcp` forwarding handler:
 2. Calls `client.call_tool({ name: tool_name, arguments: input })` via
    the rmcp client (the `streamable_http.rs` example shows
    `client.call_tool(CallToolRequestParams::new(name).with_arguments(...))`).
-3. On success: extracts `structuredContent` (if present) or maps the
-   `content` blocks (the TS `mapMCPContentBlocks` shows the mapping:
-   text/image/audio/resource/resource_link → `MCPContentBlock`),
-   wraps in a `ResponseEnvelope`, returns.
+3. On success: extracts the result from the `CallToolResult`, following
+   the `structuredContent`-preferred-over-content-blocks rule (see
+   "Output handling" below), wraps in a `ResponseEnvelope`, returns.
 4. On `result.isError`: maps to a `CallError` with the MCP error content
    (the TS `from_mcp.ts` handler shows the error mapping), returns.
 5. The rmcp client connection is maintained for the lifetime of the
@@ -119,6 +130,35 @@ At call time, the `from_mcp` forwarding handler:
 
 The handler is opaque to the `CallAdapter` — `Arc<dyn Handler>` the
 registry dispatches. `alknet-call` never sees rmcp.
+
+### Output handling (structuredContent vs content blocks)
+
+MCP `CallToolResult` (rmcp `model.rs`) carries two result fields:
+`content: Vec<ContentBlock>` (always present, defaults to `[]`) and
+`structured_content: Option<Value>` (present when the tool declared
+`outputSchema`). The `from_mcp` handler follows the same rule the TS
+adapter (`@alkdev/operations/src/from_mcp.ts`) and the rmcp SDK
+(`CallToolResult::into_typed`) use:
+
+- **`structured_content` present** (tool declared `outputSchema`): the
+  handler uses `structured_content` as the result, validated/cast
+  against the declared `output_schema`. This is the composable case —
+  the data matches the declared type, so a composing handler can use it
+  as a typed value.
+- **`structured_content` absent** (older server, no `outputSchema`):
+  the handler maps `content: Vec<ContentBlock>` to the
+  `ContentBlock`-union `output_schema` (text/image/audio/resource/
+  resource_link). The TS `mapMCPContentBlocks` shows the mapping; the
+  Rust `ContentBlock` enum (`rmcp/src/model/content.rs`) is the same
+  shape. The common sub-case is a single `Text` block — older servers
+  often JSON-stringify structured data into the `text` field. The
+  adapter does *not* attempt to `JSON.parse` the text heuristically
+  (fragile, not the adapter's concern); it carries the `ContentBlock`
+  union as the typed result. A consumer that knows the text is JSON can
+  parse it downstream.
+
+The `isError: true` case is handled separately (step 4 above) — it
+maps to a `CallError`, not to the output handling path.
 
 ### to_mcp
 
@@ -209,6 +249,34 @@ don't fit the LLM tool-call pattern. See ADR-041 §2.
    `AccessControl` gates `search` results and `call` dispatch — the
    LLM sees only what it's authorized to call.
 
+#### Shared dispatch spine with `to_openapi`
+
+`to_mcp`'s `call` tool and `to_openapi`'s `/call` endpoint share the
+same dispatch spine: resolve caller identity (Bearer →
+`IdentityProvider::resolve_from_token`) → build a root
+`OperationContext` → `OperationRegistry::invoke()` → map the
+`ResponseEnvelope` to the gateway's wire shape (`CallToolResult` for
+MCP, HTTP JSON for OpenAPI). The wire framing, discovery listing
+(`tools/list` vs `/search`), streaming (excluded vs `/subscribe` SSE),
+and server integration (rmcp `StreamableHttpService` tower service vs
+axum route handlers) are genuinely per-gateway and are not shared.
+
+Research findings
+(`docs/research/alknet-http-gateway-factoring/findings.md`) recommend
+extracting a **thin shared spine** (a concrete struct holding
+`Arc<OperationRegistry>` + `Arc<dyn IdentityProvider>` with a
+`resolve + build_context + invoke` method returning a
+`ResponseEnvelope`), **not** a `GatewayDispatch` trait or gateway
+abstraction. The spine is small (~15–30 lines per endpoint), but it is
+the one place where a divergence bug (identity resolved differently,
+`OperationContext.internal` set inconsistently, `CallError` mapped
+asymmetrically) would be a security/correctness issue. The
+server-integration and wire-framing layers stay per-gateway; a third
+gateway (GraphQL, gRPC) is not on the horizon, and if one appears its
+server-integration layer needs its own shape anyway. This is an
+implementation factoring note, not an ADR — the decision is internal to
+`alknet-http` and does not cross crate boundaries.
+
 ### No-Env-Vars
 
 The `from_mcp` forwarding handler reads the MCP server's bearer token
@@ -290,9 +358,26 @@ See [open-questions.md](../../open-questions.md) for full details.
   `OperationAdapter` trait, `AdapterError` variants
 - `/workspace/rust-sdk/` — MCP Rust SDK (rmcp v1.8.0); streamable HTTP
   transport
+- `/workspace/rust-sdk/crates/rmcp/src/model/tool.rs` — `Tool` with
+  `output_schema: Option<Arc<JsonObject>>` (the `outputSchema` field)
+- `/workspace/rust-sdk/crates/rmcp/src/model/content.rs` — `ContentBlock`
+  enum (text/image/audio/resource/resource_link — the fallback
+  `output_schema` type when `outputSchema` is absent)
+- `/workspace/rust-sdk/crates/rmcp/src/model.rs` (~line 2868) —
+  `CallToolResult` with `content: Vec<ContentBlock>` and
+  `structured_content: Option<Value>` (the two result fields); see also
+  `into_typed` (~line 3057) for the SDK's own
+  structured-content-preferred-over-text-block fallback logic
 - `/workspace/rust-sdk/examples/servers/src/simple_auth_streamhttp.rs`
   — streamable HTTP MCP server with Bearer auth (the `to_mcp` pattern)
 - `/workspace/rust-sdk/examples/clients/src/streamable_http.rs` —
   streamable HTTP MCP client (the `from_mcp` pattern)
 - `/workspace/@alkdev/operations/src/from_mcp.ts` — TypeScript prior art
-  (`createMCPClient`, `mapMCPContentBlocks`, the `MCPClientLoader`)
+  (`createMCPClient`, `mapMCPContentBlocks`, the `MCPClientLoader`; the
+  `structuredContent`-preferred-over-content-blocks logic)
+- `/workspace/@alkdev/operations/docs/architecture/adapters.md` —
+  TypeScript adapter architecture doc (the `from_mcp` `outputSchema`/
+  `structuredContent` handling, the `MUTATION` tool-type decision)
+- `docs/research/alknet-http-gateway-factoring/findings.md` — research
+  on the shared dispatch spine between `to_mcp` and `to_openapi`
+  (recommendation: thin shared struct, not a trait)

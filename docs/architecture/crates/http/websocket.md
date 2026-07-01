@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-30
+last_updated: 2026-07-01
 ---
 
 # WebSocket — the Browser Bidirectional Path
@@ -122,10 +122,16 @@ mechanism of ADR-046, but a deployment that passes no custom routes gets
 `/alknet/call`). The path must not collide with the reserved
 gateway/`/healthz`/`/openapi.json`/MCP/custom-route paths per ADR-046's
 collision rule; `/alknet/call` namespaces away from the reserved set
-naturally. The upgrade runs over HTTP/1.1 (the standard `Upgrade: websocket`
-header, RFC 6455) or HTTP/2 (the extended CONNECT protocol, RFC 8441);
-axum/hyper supports both, and the handler does not branch on which — the
-WS frame stream is the same once the upgrade completes.
+naturally. A deployment that builds a custom REST projection with
+`POST /{service}/{op}` routes (ADR-047 §4) coexists with the WS upgrade
+at `/alknet/call` — axum's `Router::merge` prioritizes specific routes
+over wildcards, so the WS upgrade's exact `/alknet/call` path wins over
+any `/{service}/{op}` wildcard a custom route projection might
+register, and the two do not collide. The upgrade runs over HTTP/1.1
+(the standard `Upgrade: websocket` header, RFC 6455) or HTTP/2 (the
+extended CONNECT protocol, RFC 8441); axum/hyper supports both, and
+the handler does not branch on which — the WS frame stream is the same
+once the upgrade completes.
 
 ### Framing: `EventEnvelope` over binary WS messages
 

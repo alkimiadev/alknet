@@ -112,7 +112,7 @@ ADR-036's `OperationType` → HTTP method mapping (`Query`→`GET`,
 at the HTTP path level, because there are no per-operation HTTP paths.
 The gateway endpoints have fixed methods (ADR-042's table):
 `/search` `GET`, `/schema` `GET`, `/call` `POST`, `/batch` `POST`,
-`/subscribe` `GET` (SSE). The `OperationType` of the *called operation*
+`/subscribe` `POST` (SSE). The `OperationType` of the *called operation*
 is carried in the request/result, not expressed in the HTTP verb — the
 client calls `/call` with the operation name; the operation's type is
 the registry's concern, not the HTTP method's. A `Query` operation and a

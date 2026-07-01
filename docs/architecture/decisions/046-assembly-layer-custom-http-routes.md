@@ -154,10 +154,11 @@ it wants.
 ### 6. This does not change the default surface
 
 A deployment that constructs `HttpAdapter` with no extra routes gets
-exactly the behavior documented in `http-server.md` — direct-call,
-gateway, `/healthz`, `/openapi.json`, MCP (feature-gated), decoy. The
+exactly the behavior documented in `http-server.md` — gateway,
+`/healthz`, `/openapi.json`, MCP (feature-gated), decoy. The
 extension point is purely additive. The default surface remains the
-published contract (ADR-036, ADR-042, ADR-045); custom routes are a
+published contract (ADR-042, ADR-045; ADR-036's routing decision is
+superseded by ADR-047); custom routes are a
 deployment-specific addition on top, not a modification of it.
 
 ## Consequences
