@@ -96,7 +96,7 @@ impl Dispatcher {
         }
     }
 
-    pub(crate) fn compose_root_env(
+    pub fn compose_root_env(
         &self,
         connection: &CallConnection,
         context: &OperationContext,
@@ -112,11 +112,7 @@ impl Dispatcher {
         if let Some(session) = session {
             env = env.with_session(session);
         }
-        if let Some(peer_id) = connection
-            .connection()
-            .identity()
-            .map(|identity| identity.id.clone())
-        {
+        if let Some(peer_id) = connection.identity().map(|identity| identity.id.clone()) {
             env.attach_peer(peer_id, connection.overlay_env());
         }
         Arc::new(env)
@@ -164,7 +160,7 @@ impl Dispatcher {
         context
     }
 
-    pub(crate) async fn dispatch_requested(
+    pub async fn dispatch_requested(
         &self,
         connection: &Arc<CallConnection>,
         request_id: String,
@@ -176,7 +172,7 @@ impl Dispatcher {
             .unwrap_or("");
         let operation_name = Self::strip_leading_slash(operation_id).to_string();
 
-        let connection_identity = connection.connection().identity().cloned();
+        let connection_identity = connection.identity().cloned();
         let identity = self.resolve_identity(connection_identity, &payload);
         let forwarded_for = payload
             .get("forwarded_for")
@@ -193,6 +189,16 @@ impl Dispatcher {
         );
 
         self.registry.invoke(&operation_name, input, context).await
+    }
+
+    pub async fn handle_abort(&self, connection: &Arc<CallConnection>, request_id: &str) {
+        let mut pending = connection.pending().lock();
+        let mut cascade = AbortCascade::new(&mut pending);
+        let aborted = cascade.cascade_abort(request_id, AbortPolicy::AbortDependents);
+        pending.handle_aborted(request_id);
+        if !aborted.is_empty() {
+            debug!(count = aborted.len(), "abort cascade evicted descendants");
+        }
     }
 
     pub(crate) async fn handle_stream(
@@ -231,13 +237,7 @@ impl Dispatcher {
                 }
                 EVENT_ABORTED => {
                     let request_id = envelope.id.clone();
-                    let mut pending = connection.pending().lock();
-                    let mut cascade = AbortCascade::new(&mut pending);
-                    let aborted = cascade.cascade_abort(&request_id, AbortPolicy::AbortDependents);
-                    pending.handle_aborted(&request_id);
-                    if !aborted.is_empty() {
-                        debug!(count = aborted.len(), "abort cascade evicted descendants");
-                    }
+                    self.handle_abort(&connection, &request_id).await;
                 }
                 other => {
                     debug!(event_type = %other, id = %envelope.id, "ignoring non-requested/non-aborted event on inbound stream");
@@ -253,6 +253,14 @@ impl Dispatcher {
     /// closed (accept loop yields `ConnectionClosed`/`StreamClosed`/`Timeout`).
     pub async fn run_loop(self, connection: Arc<CallConnection>) {
         let pending = Arc::clone(connection.pending());
+
+        let quic = match connection.connection() {
+            Some(c) => Arc::clone(c),
+            None => {
+                warn!("run_loop called with an overlay-only CallConnection; returning");
+                return;
+            }
+        };
 
         let sweeper_pending = Arc::clone(&pending);
         let sweeper_handle: JoinHandle<()> = tokio::spawn(async move {
@@ -271,7 +279,7 @@ impl Dispatcher {
         });
 
         loop {
-            match connection.connection().accept_bi().await {
+            match quic.accept_bi().await {
                 Ok((send, recv)) => {
                     let conn = Arc::clone(&connection);
                     let dispatcher = self.clone();
@@ -317,6 +325,7 @@ impl Clone for Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::wire::EVENT_RESPONDED;
     use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
@@ -577,6 +586,7 @@ mod tests {
         let dp = Dispatcher::new(registry, provider);
         let conn = CallConnection::new(stub_connection());
         conn.connection()
+            .expect("quic connection present")
             .set_identity(identity_with_scopes("worker-a", &[]))
             .expect("identity not yet set");
 
@@ -686,5 +696,159 @@ mod tests {
     #[test]
     fn dispatcher_helper_compiles_with_full_signature() {
         let _dp = dispatcher();
+    }
+
+    // --- non-QUIC (overlay-only) dispatch path ----------------------------
+
+    fn overlay_only_connection(identity: Identity) -> Arc<CallConnection> {
+        Arc::new(CallConnection::new_overlay_only(identity))
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_works_with_overlay_only_connection() {
+        let registry = Arc::new(registry_with(
+            "echo/run",
+            Visibility::External,
+            AccessControl::default(),
+        ));
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let dp = Dispatcher::new(registry, provider);
+        let conn = overlay_only_connection(identity_with_scopes("ws-peer", &[]));
+
+        let payload = serde_json::json!({
+            "operationId": "/echo/run",
+            "input": { "msg": "hello" },
+        });
+        let response = dp
+            .dispatch_requested(&conn, "ws-req-1".to_string(), payload)
+            .await;
+        assert_eq!(response.request_id, "ws-req-1");
+        assert_eq!(response.result, Ok(serde_json::json!({ "msg": "hello" })));
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_overlay_only_attaches_peer_keyed_by_stored_identity() {
+        let mut registry = OperationRegistry::new();
+        let handler = make_handler(|_input, context| async move {
+            let peer_ids = context.env.peer_ids();
+            ResponseEnvelope::ok(
+                context.request_id,
+                serde_json::json!({ "peer_ids": peer_ids }),
+            )
+        });
+        registry.register(HandlerRegistration::new(
+            external_spec("fs/readFile", AccessControl::default()),
+            handler,
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new(),
+        ));
+        let registry = Arc::new(registry);
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let dp = Dispatcher::new(registry, provider);
+        let conn = overlay_only_connection(identity_with_scopes("ws-peer", &[]));
+
+        let payload = serde_json::json!({
+            "operationId": "/fs/readFile",
+            "input": {},
+        });
+        let response = dp
+            .dispatch_requested(&conn, "ws-req-2".to_string(), payload)
+            .await;
+        let out = response.result.expect("ok");
+        assert_eq!(out["peer_ids"], serde_json::json!(["ws-peer"]));
+    }
+
+    #[tokio::test]
+    async fn dispatch_requested_overlay_only_unknown_op_returns_not_found() {
+        let registry = Arc::new(OperationRegistry::new());
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let dp = Dispatcher::new(registry, provider);
+        let conn = overlay_only_connection(identity_with_scopes("ws-peer", &[]));
+
+        let payload = serde_json::json!({
+            "operationId": "/no/such/op",
+            "input": {},
+        });
+        let response = dp
+            .dispatch_requested(&conn, "ws-req-3".to_string(), payload)
+            .await;
+        match response.result {
+            Err(e) => assert_eq!(e.code, "NOT_FOUND"),
+            other => panic!("expected NOT_FOUND, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_abort_works_with_overlay_only_connection() {
+        let registry = Arc::new(registry_with(
+            "echo/run",
+            Visibility::External,
+            AccessControl::default(),
+        ));
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let dp = Dispatcher::new(registry, provider);
+        let conn = overlay_only_connection(identity_with_scopes("ws-peer", &[]));
+
+        let parent_id = "ws-abort-root".to_string();
+        let child_id = "ws-abort-child".to_string();
+        {
+            let mut pending = conn.pending().lock();
+            pending.register_call(parent_id.clone(), Instant::now() + Duration::from_secs(30), None);
+            pending.register_call(
+                child_id.clone(),
+                Instant::now() + Duration::from_secs(30),
+                Some(parent_id.clone()),
+            );
+        }
+        assert!(conn.pending().lock().contains(&parent_id));
+        assert!(conn.pending().lock().contains(&child_id));
+
+        dp.handle_abort(&conn, &parent_id).await;
+
+        assert!(
+            !conn.pending().lock().contains(&parent_id),
+            "parent entry removed after abort"
+        );
+        assert!(
+            !conn.pending().lock().contains(&child_id),
+            "child aborted by cascade"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_abort_unknown_request_id_is_noop_for_overlay_only() {
+        let registry = Arc::new(OperationRegistry::new());
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let dp = Dispatcher::new(registry, provider);
+        let conn = overlay_only_connection(identity_with_scopes("ws-peer", &[]));
+
+        dp.handle_abort(&conn, "totally-unknown").await;
+        assert!(conn.pending().lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn overlay_only_full_dispatch_round_trip_returns_response_envelope() {
+        let registry = Arc::new(registry_with(
+            "echo/run",
+            Visibility::External,
+            AccessControl::default(),
+        ));
+        let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
+        let dp = Dispatcher::new(registry, provider);
+        let conn = overlay_only_connection(identity_with_scopes("ws-peer", &[]));
+
+        let payload = serde_json::json!({
+            "operationId": "/echo/run",
+            "input": { "v": 42 },
+        });
+        let request_id = "ws-roundtrip-1".to_string();
+        let response = dp.dispatch_requested(&conn, request_id.clone(), payload).await;
+        assert!(response.result.is_ok());
+        let envelope: EventEnvelope = response.into();
+        assert_eq!(envelope.r#type, EVENT_RESPONDED);
+        assert_eq!(envelope.id, "ws-roundtrip-1");
+        assert_eq!(envelope.payload.get("output"), Some(&serde_json::json!({ "v": 42 })));
     }
 }

@@ -556,6 +556,7 @@ mod tests {
             resources: HashMap::new(),
         };
         conn.connection()
+            .expect("quic connection present")
             .set_identity(peer_identity)
             .expect("identity not yet set");
 
