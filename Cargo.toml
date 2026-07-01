@@ -3,6 +3,7 @@ members = [
     "crates/alknet-vault",
     "crates/alknet-core",
     "crates/alknet-call",
+    "crates/alknet-http",
 ]
 resolver = "2"
 

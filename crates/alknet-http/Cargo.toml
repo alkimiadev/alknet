@@ -1,0 +1,40 @@
+[package]
+name = "alknet-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP interface for alknet: serves HTTP/1.1 + HTTP/2 on standard ALPNs (with WebSocket upgrade for browser bidirectional access) and hosts the HTTP-backed call-protocol adapters"
+repository.workspace = true
+
+[lib]
+name = "alknet_http"
+
+[features]
+default = ["h2", "http1"]
+mcp = ["dep:rmcp"]
+h2 = ["dep:hyper"]
+http1 = ["dep:hyper"]
+
+[dependencies]
+alknet-core = { path = "../alknet-core" }
+alknet-call = { path = "../alknet-call" }
+axum = { version = "0.8", features = ["ws"] }
+hyper = { version = "1", optional = true, features = ["server", "http1", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+reqwest-middleware = "0.5"
+reqwest-retry = "0.9"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tracing = "0.1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
+openapiv3 = "2"
+rmcp = { version = "1.8", optional = true, default-features = false, features = [
+    "client",
+    "server",
+    "transport-streamable-http-client-reqwest",
+    "transport-streamable-http-server",
+] }
