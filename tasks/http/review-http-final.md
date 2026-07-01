@@ -1,7 +1,7 @@
 ---
 id: http/review-http-final
 name: Final review of alknet-http crate — all components, feature gates, pattern consistency
-status: pending
+status: completed
 depends_on: [http/review-http, http/review-websocket, http/review-mcp]
 scope: broad
 risk: low
@@ -176,4 +176,24 @@ WebSocket, MCP) and verifies the crate as a whole.
 
 ## Summary
 
-> To be filled on completion
+> Final crate-wide review complete. All 9 checklist areas pass:
+> 1. Crate structure: Cargo.toml, lib.rs, 5 modules (server/gateway/client/adapters/websocket),
+>    workspace member, workspace path deps for alknet-core + alknet-call.
+> 2. Feature gate isolation: default = [h2, http1], mcp = [dep:rmcp], h3 ABSENT (ADR-044),
+>    cargo check (default/mcp/no-default) all succeed, MCP code not compiled without mcp.
+> 3. Dependencies correct: alknet-core, alknet-call, axum, reqwest stack, hyper, rmcp (mcp-gated).
+>    No wtransport/h3. No env-var config.
+> 4. Cross-cutting: no-env-vars (no std::env::var in any handler), no secret material in responses,
+>    AccessControl sole gate, Internal → NOT_FOUND, error fidelity (HTTP_<status> prefix),
+>    browsers/MCP clients not peers.
+> 5. Pattern consistency: GatewayDispatch concrete struct (not trait), auth middleware shared,
+>    SharedHttpClient ArcSwap-wrapped, error mapping free function, from_* are OperationAdapter
+>    impls, to_* are pure projections.
+> 6. ADR conformance: all ADRs (003-048) verified.
+> 7. Absence verified: no h3/WebTransport, no from_wss, no stdio MCP, no direct-call surface,
+>    no traditional per-operation-paths OpenAPI, no env-var config.
+> 8. Test coverage: alknet-call 277+2, alknet-http default 230, alknet-http mcp 265+5. All pass.
+> 9. Build cleanliness: fmt clean, clippy clean (default + mcp + all-targets), build clean.
+>
+> One known limitation: /subscribe SSE completes after single event (registry invoke returns
+> single ResponseEnvelope, no streaming subscription handler yet — research §6 OQ#5).
