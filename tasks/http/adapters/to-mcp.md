@@ -1,7 +1,7 @@
 ---
 id: http/adapters/to-mcp
 name: Implement to_mcp gateway projection (4-tool gateway, rmcp StreamableHttpService, ADR-041)
-status: pending
+status: completed
 depends_on: [http/gateway/gateway-dispatch-spine, http/server/bearer-auth-middleware]
 scope: broad
 risk: medium
@@ -205,4 +205,12 @@ The `ResponseEnvelope` → `CallToolResult` mapping uses rmcp's
 
 ## Summary
 
-> To be filled on completion
+> Implemented src/adapters/to_mcp.rs: ToMcpGateway rmcp ServerHandler with 4 fixed
+> gateway tools (search/schema/call/batch). search dispatches services/list (ACL-
+> filtered, excludes Subscriptions ADR-041 §2), schema dispatches services/schema,
+> call/batch dispatch via GatewayDispatch::invoke with ResponseEnvelope→CallToolResult
+> mapping (structured for Ok, structured_error for Err). Bearer auth via shared
+> middleware around nest_service. Identity survives rmcp framing (research §6 #2
+> confirmed via test). Feature-gated behind mcp; stdio NOT built (ADR-037). Pure
+> projection. StreamableHttpService nested at /mcp. 16 unit tests. 223 mcp-feature
+> tests + 5 integration tests pass. Clippy clean on both feature configs.
