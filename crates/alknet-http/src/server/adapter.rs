@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HyperBuilder;
@@ -35,6 +35,10 @@ use super::gateway_routes;
 use super::healthz::healthz;
 use crate::websocket::upgrade::ws_upgrade_handler;
 use crate::websocket::upgrade::WS_UPGRADE_PATH;
+#[cfg(feature = "mcp")]
+use crate::adapters::to_mcp_service;
+#[cfg(feature = "mcp")]
+use crate::gateway::GatewayDispatch;
 
 const ALPN_HTTP1: &[u8] = b"http/1.1";
 const ALPN_H2: &[u8] = b"h2";
@@ -150,14 +154,28 @@ impl HttpAdapter {
 
 fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
     let auth_state = Arc::clone(&state.identity_provider);
+
+    #[cfg(feature = "mcp")]
+    let mcp_router: Router<RouterState> = {
+        let dispatch = Arc::new(GatewayDispatch::new(
+            Arc::clone(&state.registry),
+            Arc::clone(&state.identity_provider),
+        ));
+        Router::new()
+            .nest_service("/mcp", to_mcp_service(dispatch))
+            .layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
+    };
+    #[cfg(not(feature = "mcp"))]
+    let mcp_router: Router<RouterState> = Router::new();
+
     let default: Router<RouterState> = Router::new()
         .merge(gateway_routes::gateway_router())
         .route("/openapi.json", get(not_implemented))
-        .route("/mcp", post(not_implemented))
         .route(WS_UPGRADE_PATH, get(ws_upgrade_handler))
         .route_layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
         .route("/healthz", get(healthz))
-        .fallback(decoy_fallback);
+        .fallback(decoy_fallback)
+        .merge(mcp_router);
 
     let with_extras = match extra_routes {
         Some(extra) => {
@@ -269,6 +287,7 @@ impl AsyncWrite for QuicStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::post;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
     struct NoopProvider;
