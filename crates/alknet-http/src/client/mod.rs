@@ -3,4 +3,8 @@
 //!
 //! See `docs/architecture/crates/http/http-adapters.md` and OQ-40.
 
-// TODO: implement
+mod http_client;
+mod retry_after;
+
+pub use http_client::{ClientCertConfig, HttpClientBuildError, HttpClientConfig, SharedHttpClient};
+pub use retry_after::RetryAfterMiddleware;
