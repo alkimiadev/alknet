@@ -3,10 +3,10 @@
 //! See `docs/architecture/crates/http/http-server.md`. This module wires the
 //! axum `Router` (gateway endpoints + `/healthz` + `/openapi.json` + MCP +
 //! custom routes + decoy fallback) and drives hyper's HTTP/1.1 or HTTP/2
-//! connection driver over a single QUIC bidirectional stream. Gateway route
-//! handlers, healthz/decoy logic, openapi.json generation, the MCP route, and
-//! the WS upgrade handler are implemented by their respective tasks; this task
-//! wires the routes with placeholder handlers returning 501 Not Implemented.
+//! connection driver over a single QUIC bidirectional stream. The 5 gateway
+//! endpoints (`/search`/`/schema`/`/call`/`/batch`/`/subscribe`) are wired in
+//! from `gateway_routes`; `/openapi.json`, the MCP route, and the WS upgrade
+//! handler remain placeholder 501 handlers pending their respective tasks.
 
 use std::io;
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HyperBuilder;
@@ -30,8 +30,9 @@ use alknet_core::auth::{AuthContext, IdentityProvider};
 use alknet_core::types::{Connection, HandlerError, ProtocolHandler, StreamError};
 
 use super::auth::bearer_auth_middleware;
-use crate::server::decoy::decoy_fallback;
-use crate::server::healthz::healthz;
+use super::decoy::decoy_fallback;
+use super::gateway_routes;
+use super::healthz::healthz;
 
 const ALPN_HTTP1: &[u8] = b"http/1.1";
 const ALPN_H2: &[u8] = b"h2";
@@ -46,10 +47,10 @@ pub enum DecoyConfig {
 
 #[derive(Clone)]
 #[allow(dead_code)]
-struct RouterState {
-    registry: Arc<OperationRegistry>,
-    identity_provider: Arc<dyn IdentityProvider>,
-    decoy: DecoyConfig,
+pub(crate) struct RouterState {
+    pub(crate) registry: Arc<OperationRegistry>,
+    pub(crate) identity_provider: Arc<dyn IdentityProvider>,
+    pub(crate) decoy: DecoyConfig,
 }
 
 impl axum::extract::FromRef<RouterState> for DecoyConfig {
@@ -136,11 +137,7 @@ impl HttpAdapter {
 fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
     let auth_state = Arc::clone(&state.identity_provider);
     let default: Router<RouterState> = Router::new()
-        .route("/search", any(not_implemented))
-        .route("/schema", any(not_implemented))
-        .route("/call", any(not_implemented))
-        .route("/batch", any(not_implemented))
-        .route("/subscribe", any(not_implemented))
+        .merge(gateway_routes::gateway_router())
         .route("/openapi.json", get(not_implemented))
         .route("/mcp", post(not_implemented))
         .route_layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
