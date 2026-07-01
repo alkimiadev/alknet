@@ -11,3 +11,5 @@ pub mod client;
 pub mod gateway;
 pub mod server;
 pub mod websocket;
+
+pub use gateway::GatewayDispatch;
