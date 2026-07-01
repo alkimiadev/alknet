@@ -1,7 +1,7 @@
 ---
 id: http/server/healthz-decoy
 name: Implement /healthz raw route and stealth decoy fallback (DecoyConfig)
-status: pending
+status: completed
 depends_on: [http/server/http-adapter]
 scope: narrow
 risk: low
@@ -143,4 +143,8 @@ let router = Router::new()
 
 ## Summary
 
-> To be filled on completion
+> Implemented GET /healthz raw route (src/server/healthz.rs, 200 OK text/plain 'ok',
+> no auth, no OperationContext) and stealth decoy fallback (src/server/decoy.rs:
+> DecoyConfig NotFound=nginx 404 / StaticSite=serve files / Redirect). Wired real
+> handlers into HttpAdapter router (adapter.rs) replacing placeholder 501s, using
+> FromRef<RouterState> for DecoyConfig substate. 125 tests pass. Clippy clean.
