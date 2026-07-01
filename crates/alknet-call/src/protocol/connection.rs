@@ -27,6 +27,7 @@ use crate::protocol::wire::ResponseEnvelope;
 use crate::registry::context::{generate_request_id, AbortPolicy, OperationContext, ScopedPeerEnv};
 use crate::registry::env::OperationEnv;
 use crate::registry::registration::{Handler, HandlerRegistration};
+use crate::registry::spec::AccessResult;
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -309,6 +310,7 @@ impl OperationEnv for OverlayOperationEnv {
         let handler: Handler;
         let composition_authority;
         let scoped_env;
+        let access_control;
         {
             let overlay = self.overlay.read();
             let Some(registration) = overlay.get(&name) else {
@@ -320,6 +322,19 @@ impl OperationEnv for OverlayOperationEnv {
                 .scoped_env
                 .clone()
                 .unwrap_or_else(ScopedPeerEnv::empty);
+            access_control = registration.spec.access_control.clone();
+        }
+
+        let caller_identity = if parent.internal {
+            parent
+                .handler_identity
+                .as_ref()
+                .and_then(|ca| ca.as_identity())
+        } else {
+            parent.identity.clone()
+        };
+        if let AccessResult::Forbidden(message) = access_control.check(caller_identity.as_ref()) {
+            return ResponseEnvelope::forbidden(parent.request_id.clone(), message);
         }
 
         let context = OperationContext {

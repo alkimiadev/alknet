@@ -695,6 +695,7 @@ mod tests {
         assert!(response.contains("location: https://example.com"));
     }
 
+
     #[tokio::test]
     async fn openapi_json_route_serves_gateway_spec() {
         let adapter = HttpAdapter::new(provider(), empty_registry());
