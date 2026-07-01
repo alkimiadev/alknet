@@ -1,7 +1,7 @@
 ---
 id: http/gateway/gateway-dispatch-spine
 name: Implement GatewayDispatch shared dispatch spine (thin concrete struct, not a trait)
-status: pending
+status: completed
 depends_on: [http/crate-init]
 scope: narrow
 risk: medium
@@ -180,4 +180,13 @@ research §6 open question #4.
 
 ## Summary
 
-> To be filled on completion
+> GatewayDispatch concrete struct implemented in src/gateway/dispatch.rs. Holds
+> Arc<OperationRegistry> + Arc<dyn IdentityProvider>. resolve_bearer() delegates
+> to identity_provider.resolve_from_token. invoke() builds root OperationContext
+> (internal:false, forwarded_for:None, fresh UUID v4 request_id, deadline now+30s,
+> registration bundle's composition_authority/capabilities/scoped_env) and calls
+> OperationRegistry::invoke. Duplicated build_root_context construction (alknet-call
+> version is pub(crate) + tangled with CallConnection overlays; invariants identical).
+> 14 unit tests covering dispatch, services/list AccessControl filtering, NOT_FOUND
+> for unregistered/Internal ops, FORBIDDEN for unauthorized, concrete-struct-not-trait.
+> Re-exported from lib.rs. Build/clippy/test all pass.
