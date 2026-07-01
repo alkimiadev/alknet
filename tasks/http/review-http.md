@@ -1,7 +1,7 @@
 ---
 id: http/review-http
 name: Review alknet-http server surface + OpenAPI adapters for spec conformance
-status: pending
+status: completed
 depends_on: [http/server/gateway-endpoints, http/adapters/to-openapi, http/adapters/from-openapi, http/server/healthz-decoy]
 scope: broad
 risk: low
@@ -163,4 +163,15 @@ core of the crate.
 
 ## Summary
 
-> To be filled on completion
+> HTTP server surface + OpenAPI adapters reviewed against all 12 checklist items. All
+> conformance criteria pass: HttpAdapter (struct, DecoyConfig, ProtocolHandler, axum
+> over QUIC, h3 not registered), gateway endpoints (5 fixed, no direct-call ADR-047,
+> flat JSON /call, GatewayDispatch::invoke, Internal → 404, 401/403 split, SSE /subscribe),
+> error mapping (all codes, HTTP_<status> prefix, 401/403 split, Retry-After), auth
+> (Bearer-only, shared middleware, ResolvedIdentity, no env vars), /healthz raw + decoy
+> fallback, to_openapi (5 endpoints, info.version 1.0.0, per-caller via /search, error
+> fidelity ADR-023), from_openapi (OperationAdapter, no-env-vars, HTTP_<status>, SSE),
+> SharedHttpClient (ClientWithMiddleware, retry, RetryAfter, ArcSwap), GatewayDispatch
+> (concrete struct, not trait), security constraints (no secrets in responses, no env
+> vars, Internal → 404, AccessControl sole gate). 230 default + 265 mcp tests pass.
+> Clippy clean on both feature configs. Fmt clean.

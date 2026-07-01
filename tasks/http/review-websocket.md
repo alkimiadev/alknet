@@ -1,7 +1,7 @@
 ---
 id: http/review-websocket
 name: Review WebSocket path for ADR-044/048 conformance (native session, no length prefix, browsers-not-peers)
-status: pending
+status: completed
 depends_on: [http/websocket/connection-overlay]
 scope: moderate
 risk: low
@@ -151,4 +151,14 @@ gateway shape, no length prefix).
 
 ## Summary
 
-> To be filled on completion
+> WebSocket path reviewed against all 11 checklist items. All conformance criteria
+> pass: dispatcher transport abstraction (pub API, non-QUIC CallConnection, no
+> regressions — 277+2 alknet-call tests), WS upgrade (/alknet/call, Bearer auth, 401,
+> HTTP/1.1+HTTP/2), framing (binary WS = EventEnvelope, no length prefix, text → close
+> 1002), dispatch (dispatch_requested, AccessControl gates, FORBIDDEN → call.error,
+> correlation by id, handle_abort), bidirectionality (hub calls browser ops via overlay),
+> connection-local overlay (no PeerId, no PeerEntry, overlay_env() routing,
+> PeerRef::Specific → NOT_FOUND, overlay dies on close), browsers-not-peers rationale,
+> streaming (native call.responded, no SSE, abort cascade on disconnect), all ADRs
+> (012/016/024/029/034/044/048), security constraints. 230 tests pass, clippy clean,
+> fmt clean.
