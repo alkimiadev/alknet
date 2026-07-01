@@ -1,7 +1,7 @@
 ---
 id: http/gateway/error-mapping
 name: Implement CallError-to-HTTP-status error mapping (ADR-023)
-status: pending
+status: completed
 depends_on: [http/crate-init]
 scope: narrow
 risk: low
@@ -136,4 +136,9 @@ pub fn call_error_to_http_status_with_identity(
 
 ## Summary
 
-> To be filled on completion
+> Implemented call_error_to_http_status, call_error_to_http_status_with_identity
+> (FORBIDDEN→401 no identity / 403 identity present), and call_error_to_http_response
+> (JSON body + Retry-After for retryable 503/429 with details.retry_after) in
+> src/gateway/error.rs. Five protocol codes map to fixed statuses. HTTP_<status>-
+> prefixed operation-level codes parse status from prefix (no collision). Unknown
+> operation-level codes default to 500. 21 unit tests. Build/clippy/test all clean.
