@@ -13,3 +13,4 @@ pub mod server;
 pub mod websocket;
 
 pub use gateway::GatewayDispatch;
+pub use server::{DecoyConfig, HttpAdapter};

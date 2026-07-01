@@ -12,15 +12,16 @@ name = "alknet_http"
 [features]
 default = ["h2", "http1"]
 mcp = ["dep:rmcp"]
-h2 = ["dep:hyper"]
-http1 = ["dep:hyper"]
+h2 = ["dep:hyper", "hyper-util/http2", "hyper/http2"]
+http1 = ["dep:hyper", "hyper-util/http1", "hyper/http1"]
 
 [dependencies]
 alknet-core = { path = "../alknet-core" }
 alknet-call = { path = "../alknet-call" }
 arc-swap = "1"
 axum = { version = "0.8", features = ["ws"] }
-hyper = { version = "1", optional = true, features = ["server", "http1", "http2"] }
+hyper = { version = "1", optional = true, features = ["server"] }
+hyper-util = { version = "0.1", features = ["server", "service", "tokio"] }
 httpdate = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
 reqwest-middleware = "0.5"
