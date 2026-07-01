@@ -32,6 +32,8 @@ use alknet_core::types::{Connection, HandlerError, ProtocolHandler, StreamError}
 use super::auth::bearer_auth_middleware;
 use crate::server::decoy::decoy_fallback;
 use crate::server::healthz::healthz;
+use crate::websocket::upgrade::ws_upgrade_handler;
+use crate::websocket::upgrade::WS_UPGRADE_PATH;
 
 const ALPN_HTTP1: &[u8] = b"http/1.1";
 const ALPN_H2: &[u8] = b"h2";
@@ -55,6 +57,18 @@ struct RouterState {
 impl axum::extract::FromRef<RouterState> for DecoyConfig {
     fn from_ref(state: &RouterState) -> Self {
         state.decoy.clone()
+    }
+}
+
+impl axum::extract::FromRef<RouterState> for Arc<OperationRegistry> {
+    fn from_ref(state: &RouterState) -> Self {
+        Arc::clone(&state.registry)
+    }
+}
+
+impl axum::extract::FromRef<RouterState> for Arc<dyn IdentityProvider> {
+    fn from_ref(state: &RouterState) -> Self {
+        Arc::clone(&state.identity_provider)
     }
 }
 
@@ -143,6 +157,7 @@ fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
         .route("/subscribe", any(not_implemented))
         .route("/openapi.json", get(not_implemented))
         .route("/mcp", post(not_implemented))
+        .route(WS_UPGRADE_PATH, get(ws_upgrade_handler))
         .route_layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
         .route("/healthz", get(healthz))
         .fallback(decoy_fallback);

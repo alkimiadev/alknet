@@ -4,6 +4,8 @@
 //! native `EventEnvelope` call-protocol session, not the gateway shape
 //! (ADR-048). See `docs/architecture/crates/http/websocket.md`.
 
+pub mod upgrade;
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
