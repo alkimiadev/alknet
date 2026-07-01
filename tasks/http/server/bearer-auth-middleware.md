@@ -1,7 +1,7 @@
 ---
 id: http/server/bearer-auth-middleware
 name: Implement shared Bearer auth middleware (resolve_from_token, stash Identity in request extensions)
-status: pending
+status: completed
 depends_on: [http/server/http-adapter]
 scope: narrow
 risk: medium
@@ -176,4 +176,10 @@ axum middleware into `Parts.extensions` should be retrievable via
 
 ## Summary
 
-> To be filled on completion
+> Implemented src/server/auth.rs: bearer_auth_middleware (from_fn_with_state over
+> Arc<dyn IdentityProvider>, stashes Option<Identity> in request extensions),
+> extract_bearer_identity (Bearer-only: no/malformed/Basic/unresolvable → None,
+> not an error), ResolvedIdentity axum extractor (FromRequestParts). Wired into
+> HttpAdapter router via route_layer around gateway/openapi/mcp routes, excluding
+> /healthz. Re-exported from server/mod.rs and lib.rs. 11 unit tests. 137 total
+> tests pass. Clippy clean.
