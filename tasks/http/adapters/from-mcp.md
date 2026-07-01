@@ -1,7 +1,7 @@
 ---
 id: http/adapters/from-mcp
 name: Implement from_mcp adapter (rmcp streamable HTTP client, tools/list discovery, structuredContent handling)
-status: pending
+status: completed
 depends_on: [http/client/shared-http-client, http/gateway/error-mapping]
 scope: broad
 risk: medium
@@ -223,4 +223,13 @@ invariant (ADR-014).
 
 ## Summary
 
-> To be filled on completion
+> Implemented FromMCP adapter (feature-gated behind mcp) in src/adapters/from_mcp/.
+> rmcp StreamableHttpClientTransport connects to MCP endpoint, calls tools/list,
+> builds HandlerRegistration bundles (provenance FromMCP, leaf, Internal, Mutation,
+> capabilities=bearer token). Forwarding handler calls client.call_tool, maps
+> CallToolResult per structuredContent-preferred-over-content-blocks rule (declared
+> outputSchema → structuredContent; absent → ContentBlock union; no heuristic
+> JSON.parse; isError→CallError). No-env-vars (reads context.capabilities). Streamable
+> HTTP only (ADR-037). 19 unit + 5 integration tests (real rmcp streamable HTTP server).
+> cargo test/clippy --features mcp pass clean; cargo check (no mcp) compiles with
+> from_mcp excluded.
