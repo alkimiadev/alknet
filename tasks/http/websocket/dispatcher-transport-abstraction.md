@@ -1,7 +1,7 @@
 ---
 id: http/websocket/dispatcher-transport-abstraction
 name: Expose EventEnvelope-level dispatch API in alknet-call for non-QUIC transports (WebSocket)
-status: pending
+status: completed
 depends_on: [http/crate-init]
 scope: moderate
 risk: high
@@ -177,4 +177,11 @@ the change.
 
 ## Summary
 
-> To be filled on completion
+> Cross-crate change (alknet-call): exposed Dispatcher::dispatch_requested as pub
+> and extracted abort-cascade handling into pub handle_abort method in
+> protocol/dispatch.rs. Added CallConnection::new_overlay_only(identity) constructor
+> (Option A) + identity() accessor in protocol/connection.rs for non-QUIC transports.
+> compose_root_env uses identity() accessor for both QUIC and non-QUIC paths. Existing
+> QUIC path (CallAdapter, CallClient, run_loop, handle_stream) unchanged. Zero
+> regressions: alknet-call 277+2 tests pass, alknet-http 41 tests pass, clippy clean
+> on both crates. 13 unit tests in alknet-call + 6 integration tests in alknet-http.
