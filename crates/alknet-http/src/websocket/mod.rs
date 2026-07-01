@@ -128,7 +128,10 @@ mod tests {
         let out: EventEnvelope = response.into();
         assert_eq!(out.r#type, EVENT_RESPONDED);
         assert_eq!(out.id, "ws-rt-1");
-        assert_eq!(out.payload.get("output"), Some(&serde_json::json!({ "v": 7 })));
+        assert_eq!(
+            out.payload.get("output"),
+            Some(&serde_json::json!({ "v": 7 }))
+        );
     }
 
     #[tokio::test]
@@ -160,7 +163,10 @@ mod tests {
     async fn ws_overlay_only_connection_holds_overlay_and_pending() {
         let conn = CallConnection::new_overlay_only(identity("ws-peer"));
         assert!(conn.connection().is_none());
-        assert_eq!(conn.identity().map(|i| i.id.clone()), Some("ws-peer".to_string()));
+        assert_eq!(
+            conn.identity().map(|i| i.id.clone()),
+            Some("ws-peer".to_string())
+        );
         assert!(conn.pending().lock().is_empty());
 
         let env = conn.overlay_env();

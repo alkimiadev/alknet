@@ -84,8 +84,9 @@ async fn ws_upgrade_handler_inner(
     };
 
     match ws_upgrade {
-        Some(upgrade) => upgrade
-            .on_upgrade(move |socket| run_ws_session(socket, registry, identity_provider, identity)),
+        Some(upgrade) => upgrade.on_upgrade(move |socket| {
+            run_ws_session(socket, registry, identity_provider, identity)
+        }),
         None => {
             let _ = registry;
             let _ = identity_provider;
@@ -240,19 +241,19 @@ fn serialize_envelope(envelope: &EventEnvelope) -> Result<Vec<u8>, serde_json::E
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alknet_call::registry::context::{
+        AbortPolicy, CompositionAuthority, OperationContext, ScopedPeerEnv,
+    };
     use alknet_call::registry::discovery::{
         services_list_handler, services_list_spec, services_schema_handler, services_schema_spec,
     };
+    use alknet_call::registry::env::OperationEnv;
     use alknet_call::registry::registration::{
         make_handler, HandlerRegistration, OperationProvenance,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity};
     use alknet_core::types::Capabilities;
-    use alknet_call::registry::context::{
-        AbortPolicy, CompositionAuthority, OperationContext, ScopedPeerEnv,
-    };
-    use alknet_call::registry::env::OperationEnv;
     use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
     use std::time::{Duration, Instant};
@@ -331,9 +332,7 @@ mod tests {
         let mut registry = OperationRegistry::new();
         registry.register(HandlerRegistration::new(
             external_spec("echo/run", AccessControl::default()),
-            make_handler(|input, ctx| async move {
-                ResponseEnvelope::ok(ctx.request_id, input)
-            }),
+            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
             OperationProvenance::Local,
             None,
             None,
@@ -352,9 +351,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            make_handler(|input, ctx| async move {
-                ResponseEnvelope::ok(ctx.request_id, input)
-            }),
+            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
             OperationProvenance::Local,
             None,
             None,
@@ -519,9 +516,8 @@ mod tests {
     #[tokio::test]
     async fn handle_inbound_envelope_forbidden_yields_call_error() {
         let registry = registry_with_restricted_op();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("none", identity("unpriv")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("none", identity("unpriv")));
         let dp = dispatcher(registry, provider);
         let conn = Arc::new(CallConnection::new_overlay_only(identity("unpriv")));
 
@@ -727,9 +723,8 @@ mod tests {
     #[tokio::test]
     async fn round_trip_call_requested_to_call_responded_over_ws_message_stream() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -753,9 +748,8 @@ mod tests {
     #[tokio::test]
     async fn subscription_streams_multiple_call_responded_events() {
         let registry = registry_with_subscription();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(registry, provider);
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -782,8 +776,10 @@ mod tests {
                 .with_token("no-admin", identity_with_scopes("user", &["user"])),
         );
         let dp = dispatcher(registry, provider);
-        let conn =
-            Arc::new(CallConnection::new_overlay_only(identity_with_scopes("user", &["user"])));
+        let conn = Arc::new(CallConnection::new_overlay_only(identity_with_scopes(
+            "user",
+            &["user"],
+        )));
 
         let request = EventEnvelope::requested(
             "req-admin",
@@ -882,8 +878,10 @@ mod tests {
         let overlay_env = conn.overlay_env();
         assert!(overlay_env.contains("ui/dragged"));
 
-        let composed_env: Arc<dyn OperationEnv + Send + Sync> = dp
-            .compose_root_env(&conn, &root_context_for_compose("hub-call-1", overlay_env.clone()));
+        let composed_env: Arc<dyn OperationEnv + Send + Sync> = dp.compose_root_env(
+            &conn,
+            &root_context_for_compose("hub-call-1", overlay_env.clone()),
+        );
         let ctx = root_context_with_env("hub-call-1", composed_env);
         let response = overlay_env
             .invoke("ui", "dragged", serde_json::json!({ "x": 5 }), &ctx)
@@ -935,9 +933,8 @@ mod tests {
     #[tokio::test]
     async fn drive_ws_session_round_trips_binary_call_requested_to_call_responded() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -960,7 +957,10 @@ mod tests {
                 let env: EventEnvelope = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(env.r#type, EVENT_RESPONDED);
                 assert_eq!(env.id, "ws-socket-1");
-                assert_eq!(env.payload.get("output"), Some(&serde_json::json!({ "v": 7 })));
+                assert_eq!(
+                    env.payload.get("output"),
+                    Some(&serde_json::json!({ "v": 7 }))
+                );
             }
             other => panic!("expected binary, got {other:?}"),
         }
@@ -972,9 +972,8 @@ mod tests {
     #[tokio::test]
     async fn drive_ws_session_rejects_text_with_protocol_close() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -999,9 +998,8 @@ mod tests {
     #[tokio::test]
     async fn drive_ws_session_disconnect_aborts_in_flight_pending() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -1036,9 +1034,8 @@ mod tests {
     #[tokio::test]
     async fn drive_ws_session_subscription_streams_call_responded_events() {
         let registry = registry_with_subscription();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -1077,9 +1074,8 @@ mod tests {
     #[tokio::test]
     async fn drive_ws_session_invalid_binary_closes_with_protocol_error() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -1102,9 +1098,8 @@ mod tests {
     #[tokio::test]
     async fn drive_ws_session_client_close_terminates_server() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let dp = dispatcher(Arc::clone(&registry), Arc::clone(&provider));
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
@@ -1164,17 +1159,11 @@ mod tests {
         }
 
         async fn send_text(&mut self, text: String) {
-            self.outbound_tx
-                .send(Message::Text(text.into()))
-                .await
-                .ok();
+            self.outbound_tx.send(Message::Text(text.into())).await.ok();
         }
 
         async fn send_close(&mut self) {
-            self.outbound_tx
-                .send(Message::Close(None))
-                .await
-                .ok();
+            self.outbound_tx.send(Message::Close(None)).await.ok();
         }
 
         async fn close(&mut self) {
@@ -1215,9 +1204,8 @@ mod tests {
     #[tokio::test]
     async fn ws_upgrade_handler_returns_401_when_identity_is_none() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let identity: Option<Identity> = None;
 
         let response = ws_upgrade_handler_inner(registry, provider, identity, None).await;
@@ -1227,9 +1215,8 @@ mod tests {
     #[tokio::test]
     async fn ws_upgrade_handler_does_not_reject_when_identity_present() {
         let registry = echo_registry();
-        let provider: Arc<dyn IdentityProvider> = Arc::new(
-            StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")),
-        );
+        let provider: Arc<dyn IdentityProvider> =
+            Arc::new(StaticIdentityProvider::new().with_token("ws-token", identity("ws-peer")));
         let identity = identity("ws-peer");
 
         let response = ws_upgrade_handler_inner(registry, provider, Some(identity), None).await;

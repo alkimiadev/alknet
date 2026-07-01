@@ -80,11 +80,12 @@ where
 {
     type Rejection = Infallible;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        let identity = parts.extensions.get::<Option<Identity>>().cloned().flatten();
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let identity = parts
+            .extensions
+            .get::<Option<Identity>>()
+            .cloned()
+            .flatten();
         Ok(ResolvedIdentity(identity))
     }
 }
@@ -174,15 +175,16 @@ mod tests {
         assert!(identity.is_none());
     }
 
-    async fn run_middleware(
-        idp: Arc<dyn IdentityProvider>,
-        request: Request,
-    ) -> Response {
+    async fn run_middleware(idp: Arc<dyn IdentityProvider>, request: Request) -> Response {
         let app: Router<()> = Router::new()
             .route(
                 "/",
                 get(|req: Request| async move {
-                    let identity = req.extensions().get::<Option<Identity>>().cloned().flatten();
+                    let identity = req
+                        .extensions()
+                        .get::<Option<Identity>>()
+                        .cloned()
+                        .flatten();
                     if let Some(id) = identity {
                         (StatusCode::OK, id.id)
                     } else {
@@ -261,14 +263,12 @@ mod tests {
         let app: Router<()> = Router::new()
             .route(
                 "/",
-                get(
-                    |ResolvedIdentity(identity): ResolvedIdentity| async move {
-                        match identity {
-                            Some(id) => (StatusCode::OK, id.id),
-                            None => (StatusCode::OK, "none".to_string()),
-                        }
-                    },
-                ),
+                get(|ResolvedIdentity(identity): ResolvedIdentity| async move {
+                    match identity {
+                        Some(id) => (StatusCode::OK, id.id),
+                        None => (StatusCode::OK, "none".to_string()),
+                    }
+                }),
             )
             .layer(from_fn_with_state(idp, bearer_auth_middleware));
 
@@ -287,14 +287,12 @@ mod tests {
         let app: Router<()> = Router::new()
             .route(
                 "/",
-                get(
-                    |ResolvedIdentity(identity): ResolvedIdentity| async move {
-                        match identity {
-                            Some(id) => (StatusCode::OK, id.id),
-                            None => (StatusCode::OK, "none".to_string()),
-                        }
-                    },
-                ),
+                get(|ResolvedIdentity(identity): ResolvedIdentity| async move {
+                    match identity {
+                        Some(id) => (StatusCode::OK, id.id),
+                        None => (StatusCode::OK, "none".to_string()),
+                    }
+                }),
             )
             .layer(from_fn_with_state(idp, bearer_auth_middleware));
 

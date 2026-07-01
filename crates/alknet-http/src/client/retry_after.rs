@@ -99,7 +99,10 @@ impl RetryAfterMiddleware {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.deadlines.lock().expect("deadlines mutex poisoned").len()
+        self.deadlines
+            .lock()
+            .expect("deadlines mutex poisoned")
+            .len()
     }
 
     #[cfg(test)]
@@ -156,8 +159,8 @@ mod tests {
 
     #[test]
     fn parse_retry_after_http_date() {
-        let deadline = parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT")
-            .expect("HTTP-date value parses");
+        let deadline =
+            parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT").expect("HTTP-date value parses");
         assert!(deadline > SystemTime::now());
     }
 
@@ -272,7 +275,10 @@ mod tests {
     async fn middleware_sleeps_before_request_with_active_deadline() {
         let mw = std::sync::Arc::new(RetryAfterMiddleware::with_capacity(8));
         let target = url("https://api.example.com/v1/chat");
-        mw.record_test(target.clone(), SystemTime::now() + Duration::from_millis(50));
+        mw.record_test(
+            target.clone(),
+            SystemTime::now() + Duration::from_millis(50),
+        );
         let started = SystemTime::now();
         mw.maybe_sleep_for(&target).await;
         let elapsed = SystemTime::now().duration_since(started).unwrap();

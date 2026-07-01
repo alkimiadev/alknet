@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alknet_call::client::OperationAdapter;
 use alknet_call::protocol::wire::ResponseEnvelope;
 use alknet_call::registry::context::{AbortPolicy, OperationContext, ScopedPeerEnv};
 use alknet_call::registry::env::OperationEnv;
 use alknet_call::registry::registration::OperationProvenance;
-use alknet_call::client::OperationAdapter;
 use alknet_core::types::Capabilities;
 use alknet_http::adapters::FromMCP;
 use axum::Router;
@@ -22,8 +22,8 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::{
-    StreamableHttpServerConfig,
     streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
+    StreamableHttpServerConfig,
 };
 use rmcp::{RoleServer, ServerHandler};
 use serde_json::Value;
@@ -72,18 +72,19 @@ impl ServerHandler for EchoServer {
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> impl std::future::Future<
-        Output = Result<ListToolsResult, rmcp::ErrorData>,
-    > + rmcp::service::MaybeSendFuture + '_ {
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>>
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         let tools = vec![
             Tool::new_with_raw(
                 "echo",
                 Some("Echo the input back as structured content".into()),
                 Arc::new(serde_json::Map::new()),
             )
-            .with_raw_output_schema(Arc::new(serde_json::Map::from_iter([
-                ("type".to_string(), Value::String("object".into())),
-            ]))),
+            .with_raw_output_schema(Arc::new(serde_json::Map::from_iter([(
+                "type".to_string(),
+                Value::String("object".into()),
+            )]))),
             Tool::new_with_raw(
                 "legacy",
                 Some("Legacy tool returning text content blocks".into()),
@@ -101,22 +102,17 @@ impl ServerHandler for EchoServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl std::future::Future<
-        Output = Result<CallToolResult, rmcp::ErrorData>,
-    > + rmcp::service::MaybeSendFuture + '_ {
+    ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>>
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         let name = request.name.to_string();
         std::future::ready(Ok(match name.as_str() {
             "echo" => {
-                let args = request
-                    .arguments
-                    .map(Value::Object)
-                    .unwrap_or(Value::Null);
+                let args = request.arguments.map(Value::Object).unwrap_or(Value::Null);
                 CallToolResult::structured(serde_json::json!({ "echoed": args }))
             }
             "legacy" => CallToolResult::success(vec![Content::text("plain text result")]),
-            other => CallToolResult::error(vec![Content::text(format!(
-                "unknown tool: {other}"
-            ))]),
+            other => CallToolResult::error(vec![Content::text(format!("unknown tool: {other}"))]),
         }))
     }
 

@@ -31,7 +31,10 @@ pub fn call_error_to_http_status(error: &CallError) -> u16 {
     call_error_to_http_status_with_identity(error, None)
 }
 
-pub fn call_error_to_http_status_with_identity(error: &CallError, identity: Option<&Identity>) -> u16 {
+pub fn call_error_to_http_status_with_identity(
+    error: &CallError,
+    identity: Option<&Identity>,
+) -> u16 {
     match error.code.as_str() {
         PROTOCOL_CODE_NOT_FOUND => STATUS_NOT_FOUND,
         PROTOCOL_CODE_FORBIDDEN => {
@@ -59,8 +62,8 @@ pub fn call_error_to_http_response(error: &CallError) -> Response {
     let retry_after = retry_after_value(error, status_code);
 
     if let Some(retry_after) = retry_after {
-        let header_value = HeaderValue::from_str(&retry_after)
-            .unwrap_or_else(|_| HeaderValue::from_static("0"));
+        let header_value =
+            HeaderValue::from_str(&retry_after).unwrap_or_else(|_| HeaderValue::from_static("0"));
         (status, [(header::RETRY_AFTER, header_value)], Json(body)).into_response()
     } else {
         (status, Json(body)).into_response()
@@ -139,7 +142,10 @@ mod tests {
     fn forbidden_with_some_identity_maps_to_403() {
         let error = CallError::forbidden("insufficient scopes");
         let id = identity();
-        assert_eq!(call_error_to_http_status_with_identity(&error, Some(&id)), 403);
+        assert_eq!(
+            call_error_to_http_status_with_identity(&error, Some(&id)),
+            403
+        );
     }
 
     #[test]
@@ -213,7 +219,10 @@ mod tests {
         let error = CallError::new("HTTP_503", "slow down", true);
         let response = call_error_to_http_response(&error);
         assert_eq!(response.status(), StatusCode::from_u16(503).unwrap());
-        assert!(response.headers().get(axum::http::header::RETRY_AFTER).is_none());
+        assert!(response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_none());
     }
 
     #[test]
@@ -221,7 +230,10 @@ mod tests {
         let error = CallError::new("HTTP_503", "down", false)
             .with_details(serde_json::json!({ "retry_after": "5" }));
         let response = call_error_to_http_response(&error);
-        assert!(response.headers().get(axum::http::header::RETRY_AFTER).is_none());
+        assert!(response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_none());
     }
 
     #[test]
@@ -241,7 +253,10 @@ mod tests {
         let error = CallError::timeout("timed out");
         let response = call_error_to_http_response(&error);
         assert_eq!(response.status(), StatusCode::from_u16(504).unwrap());
-        assert!(response.headers().get(axum::http::header::RETRY_AFTER).is_none());
+        assert!(response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_none());
     }
 
     #[test]

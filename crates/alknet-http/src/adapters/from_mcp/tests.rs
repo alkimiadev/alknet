@@ -22,7 +22,11 @@ fn make_tool(name: &str, input: Value, output: Option<Value>) -> Tool {
     tool
 }
 
-fn call_tool_result(content: Vec<Content>, structured: Option<Value>, is_error: Option<bool>) -> CallToolResult {
+fn call_tool_result(
+    content: Vec<Content>,
+    structured: Option<Value>,
+    is_error: Option<bool>,
+) -> CallToolResult {
     let json = serde_json::json!({
         "content": content,
         "structuredContent": structured,
@@ -204,7 +208,9 @@ fn build_spec_output_schema_present_shape() {
     let tool = make_tool(
         "get_weather",
         serde_json::json!({ "type": "object", "properties": { "city": { "type": "string" } } }),
-        Some(serde_json::json!({ "type": "object", "properties": { "temperature": { "type": "number" } } })),
+        Some(
+            serde_json::json!({ "type": "object", "properties": { "temperature": { "type": "number" } } }),
+        ),
     );
     let spec = build_spec(&tool, "weather");
     assert_eq!(spec.name, "weather/get_weather");

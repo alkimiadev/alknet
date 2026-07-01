@@ -694,4 +694,22 @@ mod tests {
         );
         assert!(response.contains("location: https://example.com"));
     }
+
+    #[tokio::test]
+    async fn openapi_json_route_serves_gateway_spec() {
+        let adapter = HttpAdapter::new(provider(), empty_registry());
+        let request = b"GET /openapi.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let response = serve_and_read(adapter, request).await;
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200 for /openapi.json, got: {response}"
+        );
+        assert!(response.contains("\"openapi\""));
+        assert!(response.contains("\"/search\""));
+        assert!(response.contains("\"/schema\""));
+        assert!(response.contains("\"/call\""));
+        assert!(response.contains("\"/batch\""));
+        assert!(response.contains("\"/subscribe\""));
+        assert!(response.contains("\"1.0.0\""));
+    }
 }

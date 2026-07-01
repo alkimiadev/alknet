@@ -83,11 +83,7 @@ impl GatewayDispatch {
                 r.capabilities.clone(),
                 r.scoped_env.clone().unwrap_or_else(ScopedPeerEnv::empty),
             ),
-            None => (
-                None,
-                Capabilities::new(),
-                ScopedPeerEnv::empty(),
-            ),
+            None => (None, Capabilities::new(), ScopedPeerEnv::empty()),
         };
 
         let env: Arc<dyn alknet_call::registry::env::OperationEnv + Send + Sync> =
@@ -254,10 +250,7 @@ mod tests {
             .invoke(None, "echo/run", serde_json::json!({ "msg": "hi" }))
             .await;
         assert!(response.result.is_ok());
-        assert_eq!(
-            response.result.unwrap(),
-            serde_json::json!({ "msg": "hi" })
-        );
+        assert_eq!(response.result.unwrap(), serde_json::json!({ "msg": "hi" }));
     }
 
     #[tokio::test]
@@ -270,9 +263,7 @@ mod tests {
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatch(registry, provider);
 
-        let response = dp
-            .invoke(None, "/echo/run", serde_json::json!({}))
-            .await;
+        let response = dp.invoke(None, "/echo/run", serde_json::json!({})).await;
         assert!(response.result.is_ok());
     }
 
@@ -369,9 +360,7 @@ mod tests {
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatch(registry, provider);
 
-        let response = dp
-            .invoke(None, "no/such", serde_json::json!({}))
-            .await;
+        let response = dp.invoke(None, "no/such", serde_json::json!({})).await;
         match response.result {
             Err(e) => {
                 assert_eq!(e.code, "NOT_FOUND");
@@ -398,9 +387,7 @@ mod tests {
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatch(registry, provider);
 
-        let response = dp
-            .invoke(None, "secret/op", serde_json::json!({}))
-            .await;
+        let response = dp.invoke(None, "secret/op", serde_json::json!({})).await;
         match response.result {
             Err(e) => {
                 assert_eq!(e.code, "NOT_FOUND");
@@ -423,9 +410,7 @@ mod tests {
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatch(registry, provider);
 
-        let response = dp
-            .invoke(None, "admin/run", serde_json::json!({}))
-            .await;
+        let response = dp.invoke(None, "admin/run", serde_json::json!({})).await;
         match response.result {
             Err(e) => {
                 assert_eq!(e.code, "FORBIDDEN");
@@ -506,8 +491,10 @@ mod tests {
 
     #[test]
     fn build_root_context_carries_registration_bundle_fields() {
-        let authority =
-            alknet_call::registry::context::CompositionAuthority::new("agent", ["fs:read".to_string()]);
+        let authority = alknet_call::registry::context::CompositionAuthority::new(
+            "agent",
+            ["fs:read".to_string()],
+        );
         let scoped = ScopedPeerEnv::new(["fs/readFile"]);
         let caps = Capabilities::new().with_api_key("google", "k".to_string());
 

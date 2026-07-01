@@ -17,10 +17,10 @@ use std::sync::Arc;
 use alknet_call::client::{AdapterError, OperationAdapter};
 use alknet_call::protocol::wire::{CallError, ResponseEnvelope};
 use alknet_call::registry::context::OperationContext;
-use alknet_call::registry::registration::{
-    make_handler, HandlerRegistration, OperationProvenance,
+use alknet_call::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+use alknet_call::registry::spec::{
+    AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility,
 };
-use alknet_call::registry::spec::{AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility};
 use alknet_core::types::Capabilities;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -128,11 +128,9 @@ impl OpenAPISpec {
                 .to_string(),
         };
 
-        let paths_raw = raw
-            .get("paths")
-            .ok_or_else(|| AdapterError::SchemaParse {
-                message: "OpenAPI document missing `paths`".into(),
-            })?;
+        let paths_raw = raw.get("paths").ok_or_else(|| AdapterError::SchemaParse {
+            message: "OpenAPI document missing `paths`".into(),
+        })?;
         if !paths_raw.is_object() {
             return Err(AdapterError::SchemaParse {
                 message: "`paths` must be a JSON object".into(),
@@ -155,14 +153,13 @@ impl OpenAPISpec {
             if operations.is_empty() {
                 continue;
             }
-            paths.insert(
-                path.clone(),
-                PathItem { operations },
-            );
+            paths.insert(path.clone(), PathItem { operations });
         }
 
-        let components = raw.get("components").and_then(|c| c.get("schemas")).and_then(
-            |schemas| {
+        let components = raw
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(|schemas| {
                 if !schemas.is_object() {
                     return None;
                 }
@@ -171,8 +168,7 @@ impl OpenAPISpec {
                     map.insert(k.clone(), v.clone());
                 }
                 Some(Components { schemas: map })
-            },
-        );
+            });
 
         Ok(Self {
             info,
@@ -190,11 +186,9 @@ impl OpenAPISpec {
         }
         let mut current: &Value = &self.raw;
         for part in reference.trim_start_matches("#/").split('/') {
-            current = current
-                .get(part)
-                .ok_or_else(|| AdapterError::SchemaParse {
-                    message: format!("cannot resolve $ref: {reference}"),
-                })?;
+            current = current.get(part).ok_or_else(|| AdapterError::SchemaParse {
+                message: format!("cannot resolve $ref: {reference}"),
+            })?;
         }
         Ok(current.clone())
     }
@@ -241,10 +235,7 @@ fn parse_operation(raw: &Value) -> Option<Operation> {
                 .filter_map(|p| {
                     let name = p.get("name")?.as_str()?.to_string();
                     let in_ = p.get("in")?.as_str()?.to_string();
-                    let required = p
-                        .get("required")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                    let required = p.get("required").and_then(|v| v.as_bool()).unwrap_or(false);
                     let schema = p.get("schema").cloned();
                     Some(Parameter {
                         name,
@@ -297,7 +288,11 @@ pub struct FromOpenAPI {
 }
 
 impl FromOpenAPI {
-    pub fn new(spec: OpenAPISpec, config: HttpServiceConfig, http_client: Arc<SharedHttpClient>) -> Self {
+    pub fn new(
+        spec: OpenAPISpec,
+        config: HttpServiceConfig,
+        http_client: Arc<SharedHttpClient>,
+    ) -> Self {
         Self {
             spec,
             config,
@@ -322,10 +317,7 @@ impl FromOpenAPI {
     }
 
     fn detect_op_type(method: &str, op: &Operation) -> OperationType {
-        let success = op
-            .responses
-            .get("200")
-            .or_else(|| op.responses.get("201"));
+        let success = op.responses.get("200").or_else(|| op.responses.get("201"));
         if let Some(resp) = success {
             if resp.content.contains_key("text/event-stream") {
                 return OperationType::Subscription;
@@ -531,9 +523,8 @@ fn build_request(
         }
     }
 
-    let base = Url::parse(base_url).map_err(|e| {
-        CallError::internal(format!("invalid base_url `{base_url}`: {e}"))
-    })?;
+    let base = Url::parse(base_url)
+        .map_err(|e| CallError::internal(format!("invalid base_url `{base_url}`: {e}")))?;
     let mut url = base
         .join(url_path.trim_start_matches('/'))
         .map_err(|e| CallError::internal(format!("invalid path `{url_path}`: {e}")))?;
@@ -683,11 +674,12 @@ async fn forward(
             .find(|(s, _)| *s == status.as_u16())
             .map(|(_, code)| code.clone())
             .unwrap_or_else(|| format!("HTTP_{}", status.as_u16()));
-        let message = format!("HTTP {}: {}", status.as_u16(), status.canonical_reason().unwrap_or(""));
-        return ResponseEnvelope::error(
-            request_id,
-            CallError::new(code, message, false),
+        let message = format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
         );
+        return ResponseEnvelope::error(request_id, CallError::new(code, message, false));
     }
 
     let content_type = response
@@ -716,10 +708,7 @@ async fn forward(
     } else {
         match response.bytes().await {
             Ok(b) => {
-                let arr: Vec<Value> = b
-                    .iter()
-                    .map(|byte| Value::Number((*byte).into()))
-                    .collect();
+                let arr: Vec<Value> = b.iter().map(|byte| Value::Number((*byte).into())).collect();
                 ResponseEnvelope::ok(request_id, Value::Array(arr))
             }
             Err(err) => ResponseEnvelope::error(
@@ -744,7 +733,8 @@ async fn stream_subscription(request_id: String, response: reqwest::Response) ->
                     let parsed = if event.data.trim().is_empty() {
                         Value::Null
                     } else {
-                        serde_json::from_str(&event.data).unwrap_or(Value::String(event.data.clone()))
+                        serde_json::from_str(&event.data)
+                            .unwrap_or(Value::String(event.data.clone()))
                     };
                     last_event = Some(parsed.clone());
                 }
@@ -1040,7 +1030,12 @@ mod tests {
             .unwrap();
         let body = props.get("body").unwrap();
         assert_eq!(body.get("type").unwrap(), "object");
-        assert!(body.get("properties").unwrap().as_object().unwrap().contains_key("name"));
+        assert!(body
+            .get("properties")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("name"));
     }
 
     #[tokio::test]
@@ -1074,14 +1069,19 @@ mod tests {
             "https://api.vast.ai",
             "/machines",
             "GET",
-            &Some(HttpAuthScheme::ApiKey { header_name: "X-API-Key".to_string() }),
+            &Some(HttpAuthScheme::ApiKey {
+                header_name: "X-API-Key".to_string(),
+            }),
             &HashMap::new(),
             "vastai",
             &serde_json::json!({}),
             &ctx,
         )
         .unwrap();
-        assert_eq!(headers.get("X-API-Key").unwrap().to_str().unwrap(), "key-xyz");
+        assert_eq!(
+            headers.get("X-API-Key").unwrap().to_str().unwrap(),
+            "key-xyz"
+        );
     }
 
     #[tokio::test]
@@ -1267,7 +1267,11 @@ mod tests {
 
     #[test]
     fn http_service_config_struct_fields() {
-        let cfg = config("ns", "https://api.example.com", Some(HttpAuthScheme::Bearer));
+        let cfg = config(
+            "ns",
+            "https://api.example.com",
+            Some(HttpAuthScheme::Bearer),
+        );
         assert_eq!(cfg.namespace, "ns");
         assert_eq!(cfg.base_url, "https://api.example.com");
         assert!(matches!(cfg.auth, Some(HttpAuthScheme::Bearer)));
@@ -1289,7 +1293,12 @@ mod tests {
         }"#;
         let spec = OpenAPISpec::from_json(doc).unwrap();
         assert!(spec.components.is_some());
-        assert!(spec.components.as_ref().unwrap().schemas.contains_key("Foo"));
+        assert!(spec
+            .components
+            .as_ref()
+            .unwrap()
+            .schemas
+            .contains_key("Foo"));
     }
 
     #[tokio::test]
@@ -1342,7 +1351,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_ref_missing_target_returns_schema_parse() {
         let spec = OpenAPISpec::from_json(minimal_spec_json()).unwrap();
-        let err = spec.resolve_ref("#/components/schemas/Missing").unwrap_err();
+        let err = spec
+            .resolve_ref("#/components/schemas/Missing")
+            .unwrap_err();
         assert!(matches!(err, AdapterError::SchemaParse { .. }));
     }
 
@@ -1409,7 +1420,8 @@ mod tests {
                 headers,
                 body,
             });
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
             sock.write_all(response.as_bytes()).await.unwrap();
             sock.flush().await.unwrap();
         });
@@ -1440,12 +1452,19 @@ mod tests {
             ctx,
         )
         .await;
-        assert!(response.result.is_ok(), "expected Ok, got {:?}", response.result);
+        assert!(
+            response.result.is_ok(),
+            "expected Ok, got {:?}",
+            response.result
+        );
         let captured = rx.await.unwrap();
         assert_eq!(captured.method, "POST");
         assert_eq!(captured.path, "/items/42");
         assert_eq!(captured.query, "filter=new");
-        assert_eq!(captured.headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            captured.headers.get("content-type").unwrap(),
+            "application/json"
+        );
         assert!(captured.body.contains("\"name\":\"widget\""));
     }
 
@@ -1457,19 +1476,19 @@ mod tests {
         }"#;
         let (base, rx) = spawn_capturing_server().await;
         let spec = OpenAPISpec::from_json(doc).unwrap();
-        let bundles = adapter(
-            spec,
-            config("openai", &base, Some(HttpAuthScheme::Bearer)),
-        )
-        .import()
-        .await
-        .unwrap();
+        let bundles = adapter(spec, config("openai", &base, Some(HttpAuthScheme::Bearer)))
+            .import()
+            .await
+            .unwrap();
         let registration = &bundles[0];
         let caps = Capabilities::new().with_http_token("openai", "sk-test-token".to_string());
         let ctx = noop_context("req-17", caps);
         let _ = (registration.handler)(serde_json::json!({}), ctx).await;
         let captured = rx.await.unwrap();
-        assert_eq!(captured.headers.get("authorization").unwrap(), "Bearer sk-test-token");
+        assert_eq!(
+            captured.headers.get("authorization").unwrap(),
+            "Bearer sk-test-token"
+        );
     }
 
     #[tokio::test]

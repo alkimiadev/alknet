@@ -1,27 +1,39 @@
-//! `to_openapi`: the OpenAPI gateway projection (ADR-042). Generates a
-//! fixed 5-endpoint gateway doc (`/search`, `/schema`, `/call`, `/batch`,
-//! `/subscribe`) that gates access to the full operation registry — not one
-//! path per operation. Served at `GET /openapi.json` by the HTTP server.
+//! `to_openapi`: gateway projection of the local operation registry into a
+//! fixed 5-endpoint OpenAPI 3.0 document (ADR-042).
 //!
-//! Pure projection (ADR-017 §5): consumes the registry, does not produce
-//! entries, is not an `OperationAdapter`. The per-caller operation surface
-//! is discovered via `/search` (AccessControl-filtered at runtime), not
-//! preloaded into the doc (ADR-042 §3). `info.version` is a constant
-//! semver tracking the gateway endpoint contract, not the operation set
-//! (ADR-045); the initial version is `1.0.0`.
+//! `to_openapi` is a pure projection (ADR-017 §5): it consumes the registry
+//! and produces a spec; it does not modify the registry, register
+//! operations, or implement `OperationAdapter`. The generated doc describes
+//! the 5 fixed gateway endpoints (`/search`, `/schema`, `/call`, `/batch`,
+//! `/subscribe`) — the sole HTTP invoke path (ADR-047). The per-caller
+//! operation surface is discovered at runtime through AccessControl-filtered
+//! `/search`, not preloaded into the doc (ADR-042 §3).
 //!
-//! Error fidelity (ADR-023): `/call`'s responses include the protocol-
-//! level errors (400/401/403/404/500/504) plus the operation-level errors
-//! declared in registry `error_schemas` (mapped by `http_status`).
+//! `info.version` is a semver constant tracking the **gateway endpoint
+//! contract**, not the operation set — per-caller operation changes do not
+//! bump the version (ADR-045). The initial version is `1.0.0`.
+//!
+//! Error fidelity (ADR-023): `/call`'s responses include the protocol-level
+//! errors (400, 401, 403, 404, 500, 504) plus the operation-level errors
+//! from the registry's `error_schemas`, mapped by `http_status`.
+//! `HTTP_<status>`-prefixed codes project to their status without colliding
+//! with the protocol-level codes.
+//!
+//! See `docs/architecture/crates/http/http-adapters.md` §"to_openapi" and
+//! ADR-042/045/023.
 
-use alknet_call::registry::registration::OperationRegistry;
-use alknet_call::registry::spec::Visibility;
+use std::collections::BTreeMap;
+
 use serde_json::{json, Map, Value};
 
-use crate::adapters::OpenAPISpec;
+use alknet_call::registry::registration::OperationRegistry;
+use alknet_call::registry::spec::ErrorDefinition;
+
+use super::from_openapi::OpenAPISpec;
 
 const GATEWAY_VERSION: &str = "1.0.0";
 const GATEWAY_TITLE: &str = "alknet gateway";
+const OPENAPI_VERSION: &str = "3.0.0";
 
 const PATH_SEARCH: &str = "/search";
 const PATH_SCHEMA: &str = "/schema";
@@ -29,229 +41,209 @@ const PATH_CALL: &str = "/call";
 const PATH_BATCH: &str = "/batch";
 const PATH_SUBSCRIBE: &str = "/subscribe";
 
-const CONTENT_JSON: &str = "application/json";
-const CONTENT_SSE: &str = "text/event-stream";
+const STATUS_BAD_REQUEST: u16 = 400;
+const STATUS_UNAUTHORIZED: u16 = 401;
+const STATUS_FORBIDDEN: u16 = 403;
+const STATUS_NOT_FOUND: u16 = 404;
+const STATUS_INTERNAL: u16 = 500;
+const STATUS_TIMEOUT: u16 = 504;
 
-const STATUS_BAD_REQUEST: &str = "400";
-const STATUS_UNAUTHORIZED: &str = "401";
-const STATUS_FORBIDDEN: &str = "403";
-const STATUS_NOT_FOUND: &str = "404";
-const STATUS_INTERNAL: &str = "500";
-const STATUS_TIMEOUT: &str = "504";
+const CODE_INVALID_INPUT: &str = "INVALID_INPUT";
+const CODE_FORBIDDEN: &str = "FORBIDDEN";
+const CODE_NOT_FOUND: &str = "NOT_FOUND";
+const CODE_INTERNAL: &str = "INTERNAL";
+const CODE_TIMEOUT: &str = "TIMEOUT";
+
+const HTTP_PREFIX: &str = "HTTP_";
 
 pub fn to_openapi(registry: &OperationRegistry) -> OpenAPISpec {
-    let mut paths_obj = Map::new();
-    paths_obj.insert(
-        PATH_SEARCH.to_string(),
-        path_item("get", search_operation()),
-    );
-    paths_obj.insert(
-        PATH_SCHEMA.to_string(),
-        path_item("get", schema_operation()),
-    );
-    paths_obj.insert(
-        PATH_CALL.to_string(),
-        path_item("post", call_operation(registry)),
-    );
-    paths_obj.insert(PATH_BATCH.to_string(), path_item("post", batch_operation()));
-    paths_obj.insert(
-        PATH_SUBSCRIBE.to_string(),
-        path_item("post", subscribe_operation()),
-    );
+    let operation_errors = collect_operation_errors(registry);
+    let raw = build_doc(operation_errors);
+    OpenAPISpec::from_value(raw).expect("to_openapi always emits a valid OpenAPI document")
+}
 
-    let doc = json!({
-        "openapi": "3.0.0",
+fn build_doc(operation_errors: Vec<ErrorDefinition>) -> Value {
+    let paths = json!({
+        PATH_SEARCH: search_path_item(),
+        PATH_SCHEMA: schema_path_item(),
+        PATH_CALL: call_path_item(&operation_errors),
+        PATH_BATCH: batch_path_item(),
+        PATH_SUBSCRIBE: subscribe_path_item(),
+    });
+
+    json!({
+        "openapi": OPENAPI_VERSION,
         "info": {
             "title": GATEWAY_TITLE,
             "version": GATEWAY_VERSION,
+            "description": "alknet gateway: 5 fixed endpoints gating access to the operation registry. The per-caller operation surface is discovered via /search (AccessControl-filtered), not preloaded into this doc."
         },
-        "paths": Value::Object(paths_obj),
-    });
-
-    OpenAPISpec::from_value(doc).expect("generated gateway doc is a valid OpenAPI 3.0 object")
-}
-
-fn path_item(method: &str, operation: Value) -> Value {
-    let mut item = Map::new();
-    item.insert(method.to_string(), operation);
-    Value::Object(item)
-}
-
-fn search_operation() -> Value {
-    json!({
-        "operationId": "search",
-        "summary": "List/search available operations (AccessControl-filtered). Returns names + descriptions.",
-        "responses": {
-            "200": json_response(search_output_schema()),
-            STATUS_BAD_REQUEST: error_response("INVALID_INPUT", "Malformed query."),
-            STATUS_UNAUTHORIZED: error_response("UNAUTHORIZED", "Missing bearer token."),
-            STATUS_FORBIDDEN: error_response("FORBIDDEN", "Insufficient scopes."),
-            STATUS_INTERNAL: error_response("INTERNAL", "Internal error."),
-            STATUS_TIMEOUT: error_response("TIMEOUT", "Request timed out."),
+        "paths": paths,
+        "components": {
+            "schemas": components_schemas()
         }
     })
 }
 
-fn schema_operation() -> Value {
+fn search_path_item() -> Value {
     json!({
-        "operationId": "schema",
-        "summary": "Get an operation's full OperationSpec (input/output JSON Schemas, error schemas).",
-        "parameters": [{
-            "name": "name",
-            "in": "query",
-            "required": true,
-            "schema": { "type": "string" }
-        }],
-        "responses": {
-            "200": json_response(schema_output_schema()),
-            STATUS_BAD_REQUEST: error_response("INVALID_INPUT", "Missing or malformed `name` parameter."),
-            STATUS_UNAUTHORIZED: error_response("UNAUTHORIZED", "Missing bearer token."),
-            STATUS_FORBIDDEN: error_response("FORBIDDEN", "Insufficient scopes for the requested operation."),
-            STATUS_NOT_FOUND: error_response("NOT_FOUND", "Operation not registered."),
-            STATUS_INTERNAL: error_response("INTERNAL", "Internal error."),
-            STATUS_TIMEOUT: error_response("TIMEOUT", "Request timed out."),
+        "get": {
+            "operationId": "gatewaySearch",
+            "summary": "List/search operations (AccessControl-filtered). Returns names + descriptions.",
+            "responses": {
+                "200": json_response(schema_search_result()),
+                "401": json_response(schema_unauthorized()),
+                "403": json_response(schema_forbidden()),
+                "500": json_response(schema_internal()),
+                "504": json_response(schema_timeout())
+            }
         }
     })
 }
 
-fn call_operation(registry: &OperationRegistry) -> Value {
-    let mut responses = Map::new();
-    responses.insert("200".to_string(), json_response(call_success_schema()));
+fn schema_path_item() -> Value {
+    json!({
+        "get": {
+            "operationId": "gatewaySchema",
+            "summary": "Get an operation's full OperationSpec (input/output JSON Schemas, error schemas).",
+            "parameters": [
+                {
+                    "name": "name",
+                    "in": "query",
+                    "required": true,
+                    "schema": { "type": "string" }
+                }
+            ],
+            "responses": {
+                "200": json_response(schema_schema_result()),
+                "400": json_response(schema_invalid_input()),
+                "401": json_response(schema_unauthorized()),
+                "403": json_response(schema_forbidden()),
+                "404": json_response(schema_not_found()),
+                "500": json_response(schema_internal()),
+                "504": json_response(schema_timeout())
+            }
+        }
+    })
+}
+
+fn call_path_item(operation_errors: &[ErrorDefinition]) -> Value {
+    let mut responses: Map<String, Value> = serde_json::Map::new();
+    responses.insert("200".to_string(), json_response(schema_call_ok()));
     responses.insert(
         STATUS_BAD_REQUEST.to_string(),
-        error_response(
-            "INVALID_INPUT",
-            "The request body was not a valid `{ operation, input }` object.",
-        ),
+        json_response(schema_protocol_error(CODE_INVALID_INPUT)),
     );
     responses.insert(
         STATUS_UNAUTHORIZED.to_string(),
-        error_response("UNAUTHORIZED", "No bearer token provided."),
+        json_response(schema_unauthorized()),
     );
     responses.insert(
         STATUS_FORBIDDEN.to_string(),
-        error_response(
-            "FORBIDDEN",
-            "Insufficient scopes to invoke the requested operation.",
-        ),
+        json_response(schema_protocol_error(CODE_FORBIDDEN)),
     );
     responses.insert(
         STATUS_NOT_FOUND.to_string(),
-        error_response("NOT_FOUND", "Operation not registered (or is Internal)."),
+        json_response(schema_protocol_error(CODE_NOT_FOUND)),
     );
     responses.insert(
         STATUS_INTERNAL.to_string(),
-        error_response("INTERNAL", "Internal error."),
+        json_response(schema_protocol_error(CODE_INTERNAL)),
     );
     responses.insert(
         STATUS_TIMEOUT.to_string(),
-        error_response("TIMEOUT", "Request timed out."),
+        json_response(schema_protocol_error(CODE_TIMEOUT)),
     );
 
-    for spec in registry.list_operations() {
-        if spec.visibility != Visibility::External {
-            continue;
-        }
-        for error in &spec.error_schemas {
-            let Some(status) = error.http_status else {
-                continue;
-            };
-            let code = format!("{status}");
-            if responses.contains_key(&code) {
-                continue;
-            }
-            responses.insert(code, json_response(error.schema.clone()));
-        }
+    let mut operation_errors_by_status: BTreeMap<u16, Vec<&ErrorDefinition>> = BTreeMap::new();
+    for error in operation_errors {
+        let status = match error.http_status {
+            Some(status) => status,
+            None => continue,
+        };
+        operation_errors_by_status
+            .entry(status)
+            .or_default()
+            .push(error);
+    }
+
+    for (status, errors) in operation_errors_by_status {
+        let key = status.to_string();
+        let response = responses
+            .entry(key)
+            .or_insert_with(|| json_response(Value::Null));
+        merge_operation_errors(response, &errors);
     }
 
     json!({
-        "operationId": "call",
-        "summary": "Invoke an operation by name with a flat JSON body `{ operation, input }`.",
-        "requestBody": {
-            "required": true,
-            "content": {
-                CONTENT_JSON: {
-                    "schema": call_input_schema(),
+        "post": {
+            "operationId": "gatewayCall",
+            "summary": "Invoke an operation by name with a flat JSON input.",
+            "requestBody": {
+                "required": true,
+                "content": {
+                    "application/json": {
+                        "schema": schema_call_request()
+                    }
                 }
-            }
-        },
-        "responses": Value::Object(responses),
-    })
-}
-
-fn batch_operation() -> Value {
-    json!({
-        "operationId": "batch",
-        "summary": "Invoke multiple operations in one request. Array of `{ operation, input }`.",
-        "requestBody": {
-            "required": true,
-            "content": {
-                CONTENT_JSON: {
-                    "schema": batch_input_schema(),
-                }
-            }
-        },
-        "responses": {
-            "200": json_response(batch_output_schema()),
-            STATUS_BAD_REQUEST: error_response("INVALID_INPUT", "The request body was not a JSON array of call requests."),
-            STATUS_UNAUTHORIZED: error_response("UNAUTHORIZED", "Missing bearer token."),
-            STATUS_FORBIDDEN: error_response("FORBIDDEN", "Insufficient scopes."),
-            STATUS_INTERNAL: error_response("INTERNAL", "Internal error."),
-            STATUS_TIMEOUT: error_response("TIMEOUT", "Request timed out."),
+            },
+            "responses": Value::Object(responses)
         }
     })
 }
 
-fn subscribe_operation() -> Value {
-    let mut responses = Map::new();
-    responses.insert("200".to_string(), sse_response(call_success_schema()));
-    responses.insert(
-        STATUS_BAD_REQUEST.to_string(),
-        error_response(
-            "INVALID_INPUT",
-            "The request body was not a valid `{ operation, input }` object.",
-        ),
-    );
-    responses.insert(
-        STATUS_UNAUTHORIZED.to_string(),
-        error_response("UNAUTHORIZED", "No bearer token provided."),
-    );
-    responses.insert(
-        STATUS_FORBIDDEN.to_string(),
-        error_response(
-            "FORBIDDEN",
-            "Insufficient scopes to invoke the requested operation.",
-        ),
-    );
-    responses.insert(
-        STATUS_NOT_FOUND.to_string(),
-        error_response("NOT_FOUND", "Operation not registered (or is Internal)."),
-    );
-    responses.insert(
-        STATUS_INTERNAL.to_string(),
-        error_response("INTERNAL", "Internal error."),
-    );
-    responses.insert(
-        STATUS_TIMEOUT.to_string(),
-        error_response("TIMEOUT", "Request timed out."),
-    );
-
+fn batch_path_item() -> Value {
     json!({
-        "operationId": "subscribe",
-        "summary": "Invoke a streaming operation. Body `{ operation, input }`; response is `text/event-stream`.",
-        "requestBody": {
-            "required": true,
-            "content": {
-                CONTENT_JSON: {
-                    "schema": call_input_schema(),
+        "post": {
+            "operationId": "gatewayBatch",
+            "summary": "Invoke multiple operations in one request. Returns an array of results.",
+            "requestBody": {
+                "required": true,
+                "content": {
+                    "application/json": {
+                        "schema": schema_batch_request()
+                    }
                 }
+            },
+            "responses": {
+                "200": json_response(schema_batch_result()),
+                "400": json_response(schema_invalid_input()),
+                "401": json_response(schema_unauthorized()),
+                "403": json_response(schema_forbidden()),
+                "500": json_response(schema_internal()),
+                "504": json_response(schema_timeout())
             }
-        },
-        "responses": Value::Object(responses),
+        }
     })
 }
 
-fn call_input_schema() -> Value {
+fn subscribe_path_item() -> Value {
+    json!({
+        "post": {
+            "operationId": "gatewaySubscribe",
+            "summary": "Invoke a streaming operation. Response is text/event-stream.",
+            "requestBody": {
+                "required": true,
+                "content": {
+                    "application/json": {
+                        "schema": schema_call_request()
+                    }
+                }
+            },
+            "responses": {
+                "200": sse_response(),
+                "400": json_response(schema_invalid_input()),
+                "401": json_response(schema_unauthorized()),
+                "403": json_response(schema_forbidden()),
+                "404": json_response(schema_not_found()),
+                "500": json_response(schema_internal()),
+                "504": json_response(schema_timeout())
+            }
+        }
+    })
+}
+
+fn schema_call_request() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -268,14 +260,26 @@ fn call_input_schema() -> Value {
     })
 }
 
-fn batch_input_schema() -> Value {
+fn schema_batch_request() -> Value {
     json!({
         "type": "array",
-        "items": call_input_schema()
+        "items": schema_call_request()
     })
 }
 
-fn search_output_schema() -> Value {
+fn schema_call_ok() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "request_id": { "type": "string" },
+            "result": { "type": "string", "enum": ["ok"] },
+            "output": { "type": "object", "description": "The operation's output." }
+        },
+        "required": ["request_id", "result", "output"]
+    })
+}
+
+fn schema_search_result() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -293,33 +297,22 @@ fn search_output_schema() -> Value {
     })
 }
 
-fn schema_output_schema() -> Value {
+fn schema_schema_result() -> Value {
     json!({
         "type": "object",
+        "description": "The full OperationSpec for the requested operation.",
         "properties": {
             "name": { "type": "string" },
             "namespace": { "type": "string" },
-            "op_type": { "type": "string" },
-            "input_schema": {},
-            "output_schema": {},
-            "error_schemas": { "type": "array" },
-            "access_control": {}
+            "op_type": { "type": "string", "enum": ["query", "mutation", "subscription"] },
+            "input_schema": { "type": "object" },
+            "output_schema": { "type": "object" },
+            "error_schemas": { "type": "array" }
         }
     })
 }
 
-fn call_success_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "request_id": { "type": "string" },
-            "result": { "type": "string", "enum": ["ok"] },
-            "output": {}
-        }
-    })
-}
-
-fn batch_output_schema() -> Value {
+fn schema_batch_result() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -329,9 +322,9 @@ fn batch_output_schema() -> Value {
                     "type": "object",
                     "properties": {
                         "request_id": { "type": "string" },
-                        "result": { "type": "string" },
-                        "output": {},
-                        "error": {}
+                        "result": { "type": "string", "enum": ["ok", "error"] },
+                        "output": { "type": "object" },
+                        "error": { "type": "object" }
                     }
                 }
             }
@@ -339,45 +332,195 @@ fn batch_output_schema() -> Value {
     })
 }
 
+fn schema_invalid_input() -> Value {
+    schema_protocol_error(CODE_INVALID_INPUT)
+}
+
+fn schema_unauthorized() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "code": { "type": "string", "enum": ["FORBIDDEN"] },
+            "message": { "type": "string", "description": "Authentication required (no bearer token)." },
+            "retryable": { "type": "boolean" }
+        },
+        "required": ["code", "message", "retryable"]
+    })
+}
+
+fn schema_forbidden() -> Value {
+    schema_protocol_error(CODE_FORBIDDEN)
+}
+
+fn schema_not_found() -> Value {
+    schema_protocol_error(CODE_NOT_FOUND)
+}
+
+fn schema_internal() -> Value {
+    schema_protocol_error(CODE_INTERNAL)
+}
+
+fn schema_timeout() -> Value {
+    schema_protocol_error(CODE_TIMEOUT)
+}
+
+fn schema_protocol_error(code: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "code": { "type": "string", "enum": [code] },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean" }
+        },
+        "required": ["code", "message", "retryable"]
+    })
+}
+
+fn operation_error_schema(error: &ErrorDefinition) -> Value {
+    let mut schema = if error.schema.is_object() {
+        error.schema.clone()
+    } else {
+        json!({ "type": "object" })
+    };
+    let obj = schema.as_object_mut().expect("error schema is object");
+    obj.entry("title")
+        .or_insert(Value::String(error.code.clone()));
+    obj.entry("description")
+        .or_insert(Value::String(error.description.clone()));
+    schema
+}
+
 fn json_response(schema: Value) -> Value {
     json!({
         "description": "",
         "content": {
-            CONTENT_JSON: {
-                "schema": schema,
+            "application/json": {
+                "schema": schema
             }
         }
     })
 }
 
-fn sse_response(schema: Value) -> Value {
+fn sse_response() -> Value {
     json!({
-        "description": "",
+        "description": "Server-Sent Events stream. Each `data:` frame is a call.responded event; stream close is call.completed.",
         "content": {
-            CONTENT_SSE: {
-                "schema": schema,
-            }
-        }
-    })
-}
-
-fn error_response(code: &str, message: &str) -> Value {
-    json!({
-        "description": message,
-        "content": {
-            CONTENT_JSON: {
+            "text/event-stream": {
                 "schema": {
-                    "type": "object",
-                    "properties": {
-                        "code": { "type": "string", "enum": [code] },
-                        "message": { "type": "string" },
-                        "retryable": { "type": "boolean" }
-                    },
-                    "required": ["code", "message", "retryable"]
+                    "type": "string",
+                    "description": "SSE frame: `data: <output>\\n\\n`."
                 }
             }
         }
     })
+}
+
+fn merge_operation_errors(response: &mut Value, errors: &[&ErrorDefinition]) {
+    let obj = match response.as_object_mut() {
+        Some(obj) => obj,
+        None => return,
+    };
+    let content = obj
+        .entry("content".to_string())
+        .or_insert(json!({}))
+        .as_object_mut();
+    let content = match content {
+        Some(c) => c,
+        None => return,
+    };
+    let json_entry = content
+        .entry("application/json".to_string())
+        .or_insert(json!({}))
+        .as_object_mut();
+    let json_entry = match json_entry {
+        Some(j) => j,
+        None => return,
+    };
+    let existing_schema = json_entry.get("schema").cloned();
+    let op_schemas: Vec<Value> = errors.iter().map(|e| operation_error_schema(e)).collect();
+    let merged = match existing_schema {
+        Some(existing) if !existing.is_null() => {
+            let mut variants = vec![existing];
+            for s in op_schemas {
+                if !variant_already_present(&variants, &s) {
+                    variants.push(s);
+                }
+            }
+            if variants.len() == 1 {
+                variants.into_iter().next().unwrap()
+            } else {
+                json!({ "oneOf": variants })
+            }
+        }
+        _ => {
+            if op_schemas.len() == 1 {
+                op_schemas.into_iter().next().unwrap()
+            } else {
+                json!({ "oneOf": op_schemas })
+            }
+        }
+    };
+    json_entry.insert("schema".to_string(), merged);
+
+    let description = errors
+        .iter()
+        .map(|e| format!("{}: {}", e.code, e.description))
+        .collect::<Vec<_>>()
+        .join("; ");
+    obj.insert("description".to_string(), Value::String(description));
+}
+
+fn variant_already_present(variants: &[Value], candidate: &Value) -> bool {
+    variants.iter().any(|v| {
+        v.get("title").and_then(Value::as_str) == candidate.get("title").and_then(Value::as_str)
+    })
+}
+
+fn components_schemas() -> Value {
+    json!({
+        "CallRequest": schema_call_request(),
+        "CallOk": schema_call_ok(),
+        "SearchResult": schema_search_result(),
+        "SchemaResult": schema_schema_result(),
+        "BatchResult": schema_batch_result()
+    })
+}
+
+fn collect_operation_errors(registry: &OperationRegistry) -> Vec<ErrorDefinition> {
+    let mut by_status: BTreeMap<u16, Vec<ErrorDefinition>> = BTreeMap::new();
+    let mut seen_codes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for spec in registry.list_operations() {
+        for error in &spec.error_schemas {
+            let status = match error.http_status {
+                Some(status) => status,
+                None => continue,
+            };
+            if is_protocol_status(status) && !is_http_prefixed_code(&error.code) {
+                continue;
+            }
+            if !seen_codes.insert(error.code.clone()) {
+                continue;
+            }
+            by_status.entry(status).or_default().push(error.clone());
+        }
+    }
+    by_status.into_values().flatten().collect()
+}
+
+fn is_protocol_status(status: u16) -> bool {
+    matches!(
+        status,
+        STATUS_BAD_REQUEST
+            | STATUS_UNAUTHORIZED
+            | STATUS_FORBIDDEN
+            | STATUS_NOT_FOUND
+            | STATUS_INTERNAL
+            | STATUS_TIMEOUT
+    )
+}
+
+fn is_http_prefixed_code(code: &str) -> bool {
+    code.starts_with(HTTP_PREFIX) && code[HTTP_PREFIX.len()..].parse::<u16>().is_ok()
 }
 
 #[cfg(test)]
@@ -387,19 +530,18 @@ mod tests {
     use alknet_call::registry::registration::{
         make_handler, HandlerRegistration, OperationProvenance,
     };
-    use alknet_call::registry::spec::{
-        AccessControl, ErrorDefinition, OperationSpec, OperationType,
-    };
+    use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::types::Capabilities;
+    use serde_json::{json, Map};
 
-    fn echo_handler() -> alknet_call::registry::registration::Handler {
-        make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) })
+    fn noop_handler() -> alknet_call::registry::registration::Handler {
+        make_handler(|_input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, Value::Null) })
     }
 
-    fn register_op(registry: &mut OperationRegistry, spec: OperationSpec) {
+    fn register(registry: &mut OperationRegistry, spec: OperationSpec) {
         registry.register(HandlerRegistration::new(
             spec,
-            echo_handler(),
+            noop_handler(),
             OperationProvenance::Local,
             None,
             None,
@@ -407,22 +549,10 @@ mod tests {
         ));
     }
 
-    fn external_spec(name: &str) -> OperationSpec {
+    fn external_spec(name: &str, errors: Vec<ErrorDefinition>) -> OperationSpec {
         OperationSpec::new(
             name,
             OperationType::Query,
-            Visibility::External,
-            json!({}),
-            json!({}),
-            vec![],
-            AccessControl::default(),
-        )
-    }
-
-    fn spec_with_errors(name: &str, errors: Vec<ErrorDefinition>) -> OperationSpec {
-        OperationSpec::new(
-            name,
-            OperationType::Mutation,
             Visibility::External,
             json!({}),
             json!({}),
@@ -431,224 +561,492 @@ mod tests {
         )
     }
 
-    fn err(code: &str, status: Option<u16>) -> ErrorDefinition {
+    fn error(code: &str, http_status: Option<u16>) -> ErrorDefinition {
         ErrorDefinition {
             code: code.to_string(),
-            description: format!("{code} error"),
-            schema: json!({ "type": "object", "properties": { "msg": { "type": "string" } } }),
-            http_status: status,
+            description: format!("error {code}"),
+            schema: json!({ "type": "object" }),
+            http_status,
         }
     }
 
-    fn paths(spec: &OpenAPISpec) -> Vec<String> {
-        spec.paths.keys().cloned().collect()
+    fn paths_object(spec: &OpenAPISpec) -> &Map<String, Value> {
+        spec.raw
+            .get("paths")
+            .and_then(Value::as_object)
+            .expect("paths object present")
+    }
+
+    fn path<'a>(spec: &'a OpenAPISpec, name: &str) -> &'a Map<String, Value> {
+        paths_object(spec)
+            .get(name)
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("path {name} present"))
+    }
+
+    fn operation<'a>(spec: &'a OpenAPISpec, name: &str, method: &str) -> &'a Map<String, Value> {
+        path(spec, name)
+            .get(method)
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("operation {method} {name} present"))
+    }
+
+    fn responses<'a>(spec: &'a OpenAPISpec, name: &str, method: &str) -> &'a Map<String, Value> {
+        operation(spec, name, method)
+            .get("responses")
+            .and_then(Value::as_object)
+            .expect("responses present")
     }
 
     #[test]
-    fn generated_doc_has_exactly_five_gateway_paths() {
+    fn empty_registry_produces_five_gateway_paths() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        let mut p = paths(&spec);
-        p.sort();
-        assert_eq!(
-            p,
-            vec!["/batch", "/call", "/schema", "/search", "/subscribe"]
-        );
+        let paths = paths_object(&spec);
+        assert_eq!(paths.len(), 5);
+        assert!(paths.contains_key(PATH_SEARCH));
+        assert!(paths.contains_key(PATH_SCHEMA));
+        assert!(paths.contains_key(PATH_CALL));
+        assert!(paths.contains_key(PATH_BATCH));
+        assert!(paths.contains_key(PATH_SUBSCRIBE));
     }
 
     #[test]
-    fn generated_doc_does_not_leak_registry_operations_as_paths() {
+    fn registry_with_operations_does_not_add_per_operation_paths() {
         let mut registry = OperationRegistry::new();
-        register_op(&mut registry, external_spec("fs/readFile"));
-        register_op(&mut registry, external_spec("agent/chat"));
+        register(&mut registry, external_spec("fs/readFile", vec![]));
+        register(&mut registry, external_spec("agent/chat", vec![]));
         let spec = to_openapi(&registry);
-        let p = paths(&spec);
-        assert!(!p.contains(&"/fs/readFile".to_string()));
-        assert!(!p.contains(&"/agent/chat".to_string()));
-        assert_eq!(p.len(), 5);
+        let paths = paths_object(&spec);
+        assert_eq!(paths.len(), 5);
+        assert!(!paths.contains_key("/fs/readFile"));
+        assert!(!paths.contains_key("/agent/chat"));
     }
 
     #[test]
     fn info_version_is_1_0_0() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        assert_eq!(spec.info.version, "1.0.0");
+        let version = spec
+            .raw
+            .get("info")
+            .and_then(|i: &Value| i.get("version"))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(version, GATEWAY_VERSION);
+        assert_eq!(version, "1.0.0");
     }
 
     #[test]
-    fn call_request_schema_is_operation_and_input() {
+    fn info_title_present() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        let call = &spec.paths["/call"].operations[0].1;
-        let body = call.request_body.as_ref().expect("request body");
-        let schema = body.content.get(CONTENT_JSON).expect("json content");
-        let props = schema
+        let title = spec
+            .raw
+            .get("info")
+            .and_then(|i: &Value| i.get("title"))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(title, GATEWAY_TITLE);
+    }
+
+    #[test]
+    fn openapi_field_is_3_0_0() {
+        let registry = OperationRegistry::new();
+        let spec = to_openapi(&registry);
+        let openapi = spec.raw.get("openapi").and_then(Value::as_str).unwrap();
+        assert_eq!(openapi, OPENAPI_VERSION);
+    }
+
+    #[test]
+    fn call_request_body_is_flat_operation_input() {
+        let registry = OperationRegistry::new();
+        let spec = to_openapi(&registry);
+        let request_schema = operation(&spec, PATH_CALL, "post")
+            .get("requestBody")
+            .and_then(|rb| rb.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let props = request_schema
             .get("properties")
             .and_then(Value::as_object)
-            .expect("properties");
+            .unwrap();
         assert!(props.contains_key("operation"));
-        let input = props.get("input").expect("input");
-        assert_eq!(input.get("type").and_then(Value::as_str), Some("object"));
-        let required = schema
+        assert!(props.contains_key("input"));
+        let operation_prop = props.get("operation").unwrap();
+        assert_eq!(
+            operation_prop.get("type").and_then(Value::as_str),
+            Some("string")
+        );
+        let input_prop = props.get("input").unwrap();
+        assert_eq!(
+            input_prop.get("type").and_then(Value::as_str),
+            Some("object")
+        );
+        let required = request_schema
             .get("required")
             .and_then(Value::as_array)
-            .expect("required");
+            .unwrap();
         assert!(required.iter().any(|v| v == "operation"));
     }
 
     #[test]
-    fn subscribe_response_content_type_is_text_event_stream() {
+    fn call_includes_all_protocol_level_error_statuses() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        let subscribe = &spec.paths["/subscribe"].operations[0].1;
-        let resp = &subscribe.responses["200"];
-        assert!(resp.content.contains_key(CONTENT_SSE));
-        assert!(!resp.content.contains_key(CONTENT_JSON));
-    }
-
-    #[test]
-    fn call_responses_include_all_protocol_level_error_statuses() {
-        let registry = OperationRegistry::new();
-        let spec = to_openapi(&registry);
-        let call = &spec.paths["/call"].operations[0].1;
-        for status in ["400", "401", "403", "404", "500", "504"] {
+        let responses = responses(&spec, PATH_CALL, "post");
+        for status in [
+            STATUS_BAD_REQUEST,
+            STATUS_UNAUTHORIZED,
+            STATUS_FORBIDDEN,
+            STATUS_NOT_FOUND,
+            STATUS_INTERNAL,
+            STATUS_TIMEOUT,
+        ] {
             assert!(
-                call.responses.contains_key(status),
-                "missing protocol-level response {status}"
+                responses.contains_key(&status.to_string()),
+                "protocol status {status} present on /call"
             );
         }
+        assert!(responses.contains_key("200"));
     }
 
     #[test]
-    fn call_responses_include_operation_level_errors_with_http_status() {
+    fn call_protocol_error_status_codes_have_protocol_codes() {
+        let registry = OperationRegistry::new();
+        let spec = to_openapi(&registry);
+        let responses = responses(&spec, PATH_CALL, "post");
+
+        let invalid_input_schema = responses
+            .get(&STATUS_BAD_REQUEST.to_string())
+            .and_then(|r: &Value| r.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .and_then(|s: &Value| s.get("properties"))
+            .and_then(|p: &Value| p.get("code"))
+            .and_then(|c: &Value| c.get("enum"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(invalid_input_schema[0], CODE_INVALID_INPUT);
+
+        let forbidden_schema = responses
+            .get(&STATUS_FORBIDDEN.to_string())
+            .and_then(|r: &Value| r.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .and_then(|s: &Value| s.get("properties"))
+            .and_then(|p: &Value| p.get("code"))
+            .and_then(|c: &Value| c.get("enum"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(forbidden_schema[0], CODE_FORBIDDEN);
+
+        let timeout_schema = responses
+            .get(&STATUS_TIMEOUT.to_string())
+            .and_then(|r: &Value| r.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .and_then(|s: &Value| s.get("properties"))
+            .and_then(|p: &Value| p.get("code"))
+            .and_then(|c: &Value| c.get("enum"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(timeout_schema[0], CODE_TIMEOUT);
+    }
+
+    #[test]
+    fn operation_errors_projected_onto_call() {
         let mut registry = OperationRegistry::new();
-        register_op(
+        register(
             &mut registry,
-            spec_with_errors(
-                "svc/op",
+            external_spec(
+                "fs/readFile",
                 vec![
-                    err("RATE_LIMITED", Some(429)),
-                    err("UNPROCESSABLE", Some(422)),
+                    error("FILE_NOT_FOUND", Some(404)),
+                    error("RATE_LIMITED", Some(429)),
                 ],
             ),
         );
         let spec = to_openapi(&registry);
-        let call = &spec.paths["/call"].operations[0].1;
-        assert!(call.responses.contains_key("429"));
-        assert!(call.responses.contains_key("422"));
-        let resp429 = &call.responses["429"];
-        let schema = resp429
-            .content
-            .get(CONTENT_JSON)
-            .and_then(|v| v.get("properties"))
-            .and_then(|v| v.get("msg"))
-            .expect("projected error schema");
-        assert_eq!(schema.get("type").and_then(Value::as_str), Some("string"));
+        let responses = responses(&spec, PATH_CALL, "post");
+        assert!(
+            responses.contains_key("429"),
+            "operation-level 429 projected onto /call"
+        );
+        let response_429 = responses.get("429").unwrap();
+        let schema = response_429
+            .get("content")
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let title = schema.get("title").and_then(Value::as_str).unwrap();
+        assert_eq!(title, "RATE_LIMITED");
+        let description = response_429
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(description.contains("RATE_LIMITED"));
     }
 
     #[test]
-    fn call_responses_project_http_404_error_code_as_404_response() {
+    fn http_prefixed_error_code_projects_to_status() {
         let mut registry = OperationRegistry::new();
-        register_op(
+        register(
             &mut registry,
-            spec_with_errors("svc/op", vec![err("HTTP_404", Some(404))]),
+            external_spec("svc/op", vec![error("HTTP_404", Some(404))]),
         );
         let spec = to_openapi(&registry);
-        let call = &spec.paths["/call"].operations[0].1;
-        assert!(call.responses.contains_key("404"));
+        let responses = responses(&spec, PATH_CALL, "post");
+        let response_404 = responses.get("404").unwrap();
+        let schema = response_404
+            .get("content")
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let one_of = schema.get("oneOf").and_then(Value::as_array);
+        let titles: Vec<&str> = match one_of {
+            Some(arr) => arr
+                .iter()
+                .filter_map(|v: &Value| v.get("title").and_then(Value::as_str))
+                .collect(),
+            None => vec![schema.get("title").and_then(Value::as_str).unwrap_or("")],
+        };
+        assert!(
+            titles.contains(&"HTTP_404"),
+            "HTTP_404 operation error must be projected on /call 404, got titles: {titles:?}"
+        );
     }
 
     #[test]
-    fn call_responses_do_not_duplicate_protocol_level_status_with_operation_error() {
+    fn http_prefixed_code_does_not_collide_with_protocol_code() {
         let mut registry = OperationRegistry::new();
-        register_op(
+        register(
             &mut registry,
-            spec_with_errors("svc/op", vec![err("HTTP_500", Some(500))]),
+            external_spec("svc/op", vec![error("HTTP_404", Some(404))]),
         );
         let spec = to_openapi(&registry);
-        let call = &spec.paths["/call"].operations[0].1;
-        assert!(call.responses.contains_key("500"));
+        let responses = responses(&spec, PATH_CALL, "post");
+        let response_404 = responses.get("404").unwrap();
+        let schema = response_404
+            .get("content")
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let one_of = schema.get("oneOf").and_then(Value::as_array);
+        let variants: Vec<&Value> = match one_of {
+            Some(arr) => arr.iter().collect(),
+            None => vec![schema],
+        };
+        let http_404_variant = variants
+            .iter()
+            .find(|v| v.get("title").and_then(Value::as_str) == Some("HTTP_404"))
+            .expect("HTTP_404 variant present");
+        let http_enum = http_404_variant
+            .get("properties")
+            .and_then(|p: &Value| p.get("code"))
+            .and_then(|c: &Value| c.get("enum"))
+            .and_then(Value::as_array);
+        assert!(
+            http_enum.is_none(),
+            "HTTP_404 variant is not constrained to a protocol code enum"
+        );
+        let titles: Vec<&str> = variants
+            .iter()
+            .filter_map(|v| v.get("title").and_then(Value::as_str))
+            .collect();
+        assert!(
+            titles.contains(&"HTTP_404"),
+            "HTTP_404 operation error projected alongside protocol 404, got titles: {titles:?}"
+        );
     }
 
     #[test]
-    fn operation_errors_without_http_status_are_not_projected() {
+    fn operation_error_without_http_status_not_projected() {
         let mut registry = OperationRegistry::new();
-        register_op(
+        register(
             &mut registry,
-            spec_with_errors("svc/op", vec![err("FILE_NOT_FOUND", None)]),
+            external_spec("svc/op", vec![error("DOMAIN_ERROR", None)]),
         );
         let spec = to_openapi(&registry);
-        let call = &spec.paths["/call"].operations[0].1;
-        assert!(!call.responses.contains_key("0"));
-        assert!(call.responses.contains_key("500"));
+        let responses = responses(&spec, PATH_CALL, "post");
+        assert!(!responses.contains_key("0"));
+        assert_eq!(
+            responses.len(),
+            7,
+            "only protocol-level statuses + 200 present"
+        );
     }
 
     #[test]
-    fn to_openapi_is_a_pure_projection_and_not_an_operation_adapter() {
-        fn assert_not_adapter<T>() {}
-        assert_not_adapter::<fn(&OperationRegistry) -> OpenAPISpec>();
-        let mut registry = OperationRegistry::new();
-        register_op(&mut registry, external_spec("svc/op"));
-        let before = registry.list_operations().len();
-        let _ = to_openapi(&registry);
-        assert_eq!(registry.list_operations().len(), before);
-    }
-
-    #[test]
-    fn batch_request_schema_is_array_of_call_request() {
+    fn subscribe_response_is_text_event_stream() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        let batch = &spec.paths["/batch"].operations[0].1;
-        let body = batch.request_body.as_ref().expect("request body");
-        let schema = body.content.get(CONTENT_JSON).expect("json content");
-        assert_eq!(schema.get("type").and_then(Value::as_str), Some("array"));
+        let responses = responses(&spec, PATH_SUBSCRIBE, "post");
+        let ok = responses.get("200").unwrap();
+        let content = ok.get("content").and_then(Value::as_object).unwrap();
+        assert!(content.contains_key("text/event-stream"));
+        assert!(!content.contains_key("application/json"));
     }
 
     #[test]
-    fn subscribe_request_body_uses_call_input_schema() {
+    fn subscribe_request_body_is_flat_operation_input() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        let subscribe = &spec.paths["/subscribe"].operations[0].1;
-        let body = subscribe.request_body.as_ref().expect("request body");
-        let schema = body.content.get(CONTENT_JSON).expect("json content");
-        assert!(schema
+        let request_schema = operation(&spec, PATH_SUBSCRIBE, "post")
+            .get("requestBody")
+            .and_then(|rb| rb.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let props = request_schema
             .get("properties")
             .and_then(Value::as_object)
-            .map(|m| m.contains_key("operation"))
-            .unwrap_or(false));
+            .unwrap();
+        assert!(props.contains_key("operation"));
+        assert!(props.contains_key("input"));
     }
 
     #[test]
-    fn search_and_schema_are_get_operations() {
+    fn batch_request_body_is_array_of_call_requests() {
         let registry = OperationRegistry::new();
         let spec = to_openapi(&registry);
-        assert_eq!(spec.paths["/search"].operations[0].0, "get");
-        assert_eq!(spec.paths["/schema"].operations[0].0, "get");
-    }
-
-    #[test]
-    fn call_batch_subscribe_are_post_operations() {
-        let registry = OperationRegistry::new();
-        let spec = to_openapi(&registry);
-        assert_eq!(spec.paths["/call"].operations[0].0, "post");
-        assert_eq!(spec.paths["/batch"].operations[0].0, "post");
-        assert_eq!(spec.paths["/subscribe"].operations[0].0, "post");
-    }
-
-    #[test]
-    fn raw_doc_carries_openapi_3_0_and_gateway_version() {
-        let registry = OperationRegistry::new();
-        let spec = to_openapi(&registry);
+        let request_schema = operation(&spec, PATH_BATCH, "post")
+            .get("requestBody")
+            .and_then(|rb| rb.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
         assert_eq!(
-            spec.raw.get("openapi").and_then(Value::as_str),
-            Some("3.0.0")
+            request_schema.get("type").and_then(Value::as_str),
+            Some("array")
         );
+        let items = request_schema
+            .get("items")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert!(items.contains_key("properties"));
+    }
+
+    #[test]
+    fn search_has_get_method() {
+        let registry = OperationRegistry::new();
+        let spec = to_openapi(&registry);
+        assert!(path(&spec, PATH_SEARCH).contains_key("get"));
+        assert!(!path(&spec, PATH_SEARCH).contains_key("post"));
+    }
+
+    #[test]
+    fn schema_has_get_method_with_name_query_param() {
+        let registry = OperationRegistry::new();
+        let spec = to_openapi(&registry);
+        let params = operation(&spec, PATH_SCHEMA, "get")
+            .get("parameters")
+            .and_then(Value::as_array)
+            .unwrap();
+        let name_param = &params[0];
+        assert_eq!(name_param.get("name").and_then(Value::as_str), Some("name"));
+        assert_eq!(name_param.get("in").and_then(Value::as_str), Some("query"));
         assert_eq!(
-            spec.raw
-                .get("info")
-                .and_then(|i| i.get("version"))
-                .and_then(Value::as_str),
-            Some("1.0.0")
+            name_param.get("required").and_then(Value::as_bool),
+            Some(true)
         );
+    }
+
+    #[test]
+    fn call_has_post_method() {
+        let registry = OperationRegistry::new();
+        let spec = to_openapi(&registry);
+        assert!(path(&spec, PATH_CALL).contains_key("post"));
+        assert!(!path(&spec, PATH_CALL).contains_key("get"));
+    }
+
+    #[test]
+    fn to_openapi_is_pure_projection_does_not_modify_registry() {
+        let mut registry = OperationRegistry::new();
+        register(&mut registry, external_spec("fs/readFile", vec![]));
+        let before_count = registry.list_operations().len();
+        let _ = to_openapi(&registry);
+        assert_eq!(registry.list_operations().len(), before_count);
+        assert!(registry.registration("fs/readFile").is_some());
+    }
+
+    #[test]
+    fn duplicate_error_status_surfaces_all_distinct_codes() {
+        let mut registry = OperationRegistry::new();
+        register(
+            &mut registry,
+            external_spec("svc/a", vec![error("RATE_LIMITED", Some(429))]),
+        );
+        register(
+            &mut registry,
+            external_spec("svc/b", vec![error("TOO_MANY_REQUESTS", Some(429))]),
+        );
+        let spec = to_openapi(&registry);
+        let responses = responses(&spec, PATH_CALL, "post");
+        assert!(responses.contains_key("429"));
+        let schema = responses
+            .get("429")
+            .and_then(|r: &Value| r.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let one_of = schema.get("oneOf").and_then(Value::as_array).unwrap();
+        let titles: Vec<&str> = one_of
+            .iter()
+            .filter_map(|v| v.get("title").and_then(Value::as_str))
+            .collect();
+        assert!(titles.contains(&"RATE_LIMITED"));
+        assert!(titles.contains(&"TOO_MANY_REQUESTS"));
+    }
+
+    #[test]
+    fn internal_operations_excluded_from_error_projection() {
+        let mut registry = OperationRegistry::new();
+        registry.register(HandlerRegistration::new(
+            OperationSpec::new(
+                "internal/op",
+                OperationType::Query,
+                Visibility::Internal,
+                json!({}),
+                json!({}),
+                vec![error("INTERNAL_ERROR", Some(418))],
+                AccessControl::default(),
+            ),
+            noop_handler(),
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new(),
+        ));
+        let spec = to_openapi(&registry);
+        let responses = responses(&spec, PATH_CALL, "post");
+        assert!(
+            !responses.contains_key("418"),
+            "internal op errors not projected"
+        );
+    }
+
+    #[test]
+    fn operation_error_with_protocol_status_but_http_prefix_is_projected() {
+        let mut registry = OperationRegistry::new();
+        register(
+            &mut registry,
+            external_spec("svc/op", vec![error("HTTP_500", Some(500))]),
+        );
+        let spec = to_openapi(&registry);
+        let responses = responses(&spec, PATH_CALL, "post");
+        let schema = responses
+            .get("500")
+            .and_then(|r: &Value| r.get("content"))
+            .and_then(|c: &Value| c.get("application/json"))
+            .and_then(|c: &Value| c.get("schema"))
+            .unwrap();
+        let one_of = schema.get("oneOf").and_then(Value::as_array).unwrap();
+        let titles: Vec<&str> = one_of
+            .iter()
+            .filter_map(|v| v.get("title").and_then(Value::as_str))
+            .collect();
+        assert!(titles.contains(&"HTTP_500"));
     }
 }
