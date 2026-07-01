@@ -1,7 +1,7 @@
 ---
 id: http/review-mcp
 name: Review MCP adapters for ADR-037/041 conformance (streamable HTTP, 4-tool gateway, output handling)
-status: pending
+status: completed
 depends_on: [http/adapters/from-mcp, http/adapters/to-mcp]
 scope: moderate
 risk: low
@@ -158,4 +158,13 @@ for the feature-gated MCP work.
 
 ## Summary
 
-> To be filled on completion
+> MCP adapters reviewed against all 12 checklist items. All conformance criteria
+> pass: from_mcp (OperationAdapter, tools/list, structuredContent-preferred output
+> handling, no JSON.parse, isError→CallError, no-env-vars ADR-014), to_mcp (4-tool
+> gateway ADR-041, ServerHandler, Subscription excluded, GatewayDispatch::invoke
+> shared spine, CallToolResult mapping, Identity survives rmcp framing research §6
+> #2, no PeerId ADR-034 §4), streamable HTTP only (ADR-037), feature gate isolation,
+> GatewayDispatch concrete struct (not trait), error fidelity (ADR-023), test coverage
+> (223 mcp tests + 5 integration tests). One formatting fix applied to from_mcp/mod.rs.
+> cargo fmt --check, clippy --features mcp --all-targets, test --features mcp, and
+> cargo check (no mcp) all pass.
