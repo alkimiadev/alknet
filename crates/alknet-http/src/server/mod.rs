@@ -7,5 +7,9 @@
 //! `docs/architecture/crates/http/http-server.md`.
 
 pub mod adapter;
+pub mod decoy;
+pub mod healthz;
 
 pub use adapter::{DecoyConfig, HttpAdapter};
+pub use decoy::decoy_fallback;
+pub use healthz::healthz;
