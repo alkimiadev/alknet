@@ -8,4 +8,6 @@
 //! `docs/architecture/crates/http/http-adapters.md` and
 //! `docs/architecture/crates/http/http-mcp.md`.
 
-// TODO: implement
+pub mod from_openapi;
+
+pub use from_openapi::{FromOpenAPI, HttpAuthScheme, HttpServiceConfig, OpenAPISpec};
