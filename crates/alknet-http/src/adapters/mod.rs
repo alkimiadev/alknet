@@ -10,4 +10,10 @@
 
 pub mod from_openapi;
 
+#[cfg(feature = "mcp")]
+pub mod from_mcp;
+
 pub use from_openapi::{FromOpenAPI, HttpAuthScheme, HttpServiceConfig, OpenAPISpec};
+
+#[cfg(feature = "mcp")]
+pub use from_mcp::FromMCP;
