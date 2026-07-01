@@ -1,7 +1,7 @@
 ---
 id: http/crate-init
 name: Initialize alknet-http crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: low
@@ -143,4 +143,10 @@ Each module file gets a doc comment and `// TODO: implement` marker.
 
 ## Summary
 
-> To be filled on completion
+> Crate initialized: crates/alknet-http with Cargo.toml, src/lib.rs, and five
+> subsystem module skeletons (server, gateway, client, adapters, websocket).
+> Workspace members list updated. Deps: alknet-core, alknet-call (workspace
+> path), axum, hyper, reqwest stack, openapiv3; rmcp optional behind mcp
+> feature (streamable HTTP only, ADR-037). h3/WebTransport absent (ADR-044).
+> Verified: cargo check, build, clippy -D warnings, test, and --features mcp
+> all pass.
