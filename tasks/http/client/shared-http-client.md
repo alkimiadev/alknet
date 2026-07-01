@@ -1,7 +1,7 @@
 ---
 id: http/client/shared-http-client
 name: Implement shared HTTP client (ClientWithMiddleware + retry + Retry-After, OQ-40)
-status: pending
+status: completed
 depends_on: [http/crate-init]
 scope: narrow
 risk: low
@@ -170,4 +170,10 @@ middleware stack above.
 
 ## Summary
 
-> To be filled on completion
+> Implemented SharedHttpClient (ArcSwap<ClientWithMiddleware>) with HttpClientConfig
+> (pool/timeout/retry/optional CA bundle+client cert), RetryTransientMiddleware from
+> reqwest-retry, and inlined RetryAfterMiddleware (~90 lines, bounded HashMap with LRU
+> eviction by earliest deadline, parses Retry-After seconds + HTTP-date, sleeps before
+> next request on 429/503). reload() rebuilds and swaps via ArcSwap. No env-var reads;
+> per-request credential injection only. Added arc-swap, httpdate, http, url deps +
+> rustls TLS feature to reqwest. 24 unit tests. Build/clippy/test all clean.
