@@ -18,9 +18,11 @@ http1 = ["dep:hyper"]
 [dependencies]
 alknet-core = { path = "../alknet-core" }
 alknet-call = { path = "../alknet-call" }
+arc-swap = "1"
 axum = { version = "0.8", features = ["ws"] }
 hyper = { version = "1", optional = true, features = ["server", "http1", "http2"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+httpdate = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
 reqwest-middleware = "0.5"
 reqwest-retry = "0.9"
 tokio = { version = "1", features = ["full"] }
@@ -32,6 +34,8 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 openapiv3 = "2"
+http = "1"
+url = "2"
 rmcp = { version = "1.8", optional = true, default-features = false, features = [
     "client",
     "server",
