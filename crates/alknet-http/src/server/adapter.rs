@@ -5,8 +5,8 @@
 //! custom routes + decoy fallback) and drives hyper's HTTP/1.1 or HTTP/2
 //! connection driver over a single QUIC bidirectional stream. The 5 gateway
 //! endpoints (`/search`/`/schema`/`/call`/`/batch`/`/subscribe`) are wired in
-//! from `gateway_routes`; `/openapi.json`, the MCP route, and the WS upgrade
-//! handler remain placeholder 501 handlers pending their respective tasks.
+//! from `gateway_routes`; `/openapi.json` serves the `to_openapi` projection
+//! of the registry.
 
 use std::io;
 use std::path::PathBuf;
@@ -14,6 +14,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
@@ -35,6 +36,7 @@ use super::gateway_routes;
 use super::healthz::healthz;
 #[cfg(feature = "mcp")]
 use crate::adapters::to_mcp_service;
+use crate::adapters::to_openapi;
 #[cfg(feature = "mcp")]
 use crate::gateway::GatewayDispatch;
 use crate::websocket::upgrade::ws_upgrade_handler;
@@ -183,7 +185,7 @@ fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
 
     let default: Router<RouterState> = Router::new()
         .merge(gateway_routes::gateway_router())
-        .route("/openapi.json", get(not_implemented))
+        .route("/openapi.json", get(openapi_json_handler))
         .route(WS_UPGRADE_PATH, get(ws_upgrade_handler))
         .route_layer(from_fn_with_state(
             auth_state.clone(),
@@ -204,8 +206,16 @@ fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
     with_extras.with_state(state)
 }
 
-async fn not_implemented() -> impl IntoResponse {
-    (StatusCode::NOT_IMPLEMENTED, "501 Not Implemented")
+async fn openapi_json_handler(State(registry): State<Arc<OperationRegistry>>) -> impl IntoResponse {
+    let spec = to_openapi(&registry);
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        )],
+        axum::Json(spec.raw),
+    )
 }
 
 #[async_trait]
@@ -683,5 +693,24 @@ mod tests {
             "expected 302 redirect, got: {response}"
         );
         assert!(response.contains("location: https://example.com"));
+    }
+
+
+    #[tokio::test]
+    async fn openapi_json_route_serves_gateway_spec() {
+        let adapter = HttpAdapter::new(provider(), empty_registry());
+        let request = b"GET /openapi.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let response = serve_and_read(adapter, request).await;
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200 for /openapi.json, got: {response}"
+        );
+        assert!(response.contains("\"openapi\""));
+        assert!(response.contains("\"/search\""));
+        assert!(response.contains("\"/schema\""));
+        assert!(response.contains("\"/call\""));
+        assert!(response.contains("\"/batch\""));
+        assert!(response.contains("\"/subscribe\""));
+        assert!(response.contains("\"1.0.0\""));
     }
 }
