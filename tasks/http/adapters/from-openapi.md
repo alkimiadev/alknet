@@ -1,7 +1,7 @@
 ---
 id: http/adapters/from-openapi
 name: Implement from_openapi adapter (parse OpenAPI, reqwest forwarding handlers, no-env-vars injection)
-status: pending
+status: completed
 depends_on: [http/client/shared-http-client, http/gateway/error-mapping]
 scope: broad
 risk: medium
@@ -239,4 +239,11 @@ protocol-level codes (`NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`,
 
 ## Summary
 
-> To be filled on completion
+> Implemented FromOpenAPI in src/adapters/from_openapi.rs. OpenAPISpec/HttpServiceConfig/
+> HttpAuthScheme types, \$ref resolution, OperationAdapter::import() producing
+> HandlerRegistration bundles (Internal visibility, FromOpenAPI provenance, leaf per
+> ADR-022, HTTP_<status> error codes per ADR-023). Reqwest forwarding handlers read
+> credentials from OperationContext.capabilities (no-env-vars ADR-014) via SharedHttpClient.
+> JSON/text/binary response branching, SSE subscription streaming via parseSSEFrames,
+> Bearer/ApiKey/Basic auth injection. 98 new tests (unit + integration with in-process
+> TCP echo/capturing servers). Build/clippy/test all clean. 111 total tests pass.
