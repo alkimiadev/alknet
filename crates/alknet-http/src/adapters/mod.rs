@@ -8,4 +8,8 @@
 //! `docs/architecture/crates/http/http-adapters.md` and
 //! `docs/architecture/crates/http/http-mcp.md`.
 
-// TODO: implement
+#[cfg(feature = "mcp")]
+pub mod from_mcp;
+
+#[cfg(feature = "mcp")]
+pub use from_mcp::FromMCP;
