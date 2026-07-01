@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -28,6 +29,7 @@ use alknet_call::registry::registration::OperationRegistry;
 use alknet_core::auth::{AuthContext, IdentityProvider};
 use alknet_core::types::{Connection, HandlerError, ProtocolHandler, StreamError};
 
+use super::auth::bearer_auth_middleware;
 use crate::server::decoy::decoy_fallback;
 use crate::server::healthz::healthz;
 
@@ -132,15 +134,17 @@ impl HttpAdapter {
 }
 
 fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
+    let auth_state = Arc::clone(&state.identity_provider);
     let default: Router<RouterState> = Router::new()
         .route("/search", any(not_implemented))
         .route("/schema", any(not_implemented))
         .route("/call", any(not_implemented))
         .route("/batch", any(not_implemented))
         .route("/subscribe", any(not_implemented))
-        .route("/healthz", get(healthz))
         .route("/openapi.json", get(not_implemented))
         .route("/mcp", post(not_implemented))
+        .route_layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
+        .route("/healthz", get(healthz))
         .fallback(decoy_fallback);
 
     let with_extras = match extra_routes {
