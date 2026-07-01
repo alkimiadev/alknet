@@ -12,19 +12,18 @@
 use alknet_call::client::{AdapterError, OperationAdapter};
 use alknet_call::protocol::wire::{CallError, ResponseEnvelope};
 use alknet_call::registry::context::OperationContext;
-use alknet_call::registry::registration::{
-    make_handler, HandlerRegistration, OperationProvenance,
+use alknet_call::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+use alknet_call::registry::spec::{
+    AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility,
 };
-use alknet_call::registry::spec::{AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility};
 use alknet_core::types::Capabilities;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content,
-    Implementation, JsonObject, Tool,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content, Implementation,
+    JsonObject, Tool,
 };
 use rmcp::service::RoleClient;
 use rmcp::transport::{
-    StreamableHttpClientTransport,
-    streamable_http_client::StreamableHttpClientTransportConfig,
+    streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
 };
 use rmcp::{Peer, ServiceExt};
 use serde_json::{Map, Value};
@@ -82,12 +81,11 @@ impl OperationAdapter for FromMCP {
             .map_err(|e| classify_init_error(&e))?;
         let peer: Peer<RoleClient> = running.peer().clone();
 
-        let tools = peer
-            .list_tools(Default::default())
-            .await
-            .map_err(|e| AdapterError::DiscoveryFailed {
+        let tools = peer.list_tools(Default::default()).await.map_err(|e| {
+            AdapterError::DiscoveryFailed {
                 message: format!("tools/list failed: {e}"),
-            })?;
+            }
+        })?;
 
         let bundles = tools
             .tools
@@ -279,10 +277,7 @@ pub(crate) fn content_blocks_to_value(blocks: &[Content]) -> Value {
 fn error_schemas_for(tool: &Tool) -> Vec<ErrorDefinition> {
     vec![ErrorDefinition {
         code: "MCP_TOOL_ERROR".to_string(),
-        description: format!(
-            "MCP tool '{}' reported an error (isError)",
-            tool.name
-        ),
+        description: format!("MCP tool '{}' reported an error (isError)", tool.name),
         schema: serde_json::json!({
             "type": "array",
             "description": "MCP error content blocks",
