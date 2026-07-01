@@ -1,5 +1,5 @@
 //! HTTP server: `HttpAdapter`, axum-over-QUIC, gateway routes, `/healthz`,
-//! decoy, and custom routes.
+//! decoy, custom routes, and shared Bearer auth middleware.
 //!
 //! Implements `alknet_core::types::ProtocolHandler` for the standard HTTP
 //! ALPNs (`h2`, `http/1.1`) with WebSocket upgrade for browser
@@ -7,5 +7,7 @@
 //! `docs/architecture/crates/http/http-server.md`.
 
 pub mod adapter;
+pub mod auth;
 
 pub use adapter::{DecoyConfig, HttpAdapter};
+pub use auth::{bearer_auth_middleware, extract_bearer_identity, ResolvedIdentity};

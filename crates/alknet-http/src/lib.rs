@@ -13,4 +13,6 @@ pub mod server;
 pub mod websocket;
 
 pub use gateway::GatewayDispatch;
-pub use server::{DecoyConfig, HttpAdapter};
+pub use server::{
+    bearer_auth_middleware, extract_bearer_identity, DecoyConfig, HttpAdapter, ResolvedIdentity,
+};

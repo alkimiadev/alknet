@@ -43,3 +43,6 @@ rmcp = { version = "1.8", optional = true, default-features = false, features = 
     "transport-streamable-http-client-reqwest",
     "transport-streamable-http-server",
 ] }
+
+[dev-dependencies]
+tower = "0.5"
