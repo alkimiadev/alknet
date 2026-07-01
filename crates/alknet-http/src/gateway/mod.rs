@@ -4,4 +4,4 @@
 //! `/subscribe`) are the sole HTTP invoke path (ADR-042/047). See
 //! `docs/architecture/crates/http/http-server.md`.
 
-// TODO: implement
+pub mod error;
