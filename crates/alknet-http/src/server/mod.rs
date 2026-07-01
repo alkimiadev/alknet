@@ -6,4 +6,6 @@
 //! bidirectional access (ADR-044). See
 //! `docs/architecture/crates/http/http-server.md`.
 
-// TODO: implement
+pub mod adapter;
+
+pub use adapter::{DecoyConfig, HttpAdapter};

@@ -112,6 +112,7 @@ dependencies = [
  "http",
  "httpdate",
  "hyper",
+ "hyper-util",
  "openapiv3",
  "reqwest 0.13.4",
  "reqwest-middleware",
