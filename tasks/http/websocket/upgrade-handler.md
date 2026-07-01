@@ -1,7 +1,7 @@
 ---
 id: http/websocket/upgrade-handler
 name: Implement WebSocket upgrade handler (native EventEnvelope session, no length prefix, bearer auth)
-status: pending
+status: completed
 depends_on: [http/server/http-adapter, http/websocket/dispatcher-transport-abstraction, http/server/bearer-auth-middleware]
 scope: broad
 risk: high
@@ -227,4 +227,13 @@ the in-flight subscription, which cascades to descendants per ADR-016.
 
 ## Summary
 
-> To be filled on completion
+> Implemented src/websocket/upgrade.rs: WS upgrade handler at /alknet/call using axum
+> WebSocketUpgrade, bearer auth via shared bearer_auth_middleware (no token → 401),
+> resolved identity stored on CallConnection::new_overlay_only, native EventEnvelope
+> over binary WS messages (no length prefix, text → protocol close 1002), shared
+> Dispatcher::dispatch_requested for call.requested (AccessControl::check gates →
+> FORBIDDEN call.error), Dispatcher::handle_abort for call.aborted, responded/completed/
+> aborted correlated via PendingRequestMap, fail_all_pending on disconnect (ADR-016
+> cascade), bidirectionality via connection-local overlay. Wired /alknet/call route
+> into adapter.rs router. 168 tests pass (incl. round-trip, 401, FORBIDDEN, subscription,
+> disconnect abort, text-close, bidirectional overlay, no-length-prefix). Clippy clean.
