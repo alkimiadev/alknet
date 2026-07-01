@@ -1,7 +1,7 @@
 ---
 id: http/websocket/connection-overlay
 name: Implement connection-local Layer 2 overlay for browser-registered ops (no PeerId, ADR-024/034/044)
-status: pending
+status: completed
 depends_on: [http/websocket/upgrade-handler]
 scope: moderate
 risk: medium
@@ -179,4 +179,12 @@ This task ensures:
 
 ## Summary
 
-> To be filled on completion
+> Added AccessControl::check to OverlayOperationEnv::invoke_with_policy in alknet-call
+> so hub's calls to browser-registered ops are gated by the browser's AccessControl
+> (caller identity = parent handler_identity.as_identity(), matching OperationRegistry
+> semantics). Created src/websocket/overlay.rs with 19 integration tests: overlay
+> scoping (not PeerCompositeEnv), no PeerId for browser, register_imported/all,
+> overlay_env() routing, PeerRef::Specific('browser-X')→NOT_FOUND, AccessControl gating
+> (allowed/forbidden/default), overlay drop on WS close + isolation, ADR-016 abort
+> cascade on disconnect, bidirectionality, no-ops use-case scoping. Zero regressions:
+> alknet-call 277+2 tests pass, alknet-http 207 tests pass, clippy clean on both.
