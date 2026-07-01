@@ -28,6 +28,9 @@ use alknet_call::registry::registration::OperationRegistry;
 use alknet_core::auth::{AuthContext, IdentityProvider};
 use alknet_core::types::{Connection, HandlerError, ProtocolHandler, StreamError};
 
+use crate::server::decoy::decoy_fallback;
+use crate::server::healthz::healthz;
+
 const ALPN_HTTP1: &[u8] = b"http/1.1";
 const ALPN_H2: &[u8] = b"h2";
 
@@ -45,6 +48,12 @@ struct RouterState {
     registry: Arc<OperationRegistry>,
     identity_provider: Arc<dyn IdentityProvider>,
     decoy: DecoyConfig,
+}
+
+impl axum::extract::FromRef<RouterState> for DecoyConfig {
+    fn from_ref(state: &RouterState) -> Self {
+        state.decoy.clone()
+    }
 }
 
 pub struct HttpAdapter {
@@ -129,9 +138,10 @@ fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
         .route("/call", any(not_implemented))
         .route("/batch", any(not_implemented))
         .route("/subscribe", any(not_implemented))
-        .route("/healthz", get(not_implemented))
+        .route("/healthz", get(healthz))
         .route("/openapi.json", get(not_implemented))
-        .route("/mcp", post(not_implemented));
+        .route("/mcp", post(not_implemented))
+        .fallback(decoy_fallback);
 
     let with_extras = match extra_routes {
         Some(extra) => {
@@ -410,8 +420,8 @@ mod tests {
         let request = b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let (response, handle) = send_request_and_read_response(request).await;
         handle.await.ok();
-        assert!(response.starts_with("HTTP/1.1 501 "), "expected 501, got: {response}");
-        assert!(response.contains("501 Not Implemented"));
+        assert!(response.starts_with("HTTP/1.1 200 "), "expected 200, got: {response}");
+        assert!(response.contains("\r\n\r\nok"));
     }
 
     #[tokio::test]
@@ -482,7 +492,88 @@ mod tests {
         }
         handle.await.ok();
         let response_str = String::from_utf8_lossy(&response);
-        assert!(response_str.starts_with("HTTP/1.1 501 "), "default GET /healthz wins, got: {response_str}");
+        assert!(response_str.starts_with("HTTP/1.1 200 "), "default GET /healthz wins, got: {response_str}");
+        assert!(response_str.contains("\r\n\r\nok"));
         assert!(!response_str.contains("custom-healthz"));
+    }
+
+    async fn serve_and_read(adapter: HttpAdapter, request: &[u8]) -> String {
+        let (mut client_send, server_recv) = duplex(8 * 1024);
+        let (server_send, mut client_recv) = duplex(8 * 1024);
+        let server_io = QuicStreamDuplex {
+            read: server_recv,
+            write: server_send,
+        };
+        let handle = tokio::spawn(async move {
+            adapter.serve_io(server_io).await.ok();
+        });
+        client_send.write_all(request).await.unwrap();
+        client_send.flush().await.unwrap();
+        let mut response = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client_recv.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+        handle.await.ok();
+        String::from_utf8_lossy(&response).to_string()
+    }
+
+    #[tokio::test]
+    async fn custom_route_matched_serves_custom_handler_not_decoy() {
+        let extra = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::OK, "oai-proxy") }),
+        );
+        let adapter = HttpAdapter::new(provider(), empty_registry())
+            .with_decoy(DecoyConfig::NotFound)
+            .with_extra_routes(extra);
+        let request = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+        let response = serve_and_read(adapter, request).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "expected 200, got: {response}");
+        assert!(response.contains("oai-proxy"));
+        assert!(!response.contains("404 Not Found"));
+    }
+
+    #[tokio::test]
+    async fn unknown_path_not_matched_by_custom_route_falls_through_to_decoy() {
+        let extra = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::OK, "oai-proxy") }),
+        );
+        let adapter = HttpAdapter::new(provider(), empty_registry())
+            .with_decoy(DecoyConfig::NotFound)
+            .with_extra_routes(extra);
+        let request = b"GET /totally/unknown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let response = serve_and_read(adapter, request).await;
+        assert!(response.starts_with("HTTP/1.1 404"), "expected 404 decoy, got: {response}");
+        assert!(response.contains("404 Not Found"));
+    }
+
+    #[tokio::test]
+    async fn healthz_takes_precedence_over_decoy() {
+        let adapter = HttpAdapter::new(provider(), empty_registry())
+            .with_decoy(DecoyConfig::Redirect {
+                to: "https://example.com".to_string(),
+            });
+        let request = b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let response = serve_and_read(adapter, request).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "expected 200 healthz, got: {response}");
+        assert!(response.contains("\r\n\r\nok"));
+    }
+
+    #[tokio::test]
+    async fn unknown_path_with_redirect_decoy_returns_redirect_over_wire() {
+        let adapter = HttpAdapter::new(provider(), empty_registry()).with_decoy(DecoyConfig::Redirect {
+            to: "https://example.com".to_string(),
+        });
+        let request = b"GET /nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let response = serve_and_read(adapter, request).await;
+        assert!(response.starts_with("HTTP/1.1 302"), "expected 302 redirect, got: {response}");
+        assert!(response.contains("location: https://example.com"));
     }
 }
