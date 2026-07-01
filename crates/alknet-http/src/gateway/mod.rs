@@ -5,5 +5,6 @@
 //! `docs/architecture/crates/http/http-server.md`.
 
 pub mod dispatch;
+pub mod error;
 
 pub use dispatch::GatewayDispatch;
