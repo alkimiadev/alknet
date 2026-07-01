@@ -33,12 +33,12 @@ use super::auth::bearer_auth_middleware;
 use super::decoy::decoy_fallback;
 use super::gateway_routes;
 use super::healthz::healthz;
-use crate::websocket::upgrade::ws_upgrade_handler;
-use crate::websocket::upgrade::WS_UPGRADE_PATH;
 #[cfg(feature = "mcp")]
 use crate::adapters::to_mcp_service;
 #[cfg(feature = "mcp")]
 use crate::gateway::GatewayDispatch;
+use crate::websocket::upgrade::ws_upgrade_handler;
+use crate::websocket::upgrade::WS_UPGRADE_PATH;
 
 const ALPN_HTTP1: &[u8] = b"http/1.1";
 const ALPN_H2: &[u8] = b"h2";
@@ -47,8 +47,12 @@ const ALPN_H2: &[u8] = b"h2";
 pub enum DecoyConfig {
     #[default]
     NotFound,
-    StaticSite { root: PathBuf },
-    Redirect { to: String },
+    StaticSite {
+        root: PathBuf,
+    },
+    Redirect {
+        to: String,
+    },
 }
 
 #[derive(Clone)]
@@ -87,11 +91,17 @@ pub struct HttpAdapter {
 }
 
 impl HttpAdapter {
-    pub fn new(identity_provider: Arc<dyn IdentityProvider>, registry: Arc<OperationRegistry>) -> Self {
+    pub fn new(
+        identity_provider: Arc<dyn IdentityProvider>,
+        registry: Arc<OperationRegistry>,
+    ) -> Self {
         Self::for_alpn(identity_provider, registry, ALPN_HTTP1)
     }
 
-    pub fn h2(identity_provider: Arc<dyn IdentityProvider>, registry: Arc<OperationRegistry>) -> Self {
+    pub fn h2(
+        identity_provider: Arc<dyn IdentityProvider>,
+        registry: Arc<OperationRegistry>,
+    ) -> Self {
         Self::for_alpn(identity_provider, registry, ALPN_H2)
     }
 
@@ -163,7 +173,10 @@ fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
         ));
         Router::new()
             .nest_service("/mcp", to_mcp_service(dispatch))
-            .layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
+            .layer(from_fn_with_state(
+                auth_state.clone(),
+                bearer_auth_middleware,
+            ))
     };
     #[cfg(not(feature = "mcp"))]
     let mcp_router: Router<RouterState> = Router::new();
@@ -172,7 +185,10 @@ fn build_router(state: RouterState, extra_routes: Option<Router>) -> Router {
         .merge(gateway_routes::gateway_router())
         .route("/openapi.json", get(not_implemented))
         .route(WS_UPGRADE_PATH, get(ws_upgrade_handler))
-        .route_layer(from_fn_with_state(auth_state.clone(), bearer_auth_middleware))
+        .route_layer(from_fn_with_state(
+            auth_state.clone(),
+            bearer_auth_middleware,
+        ))
         .route("/healthz", get(healthz))
         .fallback(decoy_fallback)
         .merge(mcp_router);
@@ -203,7 +219,10 @@ impl ProtocolHandler for HttpAdapter {
             let _ = connection.set_identity(identity);
         }
 
-        let (send, recv) = connection.accept_bi().await.map_err(stream_error_to_handler)?;
+        let (send, recv) = connection
+            .accept_bi()
+            .await
+            .map_err(stream_error_to_handler)?;
         let io = QuicStream::new(send, recv);
         self.serve_io(io).await
     }
@@ -295,7 +314,10 @@ mod tests {
         fn resolve_from_fingerprint(&self, _: &str) -> Option<alknet_core::auth::Identity> {
             None
         }
-        fn resolve_from_token(&self, _: &alknet_core::auth::AuthToken) -> Option<alknet_core::auth::Identity> {
+        fn resolve_from_token(
+            &self,
+            _: &alknet_core::auth::AuthToken,
+        ) -> Option<alknet_core::auth::Identity> {
             None
         }
     }
@@ -341,7 +363,9 @@ mod tests {
     #[test]
     fn with_decoy_updates_decoy() {
         let adapter = HttpAdapter::new(provider(), empty_registry());
-        let adapter = adapter.with_decoy(DecoyConfig::Redirect { to: "https://example.com".to_string() });
+        let adapter = adapter.with_decoy(DecoyConfig::Redirect {
+            to: "https://example.com".to_string(),
+        });
         assert!(matches!(adapter.decoy(), DecoyConfig::Redirect { .. }));
     }
 
@@ -386,7 +410,10 @@ mod tests {
     ) -> (String, tokio::task::JoinHandle<()>) {
         let (mut client_send, server_recv) = duplex(8 * 1024);
         let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex { read: server_recv, write: server_send };
+        let server_io = QuicStreamDuplex {
+            read: server_recv,
+            write: server_send,
+        };
 
         let adapter = HttpAdapter::new(provider(), empty_registry());
         let handle = tokio::spawn(async move {
@@ -399,7 +426,12 @@ mod tests {
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), client_recv.read(&mut buf)).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client_recv.read(&mut buf),
+            )
+            .await
+            {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
                 Ok(Err(_)) => break,
@@ -455,21 +487,24 @@ mod tests {
         let request = b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let (response, handle) = send_request_and_read_response(request).await;
         handle.await.ok();
-        assert!(response.starts_with("HTTP/1.1 200 "), "expected 200, got: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200 "),
+            "expected 200, got: {response}"
+        );
         assert!(response.contains("\r\n\r\nok"));
     }
 
     #[tokio::test]
     async fn custom_route_v1_foo_coexists_with_default_surface() {
-        let extra = Router::new().route(
-            "/v1/foo",
-            get(|| async { (StatusCode::OK, "foo-body") }),
-        );
+        let extra = Router::new().route("/v1/foo", get(|| async { (StatusCode::OK, "foo-body") }));
         let adapter = HttpAdapter::new(provider(), empty_registry()).with_extra_routes(extra);
 
         let (mut client_send, server_recv) = duplex(8 * 1024);
         let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex { read: server_recv, write: server_send };
+        let server_io = QuicStreamDuplex {
+            read: server_recv,
+            write: server_send,
+        };
 
         let handle = tokio::spawn(async move {
             adapter.serve_io(server_io).await.ok();
@@ -482,7 +517,12 @@ mod tests {
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), client_recv.read(&mut buf)).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client_recv.read(&mut buf),
+            )
+            .await
+            {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
                 Ok(Err(_)) => break,
@@ -491,7 +531,10 @@ mod tests {
         }
         handle.await.ok();
         let response_str = String::from_utf8_lossy(&response);
-        assert!(response_str.starts_with("HTTP/1.1 200 "), "expected 200, got: {response_str}");
+        assert!(
+            response_str.starts_with("HTTP/1.1 200 "),
+            "expected 200, got: {response_str}"
+        );
         assert!(response_str.contains("foo-body"));
     }
 
@@ -505,7 +548,10 @@ mod tests {
 
         let (mut client_send, server_recv) = duplex(8 * 1024);
         let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex { read: server_recv, write: server_send };
+        let server_io = QuicStreamDuplex {
+            read: server_recv,
+            write: server_send,
+        };
 
         let handle = tokio::spawn(async move {
             adapter.serve_io(server_io).await.ok();
@@ -518,7 +564,12 @@ mod tests {
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), client_recv.read(&mut buf)).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client_recv.read(&mut buf),
+            )
+            .await
+            {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
                 Ok(Err(_)) => break,
@@ -527,7 +578,10 @@ mod tests {
         }
         handle.await.ok();
         let response_str = String::from_utf8_lossy(&response);
-        assert!(response_str.starts_with("HTTP/1.1 200 "), "default GET /healthz wins, got: {response_str}");
+        assert!(
+            response_str.starts_with("HTTP/1.1 200 "),
+            "default GET /healthz wins, got: {response_str}"
+        );
         assert!(response_str.contains("\r\n\r\nok"));
         assert!(!response_str.contains("custom-healthz"));
     }
@@ -547,7 +601,12 @@ mod tests {
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), client_recv.read(&mut buf)).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client_recv.read(&mut buf),
+            )
+            .await
+            {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
                 Ok(Err(_)) => break,
@@ -569,7 +628,10 @@ mod tests {
             .with_extra_routes(extra);
         let request = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         let response = serve_and_read(adapter, request).await;
-        assert!(response.starts_with("HTTP/1.1 200"), "expected 200, got: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200, got: {response}"
+        );
         assert!(response.contains("oai-proxy"));
         assert!(!response.contains("404 Not Found"));
     }
@@ -583,32 +645,43 @@ mod tests {
         let adapter = HttpAdapter::new(provider(), empty_registry())
             .with_decoy(DecoyConfig::NotFound)
             .with_extra_routes(extra);
-        let request = b"GET /totally/unknown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let request =
+            b"GET /totally/unknown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let response = serve_and_read(adapter, request).await;
-        assert!(response.starts_with("HTTP/1.1 404"), "expected 404 decoy, got: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "expected 404 decoy, got: {response}"
+        );
         assert!(response.contains("404 Not Found"));
     }
 
     #[tokio::test]
     async fn healthz_takes_precedence_over_decoy() {
-        let adapter = HttpAdapter::new(provider(), empty_registry())
-            .with_decoy(DecoyConfig::Redirect {
+        let adapter =
+            HttpAdapter::new(provider(), empty_registry()).with_decoy(DecoyConfig::Redirect {
                 to: "https://example.com".to_string(),
             });
         let request = b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let response = serve_and_read(adapter, request).await;
-        assert!(response.starts_with("HTTP/1.1 200"), "expected 200 healthz, got: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected 200 healthz, got: {response}"
+        );
         assert!(response.contains("\r\n\r\nok"));
     }
 
     #[tokio::test]
     async fn unknown_path_with_redirect_decoy_returns_redirect_over_wire() {
-        let adapter = HttpAdapter::new(provider(), empty_registry()).with_decoy(DecoyConfig::Redirect {
-            to: "https://example.com".to_string(),
-        });
+        let adapter =
+            HttpAdapter::new(provider(), empty_registry()).with_decoy(DecoyConfig::Redirect {
+                to: "https://example.com".to_string(),
+            });
         let request = b"GET /nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let response = serve_and_read(adapter, request).await;
-        assert!(response.starts_with("HTTP/1.1 302"), "expected 302 redirect, got: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 302"),
+            "expected 302 redirect, got: {response}"
+        );
         assert!(response.contains("location: https://example.com"));
     }
 }

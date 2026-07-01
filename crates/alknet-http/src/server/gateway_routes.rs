@@ -52,13 +52,19 @@ impl GatewayState {
     }
 
     fn dispatch(&self) -> GatewayDispatch {
-        GatewayDispatch::new(Arc::clone(&self.registry), Arc::clone(&self.identity_provider))
+        GatewayDispatch::new(
+            Arc::clone(&self.registry),
+            Arc::clone(&self.identity_provider),
+        )
     }
 }
 
 impl FromRef<RouterState> for GatewayState {
     fn from_ref(state: &RouterState) -> Self {
-        GatewayState::new(Arc::clone(&state.registry), Arc::clone(&state.identity_provider))
+        GatewayState::new(
+            Arc::clone(&state.registry),
+            Arc::clone(&state.identity_provider),
+        )
     }
 }
 
@@ -92,7 +98,9 @@ pub(crate) async fn call_handler(
         return not_found_response(&request.operation);
     }
     let dispatch = state.dispatch();
-    let envelope = dispatch.invoke(identity.clone(), &request.operation, request.input).await;
+    let envelope = dispatch
+        .invoke(identity.clone(), &request.operation, request.input)
+        .await;
     envelope_to_response(envelope, identity.as_ref())
 }
 
@@ -101,7 +109,9 @@ pub(crate) async fn search_handler(
     ResolvedIdentity(identity): ResolvedIdentity,
 ) -> Response {
     let dispatch = state.dispatch();
-    let envelope = dispatch.invoke(identity.clone(), SERVICES_LIST, json!({})).await;
+    let envelope = dispatch
+        .invoke(identity.clone(), SERVICES_LIST, json!({}))
+        .await;
     envelope_to_response(envelope, identity.as_ref())
 }
 
@@ -115,7 +125,11 @@ pub(crate) async fn schema_handler(
     }
     let dispatch = state.dispatch();
     let envelope = dispatch
-        .invoke(identity.clone(), SERVICES_SCHEMA, json!({ "name": query.name }))
+        .invoke(
+            identity.clone(),
+            SERVICES_SCHEMA,
+            json!({ "name": query.name }),
+        )
         .await;
     envelope_to_response(envelope, identity.as_ref())
 }
@@ -149,7 +163,9 @@ pub(crate) async fn subscribe_handler(
         subscribe_stream_internal_error(request.operation)
     } else {
         let dispatch = state.dispatch();
-        let envelope = dispatch.invoke(identity, &request.operation, request.input).await;
+        let envelope = dispatch
+            .invoke(identity, &request.operation, request.input)
+            .await;
         subscribe_stream_from_envelope(envelope)
     };
     Sse::new(stream)
@@ -221,8 +237,7 @@ fn not_found_response(operation: &str) -> Response {
 fn forbidden_response(message: String, identity: Option<&Identity>) -> Response {
     let error = CallError::forbidden(message);
     let status_code = call_error_to_http_status_with_identity(&error, identity);
-    let status =
-        StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = serde_json::to_value(&error).unwrap_or(Value::Null);
     (status, Json(body)).into_response()
 }
@@ -248,7 +263,9 @@ fn is_internal_op(registry: &OperationRegistry, operation: &str) -> bool {
     }
 }
 
-fn envelope_to_sse_stream(envelope: ResponseEnvelope) -> impl Stream<Item = Result<Event, Infallible>> {
+fn envelope_to_sse_stream(
+    envelope: ResponseEnvelope,
+) -> impl Stream<Item = Result<Event, Infallible>> {
     stream::once(async move {
         match envelope.result {
             Ok(output) => {
@@ -756,7 +773,10 @@ mod tests {
             .get(axum::http::header::CONTENT_TYPE)
             .map(|v| v.to_str().unwrap().to_string());
         assert!(
-            ctype.as_deref().unwrap_or("").starts_with("text/event-stream"),
+            ctype
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("text/event-stream"),
             "expected text/event-stream, got {ctype:?}"
         );
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();

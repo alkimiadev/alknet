@@ -22,4 +22,4 @@ pub use from_openapi::{FromOpenAPI, HttpAuthScheme, HttpServiceConfig, OpenAPISp
 pub use from_mcp::FromMCP;
 
 #[cfg(feature = "mcp")]
-pub use to_mcp::{ToMcpGateway, ToMcpService, to_mcp_service};
+pub use to_mcp::{to_mcp_service, ToMcpGateway, ToMcpService};

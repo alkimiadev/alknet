@@ -33,10 +33,8 @@ pub fn fake_nginx_404() -> Response {
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    resp.headers_mut().insert(
-        header::SERVER,
-        HeaderValue::from_static("nginx"),
-    );
+    resp.headers_mut()
+        .insert(header::SERVER, HeaderValue::from_static("nginx"));
     resp
 }
 
@@ -61,10 +59,8 @@ pub async fn serve_static(root: &Path, request: Request) -> Response {
             let content_type = mime_for_path(&resolved);
             let mut resp = Response::new(Body::from(bytes));
             *resp.status_mut() = StatusCode::OK;
-            resp.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(content_type),
-            );
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
             resp
         }
         Err(_) => fake_nginx_404(),
@@ -173,10 +169,7 @@ mod tests {
     async fn send(router: axum::Router, uri: &str) -> axum::response::Response {
         tower::ServiceExt::<Request<Body>>::oneshot(
             router,
-            Request::builder()
-                .uri(uri)
-                .body(Body::empty())
-                .unwrap(),
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
         )
         .await
         .unwrap()
@@ -220,9 +213,7 @@ mod tests {
     async fn unknown_path_with_static_site_decoy_serves_file() {
         let dir = tempfile_dir();
         let file = dir.join("index.html");
-        tokio::fs::write(&file, "<h1>hello</h1>")
-            .await
-            .unwrap();
+        tokio::fs::write(&file, "<h1>hello</h1>").await.unwrap();
 
         let decoy = DecoyConfig::StaticSite { root: dir.clone() };
         let resp = send(decoy_router(decoy), "/").await;
@@ -293,10 +284,8 @@ mod tests {
     }
 
     fn tempfile_dir() -> PathBuf {
-        let dir = PathBuf::from("/tmp").join(format!(
-            "alknet-http-decoy-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            PathBuf::from("/tmp").join(format!("alknet-http-decoy-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -125,10 +125,11 @@ fn build_client(config: &HttpClientConfig) -> Result<ClientWithMiddleware, HttpC
         builder = builder.timeout(timeout);
     }
     if let Some(ca_bundle_path) = &config.ca_bundle {
-        let pem = std::fs::read(ca_bundle_path).map_err(|source| HttpClientBuildError::CaBundleRead {
-            path: ca_bundle_path.clone(),
-            source,
-        })?;
+        let pem =
+            std::fs::read(ca_bundle_path).map_err(|source| HttpClientBuildError::CaBundleRead {
+                path: ca_bundle_path.clone(),
+                source,
+            })?;
         let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|source| {
             HttpClientBuildError::CaBundleParse {
                 path: ca_bundle_path.clone(),
@@ -152,19 +153,21 @@ fn build_client(config: &HttpClientConfig) -> Result<ClientWithMiddleware, HttpC
                 source,
             }
         })?;
-        let identity = reqwest::Identity::from_pem(
-            concat_pem(&cert_pem, &key_pem).as_slice(),
-        )
-        .map_err(|source| HttpClientBuildError::ClientCertParse {
-            path: client_cert_cfg.cert_pem.clone(),
-            source,
-        })?;
+        let identity = reqwest::Identity::from_pem(concat_pem(&cert_pem, &key_pem).as_slice())
+            .map_err(|source| HttpClientBuildError::ClientCertParse {
+                path: client_cert_cfg.cert_pem.clone(),
+                source,
+            })?;
         builder = builder.identity(identity);
     }
     let reqwest_client = builder.build().map_err(HttpClientBuildError::Build)?;
     let client = reqwest_middleware::ClientBuilder::new(reqwest_client)
-        .with(RetryTransientMiddleware::new_with_policy(config.retry_policy))
-        .with(RetryAfterMiddleware::with_capacity(DEFAULT_RETRY_AFTER_CAPACITY))
+        .with(RetryTransientMiddleware::new_with_policy(
+            config.retry_policy,
+        ))
+        .with(RetryAfterMiddleware::with_capacity(
+            DEFAULT_RETRY_AFTER_CAPACITY,
+        ))
         .build();
     Ok(client)
 }
@@ -203,10 +206,7 @@ mod tests {
             .build()
             .expect("RequestBuilder builds");
         assert_eq!(request.method(), reqwest::Method::GET);
-        assert_eq!(
-            request.url().as_str(),
-            "https://api.example.com/v1/chat"
-        );
+        assert_eq!(request.url().as_str(), "https://api.example.com/v1/chat");
     }
 
     #[test]

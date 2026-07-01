@@ -36,8 +36,8 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::{
-    StreamableHttpServerConfig,
     streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
+    StreamableHttpServerConfig,
 };
 use serde_json::{Map, Value};
 
@@ -133,7 +133,10 @@ impl ToMcpGateway {
 
     fn extract_identity_from_extensions(extensions: &rmcp::model::Extensions) -> Option<Identity> {
         let parts = extensions.get::<http::request::Parts>()?;
-        parts.extensions.get::<Option<Identity>>().and_then(Option::clone)
+        parts
+            .extensions
+            .get::<Option<Identity>>()
+            .and_then(Option::clone)
     }
 
     async fn handle_search(&self, identity: Option<Identity>) -> CallToolResult {
@@ -144,8 +147,15 @@ impl ToMcpGateway {
         map_search_response(response, identity.as_ref())
     }
 
-    async fn handle_schema(&self, arguments: Option<JsonObject>, identity: Option<Identity>) -> CallToolResult {
-        let name = match arguments.and_then(|mut a| a.remove("name")).and_then(|v| v.as_str().map(str::to_string)) {
+    async fn handle_schema(
+        &self,
+        arguments: Option<JsonObject>,
+        identity: Option<Identity>,
+    ) -> CallToolResult {
+        let name = match arguments
+            .and_then(|mut a| a.remove("name"))
+            .and_then(|v| v.as_str().map(str::to_string))
+        {
             Some(n) => n,
             None => {
                 return CallToolResult::structured_error(serde_json::json!({
@@ -156,12 +166,20 @@ impl ToMcpGateway {
         };
         let response = self
             .dispatch
-            .invoke(identity, OP_SERVICES_SCHEMA, serde_json::json!({ "name": name }))
+            .invoke(
+                identity,
+                OP_SERVICES_SCHEMA,
+                serde_json::json!({ "name": name }),
+            )
             .await;
         envelope_to_call_tool_result(response)
     }
 
-    async fn handle_call(&self, arguments: Option<JsonObject>, identity: Option<Identity>) -> CallToolResult {
+    async fn handle_call(
+        &self,
+        arguments: Option<JsonObject>,
+        identity: Option<Identity>,
+    ) -> CallToolResult {
         let (operation, input) = match parse_call_arguments(arguments) {
             Ok(pair) => pair,
             Err(err) => return err,
@@ -170,7 +188,11 @@ impl ToMcpGateway {
         envelope_to_call_tool_result(response)
     }
 
-    async fn handle_batch(&self, arguments: Option<JsonObject>, identity: Option<Identity>) -> CallToolResult {
+    async fn handle_batch(
+        &self,
+        arguments: Option<JsonObject>,
+        identity: Option<Identity>,
+    ) -> CallToolResult {
         let calls = match arguments
             .and_then(|mut a| a.remove("calls"))
             .and_then(|v| v.as_array().cloned())
@@ -193,7 +215,10 @@ impl ToMcpGateway {
                     continue;
                 }
             };
-            let response = self.dispatch.invoke(identity.clone(), &operation, input).await;
+            let response = self
+                .dispatch
+                .invoke(identity.clone(), &operation, input)
+                .await;
             results.push(envelope_to_value(response));
         }
         CallToolResult::structured(Value::Array(results))
@@ -210,7 +235,10 @@ fn parse_call_arguments(arguments: Option<JsonObject>) -> Result<(String, Value)
             })));
         }
     };
-    let operation = match map.remove("operation").and_then(|v| v.as_str().map(str::to_string)) {
+    let operation = match map
+        .remove("operation")
+        .and_then(|v| v.as_str().map(str::to_string))
+    {
         Some(s) => s,
         None => {
             return Err(CallToolResult::structured_error(serde_json::json!({
@@ -359,7 +387,11 @@ impl rmcp::handler::server::ServerHandler for ToMcpGateway {
                 TOOL_CALL => this.handle_call(arguments, identity).await,
                 TOOL_BATCH => this.handle_batch(arguments, identity).await,
                 unknown => {
-                    let err = CallError::new("NOT_FOUND", format!("unknown gateway tool: {unknown}"), false);
+                    let err = CallError::new(
+                        "NOT_FOUND",
+                        format!("unknown gateway tool: {unknown}"),
+                        false,
+                    );
                     call_error_to_structured_error(err)
                 }
             };
@@ -368,9 +400,7 @@ impl rmcp::handler::server::ServerHandler for ToMcpGateway {
     }
 
     fn get_info(&self) -> ServerInfo {
-        let capabilities = ServerCapabilities::builder()
-            .enable_tools()
-            .build();
+        let capabilities = ServerCapabilities::builder().enable_tools().build();
         ServerInfo::new(capabilities)
             .with_server_info(Implementation::new(
                 "alknet-to-mcp",
@@ -462,10 +492,14 @@ mod tests {
     }
 
     fn make_echo_handler() -> alknet_call::registry::registration::Handler {
-        make_handler(|input, context| async move { ResponseEnvelope::ok(context.request_id, input) })
+        make_handler(
+            |input, context| async move { ResponseEnvelope::ok(context.request_id, input) },
+        )
     }
 
-    fn full_registry_with_ops(specs: Vec<(String, OperationType, AccessControl)>) -> Arc<OperationRegistry> {
+    fn full_registry_with_ops(
+        specs: Vec<(String, OperationType, AccessControl)>,
+    ) -> Arc<OperationRegistry> {
         let mut inner = OperationRegistry::new();
         for (name, op_type, acl) in specs {
             inner.register(HandlerRegistration::new(
@@ -509,7 +543,10 @@ mod tests {
         Arc::new(dispatch_registry)
     }
 
-    fn dispatch(registry: Arc<OperationRegistry>, provider: Arc<dyn IdentityProvider>) -> Arc<GatewayDispatch> {
+    fn dispatch(
+        registry: Arc<OperationRegistry>,
+        provider: Arc<dyn IdentityProvider>,
+    ) -> Arc<GatewayDispatch> {
         Arc::new(GatewayDispatch::new(registry, provider))
     }
 
@@ -542,7 +579,11 @@ mod tests {
             TOOL_CALL => gateway.handle_call(arguments, identity).await,
             TOOL_BATCH => gateway.handle_batch(arguments, identity).await,
             unknown => {
-                let err = CallError::new("NOT_FOUND", format!("unknown gateway tool: {unknown}"), false);
+                let err = CallError::new(
+                    "NOT_FOUND",
+                    format!("unknown gateway tool: {unknown}"),
+                    false,
+                );
                 call_error_to_structured_error(err)
             }
         }
@@ -550,10 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tools_returns_exactly_four_gateway_tools() {
-        let _gateway = ToMcpGateway::new(dispatch(
-            full_registry_with_ops(vec![]),
-            provider(),
-        ));
+        let _gateway = ToMcpGateway::new(dispatch(full_registry_with_ops(vec![]), provider()));
         let tools = gateway_tools();
         let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
         assert_eq!(names.len(), 4);
@@ -583,7 +621,11 @@ mod tests {
     #[tokio::test]
     async fn search_returns_access_control_filtered_ops_excluding_subscriptions() {
         let registry = full_registry_with_ops(vec![
-            ("public/echo".to_string(), OperationType::Query, AccessControl::default()),
+            (
+                "public/echo".to_string(),
+                OperationType::Query,
+                AccessControl::default(),
+            ),
             (
                 "admin/secret".to_string(),
                 OperationType::Query,
@@ -592,13 +634,22 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            ("events/stream".to_string(), OperationType::Subscription, AccessControl::default()),
+            (
+                "events/stream".to_string(),
+                OperationType::Subscription,
+                AccessControl::default(),
+            ),
         ]);
         let idp: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let gateway = ToMcpGateway::new(dispatch(registry, idp));
 
-        let result = invoke_tool(&gateway, "search", None, Some(identity_with_scopes("user", &["user"])))
-            .await;
+        let result = invoke_tool(
+            &gateway,
+            "search",
+            None,
+            Some(identity_with_scopes("user", &["user"])),
+        )
+        .await;
         assert_eq!(result.is_error, Some(false));
         let structured = result.structured_content.expect("structured present");
         let ops = structured
@@ -610,11 +661,23 @@ mod tests {
             .filter_map(|o| o.get("name").and_then(Value::as_str))
             .collect();
         assert!(names.contains(&"public/echo"));
-        assert!(!names.contains(&"admin/secret"), "ACL-filtered op must not appear");
-        assert!(!names.contains(&"events/stream"), "Subscription op must be excluded");
+        assert!(
+            !names.contains(&"admin/secret"),
+            "ACL-filtered op must not appear"
+        );
+        assert!(
+            !names.contains(&"events/stream"),
+            "Subscription op must be excluded"
+        );
         for op in ops {
-            assert!(op.get("description").is_some(), "each entry has a description");
-            assert!(op.get("input_schema").is_none(), "search must not return full schemas");
+            assert!(
+                op.get("description").is_some(),
+                "each entry has a description"
+            );
+            assert!(
+                op.get("input_schema").is_none(),
+                "search must not return full schemas"
+            );
         }
     }
 
@@ -632,7 +695,10 @@ mod tests {
         let result = invoke_tool(&gateway, "schema", Some(args), None).await;
         assert_eq!(result.is_error, Some(false));
         let structured = result.structured_content.expect("structured present");
-        assert_eq!(structured.get("name"), Some(&Value::String("fs/readFile".to_string())));
+        assert_eq!(
+            structured.get("name"),
+            Some(&Value::String("fs/readFile".to_string()))
+        );
         assert!(structured.get("input_schema").is_some());
         assert!(structured.get("output_schema").is_some());
         assert!(structured.get("error_schemas").is_some());
@@ -649,7 +715,10 @@ mod tests {
         let gateway = ToMcpGateway::new(dispatch(registry, provider()));
 
         let mut args = Map::new();
-        args.insert("operation".to_string(), Value::String("echo/run".to_string()));
+        args.insert(
+            "operation".to_string(),
+            Value::String("echo/run".to_string()),
+        );
         args.insert("input".to_string(), serde_json::json!({ "msg": "hi" }));
         let result = invoke_tool(&gateway, "call", Some(args), None).await;
         assert_eq!(result.is_error, Some(false));
@@ -665,12 +734,18 @@ mod tests {
         let gateway = ToMcpGateway::new(dispatch(registry, provider()));
 
         let mut args = Map::new();
-        args.insert("operation".to_string(), Value::String("no/such".to_string()));
+        args.insert(
+            "operation".to_string(),
+            Value::String("no/such".to_string()),
+        );
         args.insert("input".to_string(), Value::Object(Map::new()));
         let result = invoke_tool(&gateway, "call", Some(args), None).await;
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect("structured error present");
-        assert_eq!(structured.get("code"), Some(&Value::String("NOT_FOUND".to_string())));
+        assert_eq!(
+            structured.get("code"),
+            Some(&Value::String("NOT_FOUND".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -713,12 +788,18 @@ mod tests {
         let gateway = ToMcpGateway::new(dispatch(registry, idp));
 
         let mut args = Map::new();
-        args.insert("operation".to_string(), Value::String("admin/run".to_string()));
+        args.insert(
+            "operation".to_string(),
+            Value::String("admin/run".to_string()),
+        );
         args.insert("input".to_string(), Value::Object(Map::new()));
         let result = invoke_tool(&gateway, "call", Some(args), None).await;
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect("structured error present");
-        assert_eq!(structured.get("code"), Some(&Value::String("FORBIDDEN".to_string())));
+        assert_eq!(
+            structured.get("code"),
+            Some(&Value::String("FORBIDDEN".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -727,7 +808,10 @@ mod tests {
         let result = invoke_tool(&gateway, "bogus", None, None).await;
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.expect("structured error present");
-        assert_eq!(structured.get("code"), Some(&Value::String("NOT_FOUND".to_string())));
+        assert_eq!(
+            structured.get("code"),
+            Some(&Value::String("NOT_FOUND".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -749,10 +833,16 @@ mod tests {
         let admin_identity = identity_with_scopes("admin-peer", &["admin"]);
         let extensions = extensions_with_identity(Some(admin_identity.clone()));
         let extracted = ToMcpGateway::extract_identity_from_extensions(&extensions);
-        assert_eq!(extracted.as_ref().map(|i| &i.id), Some(&"admin-peer".to_string()));
+        assert_eq!(
+            extracted.as_ref().map(|i| &i.id),
+            Some(&"admin-peer".to_string())
+        );
 
         let mut args = Map::new();
-        args.insert("operation".to_string(), Value::String("admin/run".to_string()));
+        args.insert(
+            "operation".to_string(),
+            Value::String("admin/run".to_string()),
+        );
         args.insert("input".to_string(), serde_json::json!({ "ok": 1 }));
         let result = gateway.handle_call(Some(args), extracted).await;
         assert_eq!(result.is_error, Some(false));
@@ -779,7 +869,10 @@ mod tests {
         let id = identity_with_scopes("caller", &["read"]);
         let extensions = extensions_with_identity(Some(id.clone()));
         let extracted = ToMcpGateway::extract_identity_from_extensions(&extensions);
-        assert_eq!(extracted.as_ref().map(|i| i.id.clone()), Some("caller".to_string()));
+        assert_eq!(
+            extracted.as_ref().map(|i| i.id.clone()),
+            Some("caller".to_string())
+        );
         assert_eq!(
             extracted.as_ref().map(|i| i.scopes.clone()),
             Some(vec!["read".to_string()])
@@ -834,8 +927,14 @@ mod tests {
         );
 
         let mut call_args = Map::new();
-        call_args.insert("operation".to_string(), Value::String(first_name.to_string()));
-        call_args.insert("input".to_string(), serde_json::json!({ "path": "/etc/hosts" }));
+        call_args.insert(
+            "operation".to_string(),
+            Value::String(first_name.to_string()),
+        );
+        call_args.insert(
+            "input".to_string(),
+            serde_json::json!({ "path": "/etc/hosts" }),
+        );
         let call_result = invoke_tool(&gateway, "call", Some(call_args), None).await;
         assert_eq!(
             call_result.structured_content,
