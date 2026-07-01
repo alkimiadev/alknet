@@ -1,7 +1,7 @@
 ---
 id: http/server/gateway-endpoints
 name: Implement 5 gateway endpoints (search/schema/call/batch/subscribe) — axum route handlers
-status: pending
+status: completed
 depends_on: [http/server/http-adapter, http/gateway/gateway-dispatch-spine, http/gateway/error-mapping, http/server/bearer-auth-middleware]
 scope: broad
 risk: medium
@@ -191,4 +191,13 @@ browsers (the `websocket/` tasks).
 
 ## Summary
 
-> To be filled on completion
+> Implemented 5 fixed gateway endpoints in src/server/gateway_routes.rs: POST /call,
+> GET /search, GET /schema, POST /batch, POST /subscribe (SSE). All delegate to
+> GatewayDispatch::invoke; auth via ResolvedIdentity extractor; errors mapped via
+> call_error_to_http_response (identity-aware 401/403 split). Internal ops → 404.
+> /schema adds ACL pre-check. /subscribe projects ResponseEnvelope as SSE. /batch
+> loops over invoke returning array. Wired into adapter.rs replacing placeholder 501s.
+> 188 tests pass. Clippy clean.
+>
+> Note: /subscribe SSE completes after single event (registry invoke returns single
+> ResponseEnvelope, no streaming subscription handler yet — research §6 OQ#5).
