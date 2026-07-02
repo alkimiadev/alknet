@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-01
+last_updated: 2026-07-02
 ---
 
 # HTTP Server
@@ -194,13 +194,22 @@ The request body is `{ operation, input }` (the same flat JSON shape as
 `Accept: text/event-stream` on the `POST`). The axum route handler:
 
 - Sets `Content-Type: text/event-stream`.
-- For each `call.responded` event, writes an SSE `data:` frame (the
-  event's `output` serialized as JSON).
-- On `call.completed`, closes the SSE stream (normal end).
-- On `call.aborted`, closes the stream with an SSE error event.
-- On HTTP client disconnect (detected as the response writer closing),
-  sends `call.aborted` for the in-flight subscription, which cascades
-  to descendants per ADR-016.
+- Calls `GatewayDispatch::invoke_streaming()` (ADR-049) — the streaming
+  analogue of `invoke()`, returning a `BoxStream<ResponseEnvelope>`. The
+  security invariants are identical to `invoke()`: `internal: false`,
+  `forwarded_for: None`, same capabilities, same `scoped_env`, same ACL
+  check before dispatch. The two methods diverge only on the return shape
+  (stream vs single envelope).
+- For each `ResponseEnvelope` the stream yields, writes an SSE `data:` frame:
+  `Ok(value)` → `data:` frame with the output serialized as JSON; `Err` →
+  SSE error event with the `CallError` serialized, then close (an `Err` is
+  terminal — the stream ends after it, matching the wire protocol's
+  `call.error` semantics).
+- On natural stream end (the `StreamingHandler`'s stream completes), closes
+  the SSE stream (normal end — corresponds to `call.completed` on the wire).
+- On `call.aborted` or HTTP client disconnect (detected as the response
+  writer closing), drops the stream future — `Drop` guards release the
+  handler's resources, and the abort cascade runs per ADR-016.
 
 This is the HTTP/1.1 + HTTP/2 streaming projection. Over WebSocket
 ([websocket.md](websocket.md)), the subscription projects directly
@@ -208,6 +217,16 @@ onto the WS connection — `call.responded` events as binary WS messages,
 no SSE framing. WebTransport (`h3`, deferred per ADR-044) would project
 onto WebTransport bidirectional streams; see
 [webtransport.md](webtransport.md).
+
+**The streaming dispatch path.** Pre-ADR-049, `subscribe_handler` called
+`GatewayDispatch::invoke()` (single response) and wrapped the one
+`ResponseEnvelope` in a one-event SSE stream — a placeholder that couldn't
+stream a real `Subscription` op. ADR-049 adds `GatewayDispatch::
+invoke_streaming()` and the underlying `OperationRegistry::
+invoke_streaming()`, giving `/subscribe` a real streaming dispatch path
+to call. See ADR-049 and [http-adapters.md](http-adapters.md) for the
+`from_openapi` SSE forwarding handler that feeds `StreamingHandler`s from
+external `text/event-stream` responses.
 
 ### One-directional projection (HTTP request/response)
 
@@ -446,6 +465,7 @@ two-way door (add/remove freely). See
 | Browsers are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) §4 (amended by ADR-044 §5) | Bearer token, no `PeerId`, connection-local overlay (addressability vs. bidirectionality) — full rationale in [websocket.md](websocket.md) |
 | Error mapping (call codes → HTTP status) | [ADR-023](../../decisions/023-operation-error-schemas.md) | Protocol/operation codes distinct; `HTTP_<status>` prefix for imported |
 | Custom HTTP routes from the assembly layer | [ADR-046](../../decisions/046-assembly-layer-custom-http-routes.md) | `extra_routes: Option<Router>` at construction; raw HTTP, not operations; default surface takes precedence on collision |
+| Streaming handler for subscriptions (`invoke_streaming()`) | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `GatewayDispatch::invoke_streaming()` returns `BoxStream<ResponseEnvelope>`; `/subscribe` pipes it to SSE; replaces the one-event placeholder with the real streaming dispatch path |
 
 ## Open Questions
 

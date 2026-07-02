@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-23
+last_updated: 2026-07-02
 ---
 
 # Call Protocol
@@ -275,6 +275,7 @@ Error codes use an extensible string enum. The protocol defines the following **
 - `NOT_FOUND` — operation not in registry (or Internal op called from wire)
 - `FORBIDDEN` — access denied (insufficient scopes or unauthenticated)
 - `INVALID_INPUT` — input doesn't match the operation's JSON Schema
+- `INVALID_OPERATION_TYPE` — wrong dispatch path for the operation's type (`invoke()` called on a `Subscription`, or `invoke_streaming()` on a `Query`/`Mutation`, or `OperationEnv::invoke()` on a `Subscription` during composition — ADR-049)
 - `INTERNAL` — handler error, panic, connection failure
 - `TIMEOUT` — request timed out (retryable: true)
 
@@ -309,7 +310,7 @@ Local dispatch produces `ResponseEnvelope { request_id, result: Result<Value, Ca
 | `Ok(value)` | `{ type: "call.responded", id: request_id, payload: { output: value } }` |
 | `Err(call_error)` | `{ type: "call.error", id: request_id, payload: <serialized CallError> }` |
 
-The `request_id` becomes the `id` field. For subscriptions, each `call.responded` is a separate `EventEnvelope` with the same `id`; `call.completed` is `{ type: "call.completed", id, payload: {} }`.
+The `request_id` becomes the `id` field. For subscriptions, each `call.responded` is a separate `EventEnvelope` with the same `id`; `call.completed` is `{ type: "call.completed", id, payload: {} }`. The streaming dispatch path (`invoke_streaming()` → write each → write `call.completed`) produces these frames from a `StreamingHandler`'s stream; the single-response path (`invoke()` → write one) produces them from a `Handler`'s future. See ADR-049 and [operation-registry.md](operation-registry.md#handler).
 
 ### Protocol Operations
 
@@ -405,9 +406,13 @@ The `CallAdapter::handle()` method:
 
 1. Spawns a task that continuously calls `connection.accept_bi()` to receive incoming streams
 2. For each accepted stream, reads `EventEnvelope` frames using `FrameFramedReader`
-3. Dispatches `call.requested` events to the operation registry
+3. Dispatches `call.requested` events to the operation registry, **branching on `op_type`** (ADR-049):
+   - **`Query` / `Mutation`** → `OperationRegistry::invoke()` → write one `call.responded` (or `call.error`) `EventEnvelope` frame
+   - **`Subscription`** → `OperationRegistry::invoke_streaming()` → write each `call.responded` `EventEnvelope` as the stream yields → write `call.completed` on natural stream end (or `call.error` if the stream yields an `Err`). `deadline: None` for subscriptions (unbounded — see Timeouts below). Abort (`call.aborted` arriving for the request ID, or the stream being dropped) cascades per ADR-016: the stream future is dropped, `Drop` guards release the handler's resources, and descendants are aborted.
 4. Writes response `EventEnvelope` frames using `FrameFramedWriter`
 5. Manages `PendingRequestMap` for outgoing calls initiated by the server
+
+The streaming branch is the server-side path that makes `Subscription` operations work end-to-end. Without it, a `Subscription` op registered with a `StreamingHandler` had no server-side dispatch path — the handler produced a stream but the dispatcher only read one `ResponseEnvelope` and closed. ADR-049 adds the `StreamingHandler` type and the `invoke_streaming()` dispatch path; this section wires them into the accept loop. See [operation-registry.md](operation-registry.md#handler) for the `Handler` / `StreamingHandler` / `HandlerKind` types.
 
 For outgoing calls (server → client), the adapter:
 1. Opens a bidirectional stream with `connection.open_bi()`
@@ -562,6 +567,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 | Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; `AccessControl`-based peer authorization; retires `remote_safe`/`trusted_peer` |
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `call.requested` and `OperationContext`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details` |
+| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `StreamingHandler` type, `invoke_streaming()` dispatch path, `INVALID_OPERATION_TYPE` protocol code; the server-side streaming branch in `handle_stream` |
 
 ## Open Questions
 
@@ -615,4 +621,5 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-030: PeerEntry and Identity.id decoupling (`PeerId` source)
 - ADR-032: Forwarded-for identity (`forwarded_for` on `call.requested` and `OperationContext`)
 - ADR-034: Outgoing-only X.509 and the three peer roles
+- ADR-049: Streaming handler for subscriptions (server-side streaming dispatch path)
 - Reference implementation: `/workspace/@alkdev/alknet-main/crates/alknet-core/src/call/`

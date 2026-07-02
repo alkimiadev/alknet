@@ -2,19 +2,23 @@
 
 ## Status
 
-Accepted
+Accepted (amended by ADR-049 — protocol-level code list extended to six)
 
 ## Context
 
 The `OperationSpec` in alknet-call has `input_schema` and `output_schema` but
 no `error_schemas`. The `call.error` payload (call-protocol.md L128–134)
-carries a `code` and `message`, where `code` is one of five infrastructure
-codes: `NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`, `INTERNAL`, `TIMEOUT`.
+carries a `code` and `message`, where `code` is one of six infrastructure
+codes: `NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`, `INVALID_OPERATION_TYPE`,
+`INTERNAL`, `TIMEOUT`.
 
-These five codes cover **protocol-level failures** — the call protocol
+These six codes cover **protocol-level failures** — the call protocol
 itself can always fail to find an operation, deny access, reject bad input,
-time out, or hit an internal error. They are emitted by the dispatch
-machinery (the registry, the adapter), not by operation handlers.
+reject the wrong dispatch method for the operation type, time out, or hit
+an internal error. They are emitted by the dispatch machinery (the registry,
+the adapter), not by operation handlers. `INVALID_OPERATION_TYPE` was added
+by ADR-049 (streaming handler for subscriptions — `invoke()` called on a
+`Subscription`, or `invoke_streaming()` on a `Query`/`Mutation`).
 
 But operations also have **domain-level failures** that are not covered:
 
@@ -164,8 +168,8 @@ optional-array convention.
 ```
 
 - `code` — the error code. Either a protocol-level code (`NOT_FOUND`,
-  `FORBIDDEN`, `INVALID_INPUT`, `INTERNAL`, `TIMEOUT`) or an
-  operation-level domain code from `error_schemas` (e.g.,
+  `FORBIDDEN`, `INVALID_INPUT`, `INVALID_OPERATION_TYPE`, `INTERNAL`,
+  `TIMEOUT`) or an operation-level domain code from `error_schemas` (e.g.,
   `FILE_NOT_FOUND`, `RATE_LIMITED`).
 - `message` — human-readable error message. Unstructured — for logging and
   debugging, not for programmatic handling. Clients should switch on
@@ -182,7 +186,7 @@ optional-array convention.
 
 ### 3. Protocol-level vs operation-level error codes
 
-The five existing codes are **protocol-level** — emitted by the dispatch
+The six existing codes are **protocol-level** — emitted by the dispatch
 machinery, not by handlers:
 
 | Code | Emitted by | Meaning |
@@ -190,6 +194,7 @@ machinery, not by handlers:
 | `NOT_FOUND` | Registry | Operation not registered (or Internal op called from wire) |
 | `FORBIDDEN` | Registry / ACL | Caller lacks required scopes, or unauthenticated |
 | `INVALID_INPUT` | Registry | Input doesn't match `input_schema` |
+| `INVALID_OPERATION_TYPE` | Registry / `OperationEnv` | Wrong dispatch path for the operation's type (`invoke()` on a `Subscription`, `invoke_streaming()` on a `Query`/`Mutation`, or `OperationEnv::invoke()` on a `Subscription` during composition — ADR-049) |
 | `INTERNAL` | Registry / Adapter | Handler panic, unhandled error, connection failure |
 | `TIMEOUT` | Adapter | Request timed out |
 
@@ -242,8 +247,9 @@ accordingly.
 ```
 
 **Normative rule (review #002 W20)**: `from_openapi` must not produce error
-codes that collide with the five protocol-level codes (`NOT_FOUND`,
-`FORBIDDEN`, `INVALID_INPUT`, `INTERNAL`, `TIMEOUT`). The adapter prefixes
+codes that collide with the six protocol-level codes (`NOT_FOUND`,
+`FORBIDDEN`, `INVALID_INPUT`, `INVALID_OPERATION_TYPE`, `INTERNAL`,
+`TIMEOUT`). The adapter prefixes
 imported error codes with `HTTP_` and the status number (e.g., `HTTP_404`,
 `HTTP_429`) to avoid collision. This is a requirement for the adapter, not
 a naming convention — the `from_openapi` example above was previously shown
@@ -401,6 +407,9 @@ enum instead of a generic `Result<Output, string>`.
   for OS-level permission issues)
 - docs/reviews/001-pre-implementation-architecture-sanity-check.md
   (finding C5, which this ADR resolves)
+- ADR-049: Streaming handler for subscriptions (amends this ADR's
+  protocol-level code list — `INVALID_OPERATION_TYPE` added as the sixth
+  protocol-level code)
 - docs/sdd_process.md L19, L423 (Safe Exit protocol — the general principle
   of making failure typed and declared)
 - TypeScript reference: `/workspace/@alkdev/operations/src/types.ts`

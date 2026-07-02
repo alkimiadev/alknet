@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-01
+last_updated: 2026-07-02
 ---
 
 # HTTP MCP — from_mcp and to_mcp
@@ -78,10 +78,12 @@ The adapter:
      namespace prefix is configured — same local-naming sugar as
      `from_call`'s `FromCallConfig::namespace_prefix`, ADR-029 §5).
    - `spec.namespace` = the configured `namespace`.
-   - `spec.op_type` = `Mutation` (MCP tools are call/response; the MCP
-     spec doesn't have a native streaming/tool-subscription distinction
-     — `tools/call` returns a result. If MCP adds a streaming-tool
-     extension, a `Subscription` mapping would be added.)
+    - `spec.op_type` = `Mutation` (MCP tools are call/response; the MCP
+      spec doesn't have a native streaming/tool-subscription distinction
+      — `tools/call` returns a result. If MCP adds a streaming-tool
+      extension, a `Subscription` mapping would be added.) All `from_mcp`
+      handlers are `HandlerKind::Once` (ADR-049); `from_mcp` never
+      produces a `StreamingHandler`.
    - `spec.visibility` = `Internal` (adapter-registered, ADR-015).
    - `spec.input_schema` = the tool's `inputSchema` (JSON Schema).
     - `spec.output_schema` = depends on whether the tool declares
@@ -128,8 +130,9 @@ At call time, the `from_mcp` forwarding handler:
    registration (the MCP server is a persistent streamable HTTP
    endpoint, not a per-call connection).
 
-The handler is opaque to the `CallAdapter` — `Arc<dyn Handler>` the
-registry dispatches. `alknet-call` never sees rmcp.
+The handler is opaque to the `CallAdapter` — a `HandlerKind::Once`
+wrapping an `Arc<dyn Handler>` that the registry dispatches. `alknet-call`
+never sees rmcp.
 
 ### Output handling (structuredContent vs content blocks)
 
@@ -222,7 +225,12 @@ The gateway exposes only `Query` and `Mutation` operations
 (request/response). `Subscription` operations (streaming) are filtered
 out of `search` results and cannot be invoked via `call` — MCP tool
 calls are request/response by protocol design; streaming subscriptions
-don't fit the LLM tool-call pattern. See ADR-041 §2.
+don't fit the LLM tool-call pattern. This is unaffected by ADR-049
+(streaming handlers): the `StreamingHandler` type and `invoke_streaming()`
+dispatch path exist in `alknet-call` and are used by `to_openapi`'s
+`/subscribe` endpoint, but `to_mcp` does not expose them — it filters by
+`op_type` and only dispatches `Query`/`Mutation` via `invoke()`. See
+ADR-041 §2.
 
 #### `to_mcp` service behavior
 
@@ -263,19 +271,19 @@ axum route handlers) are genuinely per-gateway and are not shared.
 
 Research findings
 (`docs/research/alknet-http-gateway-factoring/findings.md`) recommend
-extracting a **thin shared spine** (a concrete struct holding
-`Arc<OperationRegistry>` + `Arc<dyn IdentityProvider>` with a
-`resolve + build_context + invoke` method returning a
-`ResponseEnvelope`), **not** a `GatewayDispatch` trait or gateway
-abstraction. The spine is small (~15–30 lines per endpoint), but it is
-the one place where a divergence bug (identity resolved differently,
-`OperationContext.internal` set inconsistently, `CallError` mapped
-asymmetrically) would be a security/correctness issue. The
-server-integration and wire-framing layers stay per-gateway; a third
-gateway (GraphQL, gRPC) is not on the horizon, and if one appears its
-server-integration layer needs its own shape anyway. This is an
-implementation factoring note, not an ADR — the decision is internal to
-`alknet-http` and does not cross crate boundaries.
+extracting a **thin shared spine** (the concrete `GatewayDispatch` struct
+holding `Arc<OperationRegistry>` + `Arc<dyn IdentityProvider>` with a
+`resolve + build_context + invoke` method returning a `ResponseEnvelope`,
+named in ADR-049 and extended with `invoke_streaming()` for the streaming
+path), **not** a trait or gateway abstraction. The spine is small (~15–30
+lines per endpoint), but it is the one place where a divergence bug
+(identity resolved differently, `OperationContext.internal` set
+inconsistently, `CallError` mapped asymmetrically) would be a
+security/correctness issue. The server-integration and wire-framing layers
+stay per-gateway; a third gateway (GraphQL, gRPC) is not on the horizon,
+and if one appears its server-integration layer needs its own shape anyway.
+This is an implementation factoring note, not an ADR — the decision is
+internal to `alknet-http` and does not cross crate boundaries.
 
 ### No-Env-Vars
 
@@ -340,6 +348,7 @@ every other HTTP request.
 | Error fidelity | [ADR-023](../../decisions/023-operation-error-schemas.md) | MCP tool errors mapped to `ErrorDefinition`s |
 | No-env-vars credential injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Handler reads `context.capabilities`, not env vars |
 | MCP clients are not alknet peers | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Bearer token, no `PeerId` |
+| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_mcp` handlers are always `HandlerKind::Once` (MCP tools are request/response); `to_mcp` excludes `Subscription` ops (unchanged by the streaming handler) |
 
 ## Open Questions
 

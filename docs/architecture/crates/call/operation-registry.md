@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-07-02
 ---
 
 # Operation Registry
@@ -91,19 +91,75 @@ Operations with empty `AccessControl` (no required scopes, no resource checks) a
 
 ### Handler
 
+There are two handler types, one per dispatch shape — mirroring the
+TypeScript prior art (`@alkdev/operations/src/types.ts:62-78`:
+`OperationHandler` returns a single value; `SubscriptionHandler` returns an
+`AsyncGenerator`). The split is locked by ADR-049.
+
 ```rust
-pub type Handler = Arc<dyn Fn(Value, OperationContext) -> Pin<Box<dyn Future<Output = ResponseEnvelope> + Send>> + Send + Sync>;
+/// Request/response handler — Query and Mutation operations.
+pub type Handler = Arc<
+    dyn Fn(Value, OperationContext) -> Pin<Box<dyn Future<Output = ResponseEnvelope> + Send>>
+        + Send + Sync,
+>;
+
+/// Streaming handler — Subscription operations. Returns a stream of
+/// ResponseEnvelopes: each Ok(value) → call.responded, an Err → call.error
+/// (terminal — stream ends), natural stream end → call.completed.
+pub type StreamingHandler = Arc<
+    dyn Fn(Value, OperationContext)
+        -> Pin<Box<dyn Stream<Item = ResponseEnvelope> + Send>>
+        + Send + Sync,
+>;
+
+/// Type alias for the boxed stream shape used by `invoke_streaming()` and
+/// `StreamingHandler` return values. The concrete library
+/// (`futures::stream::BoxStream<'static, T>` = `Pin<Box<dyn Stream<Item = T>
+/// + Send>>`) is a two-way-door implementation detail (ADR-049); the alias
+/// exists so the two spellings (the expanded form in `StreamingHandler` and
+/// the short form in `invoke_streaming()`) refer to the same type.
+pub type ResponseStream = Pin<Box<dyn Stream<Item = ResponseEnvelope> + Send>>;
 ```
 
-Handlers are async — many operations (file I/O, HTTP service calls, irpc service calls) are inherently asynchronous. The handler receives an `async` runtime context and returns a `Future<Output = ResponseEnvelope>`.
+Both handlers are async — many operations (file I/O, HTTP service calls,
+irpc service calls, LLM streaming) are inherently asynchronous. A handler
+receives:
 
-A handler receives:
-- `input: Value` — the deserialized `payload` from the `call.requested` event (always `serde_json::Value`)
+- `input: Value` — the deserialized `payload` from the `call.requested` event
+  (always `serde_json::Value`)
 - `context: OperationContext` — request ID, identity, metadata, env
 
-And returns a `ResponseEnvelope` containing the result or an error. `ResponseEnvelope` is defined in [call-protocol.md](call-protocol.md#responseenvelope) — it carries the request ID and a `Result<Value, CallError>`. Local dispatch produces it with no serialization overhead; the `CallAdapter` converts it to `EventEnvelope` for the wire.
+The **`Handler`** (request/response) returns a single `ResponseEnvelope`
+containing the result or an error. `ResponseEnvelope` is defined in
+[call-protocol.md](call-protocol.md#responseenvelope) — it carries the request
+ID and a `Result<Value, CallError>`. Local dispatch produces it with no
+serialization overhead; the `CallAdapter` converts it to `EventEnvelope` for
+the wire.
 
-When a handler returns an error, the `CallError.code` is matched against the operation's declared `error_schemas` (ADR-023). If the code matches a declared `ErrorDefinition`, the `call.error` event carries that code and the error's detail payload. If it doesn't match, the `call.error` carries `INTERNAL`. This is how handler failures become typed errors on the wire instead of string-matched messages.
+The **`StreamingHandler`** (streaming) returns a `Pin<Box<dyn Stream<Item =
+ResponseEnvelope> + Send>>` — the stream analogue of `Handler`'s
+`Pin<Box<dyn Future<...>>>`. Each `Ok(value)` in the stream becomes a
+`call.responded` event; an `Err` becomes a `call.error` event (terminal — the
+stream ends after it); natural stream end becomes `call.completed`. The
+dispatch path converts each `ResponseEnvelope` to `EventEnvelope` exactly as
+it does for the single-response case — no new wire-format concept is
+introduced. See ADR-049 and [call-protocol.md](call-protocol.md) §"CallAdapter
+Stream Handling".
+
+When a handler returns an error, the `CallError.code` is matched against the operation's declared `error_schemas` (ADR-023). If the code matches a declared `ErrorDefinition`, the `call.error` event carries that code and the error's detail payload. If it doesn't match, the `call.error` carries `INTERNAL`. This is how handler failures become typed errors on the wire instead of string-matched messages. The same matching applies to `Err` values yielded by a `StreamingHandler`.
+
+A `make_streaming_handler()` helper (analogue of `make_handler()`) wraps a
+stream-producing closure into a `StreamingHandler`:
+
+```rust
+pub fn make_streaming_handler<S, St>(f: S) -> StreamingHandler
+where
+    S: Fn(Value, OperationContext) -> St + Send + Sync + 'static,
+    St: Stream<Item = ResponseEnvelope> + Send + 'static,
+{
+    Arc::new(move |input, context| Box::pin(f(input, context)))
+}
+```
 
 ### OperationContext
 
@@ -196,9 +252,10 @@ pub struct OperationRegistry {
 
 The registry maps operation names to `HandlerRegistration` bundles. The curated layer (Layer 0) is a `HashMap<String, HandlerRegistration>`; session and connection overlays (Layers 1 and 2) are separate maps that the `CallAdapter` composes into the per-call `OperationContext.env` (ADR-024). See ADR-022 for the full registration model and ADR-024 for the layering model. Key methods:
 
-- `register(registration)`: Add an operation to the curated layer at startup
-- `registration(name)`: Find a registration by operation name (checks active overlays first, then curated base — ADR-024). Returns spec, handler, provenance, composition authority, scoped env, capabilities.
-- `invoke(name, input, context)`: Look up, check ACL, invoke handler, return result
+- `register(registration)`: Add an operation to the curated layer at startup. Validates `handler` is the right `HandlerKind` for `spec.op_type` (Once for Query/Mutation, Stream for Subscription — ADR-049). Mismatch is a startup error.
+- `registration(name)`: Find a registration by operation name (checks active overlays first, then curated base — ADR-024). Returns spec, handler (`HandlerKind`), provenance, composition authority, scoped env, capabilities.
+- `invoke(name, input, context)`: Look up, check ACL, invoke handler, return a single `ResponseEnvelope` (request/response path — Query/Mutation). **Errors with `INVALID_OPERATION_TYPE` if the op is a `Subscription`** — `invoke()` is the wrong dispatch path for streaming ops; use `invoke_streaming()` (ADR-049).
+- `invoke_streaming(name, input, context)`: Look up, check ACL, invoke streaming handler, return a `ResponseStream` (the boxed stream alias — ADR-049) (streaming path — Subscription). Pre-handler errors (not-found, forbidden, `INVALID_OPERATION_TYPE` for a non-Subscription op) yield a single error `ResponseEnvelope` and end the stream. See ADR-049.
 - `list_operations()`: Return all registered specs (for `/services/list` — returns curated + active overlay ops)
 
 ### Request ID Generation
@@ -229,14 +286,22 @@ The registration bundle carries everything the dispatch path needs to construct 
 ```rust
 pub struct HandlerRegistration {
     pub spec: OperationSpec,
-    pub handler: Handler,
+    pub handler: HandlerKind,           // Once or Stream — validated against spec.op_type (ADR-049)
     pub provenance: OperationProvenance,
     pub composition_authority: Option<CompositionAuthority>, // None for leaves
-    pub scoped_env: Option<ScopedOperationEnv>,               // None for leaves
+    pub scoped_env: Option<ScopedPeerEnv>,               // None for leaves
     pub capabilities: Capabilities,
     // NOTE: ADR-028 added `remote_safe: bool` here; ADR-029 supersedes it and
     // removes the field. Peer authorization is `AccessControl::check(peer_identity)`,
     // not a per-op boolean. See ADR-029 §3.
+}
+
+/// Which dispatch path a handler uses — locked by ADR-049.
+/// Validated against `spec.op_type` at registration:
+/// Query/Mutation → Once; Subscription → Stream. Mismatch is a startup error.
+pub enum HandlerKind {
+    Once(Handler),
+    Stream(StreamingHandler),
 }
 ```
 
@@ -291,19 +356,22 @@ impl CompositionAuthority {
 - `scoped_env`: The set of operations this handler may reach via `env.invoke()`. `None` for leaves (empty env). The reachability control from ADR-015.
 - `capabilities`: Outbound credentials (decrypted API keys, signing keys). Populated by the assembly layer from the vault at registration time. See [Capability Injection](#capability-injection).
 
-The `OperationRegistryBuilder` provides a fluent API with convenience methods for common cases:
+The `OperationRegistryBuilder` provides a fluent API with convenience methods for common cases. The builder absorbs the `HandlerKind` wrapping internally — `.with_local()` and `.with_leaf()` take the raw `Handler` (or `StreamingHandler`) and wrap it in the right `HandlerKind` based on `spec.op_type` (ADR-049):
 
 ```rust
 // with_local: Local provenance, full bundle — all 5 args required.
 // with_local(spec, handler, composition_authority, scoped_env, capabilities)
+// The builder inspects spec.op_type and wraps in HandlerKind::Once
+// (Query/Mutation) or HandlerKind::Stream (Subscription) automatically.
 let registry = OperationRegistryBuilder::new()
     // Built-in service discovery (Local, no composition — empty authority, empty env, empty caps)
     .with_local(services_list_spec(), Arc::new(services_list_handler),
                 CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
     .with_local(services_schema_spec(), Arc::new(schema_handler),
                 CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
-    // Agent handler (Local, composes — authority + scoped env + capabilities)
-    .with_local(agent_chat_spec(), Arc::new(agent_chat_handler),
+    // Agent handler (Local, Subscription — streams call.responded as the
+    // LLM generates tokens; builder wraps in HandlerKind::Stream)
+    .with_local(agent_chat_spec(), Arc::new(agent_chat_streaming_handler),
                 CompositionAuthority::new("agent-chat", ["llm:call", "fs:read", "vastai:query"]),
                 ScopedOperationEnv::new(["fs/readFile", "vastai/listMachines", "llm/generate"]),
                 Capabilities::new().with_api_key("google", google_api_key))
@@ -317,6 +385,8 @@ The CLI binary (or assembly layer) constructs the registry and passes it to the 
 ### OperationEnv
 
 The `OperationEnv` trait is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
+
+**`OperationEnv` is request/response-only** (ADR-049). It returns a single `ResponseEnvelope` — no streaming variant exists. Calling `invoke()` on a `Subscription` op produces `CallError { code: "INVALID_OPERATION_TYPE", ... }` — composition cannot truncate a stream to its first value. Stream composition (filter, map, combine, window, dedupe) is a handler-level concern, not a protocol composition concern; see ADR-049 for the rationale and the `@alkdev/pubsub` `operators.ts` prior art.
 
 ```rust
 /// The composition dispatch trait. A handler composes child operations
@@ -673,10 +743,11 @@ let registry = OperationRegistryBuilder::new()
                 CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
     .with_local(services_schema_spec(), Arc::new(schema_handler),
                 CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
-    // Agent handler (Local, composes — full bundle via .with())
+    // Agent handler (Local, Subscription — composes; streaming handler
+    // wrapped in HandlerKind::Stream by the builder per ADR-049)
     .with(HandlerRegistration {
         spec: agent_chat_spec(),
-        handler: Arc::new(agent_chat_handler),
+        handler: HandlerKind::Stream(Arc::new(agent_chat_streaming_handler)),
         provenance: OperationProvenance::Local,
         composition_authority: Some(CompositionAuthority::new(
             "agent-chat", ["llm:call", "fs:read", "vastai:query"])),
@@ -750,6 +821,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. See ADR-014.
 - **Metadata does not propagate through composition.** `OperationEnv::invoke()` constructs fresh metadata for nested calls (`HashMap::new()`), not the parent's metadata. This prevents a handler that accidentally places a secret in metadata from leaking it to child operations — and if a child is a `from_call` operation (ADR-017), across the wire to a remote node. The tracing link is `parent_request_id`, not metadata propagation. See ADR-014.
 - **Provenance determines composition capability.** Only `Local` and `Session` ops can compose. Leaves (`FromOpenAPI`, `FromMCP`, `FromCall`) get `composition_authority: None` and `scoped_env: None` — they don't compose, so they don't need authority or reachability bounds. See ADR-022.
+- **`HandlerKind` matches `op_type`** (ADR-049). `Query`/`Mutation` ops register a `HandlerKind::Once(Handler)`; `Subscription` ops register a `HandlerKind::Stream(StreamingHandler)`. Mismatch is a startup error. `invoke()` on a `Subscription` and `invoke_streaming()` on a `Query`/`Mutation` both return `INVALID_OPERATION_TYPE`. `OperationEnv::invoke()` (composition) is request/response-only and errors with `INVALID_OPERATION_TYPE` on `Subscription` ops — stream composition is a handler-level concern, not a protocol composition concern.
 
 ## Design Decisions
 
@@ -768,6 +840,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` (the field this doc's `HandlerRegistration` previously gained) |
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `OperationContext` and `call.requested`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
 | ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~`remote_safe` marking on `HandlerRegistration`~~ — superseded by ADR-029 |
+| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `StreamingHandler` type alongside `Handler`; `HandlerKind` enum on `HandlerRegistration` validated against `op_type`; `invoke_streaming()` on `OperationRegistry`; `invoke()` and `OperationEnv::invoke()` error with `INVALID_OPERATION_TYPE` on `Subscription` ops; composition stays request/response-only, stream composition is handler-level |
 
 ## Open Questions
 
@@ -814,4 +887,5 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-029: Peer-graph routing model (peer-keyed overlays + `PeerRef` routing; `PeerCompositeEnv` supersedes the singular-connection `CompositeOperationEnv`)
 - ADR-030: PeerEntry and Identity.id decoupling (`PeerId` source = `Identity.id` = `PeerEntry.peer_id`)
 - ADR-032: Forwarded-for identity (`forwarded_for` on `OperationContext` and `call.requested`; metadata only)
+- ADR-049: Streaming handler for subscriptions (`StreamingHandler`, `HandlerKind`, `invoke_streaming()`, `INVALID_OPERATION_TYPE`)
 - Reference implementation: `/workspace/@alkdev/alknet-main/crates/alknet-core/src/call/`

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-01
+last_updated: 2026-07-02
 ---
 
 # HTTP Adapters — from_openapi and to_openapi
@@ -123,8 +123,8 @@ The adapter:
 
 ### Forwarding handler
 
-The forwarding handler is the `Arc<dyn Handler>` stored in the
-`HandlerRegistration`. At call time, it:
+The forwarding handler is stored in the `HandlerRegistration` as a
+`HandlerKind` (ADR-049). At call time, it:
 
 1. Reads the call input (`serde_json::Value`).
 2. Builds the outbound HTTP request:
@@ -138,15 +138,23 @@ The forwarding handler is the `Arc<dyn Handler>` stored in the
    below).
 4. For a `Query`/`Mutation`: parses the response body (JSON, text, or
    binary — same content-type branching as the TS `createHTTPOperation`),
-   wraps it in a `ResponseEnvelope`, returns.
+   wraps it in a `ResponseEnvelope`, returns. Registered as
+   `HandlerKind::Once` — a `Handler` returning a single
+   `ResponseEnvelope`.
 5. For a `Subscription` (`text/event-stream` response): streams
    `call.responded` events as the SSE chunks arrive (same SSE parsing as
-   the TS `parseSSEFrames`), then `call.completed` on stream end.
+   the TS `parseSSEFrames`), then the stream ends on SSE close (which
+   becomes `call.completed` on the wire). Registered as
+   `HandlerKind::Stream` — a `StreamingHandler` returning a
+   `BoxStream<ResponseEnvelope>` (ADR-049). Each SSE `data:` frame becomes
+   a `ResponseEnvelope::ok()`; an HTTP error (non-2xx) becomes a single
+   `ResponseEnvelope::error()` and ends the stream.
 6. On HTTP error (non-2xx): maps to the declared `ErrorDefinition` by
    HTTP status code (see Error Fidelity below), returns a `CallError`.
 
-The handler is opaque to the `CallAdapter` — it's an `Arc<dyn Handler>`
-the registry dispatches. `alknet-call` never sees `reqwest`.
+The handler is opaque to the `CallAdapter` — it's a `HandlerKind` the
+registry dispatches (via `invoke()` for `Once`, `invoke_streaming()` for
+`Stream`). `alknet-call` never sees `reqwest`.
 
 ### HTTP client (reqwest)
 
@@ -319,9 +327,9 @@ factoring recommendation (thin shared struct, not a trait).
 
 `from_openapi` maps OpenAPI non-2xx response status codes to
 `ErrorDefinition`s (ADR-023 §5). The normative rule (review #002 W20):
-`from_openapi` must not produce error codes that collide with the five
+`from_openapi` must not produce error codes that collide with the six
 protocol-level codes (`NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`,
-`INTERNAL`, `TIMEOUT`). The adapter prefixes imported error codes with
+`INVALID_OPERATION_TYPE`, `INTERNAL`, `TIMEOUT`). The adapter prefixes imported error codes with
 `HTTP_` and the status number:
 
 ```rust
@@ -423,6 +431,7 @@ once published, the 5-endpoint gateway shape is one-way.
 | HTTP path = operation path (~~direct-call surface~~) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) → superseded by [ADR-047](../../decisions/047-remove-direct-call-http-surface.md) | ~~`POST /{service}/{op}` → `call.requested`~~ — removed; the gateway `/call` with `{ operation, input }` is the sole invoke path; `to_openapi` describes the gateway, not a per-operation surface |
 | `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered. Supersedes ADR-036's original `to_openapi` "paths mirror `/{service}/{op}`" clause |
 | `to_openapi` published-spec versioning | [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | `info.version` semver tracks the gateway endpoint contract, not the operation set; consumers detect breaking changes via the major version |
+| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_openapi` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`); SSE response → `BoxStream<ResponseEnvelope>`; `Query`/`Mutation` stay `HandlerKind::Once` |
 
 ## Open Questions
 

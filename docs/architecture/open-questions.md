@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-30
+last_updated: 2026-07-02
 ---
 
 # Open Questions
@@ -316,7 +316,12 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: resolved
 - **Door type**: One-way (wire format), two-way (mapping mechanism)
 - **Priority**: high
-- **Resolution**: `OperationSpec` gains `error_schemas: Vec<ErrorDefinition>` where each `ErrorDefinition` carries a `code`, `description`, `schema` (JSON Schema for the error detail payload), and optional `http_status` (for adapter projection). The `call.error` payload gains an optional `details` field carrying the typed error payload. Protocol-level codes (`NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`, `INTERNAL`, `TIMEOUT`) are distinct from operation-level domain codes (`FILE_NOT_FOUND`, `RATE_LIMITED`, etc.) — protocol codes are emitted by the dispatch machinery, operation codes by handlers. `from_openapi`/`to_openapi` map OpenAPI response status codes to/from `ErrorDefinition`s, making the adapter contract from ADR-017 faithful on the error axis. `services/schema` exposes `error_schemas` for client code generation. See ADR-023.
+- **Resolution**: `OperationSpec` gains `error_schemas: Vec<ErrorDefinition>` where each `ErrorDefinition` carries a `code`, `description`, `schema` (JSON Schema for the error detail payload), and optional `http_status` (for adapter projection). The `call.error` payload gains an optional `details` field carrying the typed error payload.   Protocol-level codes (`NOT_FOUND`, `FORBIDDEN`, `INVALID_INPUT`,
+  `INVALID_OPERATION_TYPE`, `INTERNAL`, `TIMEOUT`) are distinct from
+  operation-level domain codes (`FILE_NOT_FOUND`, `RATE_LIMITED`, etc.) —
+  protocol codes are emitted by the dispatch machinery, operation codes by
+  handlers. The six-code protocol-level list was extended from five by
+  ADR-049 (`INVALID_OPERATION_TYPE`). `from_openapi`/`to_openapi` map OpenAPI response status codes to/from `ErrorDefinition`s, making the adapter contract from ADR-017 faithful on the error axis. `services/schema` exposes `error_schemas` for client code generation. See ADR-023.
 - **Cross-references**: ADR-017, ADR-023, docs/reviews/001-pre-implementation-architecture-sanity-check.md (C5), [operation-registry.md](crates/call/operation-registry.md), [call-protocol.md](crates/call/call-protocol.md)
 
 ## Theme: Call Client and Adapters
@@ -910,3 +915,43 @@ is a feature extension, not an unmade architecture decision.
 - **Cross-references**: ADR-014, ADR-017, ADR-035,
   [http-adapters.md](crates/http/http-adapters.md),
   [http-mcp.md](crates/http/http-mcp.md)
+
+### OQ-41: Stream Operators Library
+
+- **Origin**: [ADR-049](decisions/049-streaming-handler-for-subscriptions.md),
+  [operation-registry.md](crates/call/operation-registry.md) §"OperationEnv"
+- **Status**: open (feature extension — a library to build, not a decision
+  to make before implementation)
+- **Door type**: Two-way (additive utility library; no protocol or API-surface
+  change)
+- **Priority**: low
+- **Resolution**: ADR-049 establishes that stream composition (filter, map,
+  combine, window, dedupe) is a **handler-level concern**, not a protocol
+  composition concern. `OperationEnv::invoke()` is request/response-only;
+  stream manipulation happens at the handler level with stream operators on
+  the `BoxStream<ResponseEnvelope>` the handler itself produces. The
+  `@alkdev/pubsub` `operators.ts` is the prior art: 13 operators (`filter`,
+  `map`, `take`, `batch`, `dedupe`, `window`, `chain`, `join`, `reduce`,
+  `groupBy`, `flat`, `pipe`, `toArray`) that operate on `AsyncIterable<T>`,
+  forked from graphql-yoga's subscription implementation.
+
+  The Rust analogue — a stream-operators utility crate or module providing
+  the same set of operators on `BoxStream<T>` / `impl Stream<Item = T>` — is
+  a **feature extension**, not an unmade architectural decision. Handlers can
+  produce streams today without it (`Box::pin(stream::iter(...))`,
+  `async_stream::stream!`, `futures::stream` combinators all work); the
+  operators library is a convenience that reduces boilerplate for handlers
+  that transform streams (filter, batch, dedupe, window). No ADR is needed
+  for the library itself — it's internal utility code that doesn't cross
+  crate boundaries as a contract. An ADR would be warranted only if the
+  operators become part of a public API surface (e.g., a handler-registration
+  DSL that references operator names).
+
+  This OQ exists so the operators library is tracked and findable, not left
+  as inline hedging in the spec docs. It is not a deferral of a decision —
+  the architectural decision (stream composition is handler-level, not
+  protocol-level) is made in ADR-049. This tracks the *implementation* of
+  the utility library, which is scheduling work, not architecture work.
+- **Cross-references**: ADR-049,
+  [operation-registry.md](crates/call/operation-registry.md) §"OperationEnv",
+  `/workspace/@alkdev/pubsub/src/operators.ts` (TS prior art)

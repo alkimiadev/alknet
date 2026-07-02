@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-28
+last_updated: 2026-07-02
 ---
 
 # alknet-call — Client and Adapters
@@ -323,8 +323,21 @@ The flow (ADR-017 §3):
 3. For each discovered op, construct a `HandlerRegistration`:
    - `spec` mirrors the remote op's name (with optional prefix), namespace,
      type, schemas, access control.
-   - `handler` is a forwarding handler: sends `call.requested` through the
-     `CallConnection`, awaits `call.responded` (or streams for subscriptions).
+   - `handler` is a forwarding handler, **branched on `op_type`** (ADR-049):
+     - `Query` / `Mutation` → a `Handler` (registered as `HandlerKind::Once`):
+       sends `call.requested` via `CallConnection::call_with_payload()`, awaits
+       the single `call.responded` (or `call.error`), returns the
+       `ResponseEnvelope`.
+     - `Subscription` → a `StreamingHandler` (registered as
+       `HandlerKind::Stream`): calls `CallConnection::subscribe()`, which
+       returns `impl Stream<Item = ResponseEnvelope>` (the client-side
+       streaming path, already implemented), maps it to a
+       `BoxStream<ResponseEnvelope>`. The remote stream flows end-to-end:
+       each `call.responded` the remote sends becomes a stream item; the
+       remote's `call.completed` ends the stream (→ wire `call.completed`);
+       `call.aborted` drops the stream (cascade per ADR-016). No truncation,
+       no first-value fallback — a `from_call`-imported subscription forwards
+       the full remote stream.
    - `provenance: FromCall`, `composition_authority: None`, `scoped_env: None`
      (leaf — ADR-022).
 4. The caller registers the bundles via
@@ -668,6 +681,7 @@ Based on the gap analysis and the downstream unblock chain:
 | Privilege model and authority context | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | Adapter-registered ops are `Internal` by default; default-deny posture |
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | Cross-node abort through `from_call` forwarding handler's `parent_request_id` |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | `error_schemas` mirrored by `from_call` from remote op's spec |
+| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_call` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`) that calls `CallConnection::subscribe()` and forwards the remote stream; `Query`/`Mutation` stay `HandlerKind::Once` |
 | TLS identity redesign | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | RFC 7250 raw key / X.509 cert dimensions of `CallCredentials` |
 | Outgoing-only X.509 and three peer roles | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Public X.509 endpoint is not a `PeerEntry` on the client side (no `PeerId`, not in peer graph); client-side verifier by `PeerEntry` presence (CA vs fingerprint pin); hub = mixed-fingerprint `PeerEntry` |
 | HD derivation for encryption keys | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Vault-derived TLS identity material |
