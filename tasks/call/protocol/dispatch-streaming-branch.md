@@ -1,7 +1,7 @@
 ---
 id: call/protocol/dispatch-streaming-branch
 name: Wire Dispatcher::handle_stream streaming branch (Subscription → invoke_streaming → write each → call.completed)
-status: pending
+status: completed
 depends_on: [call/registry/invoke-streaming]
 scope: narrow
 risk: medium
@@ -171,4 +171,4 @@ task; aborting the connection cancels it).
 
 ## Summary
 
-> To be filled on completion
+> Added DispatchResult enum (Once(ResponseEnvelope) | Stream(ResponseStream)) and Dispatcher::dispatch() branching on op_type (looked up via registry.registration). handle_stream matches on DispatchResult — the branch is visible there (spec framing). Streaming pump writes each ResponseEnvelope → EventEnvelope frame; call.completed on natural end only when !last_was_error (Err is terminal, no call.completed after). deadline: None for streaming branch. Abort via Drop (no new code). Existing Query/Mutation path unchanged. Added 7 unit tests (dispatch branch, deadline clearing, pump frames, error terminal, query unchanged, unknown op, abort drops stream). 306 tests pass.
