@@ -18,7 +18,7 @@ mod tests {
     use alknet_call::protocol::wire::{EventEnvelope, ResponseEnvelope, EVENT_RESPONDED};
     use alknet_call::registry::context::AbortPolicy;
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance,
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{Identity, IdentityProvider};
@@ -77,14 +77,18 @@ mod tests {
 
     fn echo_registry() -> Arc<alknet_call::registry::registration::OperationRegistry> {
         let mut registry = alknet_call::registry::registration::OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo/run"),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo/run"),
+                HandlerKind::Once(make_handler(|input, ctx| async move {
+                    ResponseEnvelope::ok(ctx.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -174,7 +178,9 @@ mod tests {
         assert!(!env.contains("worker/exec"));
         conn.register_imported(HandlerRegistration::new(
             external_spec("worker/exec"),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
+            HandlerKind::Once(make_handler(|input, ctx| async move {
+                ResponseEnvelope::ok(ctx.request_id, input)
+            })),
             OperationProvenance::FromCall,
             None,
             None,

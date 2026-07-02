@@ -17,7 +17,9 @@ use std::sync::Arc;
 use alknet_call::client::{AdapterError, OperationAdapter};
 use alknet_call::protocol::wire::{CallError, ResponseEnvelope};
 use alknet_call::registry::context::OperationContext;
-use alknet_call::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+use alknet_call::registry::registration::{
+    make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
+};
 use alknet_call::registry::spec::{
     AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility,
 };
@@ -469,7 +471,7 @@ impl FromOpenAPI {
         let capabilities = Capabilities::new();
         Ok(HandlerRegistration::new(
             spec,
-            handler,
+            HandlerKind::Once(handler),
             OperationProvenance::FromOpenAPI,
             None,
             None,
@@ -1151,7 +1153,10 @@ mod tests {
             .unwrap();
         let registration = &bundles[0];
         let ctx = noop_context("req-10", Capabilities::new());
-        let response = (registration.handler)(serde_json::json!({}), ctx).await;
+        let response = match &registration.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         assert_eq!(response.request_id, "req-10");
         match response.result {
             Ok(v) => assert_eq!(v, serde_json::json!({"ok":true})),
@@ -1176,7 +1181,10 @@ mod tests {
             .unwrap();
         let registration = &bundles[0];
         let ctx = noop_context("req-11", Capabilities::new());
-        let response = (registration.handler)(serde_json::json!({}), ctx).await;
+        let response = match &registration.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         match response.result {
             Err(e) => {
                 assert_eq!(e.code, "HTTP_404");
@@ -1201,7 +1209,10 @@ mod tests {
             .unwrap();
         let registration = &bundles[0];
         let ctx = noop_context("req-12", Capabilities::new());
-        let response = (registration.handler)(serde_json::json!({}), ctx).await;
+        let response = match &registration.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         assert!(response.result.is_ok());
         let last = response.result.unwrap();
         assert_eq!(last, serde_json::json!({"n":2}));
@@ -1447,11 +1458,16 @@ mod tests {
             .unwrap();
         let registration = &bundles[0];
         let ctx = noop_context("req-16", Capabilities::new());
-        let response = (registration.handler)(
-            serde_json::json!({"id":"42","filter":"new","body":{"name":"widget"}}),
-            ctx,
-        )
-        .await;
+        let response = match &registration.handler {
+            HandlerKind::Once(h) => {
+                h(
+                    serde_json::json!({"id":"42","filter":"new","body":{"name":"widget"}}),
+                    ctx,
+                )
+                .await
+            }
+            _ => panic!("expected Once handler"),
+        };
         assert!(
             response.result.is_ok(),
             "expected Ok, got {:?}",
@@ -1483,7 +1499,10 @@ mod tests {
         let registration = &bundles[0];
         let caps = Capabilities::new().with_http_token("openai", "sk-test-token".to_string());
         let ctx = noop_context("req-17", caps);
-        let _ = (registration.handler)(serde_json::json!({}), ctx).await;
+        let _ = match &registration.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         let captured = rx.await.unwrap();
         assert_eq!(
             captured.headers.get("authorization").unwrap(),
@@ -1519,7 +1538,10 @@ mod tests {
             .unwrap();
         let registration = &bundles[0];
         let ctx = noop_context("req-18", Capabilities::new());
-        let response = (registration.handler)(serde_json::json!({}), ctx).await;
+        let response = match &registration.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         match response.result {
             Ok(Value::String(s)) => assert_eq!(s, "hello world"),
             other => panic!("expected String, got {other:?}"),
@@ -1540,7 +1562,10 @@ mod tests {
             .unwrap();
         let registration = &bundles[0];
         let ctx = noop_context("req-19", Capabilities::new());
-        let response = (registration.handler)(serde_json::json!({}), ctx).await;
+        let response = match &registration.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         match response.result {
             Err(e) => assert_eq!(e.code, "HTTP_500"),
             other => panic!("expected HTTP_500, got {other:?}"),

@@ -432,7 +432,7 @@ mod tests {
         services_list_handler, services_list_spec, services_schema_handler, services_schema_spec,
     };
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance, OperationRegistry,
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance, OperationRegistry,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
@@ -502,44 +502,52 @@ mod tests {
     ) -> Arc<OperationRegistry> {
         let mut inner = OperationRegistry::new();
         for (name, op_type, acl) in specs {
-            inner.register(HandlerRegistration::new(
-                external_spec(&name, op_type, acl),
-                make_echo_handler(),
-                OperationProvenance::Local,
-                None,
-                None,
-                Capabilities::new(),
-            ));
+            inner
+                .register(HandlerRegistration::new(
+                    external_spec(&name, op_type, acl),
+                    HandlerKind::Once(make_echo_handler()),
+                    OperationProvenance::Local,
+                    None,
+                    None,
+                    Capabilities::new(),
+                ))
+                .unwrap();
         }
         let inner = Arc::new(inner);
 
         let mut dispatch_registry = OperationRegistry::new();
         for op in inner.list_operations() {
-            dispatch_registry.register(HandlerRegistration::new(
-                external_spec(&op.name, op.op_type, op.access_control.clone()),
-                make_echo_handler(),
+            dispatch_registry
+                .register(HandlerRegistration::new(
+                    external_spec(&op.name, op.op_type, op.access_control.clone()),
+                    HandlerKind::Once(make_echo_handler()),
+                    OperationProvenance::Local,
+                    None,
+                    None,
+                    Capabilities::new(),
+                ))
+                .unwrap();
+        }
+        dispatch_registry
+            .register(HandlerRegistration::new(
+                services_list_spec(),
+                HandlerKind::Once(services_list_handler(Arc::clone(&inner))),
                 OperationProvenance::Local,
                 None,
-                None,
+                ScopedPeerEnv::empty().into(),
                 Capabilities::new(),
-            ));
-        }
-        dispatch_registry.register(HandlerRegistration::new(
-            services_list_spec(),
-            services_list_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            ScopedPeerEnv::empty().into(),
-            Capabilities::new(),
-        ));
-        dispatch_registry.register(HandlerRegistration::new(
-            services_schema_spec(),
-            services_schema_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            ScopedPeerEnv::empty().into(),
-            Capabilities::new(),
-        ));
+            ))
+            .unwrap();
+        dispatch_registry
+            .register(HandlerRegistration::new(
+                services_schema_spec(),
+                HandlerKind::Once(services_schema_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                ScopedPeerEnv::empty().into(),
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(dispatch_registry)
     }
 

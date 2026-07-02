@@ -12,7 +12,9 @@
 use alknet_call::client::{AdapterError, OperationAdapter};
 use alknet_call::protocol::wire::{CallError, ResponseEnvelope};
 use alknet_call::registry::context::OperationContext;
-use alknet_call::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+use alknet_call::registry::registration::{
+    make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
+};
 use alknet_call::registry::spec::{
     AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility,
 };
@@ -156,7 +158,7 @@ fn build_registration(
 
     HandlerRegistration::new(
         spec,
-        handler,
+        HandlerKind::Once(handler),
         OperationProvenance::FromMCP,
         None,
         None,

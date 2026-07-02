@@ -326,7 +326,9 @@ impl Clone for Dispatcher {
 mod tests {
     use super::*;
     use crate::protocol::wire::EVENT_RESPONDED;
-    use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+    use crate::registry::registration::{
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
+    };
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
     use alknet_core::types::{Capabilities, MockConnection};
@@ -412,24 +414,26 @@ mod tests {
 
     fn registry_with(name: &str, visibility: Visibility, acl: AccessControl) -> OperationRegistry {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                name,
-                OperationType::Query,
-                visibility,
-                serde_json::json!({}),
-                serde_json::json!({}),
-                vec![],
-                acl,
-            ),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    name,
+                    OperationType::Query,
+                    visibility,
+                    serde_json::json!({}),
+                    serde_json::json!({}),
+                    vec![],
+                    acl,
+                ),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         registry
     }
 
@@ -451,14 +455,16 @@ mod tests {
                 serde_json::json!({ "has_google": has_google }),
             )
         });
-        registry.register(HandlerRegistration::new(
-            external_spec("admin/run", AccessControl::default()),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            caps,
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("admin/run", AccessControl::default()),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                caps,
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = Dispatcher::new(registry, provider);
@@ -486,20 +492,22 @@ mod tests {
                 serde_json::json!({ "has_google": has_google }),
             )
         });
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "admin/run",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            caps,
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin/run",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                caps,
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(
             StaticIdentityProvider::new()
@@ -609,14 +617,16 @@ mod tests {
                 serde_json::json!({ "forwarded_for_id": forwarded_id }),
             )
         });
-        registry.register(HandlerRegistration::new(
-            external_spec("fs/readFile", AccessControl::default()),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("fs/readFile", AccessControl::default()),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = Dispatcher::new(registry, provider);
@@ -648,14 +658,16 @@ mod tests {
                 serde_json::json!({ "present": present }),
             )
         });
-        registry.register(HandlerRegistration::new(
-            external_spec("fs/readFile", AccessControl::default()),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("fs/readFile", AccessControl::default()),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = Dispatcher::new(registry, provider);
@@ -736,14 +748,16 @@ mod tests {
                 serde_json::json!({ "peer_ids": peer_ids }),
             )
         });
-        registry.register(HandlerRegistration::new(
-            external_spec("fs/readFile", AccessControl::default()),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("fs/readFile", AccessControl::default()),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = Dispatcher::new(registry, provider);
@@ -795,7 +809,11 @@ mod tests {
         let child_id = "ws-abort-child".to_string();
         {
             let mut pending = conn.pending().lock();
-            pending.register_call(parent_id.clone(), Instant::now() + Duration::from_secs(30), None);
+            pending.register_call(
+                parent_id.clone(),
+                Instant::now() + Duration::from_secs(30),
+                None,
+            );
             pending.register_call(
                 child_id.clone(),
                 Instant::now() + Duration::from_secs(30),
@@ -844,11 +862,16 @@ mod tests {
             "input": { "v": 42 },
         });
         let request_id = "ws-roundtrip-1".to_string();
-        let response = dp.dispatch_requested(&conn, request_id.clone(), payload).await;
+        let response = dp
+            .dispatch_requested(&conn, request_id.clone(), payload)
+            .await;
         assert!(response.result.is_ok());
         let envelope: EventEnvelope = response.into();
         assert_eq!(envelope.r#type, EVENT_RESPONDED);
         assert_eq!(envelope.id, "ws-roundtrip-1");
-        assert_eq!(envelope.payload.get("output"), Some(&serde_json::json!({ "v": 42 })));
+        assert_eq!(
+            envelope.payload.get("output"),
+            Some(&serde_json::json!({ "v": 42 }))
+        );
     }
 }

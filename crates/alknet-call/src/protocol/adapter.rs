@@ -166,7 +166,9 @@ mod tests {
     };
     use crate::registry::context::{AbortPolicy, OperationContext, ScopedPeerEnv};
     use crate::registry::env::OperationEnv;
-    use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+    use crate::registry::registration::{
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
+    };
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::AuthToken;
     use alknet_core::types::Capabilities;
@@ -245,22 +247,24 @@ mod tests {
         handler: crate::registry::registration::Handler,
     ) -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                name,
-                OperationType::Query,
-                visibility,
-                serde_json::json!({}),
-                serde_json::json!({}),
-                vec![],
-                acl,
-            ),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    name,
+                    OperationType::Query,
+                    visibility,
+                    serde_json::json!({}),
+                    serde_json::json!({}),
+                    vec![],
+                    acl,
+                ),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -421,14 +425,16 @@ mod tests {
         let mut registry = OperationRegistry::new();
         let scoped = ScopedPeerEnv::new(["fs/readFile"]);
         let caps = Capabilities::new().with_api_key("google", "k".to_string());
-        registry.register(HandlerRegistration::new(
-            external_spec("agent/run", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            Some(scoped.clone()),
-            caps.clone(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("agent/run", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                Some(scoped.clone()),
+                caps.clone(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let adapter = CallAdapter::new(registry, provider);
@@ -543,7 +549,7 @@ mod tests {
                 vec![],
                 AccessControl::default(),
             ),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::FromCall,
             None,
             None,
@@ -610,7 +616,7 @@ mod tests {
                 vec![],
                 AccessControl::default(),
             ),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::FromCall,
             None,
             None,

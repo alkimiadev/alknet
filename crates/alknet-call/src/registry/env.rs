@@ -303,7 +303,9 @@ impl OperationEnv for PeerCompositeEnv {
 mod tests {
     use super::*;
     use crate::registry::context::CompositionAuthority;
-    use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+    use crate::registry::registration::{
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
+    };
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::Identity;
     use alknet_core::types::Capabilities;
@@ -406,22 +408,24 @@ mod tests {
         scoped_env: Option<ScopedPeerEnv>,
     ) -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                name,
-                OperationType::Query,
-                spec_visibility,
-                serde_json::json!({}),
-                serde_json::json!({}),
-                vec![],
-                AccessControl::default(),
-            ),
-            handler,
-            OperationProvenance::Local,
-            composition_authority,
-            scoped_env,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    name,
+                    OperationType::Query,
+                    spec_visibility,
+                    serde_json::json!({}),
+                    serde_json::json!({}),
+                    vec![],
+                    AccessControl::default(),
+                ),
+                HandlerKind::Once(handler),
+                OperationProvenance::Local,
+                composition_authority,
+                scoped_env,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 

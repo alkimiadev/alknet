@@ -117,7 +117,7 @@ mod tests {
         services_list_handler, services_list_spec, services_schema_handler, services_schema_spec,
     };
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance,
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::AuthToken;
@@ -187,45 +187,51 @@ mod tests {
 
     fn registry_with(name: &str, visibility: Visibility, acl: AccessControl) -> OperationRegistry {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                name,
-                OperationType::Query,
-                visibility,
-                serde_json::json!({}),
-                serde_json::json!({}),
-                vec![],
-                acl,
-            ),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    name,
+                    OperationType::Query,
+                    visibility,
+                    serde_json::json!({}),
+                    serde_json::json!({}),
+                    vec![],
+                    acl,
+                ),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         registry
     }
 
     fn registry_with_discovery(inner: Arc<OperationRegistry>) -> OperationRegistry {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            services_list_spec(),
-            services_list_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            ScopedPeerEnv::empty().into(),
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            services_schema_spec(),
-            services_schema_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            ScopedPeerEnv::empty().into(),
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                services_list_spec(),
+                HandlerKind::Once(services_list_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                ScopedPeerEnv::empty().into(),
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                services_schema_spec(),
+                HandlerKind::Once(services_schema_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                ScopedPeerEnv::empty().into(),
+                Capabilities::new(),
+            ))
+            .unwrap();
         registry
     }
 
@@ -270,32 +276,36 @@ mod tests {
     #[tokio::test]
     async fn invoke_for_services_list_returns_access_control_filtered_list() {
         let mut inner = OperationRegistry::new();
-        inner.register(HandlerRegistration::new(
-            external_spec("public/echo", AccessControl::default()),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        inner.register(HandlerRegistration::new(
-            external_spec(
-                "admin/secret",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        inner
+            .register(HandlerRegistration::new(
+                external_spec("public/echo", AccessControl::default()),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        inner
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin/secret",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let inner = Arc::new(inner);
         let discovery = Arc::new(registry_with_discovery(Arc::clone(&inner)));
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
@@ -327,16 +337,18 @@ mod tests {
     #[tokio::test]
     async fn invoke_for_services_schema_returns_spec_for_known_op() {
         let mut inner = OperationRegistry::new();
-        inner.register(HandlerRegistration::new(
-            external_spec("fs/readFile", AccessControl::default()),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        inner
+            .register(HandlerRegistration::new(
+                external_spec("fs/readFile", AccessControl::default()),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let inner = Arc::new(inner);
         let discovery = Arc::new(registry_with_discovery(Arc::clone(&inner)));
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
@@ -373,16 +385,18 @@ mod tests {
     #[tokio::test]
     async fn invoke_for_internal_op_returns_not_found_not_leaked() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret/op", AccessControl::default()),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret/op", AccessControl::default()),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatch(registry, provider);
@@ -499,16 +513,18 @@ mod tests {
         let caps = Capabilities::new().with_api_key("google", "k".to_string());
 
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("agent/run", AccessControl::default()),
-            make_handler(|input, context| async move {
-                ResponseEnvelope::ok(context.request_id, input)
-            }),
-            OperationProvenance::Local,
-            Some(authority),
-            Some(scoped.clone()),
-            caps,
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("agent/run", AccessControl::default()),
+                HandlerKind::Once(make_handler(|input, context| async move {
+                    ResponseEnvelope::ok(context.request_id, input)
+                })),
+                OperationProvenance::Local,
+                Some(authority),
+                Some(scoped.clone()),
+                caps,
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatch(registry, provider);

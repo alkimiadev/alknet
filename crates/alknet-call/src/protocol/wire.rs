@@ -105,6 +105,10 @@ impl CallError {
     pub fn timeout(message: impl Into<String>) -> Self {
         Self::new("TIMEOUT", message, true)
     }
+
+    pub fn invalid_operation_type(message: impl Into<String>) -> Self {
+        Self::new("INVALID_OPERATION_TYPE", message, false)
+    }
 }
 
 impl Eq for CallError {}

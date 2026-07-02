@@ -11,7 +11,9 @@ use serde_json::Value;
 use crate::client::{AdapterError, OperationAdapter};
 use crate::protocol::wire::{CallError, ResponseEnvelope};
 use crate::registry::context::OperationContext;
-use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+use crate::registry::registration::{
+    make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
+};
 use crate::registry::spec::OperationSpec;
 
 /// Build a [`HandlerRegistration`] from a JSON Schema-described operation.
@@ -30,7 +32,7 @@ pub fn from_jsonschema(spec: OperationSpec, _schema: Value) -> HandlerRegistrati
     });
     HandlerRegistration::new(
         spec,
-        handler,
+        HandlerKind::Once(handler),
         OperationProvenance::FromJsonSchema,
         None,
         None,
@@ -138,7 +140,10 @@ mod tests {
     async fn placeholder_handler_returns_error_when_invoked() {
         let bundle = from_jsonschema_fn::from_jsonschema(test_spec("ns/op"), serde_json::json!({}));
         let ctx = test_context("req-1");
-        let response = (bundle.handler)(serde_json::json!({}), ctx).await;
+        let response = match &bundle.handler {
+            HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+            _ => panic!("expected Once handler"),
+        };
         match response.result {
             Err(e) => {
                 assert_eq!(e.code, "NOT_FOUND");

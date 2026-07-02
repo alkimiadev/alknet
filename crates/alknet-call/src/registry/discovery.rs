@@ -324,7 +324,10 @@ pub fn services_schema_handler(registry: Arc<OperationRegistry>) -> Handler {
 mod tests {
     use super::*;
     use crate::registry::context::{CompositionAuthority, ScopedPeerEnv};
-    use crate::registry::registration::{make_handler, HandlerRegistration, OperationProvenance};
+    use crate::registry::registration::{
+        make_handler, make_streaming_handler, HandlerKind, HandlerRegistration,
+        OperationProvenance, StreamingHandler,
+    };
     use alknet_core::types::Capabilities;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -357,6 +360,12 @@ mod tests {
         make_handler(
             |input, context| async move { ResponseEnvelope::ok(context.request_id, input) },
         )
+    }
+
+    fn echo_streaming_handler() -> StreamingHandler {
+        make_streaming_handler(|input, context| {
+            futures::stream::iter(vec![ResponseEnvelope::ok(context.request_id, input)])
+        })
     }
 
     fn noop_env() -> Arc<dyn crate::registry::env::OperationEnv + Send + Sync> {
@@ -439,36 +448,42 @@ mod tests {
 
     fn registry_with_access_controlled_ops() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec_with_acl("public/echo", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            external_spec_with_acl(
-                "admin/secret",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            internal_spec("internal/hidden"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec_with_acl("public/echo", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                external_spec_with_acl(
+                    "admin/secret",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("internal/hidden"),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -485,59 +500,67 @@ mod tests {
 
     fn registry_with_ops() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("fs/readFile"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret/internal"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                "events/subscribe",
-                OperationType::Subscription,
-                Visibility::External,
-                json!({}),
-                json!({}),
-                vec![],
-                AccessControl::default(),
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                "fs/readFileErr",
-                OperationType::Query,
-                Visibility::External,
-                json!({}),
-                json!({}),
-                vec![super::super::spec::ErrorDefinition {
-                    code: "FILE_NOT_FOUND".to_string(),
-                    description: "file not found".to_string(),
-                    schema: json!({ "type": "object" }),
-                    http_status: None,
-                }],
-                AccessControl::default(),
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("fs/readFile"),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret/internal"),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    "events/subscribe",
+                    OperationType::Subscription,
+                    Visibility::External,
+                    json!({}),
+                    json!({}),
+                    vec![],
+                    AccessControl::default(),
+                ),
+                HandlerKind::Stream(echo_streaming_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    "fs/readFileErr",
+                    OperationType::Query,
+                    Visibility::External,
+                    json!({}),
+                    json!({}),
+                    vec![super::super::spec::ErrorDefinition {
+                        code: "FILE_NOT_FOUND".to_string(),
+                        description: "file not found".to_string(),
+                        schema: json!({ "type": "object" }),
+                        http_status: None,
+                    }],
+                    AccessControl::default(),
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -669,22 +692,26 @@ mod tests {
         let schema_handler = services_schema_handler(Arc::clone(&registry));
 
         let mut discovery_registry = OperationRegistry::new();
-        discovery_registry.register(HandlerRegistration::new(
-            services_list_spec(),
-            list_handler,
-            OperationProvenance::Local,
-            CompositionAuthority::none(),
-            ScopedPeerEnv::empty().into(),
-            Capabilities::new(),
-        ));
-        discovery_registry.register(HandlerRegistration::new(
-            services_schema_spec(),
-            schema_handler,
-            OperationProvenance::Local,
-            CompositionAuthority::none(),
-            ScopedPeerEnv::empty().into(),
-            Capabilities::new(),
-        ));
+        discovery_registry
+            .register(HandlerRegistration::new(
+                services_list_spec(),
+                HandlerKind::Once(list_handler),
+                OperationProvenance::Local,
+                CompositionAuthority::none(),
+                ScopedPeerEnv::empty().into(),
+                Capabilities::new(),
+            ))
+            .unwrap();
+        discovery_registry
+            .register(HandlerRegistration::new(
+                services_schema_spec(),
+                HandlerKind::Once(schema_handler),
+                OperationProvenance::Local,
+                CompositionAuthority::none(),
+                ScopedPeerEnv::empty().into(),
+                Capabilities::new(),
+            ))
+            .unwrap();
         let discovery = Arc::new(discovery_registry);
 
         let ctx = root_context("req-6");

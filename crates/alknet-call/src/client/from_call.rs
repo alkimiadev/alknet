@@ -19,7 +19,9 @@ use crate::client::AdapterError;
 use crate::protocol::connection::CallConnection;
 use crate::protocol::wire::ResponseEnvelope;
 use crate::registry::context::OperationContext;
-use crate::registry::registration::{Handler, HandlerRegistration, OperationProvenance};
+use crate::registry::registration::{
+    Handler, HandlerKind, HandlerRegistration, OperationProvenance,
+};
 use crate::registry::spec::{
     AccessControl, ErrorDefinition, OperationSpec, OperationType, Visibility,
 };
@@ -128,7 +130,7 @@ fn build_bundles(
         );
         bundles.push(HandlerRegistration::new(
             spec,
-            handler,
+            HandlerKind::Once(handler),
             OperationProvenance::FromCall,
             None,
             None,
@@ -549,7 +551,7 @@ mod tests {
         );
         let reg = HandlerRegistration::new(
             spec,
-            handler,
+            HandlerKind::Once(handler),
             OperationProvenance::FromCall,
             None,
             None,

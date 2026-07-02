@@ -528,7 +528,7 @@ mod tests {
     use super::*;
     use alknet_call::protocol::wire::ResponseEnvelope;
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance,
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::types::Capabilities;
@@ -539,14 +539,16 @@ mod tests {
     }
 
     fn register(registry: &mut OperationRegistry, spec: OperationSpec) {
-        registry.register(HandlerRegistration::new(
-            spec,
-            noop_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                spec,
+                HandlerKind::Once(noop_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
     }
 
     fn external_spec(name: &str, errors: Vec<ErrorDefinition>) -> OperationSpec {
@@ -1003,22 +1005,24 @@ mod tests {
     #[test]
     fn internal_operations_excluded_from_error_projection() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                "internal/op",
-                OperationType::Query,
-                Visibility::Internal,
-                json!({}),
-                json!({}),
-                vec![error("INTERNAL_ERROR", Some(418))],
-                AccessControl::default(),
-            ),
-            noop_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    "internal/op",
+                    OperationType::Query,
+                    Visibility::Internal,
+                    json!({}),
+                    json!({}),
+                    vec![error("INTERNAL_ERROR", Some(418))],
+                    AccessControl::default(),
+                ),
+                HandlerKind::Once(noop_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let spec = to_openapi(&registry);
         let responses = responses(&spec, PATH_CALL, "post");
         assert!(

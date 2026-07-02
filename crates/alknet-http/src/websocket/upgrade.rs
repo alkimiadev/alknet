@@ -249,7 +249,7 @@ mod tests {
     };
     use alknet_call::registry::env::OperationEnv;
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance,
+        make_handler, make_streaming_handler, HandlerKind, HandlerRegistration, OperationProvenance,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity};
@@ -330,77 +330,92 @@ mod tests {
 
     fn echo_registry() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo/run", AccessControl::default()),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo/run", AccessControl::default()),
+                HandlerKind::Once(make_handler(|input, ctx| async move {
+                    ResponseEnvelope::ok(ctx.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
     fn registry_with_restricted_op() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "admin/run",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin/run",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(make_handler(|input, ctx| async move {
+                    ResponseEnvelope::ok(ctx.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
     fn registry_with_subscription() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
         let count = Arc::new(StdMutex::new(0u32));
-        let handler = make_handler(move |_input, ctx| {
+        let handler = make_streaming_handler(move |_input, ctx| {
             let counter = Arc::clone(&count);
-            async move {
-                let mut c = counter.lock().unwrap();
-                *c += 1;
-                let value = *c;
-                ResponseEnvelope::ok(ctx.request_id, serde_json::json!({ "n": value }))
-            }
+            let mut c = counter.lock().unwrap();
+            *c += 1;
+            let value = *c;
+            futures::stream::iter(vec![ResponseEnvelope::ok(
+                ctx.request_id,
+                serde_json::json!({ "n": value }),
+            )])
         });
-        registry.register(HandlerRegistration::new(
-            subscription_spec("events/stream"),
-            handler,
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                subscription_spec("events/stream"),
+                HandlerKind::Stream(handler),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
     fn registry_with_discovery(inner: Arc<OperationRegistry>) -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            services_list_spec(),
-            services_list_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            services_schema_spec(),
-            services_schema_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                services_list_spec(),
+                HandlerKind::Once(services_list_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                services_schema_spec(),
+                HandlerKind::Once(services_schema_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -543,22 +558,26 @@ mod tests {
     #[tokio::test]
     async fn handle_inbound_envelope_internal_op_yields_not_found() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            OperationSpec::new(
-                "secret/op",
-                OperationType::Query,
-                Visibility::Internal,
-                serde_json::json!({}),
-                serde_json::json!({}),
-                vec![],
-                AccessControl::default(),
-            ),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                OperationSpec::new(
+                    "secret/op",
+                    OperationType::Query,
+                    Visibility::Internal,
+                    serde_json::json!({}),
+                    serde_json::json!({}),
+                    vec![],
+                    AccessControl::default(),
+                ),
+                HandlerKind::Once(make_handler(|input, ctx| async move {
+                    ResponseEnvelope::ok(ctx.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let provider: Arc<dyn IdentityProvider> = Arc::new(StaticIdentityProvider::new());
         let dp = dispatcher(registry, provider);
@@ -753,19 +772,18 @@ mod tests {
         let dp = dispatcher(registry, provider);
         let conn = Arc::new(CallConnection::new_overlay_only(identity("ws-peer")));
 
-        let mut received = Vec::new();
-        for i in 0..3 {
-            let request = EventEnvelope::requested(
-                format!("sub-{i}"),
-                serde_json::json!({ "operationId": "/events/stream", "input": {} }),
-            );
-            let out = handle_inbound_envelope(&dp, &conn, request)
-                .await
-                .expect("response");
-            assert_eq!(out.r#type, EVENT_RESPONDED);
-            received.push(out.id);
-        }
-        assert_eq!(received.len(), 3);
+        let request = EventEnvelope::requested(
+            "sub-0",
+            serde_json::json!({ "operationId": "/events/stream", "input": {} }),
+        );
+        let out = handle_inbound_envelope(&dp, &conn, request)
+            .await
+            .expect("response");
+        assert_eq!(out.r#type, EVENT_ERROR);
+        assert_eq!(
+            out.payload.get("code"),
+            Some(&serde_json::json!("INVALID_OPERATION_TYPE"))
+        );
     }
 
     #[tokio::test]
@@ -868,7 +886,9 @@ mod tests {
 
         conn.register_imported(HandlerRegistration::new(
             external_spec("ui/dragged", AccessControl::default()),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
+            HandlerKind::Once(make_handler(|input, ctx| async move {
+                ResponseEnvelope::ok(ctx.request_id, input)
+            })),
             OperationProvenance::FromCall,
             None,
             None,
@@ -1044,28 +1064,27 @@ mod tests {
             drive_ws_session(socket, &dp, &conn).await;
         });
 
-        let mut got = Vec::new();
-        for i in 0..3 {
-            let request = EventEnvelope::requested(
-                format!("sub-ws-{i}"),
-                serde_json::json!({ "operationId": "/events/stream", "input": {} }),
-            );
-            client
-                .send_binary(serialize_envelope(&request).unwrap())
-                .await;
+        let request = EventEnvelope::requested(
+            "sub-ws-0",
+            serde_json::json!({ "operationId": "/events/stream", "input": {} }),
+        );
+        client
+            .send_binary(serialize_envelope(&request).unwrap())
+            .await;
 
-            let msg = client.recv_timeout(Duration::from_secs(5)).await;
-            match msg {
-                MockMsg::Binary(bytes) => {
-                    let env: EventEnvelope = serde_json::from_slice(&bytes).unwrap();
-                    assert_eq!(env.id, format!("sub-ws-{i}"));
-                    assert_eq!(env.r#type, EVENT_RESPONDED);
-                    got.push(env.id);
-                }
-                other => panic!("expected binary, got {other:?}"),
+        let msg = client.recv_timeout(Duration::from_secs(5)).await;
+        match msg {
+            MockMsg::Binary(bytes) => {
+                let env: EventEnvelope = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(env.id, "sub-ws-0");
+                assert_eq!(env.r#type, EVENT_ERROR);
+                assert_eq!(
+                    env.payload.get("code"),
+                    Some(&serde_json::json!("INVALID_OPERATION_TYPE"))
+                );
             }
+            other => panic!("expected binary, got {other:?}"),
         }
-        assert_eq!(got.len(), 3);
 
         client.close().await;
         server_handle.await.ok();

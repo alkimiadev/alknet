@@ -572,7 +572,7 @@ mod tests {
     use crate::protocol::connection::CallConnection;
     use crate::protocol::wire::ResponseEnvelope;
     use crate::registry::registration::{
-        make_handler, Handler, HandlerRegistration, OperationProvenance,
+        make_handler, Handler, HandlerKind, HandlerRegistration, OperationProvenance,
     };
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::Identity;
@@ -640,14 +640,16 @@ mod tests {
 
     fn registry_with_caps() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("pub/run"),
-            caps_inspect_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new().with_api_key("google", "pub-key".to_string()),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("pub/run"),
+                HandlerKind::Once(caps_inspect_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new().with_api_key("google", "pub-key".to_string()),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -709,7 +711,9 @@ mod tests {
         let client = CallClient::new(Arc::clone(&registry), Arc::new(NoopIdentityProvider));
         let conn = client.spawn_dispatch(stub_connection());
         assert_eq!(
-            conn.connection().expect("quic connection present").remote_alpn(),
+            conn.connection()
+                .expect("quic connection present")
+                .remote_alpn(),
             b"alknet/call"
         );
         std::mem::drop(conn);

@@ -4,17 +4,32 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use alknet_core::types::Capabilities;
+use futures::stream::Stream;
 use serde_json::Value;
 
 use super::context::{CompositionAuthority, OperationContext, ScopedPeerEnv};
-use super::spec::{AccessResult, OperationSpec, Visibility};
-use crate::protocol::wire::ResponseEnvelope;
+use super::spec::{AccessResult, OperationSpec, OperationType, Visibility};
+use crate::protocol::wire::{CallError, ResponseEnvelope};
 
 pub type Handler = Arc<
     dyn Fn(Value, OperationContext) -> Pin<Box<dyn Future<Output = ResponseEnvelope> + Send>>
         + Send
         + Sync,
 >;
+
+pub type StreamingHandler = Arc<
+    dyn Fn(Value, OperationContext) -> Pin<Box<dyn Stream<Item = ResponseEnvelope> + Send>>
+        + Send
+        + Sync,
+>;
+
+pub type ResponseStream = Pin<Box<dyn Stream<Item = ResponseEnvelope> + Send>>;
+
+#[derive(Clone)]
+pub enum HandlerKind {
+    Once(Handler),
+    Stream(StreamingHandler),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationProvenance {
@@ -28,7 +43,7 @@ pub enum OperationProvenance {
 
 pub struct HandlerRegistration {
     pub spec: OperationSpec,
-    pub handler: Handler,
+    pub handler: HandlerKind,
     pub provenance: OperationProvenance,
     pub composition_authority: Option<CompositionAuthority>,
     pub scoped_env: Option<ScopedPeerEnv>,
@@ -38,7 +53,7 @@ pub struct HandlerRegistration {
 impl HandlerRegistration {
     pub fn new(
         spec: OperationSpec,
-        handler: Handler,
+        handler: HandlerKind,
         provenance: OperationProvenance,
         composition_authority: Option<CompositionAuthority>,
         scoped_env: Option<ScopedPeerEnv>,
@@ -66,9 +81,24 @@ impl OperationRegistry {
         }
     }
 
-    pub fn register(&mut self, registration: HandlerRegistration) {
+    pub fn register(&mut self, registration: HandlerRegistration) -> Result<(), String> {
+        let expected = match registration.spec.op_type {
+            OperationType::Query | OperationType::Mutation => "Once",
+            OperationType::Subscription => "Stream",
+        };
+        let actual = match registration.handler {
+            HandlerKind::Once(_) => "Once",
+            HandlerKind::Stream(_) => "Stream",
+        };
+        if expected != actual {
+            return Err(format!(
+                "handler kind mismatch: {:?} requires HandlerKind::{} (got HandlerKind::{})",
+                registration.spec.op_type, expected, actual
+            ));
+        }
         self.operations
             .insert(registration.spec.name.clone(), registration);
+        Ok(())
     }
 
     pub fn registration(&self, name: &str) -> Option<&HandlerRegistration> {
@@ -113,8 +143,18 @@ impl OperationRegistry {
             return ResponseEnvelope::forbidden(request_id, message);
         }
 
-        let handler = Arc::clone(&registration.handler);
-        (handler)(input, context).await
+        match &registration.handler {
+            HandlerKind::Once(handler) => {
+                let handler = Arc::clone(handler);
+                (handler)(input, context).await
+            }
+            HandlerKind::Stream(_) => ResponseEnvelope::error(
+                request_id,
+                CallError::invalid_operation_type(
+                    "invoke() called on a Subscription op; use invoke_streaming()",
+                ),
+            ),
+        }
     }
 }
 
@@ -135,10 +175,30 @@ impl OperationRegistryBuilder {
         }
     }
 
-    fn store(mut self, registration: HandlerRegistration) -> Self {
-        self.operations
-            .insert(registration.spec.name.clone(), registration);
-        self
+    fn store(mut self, registration: HandlerRegistration) -> Result<Self, String> {
+        let name = registration.spec.name.clone();
+        self.operations.insert(name, registration);
+        Ok(self)
+    }
+
+    fn wrap_once(spec: &OperationSpec, handler: Handler) -> Result<HandlerKind, String> {
+        match spec.op_type {
+            OperationType::Query | OperationType::Mutation => Ok(HandlerKind::Once(handler)),
+            OperationType::Subscription => Err(format!(
+                "handler kind mismatch: {:?} requires HandlerKind::Stream (got Handler)",
+                spec.op_type
+            )),
+        }
+    }
+
+    fn wrap_stream(spec: &OperationSpec, handler: StreamingHandler) -> Result<HandlerKind, String> {
+        match spec.op_type {
+            OperationType::Subscription => Ok(HandlerKind::Stream(handler)),
+            OperationType::Query | OperationType::Mutation => Err(format!(
+                "handler kind mismatch: {:?} requires HandlerKind::Once (got StreamingHandler)",
+                spec.op_type
+            )),
+        }
     }
 
     pub fn with_local(
@@ -148,10 +208,31 @@ impl OperationRegistryBuilder {
         composition_authority: Option<CompositionAuthority>,
         scoped_env: Option<ScopedPeerEnv>,
         capabilities: Capabilities,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        let kind = Self::wrap_once(&spec, handler)?;
         let registration = HandlerRegistration::new(
             spec,
-            handler,
+            kind,
+            OperationProvenance::Local,
+            composition_authority,
+            scoped_env,
+            capabilities,
+        );
+        self.store(registration)
+    }
+
+    pub fn with_local_streaming(
+        self,
+        spec: OperationSpec,
+        handler: StreamingHandler,
+        composition_authority: Option<CompositionAuthority>,
+        scoped_env: Option<ScopedPeerEnv>,
+        capabilities: Capabilities,
+    ) -> Result<Self, String> {
+        let kind = Self::wrap_stream(&spec, handler)?;
+        let registration = HandlerRegistration::new(
+            spec,
+            kind,
             OperationProvenance::Local,
             composition_authority,
             scoped_env,
@@ -165,7 +246,7 @@ impl OperationRegistryBuilder {
         spec: OperationSpec,
         handler: Handler,
         capabilities: Capabilities,
-    ) -> Self {
+    ) -> Result<Self, String> {
         self.with_leaf_provenance(
             spec,
             handler,
@@ -180,13 +261,41 @@ impl OperationRegistryBuilder {
         handler: Handler,
         provenance: OperationProvenance,
         capabilities: Capabilities,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        let kind = Self::wrap_once(&spec, handler)?;
         let registration =
-            HandlerRegistration::new(spec, handler, provenance, None, None, capabilities);
+            HandlerRegistration::new(spec, kind, provenance, None, None, capabilities);
         self.store(registration)
     }
 
-    pub fn with(self, registration: HandlerRegistration) -> Self {
+    pub fn with_leaf_streaming(
+        self,
+        spec: OperationSpec,
+        handler: StreamingHandler,
+        capabilities: Capabilities,
+    ) -> Result<Self, String> {
+        self.with_leaf_streaming_provenance(
+            spec,
+            handler,
+            OperationProvenance::FromOpenAPI,
+            capabilities,
+        )
+    }
+
+    pub fn with_leaf_streaming_provenance(
+        self,
+        spec: OperationSpec,
+        handler: StreamingHandler,
+        provenance: OperationProvenance,
+        capabilities: Capabilities,
+    ) -> Result<Self, String> {
+        let kind = Self::wrap_stream(&spec, handler)?;
+        let registration =
+            HandlerRegistration::new(spec, kind, provenance, None, None, capabilities);
+        self.store(registration)
+    }
+
+    pub fn with(self, registration: HandlerRegistration) -> Result<Self, String> {
         self.store(registration)
     }
 
@@ -207,6 +316,14 @@ pub fn make_handler<F, Fut>(f: F) -> Handler
 where
     F: Fn(Value, OperationContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ResponseEnvelope> + Send + 'static,
+{
+    Arc::new(move |input, context| Box::pin(f(input, context)))
+}
+
+pub fn make_streaming_handler<S, St>(f: S) -> StreamingHandler
+where
+    S: Fn(Value, OperationContext) -> St + Send + Sync + 'static,
+    St: Stream<Item = ResponseEnvelope> + Send + 'static,
 {
     Arc::new(move |input, context| Box::pin(f(input, context)))
 }
@@ -312,14 +429,16 @@ mod tests {
     #[tokio::test]
     async fn register_and_invoke_simple_operation() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context("req-1", None, None, false, ScopedPeerEnv::empty());
         let response = registry
             .invoke("echo", serde_json::json!({"hi": 1}), ctx)
@@ -331,14 +450,16 @@ mod tests {
     #[tokio::test]
     async fn internal_op_from_external_call_returns_not_found() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context("req-2", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("secret", serde_json::json!({}), ctx).await;
         match response.result {
@@ -353,14 +474,16 @@ mod tests {
     #[tokio::test]
     async fn internal_op_from_internal_call_invokes_handler() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context("req-3", None, None, true, ScopedPeerEnv::empty());
         let response = registry
             .invoke("secret", serde_json::json!({"x": 2}), ctx)
@@ -383,20 +506,22 @@ mod tests {
     #[tokio::test]
     async fn acl_sufficient_scopes_allowed() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "admin",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context(
             "req-5",
             Some(identity_with_scopes("caller", &["admin"])),
@@ -411,20 +536,22 @@ mod tests {
     #[tokio::test]
     async fn acl_insufficient_scopes_forbidden() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "admin",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context(
             "req-6",
             Some(identity_with_scopes("caller", &["user"])),
@@ -445,20 +572,22 @@ mod tests {
     #[tokio::test]
     async fn acl_restricted_op_no_identity_forbidden() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "admin",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context("req-7", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("admin", serde_json::json!({}), ctx).await;
         match response.result {
@@ -474,20 +603,22 @@ mod tests {
     async fn internal_call_acl_uses_handler_identity() {
         let mut registry = OperationRegistry::new();
         let composing_authority = CompositionAuthority::new("agent-chat", ["admin".to_string()]);
-        registry.register(HandlerRegistration::new(
-            internal_spec(
-                "secret",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec(
+                    "secret",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context(
             "req-8",
             Some(identity_with_scopes("user", &["user"])),
@@ -506,20 +637,22 @@ mod tests {
     async fn internal_call_acl_insufficient_handler_identity_forbidden() {
         let mut registry = OperationRegistry::new();
         let weak_authority = CompositionAuthority::new("weak", ["user".to_string()]);
-        registry.register(HandlerRegistration::new(
-            internal_spec(
-                "secret",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec(
+                    "secret",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context(
             "req-9",
             Some(identity_with_scopes("user", &["admin"])),
@@ -541,20 +674,22 @@ mod tests {
     async fn external_call_acl_uses_caller_identity_not_handler_identity() {
         let mut registry = OperationRegistry::new();
         let handler_authority = CompositionAuthority::new("agent", ["admin".to_string()]);
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "gate",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            Some(handler_authority),
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "gate",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                Some(handler_authority),
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context(
             "req-10",
             Some(identity_with_scopes("user", &["user"])),
@@ -572,22 +707,26 @@ mod tests {
     #[tokio::test]
     async fn list_operations_returns_external_only() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ops = registry.list_operations();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].name, "echo");
@@ -596,14 +735,16 @@ mod tests {
     #[tokio::test]
     async fn handler_returned_error_passes_through() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("boom", AccessControl::default()),
-            error_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("boom", AccessControl::default()),
+                HandlerKind::Once(error_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let ctx = root_context("req-11", None, None, false, ScopedPeerEnv::empty());
         let response = registry.invoke("boom", serde_json::json!({}), ctx).await;
         match response.result {
@@ -622,6 +763,7 @@ mod tests {
                 ScopedPeerEnv::empty().into(),
                 Capabilities::new(),
             )
+            .unwrap()
             .build();
         let reg = registry.registration("echo").expect("registered");
         assert_eq!(reg.provenance, OperationProvenance::Local);
@@ -639,6 +781,7 @@ mod tests {
                 Some(ScopedPeerEnv::new(["fs/readFile"])),
                 Capabilities::new(),
             )
+            .unwrap()
             .build();
         let reg = registry.registration("agent").expect("registered");
         assert_eq!(reg.provenance, OperationProvenance::Local);
@@ -657,6 +800,7 @@ mod tests {
                 echo_handler(),
                 Capabilities::new(),
             )
+            .unwrap()
             .build();
         let reg = registry.registration("vastai").expect("registered");
         assert_eq!(reg.provenance, OperationProvenance::FromOpenAPI);
@@ -673,6 +817,7 @@ mod tests {
                 OperationProvenance::FromCall,
                 Capabilities::new(),
             )
+            .unwrap()
             .build();
         let reg = registry.registration("remote").expect("registered");
         assert_eq!(reg.provenance, OperationProvenance::FromCall);
@@ -684,13 +829,16 @@ mod tests {
     fn builder_with_takes_full_bundle() {
         let registration = HandlerRegistration::new(
             external_spec("agent", AccessControl::default()),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::Session,
             Some(CompositionAuthority::new("sandbox", [])),
             Some(ScopedPeerEnv::new(["fs/readFile"])),
             Capabilities::new(),
         );
-        let registry = OperationRegistryBuilder::new().with(registration).build();
+        let registry = OperationRegistryBuilder::new()
+            .with(registration)
+            .unwrap()
+            .build();
         let reg = registry.registration("agent").expect("registered");
         assert_eq!(reg.provenance, OperationProvenance::Session);
         assert!(reg.composition_authority.is_some());
@@ -717,18 +865,145 @@ mod tests {
         let authority = CompositionAuthority::new("agent", ["fs:read".to_string()]);
         let scoped = ScopedPeerEnv::new(["fs/readFile"]);
         let caps = Capabilities::new().with_api_key("google", "k".to_string());
-        registry.register(HandlerRegistration::new(
-            external_spec("agent", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            Some(authority.clone()),
-            Some(scoped.clone()),
-            caps.clone(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("agent", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                Some(authority.clone()),
+                Some(scoped.clone()),
+                caps.clone(),
+            ))
+            .unwrap();
         let reg = registry.registration("agent").expect("found");
         assert_eq!(reg.spec.name, "agent");
         assert_eq!(reg.provenance, OperationProvenance::Local);
         assert_eq!(reg.composition_authority.as_ref().unwrap().label, "agent");
         assert!(reg.scoped_env.as_ref().unwrap().allows("fs/readFile"));
+    }
+
+    fn subscription_spec(name: &str) -> OperationSpec {
+        OperationSpec::new(
+            name,
+            OperationType::Subscription,
+            Visibility::External,
+            serde_json::json!({}),
+            serde_json::json!({}),
+            vec![],
+            AccessControl::default(),
+        )
+    }
+
+    fn echo_streaming_handler() -> StreamingHandler {
+        make_streaming_handler(|input, context| {
+            futures::stream::iter(vec![ResponseEnvelope::ok(context.request_id, input)])
+        })
+    }
+
+    #[tokio::test]
+    async fn invoke_on_stream_kind_returns_invalid_operation_type() {
+        let mut registry = OperationRegistry::new();
+        registry
+            .register(HandlerRegistration::new(
+                subscription_spec("events/stream"),
+                HandlerKind::Stream(echo_streaming_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let ctx = root_context("req-iot", None, None, false, ScopedPeerEnv::empty());
+        let response = registry
+            .invoke("events/stream", serde_json::json!({}), ctx)
+            .await;
+        match response.result {
+            Err(e) => assert_eq!(e.code, "INVALID_OPERATION_TYPE"),
+            other => panic!("expected INVALID_OPERATION_TYPE, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_on_once_kind_dispatches_normally() {
+        let mut registry = OperationRegistry::new();
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let ctx = root_context("req-once", None, None, false, ScopedPeerEnv::empty());
+        let response = registry
+            .invoke("echo", serde_json::json!({"hi": 1}), ctx)
+            .await;
+        assert_eq!(response.result, Ok(serde_json::json!({"hi": 1})));
+    }
+
+    #[test]
+    fn register_rejects_once_for_subscription_spec() {
+        let mut registry = OperationRegistry::new();
+        let result = registry.register(HandlerRegistration::new(
+            subscription_spec("events/stream"),
+            HandlerKind::Once(echo_handler()),
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new(),
+        ));
+        match result {
+            Err(msg) => assert!(
+                msg.contains("Subscription")
+                    && msg.contains("HandlerKind::Stream")
+                    && msg.contains("HandlerKind::Once"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_rejects_stream_for_query_spec() {
+        let mut registry = OperationRegistry::new();
+        let result = registry.register(HandlerRegistration::new(
+            external_spec("echo", AccessControl::default()),
+            HandlerKind::Stream(echo_streaming_handler()),
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new(),
+        ));
+        match result {
+            Err(msg) => assert!(
+                (msg.contains("Query") || msg.contains("Mutation"))
+                    && msg.contains("HandlerKind::Once")
+                    && msg.contains("HandlerKind::Stream"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn make_streaming_handler_produces_working_stream() {
+        use futures::stream::StreamExt;
+        let handler = echo_streaming_handler();
+        let ctx = root_context("req-st", None, None, false, ScopedPeerEnv::empty());
+        let mut stream = handler(serde_json::json!({"v": 1}), ctx);
+        let first = stream.next().await.expect("one envelope");
+        assert_eq!(first.result, Ok(serde_json::json!({"v": 1})));
+        let second = stream.next().await;
+        assert!(second.is_none(), "stream ends after one value");
+    }
+
+    #[test]
+    fn call_error_invalid_operation_type_is_not_retryable() {
+        let err = CallError::invalid_operation_type("bad path");
+        assert_eq!(err.code, "INVALID_OPERATION_TYPE");
+        assert!(!err.retryable);
+        assert!(err.details.is_none());
     }
 }

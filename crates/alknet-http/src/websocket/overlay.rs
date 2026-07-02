@@ -30,7 +30,7 @@ mod tests {
     };
     use alknet_call::registry::env::{OperationEnv, PeerRef};
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance, OperationRegistry,
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance, OperationRegistry,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{Identity, IdentityProvider};
@@ -113,7 +113,9 @@ mod tests {
     ) -> HandlerRegistration {
         HandlerRegistration::new(
             external_spec(name, acl),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
+            HandlerKind::Once(make_handler(|input, ctx| async move {
+                ResponseEnvelope::ok(ctx.request_id, input)
+            })),
             OperationProvenance::FromCall,
             composition_authority,
             None,
@@ -123,14 +125,18 @@ mod tests {
 
     fn echo_registry() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo/run", AccessControl::default()),
-            make_handler(|input, ctx| async move { ResponseEnvelope::ok(ctx.request_id, input) }),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo/run", AccessControl::default()),
+                HandlerKind::Once(make_handler(|input, ctx| async move {
+                    ResponseEnvelope::ok(ctx.request_id, input)
+                })),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -454,9 +460,9 @@ mod tests {
 
         conn.register_imported(HandlerRegistration::new(
             external_spec("ui/dragged", AccessControl::default()),
-            make_handler(|input, ctx| async move {
+            HandlerKind::Once(make_handler(|input, ctx| async move {
                 ResponseEnvelope::ok(ctx.request_id, serde_json::json!({ "echoed": input }))
-            }),
+            })),
             OperationProvenance::FromCall,
             None,
             None,
@@ -654,7 +660,7 @@ mod tests {
         };
         conn.register_imported(HandlerRegistration::new(
             subscription_spec("events/stream"),
-            handler,
+            HandlerKind::Once(handler),
             OperationProvenance::FromCall,
             None,
             None,

@@ -26,7 +26,7 @@ use super::wire::{
 use crate::protocol::wire::ResponseEnvelope;
 use crate::registry::context::{generate_request_id, AbortPolicy, OperationContext, ScopedPeerEnv};
 use crate::registry::env::OperationEnv;
-use crate::registry::registration::{Handler, HandlerRegistration};
+use crate::registry::registration::{HandlerKind, HandlerRegistration};
 use crate::registry::spec::AccessResult;
 
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -307,7 +307,7 @@ impl OperationEnv for OverlayOperationEnv {
             return ResponseEnvelope::not_found(parent.request_id.clone(), &name);
         }
 
-        let handler: Handler;
+        let handler: HandlerKind;
         let composition_authority;
         let scoped_env;
         let access_control;
@@ -316,7 +316,7 @@ impl OperationEnv for OverlayOperationEnv {
             let Some(registration) = overlay.get(&name) else {
                 return ResponseEnvelope::not_found(parent.request_id.clone(), &name);
             };
-            handler = Arc::clone(&registration.handler);
+            handler = registration.handler.clone();
             composition_authority = registration.composition_authority.clone();
             scoped_env = registration
                 .scoped_env
@@ -355,7 +355,15 @@ impl OperationEnv for OverlayOperationEnv {
             internal: true,
         };
 
-        handler(input, context).await
+        match handler {
+            HandlerKind::Once(h) => h(input, context).await,
+            HandlerKind::Stream(_) => ResponseEnvelope::error(
+                parent.request_id.clone(),
+                CallError::invalid_operation_type(
+                    "OperationEnv::invoke() called on a Subscription op; composition is request/response-only",
+                ),
+            ),
+        }
     }
 
     fn contains(&self, name: &str) -> bool {
@@ -421,7 +429,7 @@ impl Stream for SubscriptionStream {
 mod tests {
     use super::*;
     use crate::registry::context::CompositionAuthority;
-    use crate::registry::registration::{make_handler, OperationProvenance};
+    use crate::registry::registration::{make_handler, Handler, HandlerKind, OperationProvenance};
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::types::{Capabilities, MockConnection};
     use std::collections::HashMap;
@@ -476,7 +484,7 @@ mod tests {
     fn imported_registration(name: &str) -> HandlerRegistration {
         HandlerRegistration::new(
             external_spec(name),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::FromCall,
             None,
             None,
@@ -608,7 +616,7 @@ mod tests {
         });
         conn.register_imported(HandlerRegistration::new(
             external_spec("worker/exec"),
-            inspect_handler,
+            HandlerKind::Once(inspect_handler),
             OperationProvenance::FromCall,
             None,
             None,
@@ -631,7 +639,9 @@ mod tests {
     fn connection_accessor_returns_underlying_connection() {
         let conn = CallConnection::new(stub_connection());
         assert_eq!(
-            conn.connection().expect("quic connection present").remote_alpn(),
+            conn.connection()
+                .expect("quic connection present")
+                .remote_alpn(),
             b"alknet/call"
         );
     }
@@ -959,5 +969,40 @@ mod tests {
         let conn = CallConnection::new(stub_connection());
         assert!(conn.connection().is_some(), "QUIC connection present");
         assert!(conn.identity().is_none(), "no identity set yet");
+    }
+
+    #[tokio::test]
+    async fn overlay_env_invoke_on_stream_kind_returns_invalid_operation_type() {
+        use crate::registry::registration::make_streaming_handler;
+        let conn = CallConnection::new(stub_connection());
+        let streaming_handler = make_streaming_handler(|input, ctx| {
+            futures::stream::iter(vec![ResponseEnvelope::ok(ctx.request_id, input)])
+        });
+        conn.register_imported(HandlerRegistration::new(
+            OperationSpec::new(
+                "events/stream",
+                OperationType::Subscription,
+                Visibility::External,
+                serde_json::json!({}),
+                serde_json::json!({}),
+                vec![],
+                AccessControl::default(),
+            ),
+            HandlerKind::Stream(streaming_handler),
+            OperationProvenance::FromCall,
+            None,
+            None,
+            Capabilities::new(),
+        ));
+        let env = conn.overlay_env();
+        let scoped = ScopedPeerEnv::new(["events/stream"]);
+        let ctx = root_context("root-stream", scoped, env.clone());
+        let response = env
+            .invoke("events", "stream", serde_json::json!({}), &ctx)
+            .await;
+        match response.result {
+            Err(e) => assert_eq!(e.code, "INVALID_OPERATION_TYPE"),
+            other => panic!("expected INVALID_OPERATION_TYPE, got {other:?}"),
+        }
     }
 }

@@ -295,7 +295,7 @@ mod tests {
         services_list_handler, services_list_spec, services_schema_handler, services_schema_spec,
     };
     use alknet_call::registry::registration::{
-        make_handler, HandlerRegistration, OperationProvenance,
+        make_handler, HandlerKind, HandlerRegistration, OperationProvenance,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType};
     use alknet_core::auth::{AuthToken, Identity};
@@ -376,46 +376,52 @@ mod tests {
 
     fn registry_with_echo() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo/run", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo/run", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
     fn registry_with_restricted_op() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec(
-                "admin/run",
-                AccessControl {
-                    required_scopes: vec!["admin".to_string()],
-                    ..Default::default()
-                },
-            ),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec(
+                    "admin/run",
+                    AccessControl {
+                        required_scopes: vec!["admin".to_string()],
+                        ..Default::default()
+                    },
+                ),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
     fn registry_with_internal_op() -> Arc<OperationRegistry> {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret/op"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret/op"),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         Arc::new(registry)
     }
 
@@ -424,37 +430,43 @@ mod tests {
     ) -> Arc<OperationRegistry> {
         let mut inner = OperationRegistry::new();
         for op in inner_ops {
-            inner.register(op);
+            inner.register(op).unwrap();
         }
         let inner = Arc::new(inner);
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            services_list_spec(),
-            services_list_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            services_schema_spec(),
-            services_schema_handler(Arc::clone(&inner)),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                services_list_spec(),
+                HandlerKind::Once(services_list_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                services_schema_spec(),
+                HandlerKind::Once(services_schema_handler(Arc::clone(&inner))),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         for spec in inner.list_operations() {
             let name = spec.name.clone();
             let reg = inner.registration(&name).unwrap();
-            registry.register(HandlerRegistration::new(
-                reg.spec.clone(),
-                Arc::clone(&reg.handler),
-                reg.provenance,
-                reg.composition_authority.clone(),
-                reg.scoped_env.clone(),
-                reg.capabilities.clone(),
-            ));
+            registry
+                .register(HandlerRegistration::new(
+                    reg.spec.clone(),
+                    reg.handler.clone(),
+                    reg.provenance,
+                    reg.composition_authority.clone(),
+                    reg.scoped_env.clone(),
+                    reg.capabilities.clone(),
+                ))
+                .unwrap();
         }
         Arc::new(registry)
     }
@@ -572,7 +584,7 @@ mod tests {
         let ops = vec![
             HandlerRegistration::new(
                 external_spec("public/echo", AccessControl::default()),
-                echo_handler(),
+                HandlerKind::Once(echo_handler()),
                 OperationProvenance::Local,
                 None,
                 None,
@@ -586,7 +598,7 @@ mod tests {
                         ..Default::default()
                     },
                 ),
-                echo_handler(),
+                HandlerKind::Once(echo_handler()),
                 OperationProvenance::Local,
                 None,
                 None,
@@ -625,7 +637,7 @@ mod tests {
     async fn schema_returns_full_spec_for_authorized_op() {
         let ops = vec![HandlerRegistration::new(
             external_spec("echo/run", AccessControl::default()),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::Local,
             None,
             None,
@@ -657,7 +669,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::Local,
             None,
             None,
@@ -709,22 +721,26 @@ mod tests {
     #[tokio::test]
     async fn batch_internal_op_returns_not_found_in_array() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret/op"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
-        registry.register(HandlerRegistration::new(
-            external_spec("echo/run", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret/op"),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo/run", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         let registry = Arc::new(registry);
         let router = build_router(registry, unused_provider());
         let req = Request::builder()
@@ -823,14 +839,16 @@ mod tests {
     #[test]
     fn is_internal_op_detects_registered_internal_op() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            internal_spec("secret/op"),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                internal_spec("secret/op"),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         assert!(is_internal_op(&registry, "secret/op"));
         assert!(is_internal_op(&registry, "/secret/op"));
     }
@@ -838,14 +856,16 @@ mod tests {
     #[test]
     fn is_internal_op_false_for_external_op() {
         let mut registry = OperationRegistry::new();
-        registry.register(HandlerRegistration::new(
-            external_spec("echo/run", AccessControl::default()),
-            echo_handler(),
-            OperationProvenance::Local,
-            None,
-            None,
-            Capabilities::new(),
-        ));
+        registry
+            .register(HandlerRegistration::new(
+                external_spec("echo/run", AccessControl::default()),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
         assert!(!is_internal_op(&registry, "echo/run"));
     }
 
@@ -906,7 +926,7 @@ mod tests {
         let ops = vec![
             HandlerRegistration::new(
                 external_spec("public/echo", AccessControl::default()),
-                echo_handler(),
+                HandlerKind::Once(echo_handler()),
                 OperationProvenance::Local,
                 None,
                 None,
@@ -920,7 +940,7 @@ mod tests {
                         ..Default::default()
                     },
                 ),
-                echo_handler(),
+                HandlerKind::Once(echo_handler()),
                 OperationProvenance::Local,
                 None,
                 None,
@@ -953,7 +973,7 @@ mod tests {
     async fn schema_unknown_op_returns_404() {
         let ops = vec![HandlerRegistration::new(
             external_spec("echo/run", AccessControl::default()),
-            echo_handler(),
+            HandlerKind::Once(echo_handler()),
             OperationProvenance::Local,
             None,
             None,

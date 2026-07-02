@@ -15,7 +15,7 @@ use alknet_call::registry::discovery::{
     services_list_handler, services_list_spec, services_schema_handler, services_schema_spec,
 };
 use alknet_call::registry::registration::{
-    make_handler, Handler, HandlerRegistration, OperationProvenance, OperationRegistry,
+    make_handler, Handler, HandlerKind, HandlerRegistration, OperationProvenance, OperationRegistry,
 };
 use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
 use alknet_core::auth::{Identity, IdentityProvider};
@@ -124,58 +124,66 @@ async fn build_raw_quinn_server(
 /// services/list + services/schema discovery handlers.
 fn build_server_registry() -> Arc<OperationRegistry> {
     let mut registry = OperationRegistry::new();
-    registry.register(HandlerRegistration::new(
-        external_spec("server/echo"),
-        echo_handler(),
-        OperationProvenance::Local,
-        None,
-        None,
-        Capabilities::new(),
-    ));
-    registry.register(HandlerRegistration::new(
-        external_spec("server/secret"),
-        echo_handler(),
-        OperationProvenance::Local,
-        None,
-        None,
-        Capabilities::new().with_api_key("google", "server-secret".to_string()),
-    ));
+    registry
+        .register(HandlerRegistration::new(
+            external_spec("server/echo"),
+            HandlerKind::Once(echo_handler()),
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new(),
+        ))
+        .unwrap();
+    registry
+        .register(HandlerRegistration::new(
+            external_spec("server/secret"),
+            HandlerKind::Once(echo_handler()),
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new().with_api_key("google", "server-secret".to_string()),
+        ))
+        .unwrap();
     let discovery_registry = Arc::new(registry);
     let list_handler = services_list_handler(Arc::clone(&discovery_registry));
     let schema_handler = services_schema_handler(Arc::clone(&discovery_registry));
     let mut full = OperationRegistry::new();
     full.register(HandlerRegistration::new(
         external_spec("server/echo"),
-        echo_handler(),
+        HandlerKind::Once(echo_handler()),
         OperationProvenance::Local,
         None,
         None,
         Capabilities::new(),
-    ));
+    ))
+    .unwrap();
     full.register(HandlerRegistration::new(
         external_spec("server/secret"),
-        echo_handler(),
+        HandlerKind::Once(echo_handler()),
         OperationProvenance::Local,
         None,
         None,
         Capabilities::new().with_api_key("google", "server-secret".to_string()),
-    ));
+    ))
+    .unwrap();
     full.register(HandlerRegistration::new(
         services_list_spec(),
-        list_handler,
+        HandlerKind::Once(list_handler),
         OperationProvenance::Local,
         None,
         None,
         Capabilities::new(),
-    ));
+    ))
+    .unwrap();
     full.register(HandlerRegistration::new(
         services_schema_spec(),
-        schema_handler,
+        HandlerKind::Once(schema_handler),
         OperationProvenance::Local,
         None,
         None,
         Capabilities::new(),
-    ));
+    ))
+    .unwrap();
     Arc::new(full)
 }
 
@@ -191,14 +199,16 @@ async fn two_node_call_round_trip() {
     // it as UnknownIssuer since the self-signed cert is not in the platform
     // root store.
     let mut client_registry = OperationRegistry::new();
-    client_registry.register(HandlerRegistration::new(
-        external_spec("client/echo"),
-        echo_handler(),
-        OperationProvenance::Local,
-        None,
-        None,
-        Capabilities::new(),
-    ));
+    client_registry
+        .register(HandlerRegistration::new(
+            external_spec("client/echo"),
+            HandlerKind::Once(echo_handler()),
+            OperationProvenance::Local,
+            None,
+            None,
+            Capabilities::new(),
+        ))
+        .unwrap();
     let client_registry = Arc::new(client_registry);
     let client = CallClient::new(Arc::clone(&client_registry), Arc::new(NoopIdentityProvider));
 
