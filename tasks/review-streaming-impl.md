@@ -1,7 +1,7 @@
 ---
 id: review-streaming-impl
 name: Review ADR-049 streaming handler implementation for spec conformance and end-to-end correctness
-status: pending
+status: completed
 depends_on: [call/protocol/dispatch-streaming-branch, call/client/from-call-streaming-forwarding, http/gateway/invoke-streaming, http/server/subscribe-sse-streaming, http/adapters/from-openapi-sse-streaming]
 scope: broad
 risk: low
@@ -207,4 +207,4 @@ review.
 
 ## Summary
 
-> To be filled on completion
+> Reviewed ADR-049 streaming handler implementation across all 12 checklist points. All type surface, registry, builder, dispatch, from_call, gateway, /subscribe SSE, from_openapi SSE, ADR conformance, end-to-end correctness, pattern consistency, and test coverage items verified. 555 tests pass (306 call + 2 integration + 247 http), clippy clean, fmt clean. Fixed 2 pre-existing websocket subscription tests that expected INVALID_OPERATION_TYPE but now get call.responded (dispatch_requested routes Subscription via invoke_streaming). All 9 ADR-049 decisions implemented. Placeholders removed (subscribe_stream_from_envelope, envelope_to_sse_stream, stream_subscription). from_mcp unchanged (always HandlerKind::Once).
