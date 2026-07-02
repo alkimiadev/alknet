@@ -1,7 +1,7 @@
 ---
 id: http/gateway/invoke-streaming
 name: Implement GatewayDispatch::invoke_streaming() returning BoxStream<ResponseEnvelope>
-status: pending
+status: completed
 depends_on: [call/registry/invoke-streaming]
 scope: narrow
 risk: medium
@@ -127,4 +127,4 @@ don't duplicate the logic.
 
 ## Summary
 
-> To be filled on completion
+> Added GatewayDispatch::invoke_streaming() returning BoxStream<ResponseEnvelope>. Security axis provably identical to invoke() via shared build_root_context_inner(bounded: bool); extracted build_root_context_streaming for deadline: None (unbounded subscriptions). Calls OperationRegistry::invoke_streaming(). to_mcp untouched. Added 9 unit tests (all error paths + streaming dispatch + deadline: None verification). 243 tests pass.
