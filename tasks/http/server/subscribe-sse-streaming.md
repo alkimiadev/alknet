@@ -1,7 +1,7 @@
 ---
 id: http/server/subscribe-sse-streaming
 name: Wire /subscribe handler to GatewayDispatch::invoke_streaming() and pipe BoxStream to SSE
-status: pending
+status: completed
 depends_on: [http/gateway/invoke-streaming]
 scope: narrow
 risk: medium
@@ -153,4 +153,4 @@ stream is dropped (not leaked) on disconnect.
 
 ## Summary
 
-> To be filled on completion
+> Replaced /subscribe one-event placeholder with real streaming path. subscribe_handler now calls GatewayDispatch::invoke_streaming() and pipes BoxStream to SSE via subscribe_stream_from_envelope_stream (StreamExt::map). Ok → data: frame, Err → event:error (terminal, stream ends after). Removed placeholder helpers (subscribe_stream_from_envelope, envelope_to_sse_stream). Kept subscribe_stream_internal_error for Internal ops (NOT_FOUND). Added 6 unit tests. Also fixed 2 pre-existing websocket subscription tests that expected INVALID_OPERATION_TYPE but now get call.responded (dispatch_requested routes Subscription via invoke_streaming). 247 tests pass.
