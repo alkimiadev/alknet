@@ -779,10 +779,11 @@ mod tests {
         let out = handle_inbound_envelope(&dp, &conn, request)
             .await
             .expect("response");
-        assert_eq!(out.r#type, EVENT_ERROR);
+        assert_eq!(out.r#type, EVENT_RESPONDED);
+        assert_eq!(out.id, "sub-0");
         assert_eq!(
-            out.payload.get("code"),
-            Some(&serde_json::json!("INVALID_OPERATION_TYPE"))
+            out.payload.get("output"),
+            Some(&serde_json::json!({ "n": 1 }))
         );
     }
 
@@ -1077,10 +1078,10 @@ mod tests {
             MockMsg::Binary(bytes) => {
                 let env: EventEnvelope = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(env.id, "sub-ws-0");
-                assert_eq!(env.r#type, EVENT_ERROR);
+                assert_eq!(env.r#type, EVENT_RESPONDED);
                 assert_eq!(
-                    env.payload.get("code"),
-                    Some(&serde_json::json!("INVALID_OPERATION_TYPE"))
+                    env.payload.get("output"),
+                    Some(&serde_json::json!({ "n": 1 }))
                 );
             }
             other => panic!("expected binary, got {other:?}"),
