@@ -1,7 +1,7 @@
 ---
 id: http/adapters/from-openapi-sse-streaming
 name: Implement from_openapi Subscription forwarding as StreamingHandler (SSE response → BoxStream<ResponseEnvelope>)
-status: pending
+status: completed
 depends_on: [call/registry/streaming-handler-handlerkind]
 scope: narrow
 risk: medium
@@ -240,4 +240,4 @@ HandlerRegistration::new(spec, handler, OperationProvenance::FromOpenAPI, None, 
 
 ## Summary
 
-> To be filled on completion
+> Branched build_registration on op_type: Subscription → make_streaming_handler + forward_stream() (HandlerKind::Stream), Query/Mutation → existing make_handler + forward() (HandlerKind::Once). forward_stream() sends Accept: text/event-stream, streams SSE chunks via stream::unfold over response.bytes_stream(), reusing parse_sse_frames; each data: frame → one ResponseEnvelope::ok(), HTTP error → single ResponseEnvelope::error(), SSE end → ResponseStream ends. Removed stream_subscription() collect-all placeholder. Added 4 tests + updated integration test. 234 tests pass.
