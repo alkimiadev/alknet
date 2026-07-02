@@ -1,7 +1,7 @@
 ---
 id: call/registry/streaming-handler-handlerkind
 name: Introduce StreamingHandler, HandlerKind, ResponseStream types and migrate HandlerRegistration to HandlerKind
-status: pending
+status: completed
 depends_on: []
 scope: broad
 risk: medium
@@ -253,4 +253,4 @@ need the explicit `HandlerKind::Once(...)` wrap.
 
 ## Summary
 
-> To be filled on completion
+> Introduced StreamingHandler/ResponseStream type aliases and HandlerKind enum (Once|Stream) + make_streaming_handler() helper in registration.rs; added CallError::invalid_operation_type() (sixth protocol code, retryable: false) in wire.rs; flipped HandlerRegistration.handler to HandlerKind and changed new() signature; builder absorbs wrapping (with_local/with_leaf wrap Handler in Once for Query/Mutation, new with_local_streaming/with_leaf_streaming take StreamingHandler and wrap in Stream for Subscription) with kind/op_type mismatch validation; OperationRegistry::register() now returns Result<(), String> with clear mismatch message; invoke() errors on HandlerKind::Stream with INVALID_OPERATION_TYPE; OverlayOperationEnv::invoke_with_policy matches on HandlerKind (Stream -> INVALID_OPERATION_TYPE); migrated all ~95 HandlerRegistration::new() call sites to wrap in HandlerKind::Once(handler); updated two websocket subscription tests to expect INVALID_OPERATION_TYPE; added unit tests for invoke/register validation, make_streaming_handler, and overlay Stream-kind rejection. All verification passes (build, clippy -D warnings, test, fmt --check) for alknet-call + alknet-http.
