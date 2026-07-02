@@ -1,7 +1,7 @@
 ---
 id: call/client/from-call-streaming-forwarding
 name: Implement from_call streaming forwarding handler (Subscription → CallConnection::subscribe → StreamingHandler)
-status: pending
+status: completed
 depends_on: [call/registry/streaming-handler-handlerkind]
 scope: narrow
 risk: medium
@@ -169,4 +169,4 @@ or the pending entry's removal handles it).
 
 ## Summary
 
-> To be filled on completion
+> Branched build_bundles on spec.op_type: Subscription → make_streaming_forwarding_handler (HandlerKind::Stream), Query/Mutation → existing make_forwarding_handler (HandlerKind::Once). Added CallConnection::subscribe_with_payload() mirroring call_with_payload (registers in PendingRequestMap, abort cascade wired). Streaming forwarding handler reuses build_forwarded_payload for forwarded_for + auth_token (ADR-032). composition_authority: None, scoped_env: None for FromCall streaming leaves. Added 7 unit tests covering all branches and forwarding behavior.
