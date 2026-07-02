@@ -168,11 +168,26 @@ impl CallConnection {
         operation_id: &str,
         input: Value,
     ) -> impl Stream<Item = ResponseEnvelope> {
-        let request_id = generate_request_id();
         let payload = serde_json::json!({
             "operationId": operation_id,
             "input": input,
         });
+        self.subscribe_with_payload(payload).await
+    }
+
+    /// Subscribe to a remote op with a caller-constructed `call.requested`
+    /// payload. The payload MUST include `operationId` and `input`; the
+    /// caller may add `forwarded_for` (ADR-032) and `auth_token` (ADR-017 §7)
+    /// for the hub forwarding path used by `from_call`'s streaming forwarding
+    /// handler. Mirrors [`call_with_payload`](Self::call_with_payload) so the
+    /// forwarding handler can populate `forwarded_for` + `auth_token` on the
+    /// subscription payload (the plain [`subscribe`](Self::subscribe) builds
+    /// the payload internally and omits those fields).
+    pub async fn subscribe_with_payload(
+        &self,
+        payload: Value,
+    ) -> impl Stream<Item = ResponseEnvelope> {
+        let request_id = generate_request_id();
 
         let connection = match &self.connection {
             Some(c) => c,
