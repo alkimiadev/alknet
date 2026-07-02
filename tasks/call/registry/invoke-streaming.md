@@ -1,7 +1,7 @@
 ---
 id: call/registry/invoke-streaming
 name: Implement OperationRegistry::invoke_streaming() returning ResponseStream
-status: pending
+status: completed
 depends_on: [call/registry/streaming-handler-handlerkind]
 scope: narrow
 risk: medium
@@ -167,4 +167,4 @@ streams. The error envelope carries the `request_id` from the context.
 
 ## Summary
 
-> To be filled on completion
+> Added OperationRegistry::invoke_streaming() in crates/alknet-call/src/registry/registration.rs — the streaming dispatch path for Subscription operations. Same visibility + ACL checks as invoke() (provably identical security axis), then dispatches the StreamingHandler and returns its ResponseStream. Pre-handler errors (not-found, forbidden, INVALID_OPERATION_TYPE for non-Subscription ops) yield a single error ResponseEnvelope via stream::once, then end. Added 6 unit tests covering all paths (subscription dispatch, unknown op, query op cross-kind error, internal op from external, ACL denied, internal call using handler_identity).
