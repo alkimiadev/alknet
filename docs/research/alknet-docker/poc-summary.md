@@ -122,7 +122,9 @@ Following the filesystem POC's pattern of distinguishing feasibility-validated f
 
 6. **Label namespace / ownership.** Dispatch used `dispatch.managed=true`. The real crate needs a configurable label prefix and ownership mapping (`alknet.owner=<peer-id>`) tied to the call protocol's identity model. Spec-scope, not feasibility.
 
-7. **Fleet view (multiple hosts).** The POC is single-host (one `bollard::Docker` client, local socket). The fleet view — dev1 + ns528096 + runpod — is a client-side concern: a `CallClient` talking to multiple endpoints, each running alknet-docker locally. This composes with the ALPN model cleanly. The later normalization crate (`alknet-compute` or similar) is the fleet client that picks which endpoint to call.
+7. **Fleet view (multiple hosts).** The POC is single-host (one `bollard::Docker` client, local socket). The fleet view — multiple dedicated servers + rented instances (e.g. runpod) — is a client-side concern: a `CallClient` talking to multiple endpoints, each running alknet-docker locally. This composes with the ALPN model cleanly. The later normalization crate is the fleet client that picks which endpoint to call — see §6 below for the boundary and the head-worker/machine-node model that frames it.
+
+> **Note (correction):** an earlier draft of this section called the normalization crate `alknet-compute`. That name is wrong. `alknet-compute` is an example of something a *normalized* `alknet-container` might **run inside** a container — a workload, not the fleet layer. The normalization crate is `alknet-container` (or similar), and its job is making any docker-capable machine addressable through one shape.
 
 ---
 
@@ -156,7 +158,27 @@ The POC uses the local checkout at 0.21.0. The real crate should depend on publi
 
 ### 6. The normalization crate boundary (scoping)
 
-Where does `alknet-docker` end and the later normalization crate (`alknet-compute`?) begin? The conversation says alknet-docker is "more generalized" (thin wrapper over bollard) and the normalization layer (the `InstanceProvider` trait over docker/vast/runpod) comes later, in a separate crate. The POC validates the thin-wrapper side. The normalization crate is the fleet client that talks to multiple alknet-docker endpoints. This keeps alknet-docker single-host and bollard-specific; the normalization layer is transport-agnostic (it talks the call protocol, not bollard).
+Where does `alknet-docker` end and the later normalization crate begin?
+
+**alknet-docker** stays a thin, single-host, bollard-specific wrapper. It talks to one local docker daemon and exposes operations over the call protocol. The POC validates this side.
+
+**The normalization layer** — tentatively `alknet-container` — is the fleet client that talks to multiple alknet-docker endpoints over the call protocol (not bollard). It makes "any docker-capable machine" addressable through one shape, regardless of whether that machine is a dedicated OVH server, a runpod non-GPU instance ($0.07/hr), a vast.ai GPU box, or a local dev box.
+
+**What `alknet-compute` actually is:** a workload — an example of something a normalized `alknet-container` would *run inside* a container it manages, not the fleet layer itself. An earlier conflation of these two is the thing being corrected here.
+
+**The head-worker / machine-node model.** Framed ray.io-style to untangle the fleet topology:
+
+- **Machine node** — any node capable of running docker. Neutral about role.
+- **Head node (hub)** — a node that other nodes connect *to* and that manages them. E.g. a dedicated server hosting its existing containers *plus* a hub endpoint running in a container on that same node.
+- **Worker node (spoke)** — a node that connects *to* a head and exposes its local operations so the head can manage its containers. E.g. a second dedicated server would connect to the hub and expose its docker operations for remote management.
+
+A machine can be both spoke and hub. Two dedicated servers (e.g. rented from OVH) are both machine nodes; one additionally hosts the hub. When scaling dev agents or needing GPUs, rented runpod/vast.ai instances become worker spokes that dial the same hub.
+
+**Prior art — the dispatch POC.** `/workspace/@alkdev/dispatch` is an older, out-of-date-deps POC that demonstrates the *reverse* of a typical GitHub/Gitea runner: instead of the runner dialing a control plane, the control plane dials into worker nodes over SSH. Its `InstanceProvider` trait (`src/provider.rs`) and `DockerProvider` (`src/docker.rs`, bollard 0.18, `dispatch.managed=true` labels, SSH-key-injection into containers) is the same "normalize heterogeneous compute" idea, but implemented by requiring SSH on the worker end. The SSH requirement is realistic for runpod/vast.ai but is exactly the friction alknet-container removes: the worker dials the hub over the call protocol and exposes its docker operations directly — no SSH, no key injection, no port binding to 127.0.0.1.
+
+**How external providers normalize.** runpod exposes a standard OpenAPI spec; `alknet-http`'s `from_openapi` adapter (`crates/alknet-http/src/adapters/from_openapi.rs`) can import it wholesale and surface its operations as call-protocol operations. vast.ai has a similar API but needs customization (no clean OpenAPI drop-in). The normalization crate wraps both behind one `InstanceProvider`-shaped trait so the fleet client is provider-agnostic.
+
+This keeps alknet-docker single-host and bollard-specific; the normalization layer is transport- and provider-agnostic (it talks the call protocol and `from_openapi`-imported HTTP APIs, not bollard or raw SSH).
 
 ---
 
@@ -216,7 +238,8 @@ alknet-docker-poc/
 - alknet-call wire format: `/workspace/@alkdev/alknet/crates/alknet-call/src/protocol/wire.rs` (EventEnvelope, FrameFramedReader/Writer — the POC's `frame.rs` mirrors this)
 - alknet-call dispatch: `/workspace/@alkdev/alknet/crates/alknet-call/src/protocol/dispatch.rs` (`handle_stream` at :295, `pump_stream` at :340 — the streaming pump the POC's `drive_logs`/`drive_exec` mirror)
 - alknet-call registry: `/workspace/@alkdev/alknet/crates/alknet-call/src/registry/registration.rs` (`StreamingHandler` at :20 — the handler shape for subscription ops)
-- dispatch POC: `/workspace/@alkdev/dispatch/src/docker.rs` (previous bollard 0.18 wrapping, opinionated for SSH key injection)
+- dispatch POC (prior art, "reverse runner"): `/workspace/@alkdev/dispatch` — `src/provider.rs` (`InstanceProvider` trait), `src/docker.rs` (bollard 0.18 wrapping, SSH-key-injection model), `src/vast.rs`, `AGENTS.md` (provider architecture summary)
+- alknet-http `from_openapi` adapter (runpod-style provider import): `/workspace/@alkdev/alknet/crates/alknet-http/src/adapters/from_openapi.rs`
 - filesystem POC summary (structure reference): `/workspace/@alkdev/alknet/docs/research/alknet-filesystem/poc-summary.md`
 - SDD process: `/workspace/@alkdev/alknet/docs/sdd_process.md` (Phase 0 exploration → Phase 1 architecture)
-- System docs: `/workspace/system/README.md` (dev1 + ns528096 two-server setup, the fleet use case)
+- System docs (private, not in-repo): the maintainer's two-server fleet setup that motivates this design. The fleet use case is captured abstractly in §6 above; the concrete hostnames/IPs/paths are kept out of the public repo.
