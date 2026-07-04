@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-04
+last_updated: 2026-07-05
 ---
 
 # Open Questions
@@ -973,9 +973,10 @@ is a feature extension, not an unmade architecture decision.
 - **Origin**: [alknet-docker POC summary](../../research/alknet-docker/poc-summary.md)
   §"Open Unknowns" #3 (container-as-resource identity model); generalized
   during the Phase 1 review pass triggered by that research finding.
-- **Status**: open — the two structural decisions below are made; the
-  remaining questions (listed under "Open for the ADR") are what the ADR
-  must settle before the dependent crate specs can be drafted.
+- **Status**: resolved — all five sub-questions are decided (storage
+  shape, integration point, proxy-vs-grant, and the four clarifications).
+  The ADR will write these into decision text; the dependent crate specs
+  can declare their `AccessControl` shapes against this model.
 - **Door type**: One-way (the `AccessControl::check` signature change and
   the `OperationSpec.resource_id_path` addition in core/call), two-way (the
   ownership provider mechanism, per the established repo/adapter pattern)
@@ -989,7 +990,7 @@ is a feature extension, not an unmade architecture decision.
   and downstream crates build on whatever default was picked, making the
   "cheap reversal" expensive.
 
-- **Resolution (decided so far).**
+- **Resolution.**
 
   **Decision 1 — storage side: reuse the repo/adapter pattern.** The
   ownership store is a fourth instance of the established repo/adapter
@@ -1058,74 +1059,131 @@ is a feature extension, not an unmade architecture decision.
   conventions, no handler-level knowledge, no "the dispatcher just knows."
   The contract is on the spec, where it belongs.
 
-- **Open for the ADR.** The decisions above settle the storage shape and
-  the integration point. The ADR must still address:
+- **Resolved specifics (the four questions the ADR must write into
+  decision text).** The decisions above settle the storage shape and the
+  integration point. The four specifics below settle how the model
+  behaves at the edges:
 
-  1. **No-specific-resource operations (the `list` case).** Operations
-     with `resource_type` set but `resource_id_path` absent — e.g.
-     `docker/container/list`, which doesn't reference a specific container.
-     There the question is "does this peer have *any* resource of this
-     type?" rather than "does this peer own *this* resource?" Option 2
-     handles this naturally (check asks the provider "any resources of
-     type T for this identity?" when no specific ID is present), but the
-     exact semantics need to be pinned: does the ACL gate the whole call
-     (allow/deny), or does the handler filter the result to owned
-     containers (allow + filter)? The former is the scope-gating path; the
-     latter is the result-filtering path. They compose (scope-gate the
-     call, then filter the result), but the ADR should state which is the
-     default and how a spec declares which it wants. `list` is the case
+  1. **No-specific-resource operations (the `list` case) — scope-gate +
+     result-filter, composing.** Operations with `resource_type` set but
+     `resource_id_path` absent — e.g. `docker/container/list`, which
+     doesn't reference a specific container. When a coordinator lists
+     containers it owns, it should see only its own — not every container
+     on the host. That's not just scope-gating ("can you call
+     `container/list` at all?") and not just result-filtering ("return
+     only owned") — it's both: scope-gate the call (does the peer have the
+     `container:list` scope), then filter the result to owned resources.
+     The default is "allow if scoped, filter to owned." `list` is the case
      that forces this; `exec`/`inspect`/`stop` against a specific
-     container are the clean case.
+     container are the clean case (single targeted ownership lookup via
+     `resource_id_path`). The ADR states the default and how a spec
+     declares which it wants.
 
-  2. **Teardown coupling.** The ownership store's write path (revoke on
-     teardown) must be coupled to the spawned resource's lifecycle, not
-     left to operator workflows. When a container dies or is removed, the
-     ownership entry must be revoked — otherwise the store accumulates
-     stale entries and an ACL check could reference a resource that no
-     longer exists. The coupling mechanism (the docker handler explicitly
-     calls revoke on container exit, vs. a background reaper, vs. TTL-based
-     expiry) is two-way-door mechanism work, but the ADR should state the
-     coupling requirement and the default mechanism.
+  2. **Teardown coupling — automatic, handler-driven.** The ownership
+     store's write path (revoke on teardown) is coupled to the spawned
+     resource's lifecycle. The "burn it and start over" capability depends
+     on ownership state tracking the lifecycle correctly. When a container
+     dies or is destroyed, the ownership entry is revoked *by the handler
+     that managed the lifecycle* (the docker handler calls revoke on
+     container exit), not by an operator workflow or a background reaper.
+     The burn-and-start-over pattern is: destroy container → ownership
+     revoked automatically → spawn new container → new ownership recorded.
+     If teardown weren't automatic, stale ownership entries would
+     accumulate and the "burn" path would leave dangling ACL state. The
+     architectural commitment is: handler-driven revoke on lifecycle end,
+     not a reaper. The coupling mechanism (explicit handler call vs.
+     lifecycle-hook abstraction) is two-way-door implementation work.
 
-  3. **Fleet representation (spoke resources on the hub).** When a worker
-     spoke spawns a container and exposes it to the hub over the call
-     protocol, the hub's ownership store needs to represent "peer X owns
-     resource R" for routing/ACL on the hub side. Whether the spoke pushes
-     ownership records to the hub on spawn, the hub derives them from
-     `from_call`-discovered operations, or the spoke owns the ACL decision
-     and the hub forwards — is a real question with cross-node state
-     implications. The POC summary's §6 head-worker/machine-node model
-     frames the topology; this question is where that topology meets the
-     ownership model. Likely the most consequential of the three open
-     questions.
+  3. **Fleet representation (spoke resources on the hub) — per-node
+     ownership, downstream app tracks "who is this for."** Under the
+     proxy pattern (Decision 3 below), the docker node records "coordinator
+     owns C" in its local ownership store. The coordinator's "I started C
+     for agent Y" mapping lives in the coordinator's own downstream-app
+     state, not in the core ownership store. The ownership store is
+     per-node (each docker node records its local ownership); the hub's
+     agent-to-workspace mapping is app state. There is no cross-node
+     ownership propagation in the base model — the spoke sees the hub as
+     the owner, and the hub's "who is this for" is its own concern. The
+     proxy pattern keeps ownership local, which is why this question is
+     less consequential than originally framed.
 
-  4. **Composition interaction.** ADR-015/022 populate
-     `CompositionAuthority.resources` for internal composition calls. With
-     dynamic ownership, an internal composition that targets a runtime-
-     spawned resource (a handler composing `docker/container/exec` against
-     a specific container) needs the composition authority to be checkable
-     against the ownership store too, not just against the static
-     `CompositionAuthority.resources` map. Whether `CompositionAuthority`
-     grows a dynamic-ownership path parallel to `Identity`, or composition
-     always runs under the caller's ownership, or some third option — needs
-     to be stated so the privilege model stays coherent with the ownership
-     model.
+  4. **Composition interaction — two separate checks, no change to
+     `CompositionAuthority`.** In the proxy pattern, the coordinator
+     composes `docker/container/exec` on behalf of an agent. Two checks
+     must pass: (a) the coordinator's `CompositionAuthority` has the
+     `container:exec` scope (static, ADR-015/022 unchanged), and (b) the
+     coordinator owns this specific container (dynamic, ownership store).
+     The composition authority stays static — it doesn't grow a dynamic
+     path. The ownership store handles the dynamic resource-level check.
+     Both must pass; they're orthogonal. **ADR-015/022 don't need
+     amendment** — the composition authority is unchanged, and the
+     ownership store is an additional check, not a modification to the
+     existing one.
 
-  These are genuine open questions, not deferred decisions — the ADR must
-  answer them. They were surfaced by choosing Option 2 + `resource_id_path`
-  rather than by leaving the integration point undecided; recording them
-  here so the ADR drafting starts from a known set of specifics to work
-  out, not from a blank page.
+- **Decision 3 — access pattern: proxy-only as the base model.** The base
+  model is "spawner owns, proxy to share, teardown revokes" — with no
+  grant/transfer mechanism in the core ownership store. Two patterns for
+  how a downstream consumer reaches a runtime-spawned resource were
+  identified:
+
+  - **Proxy pattern (the common case, and the only one the core model
+    supports).** A coordinator starts a container and manages its
+    lifecycle; the end user never talks to docker directly. The
+    coordinator re-exports the docker operations it wants to expose (via
+    `from_call` — the adapter that imports a peer's operations and
+    re-registers them locally, ADR-017 — or by composing them in its own
+    handlers), and when the end user invokes one, the coordinator is the
+    *direct caller* to the docker endpoint. Docker's ownership store sees the coordinator as the
+    owner and as the caller — the check passes. The end user's identity
+    rides as `forwarded_for` metadata (ADR-032), and the coordinator does
+    whatever end-user-level ACL it wants at its own layer. This is the
+    kernel/user-land + forwarded-for model: the hub's authority is used,
+    `forwarded_for` is metadata, the hub handles its own ACL.
+
+  - **Grant pattern ("poking holes") — not in the core model.** A
+    downstream app wants to give an end user *direct* call-protocol
+    access to the docker endpoint for specific containers — the end user
+    calls `docker/container/exec` themselves, not through a proxy. Docker's
+    ownership store would need a record that the end user has access to
+    that container, even though the downstream app spawned it. No
+    described use case requires this. The agent-workspace case — the
+    concrete one — is entirely the proxy pattern: the coordinator starts
+    the workspace container; the agent interacts with what's *inside* the
+    container (a TTY, an opencode instance's API surface), not with
+    docker operations on the container. Docker-level operations (stop,
+    remove, inspect) are the coordinator's job.
+
+  "Poking holes" is a downstream-app concern — the app that owns the
+  resources re-exports the operations it wants to share via `from_call`
+  with its own ACL layer, rather than the core ownership store growing a
+  grant API. The ADR commits to proxy-only and explicitly states that
+  "poking holes" is a downstream app's job.
+
+  **A future grant mechanism is additive, not a one-way door closure.**
+  If a use case forces the grant pattern, it's a new method on the
+  ownership store trait (`grant(identity, resource)` /
+  `revoke_grant(...)`). `AccessControl::check` already consults the
+  ownership provider; a grant-aware provider would answer "yes" for
+  grantees in addition to owners, without a trait-shape change. The
+  two-way-door classification (additive) is stated here as reversal-cost
+  classification, not as a reason to defer the decision — the decision is
+  made (proxy-only), and the cost of reversing it if a future use case
+  forces it is low. If the grant pattern is later admitted, specifics 3
+  and 4 above are revisited: cross-node ownership propagation returns to
+  the table (3), and composition under a grant would need
+  `CompositionAuthority` to grow a dynamic path, amending ADR-015/022 (4).
 
 - **Cross-references**: ADR-009 (door-type-as-deferral anti-pattern),
   ADR-015, ADR-022 (the static `CompositionAuthority.resources` model this
-  extends — see open question 4), ADR-030, ADR-033 (repo/adapter pattern —
-  reused for the ownership store), ADR-035 (`IdentityStore` —
-  administrative peer mutations, a different concern from runtime resource
-  ownership, but the sync-read + ArcSwap + honker-NOTIFY shape is reused),
-  [auth.md](crates/core/auth.md) (`Identity.resources`, `AccessControl::check`
-  interaction — both under edit by this decision),
-  [operation-registry.md](crates/call/operation-registry.md) (`AccessControl`,
-  `OperationSpec` — `resource_id_path` addition),
+  extends — see open question 4), ADR-030, ADR-032 (`forwarded_for`
+  metadata — the proxy pattern's end-user-identity carrier), ADR-033
+  (repo/adapter pattern — reused for the ownership store), ADR-035
+  (`IdentityStore` — administrative peer mutations, a different concern
+  from runtime resource ownership, but the sync-read + ArcSwap +
+  honker-NOTIFY shape is reused),
+  [auth.md](crates/core/auth.md) (`Identity.resources`,
+  `AccessControl::check` interaction — both under edit by this decision),
+  [operation-registry.md](crates/call/operation-registry.md)
+  (`AccessControl`, `OperationSpec` — `resource_id_path` addition),
   [alknet-docker POC summary](../../research/alknet-docker/poc-summary.md)
   §"Open Unknowns" #3

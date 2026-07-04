@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-04
+last_updated: 2026-07-05
 ---
 
 # Alknet Architecture
@@ -155,8 +155,8 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-39**: ~~`to_openapi` published-spec versioning~~ — **resolved by ADR-045** (`info.version` semver tracks the gateway endpoint contract, not the operation set; per-caller operations discovered via `/search`)
 - **OQ-41**: Stream operators library — a handler-level utility library (filter, map, batch, dedupe, window, etc. on `BoxStream<T>`), prior art in `@alkdev/pubsub/operators.ts`; feature extension, not an architectural decision (the architecture decision — stream composition is handler-level, not protocol-level — is made in ADR-049)
 
-**Open (blocking, requires ADR before the dependent crate specs):**
-- **OQ-42**: Dynamic resource ownership for runtime-spawned resources — surfaced by the alknet-docker POC (containers as `AccessControl` resources), generalized to every "spawn a thing at runtime and expose it over the call protocol" crate (docker, tty, opencode-runner wrapper, `alknet-container` fleet layer). The current `Identity.resources` → `AccessControl::check` model is static (config-sourced via `PeerEntry`/`CompositionAuthority`); runtime-spawned resources with derived ownership don't fit. **Decision direction set**: storage side reuses the repo/adapter pattern (ADR-033, fourth instance alongside `IdentityProvider`/`IdentityStore`/`CredentialStore`); integration point is Option 2 — `AccessControl::check` consults an ownership provider directly, with `OperationSpec` gaining a `resource_id_path` JSON pointer so the spec stays fully self-describing for authorization. Four specifics remain open for the ADR: the no-specific-resource (`list`) case, teardown coupling, fleet representation (spoke resources on the hub), and composition interaction with dynamic ownership. High priority — blocks the docker/tty/runner/fleet crate specs.
+**Resolved (blocks lifted, ADR drafting can proceed):**
+- **OQ-42**: Dynamic resource ownership for runtime-spawned resources — **resolved**. Storage reuses the repo/adapter pattern (ADR-033, fourth instance); integration is Option 2 (`AccessControl::check` consults an ownership provider directly, `OperationSpec` gains `resource_id_path`); access pattern is proxy-only (spawner owns, proxy to share, teardown revokes; no grant mechanism in core — "poking holes" is a downstream-app concern, additive if ever needed). Four edge specifics pinned: `list` = scope-gate + result-filter; teardown = automatic, handler-driven; fleet = per-node ownership, downstream app tracks "who is this for"; composition = two orthogonal checks, ADR-015/022 unchanged. Ready for ADR drafting; dependent crate specs (docker, tty, runner, fleet) can declare their `AccessControl` shapes against this model.
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
