@@ -963,107 +963,159 @@ is a feature extension, not an unmade architecture decision.
 - **Origin**: [alknet-docker POC summary](../../research/alknet-docker/poc-summary.md)
   §"Open Unknowns" #3 (container-as-resource identity model); generalized
   during the Phase 1 review pass triggered by that research finding.
-- **Status**: open
-- **Door type**: One-way (the `Identity.resources` → `AccessControl::check`
-  model in core/call), two-way (the mechanism for supplementing it)
+- **Status**: open — the two structural decisions below are made; the
+  remaining questions (listed under "Open for the ADR") are what the ADR
+  must settle before the dependent crate specs can be drafted.
+- **Door type**: One-way (the `AccessControl::check` signature change and
+  the `OperationSpec.resource_id_path` addition in core/call), two-way (the
+  ownership provider mechanism, per the established repo/adapter pattern)
 - **Priority**: high — blocks the alknet-docker, alknet-tty, opencode-runner
   wrapper, and `alknet-container` (fleet normalization) crate specs. None of
-  those specs can declare their `AccessControl` shapes until this is resolved,
-  because the model available to them determines what ACL declarations are
-  even expressible. Permitting "docker picks a per-crate default and the
-  others follow" is the door-type-as-deferral anti-pattern (ADR-009 §"What
-  this framework is NOT"): each crate bakes in an ACL shape and downstream
-  crates build on whatever default was picked, making the "cheap reversal"
-  expensive.
-- **Resolution**: Not yet made. This OQ records the issue and its scope so the
-  architecture workflow can see it; the resolution requires an ADR (and,
-  given the one-way door, likely a Phase 0 research/POC pass first).
+  those specs can declare their `AccessControl` shapes until this is
+  resolved, because the model available to them determines what ACL
+  declarations are even expressible. Permitting "docker picks a per-crate
+  default and the others follow" is the door-type-as-deferral anti-pattern
+  (ADR-009 §"What this framework is NOT"): each crate bakes in an ACL shape
+  and downstream crates build on whatever default was picked, making the
+  "cheap reversal" expensive.
 
-  **The issue, generalized.** The alknet-docker POC research flagged that
-  containers are a natural resource for `AccessControl` (`resource_type:
-  "container"`, `resource_action: "exec"`), but containers are created at
-  runtime — the resource set is dynamic, and "who can exec into container C"
-  is a function of "who created C," not of a static `PeerEntry.resources`
-  entry an operator wrote. The POC agent's one-line summary — "the
-  `IdentityProvider` model in alknet-core is currently static (`PeerEntry`
-  set). Dynamic resource ownership needs a spec" — is accurate, and the
-  consequence it draws is the right one.
+- **Resolution (decided so far).**
 
-  The issue is broader than the docker case that surfaced it. **Every crate
-  that spawns a thing at runtime and exposes it over the call protocol hits
-  the same shape:**
+  **Decision 1 — storage side: reuse the repo/adapter pattern.** The
+  ownership store is a fourth instance of the established repo/adapter
+  pattern (ADR-033), alongside `IdentityProvider` (ADR-004), `IdentityStore`
+  (ADR-035), and `CredentialStore` (ADR-031). Concretely: a trait in
+  `alknet-core` (read method: "does identity X own resource R with action
+  A?" / "what resources of type T does X own?"; write method: "record X
+  spawned R", "revoke R on teardown"), with an in-memory default adapter in
+  core. The in-memory default carries the docker/runner cases with no
+  backend dependency — ownership is runtime state, meaningless across
+  restarts (a container ID from a previous process doesn't exist), so the
+  default case has no persistence requirement. A persistence adapter (e.g.
+  sqlite/honker-backed, for a hub that wants fleet ownership to survive
+  restarts) is separable and built when a concrete use case forces it, same
+  as `alknet-store-sqlite` for peer/credential persistence. The read stays
+  sync (called from `AccessControl::check` on the dispatch hot path, no
+  `.await`), with persistence adapters caching in memory and using honker
+  NOTIFY for invalidation — same `ArcSwap`-backed full-reload pattern as
+  `ConfigIdentityProvider` (ADR-035). No new shape invented on the storage
+  side; no Phase 0 needed for it.
 
-  | Crate (some prospective) | Runtime-spawned resource | Ownership derivation |
-  |--------------------------|--------------------------|----------------------|
-  | alknet-docker | container ID | who created the container |
-  | alknet-tty | a TTY session (often bound to a container) | who opened the session |
-  | opencode-runner wrapper (a runner crate that starts an opencode instance in a container and wraps its OpenAPI surface via `alknet-http`'s `from_openapi`) | an opencode instance | who started the instance |
-  | `alknet-container` (fleet normalization, per the POC summary's §6 boundary) | a normalized container across multiple hosts | transitively, who created the underlying container |
+  **Decision 2 — integration point: Option 2, `check` consults the
+  ownership provider directly.** `AccessControl::check` grows a parameter
+  for the ownership provider (or reads one carried on `OperationContext`),
+  and consults it for `resource_type`/`resource_action` checks against
+  runtime-spawned resources. The alternative considered and rejected —
+  Option 1, augmenting `Identity.resources` with a per-request snapshot
+  before calling `check` — preserves `check`'s purity by moving the
+  impurity one frame up the stack: the dispatcher would pull owned
+  resources into a per-request identity snapshot so `check` *looks*
+  unchanged while reading state that was never part of the static
+  identity. The purity was always theatrical (the question "can X exec
+  into container C" was never purely a function of identity; it just
+  looked that way because the resource set was static). Option 2 makes
+  `check`'s signature honest about what ACL checking *is* in the presence
+  of dynamic resources: a function of (ACL, Identity, current-ownership-
+  state). The impurity is real either way; Option 2 puts it in the
+  signature where it's visible, rather than hiding it in a per-request
+  snapshot pretending to be static identity. Option 3 (handler-level
+  ownership check, `AccessControl` gates only scope) was rejected because
+  it splits the ACL story — some resources statically checked, some
+  handler-checked — which is the kind of inconsistency that creates the
+  "figure out how it fits with what is there" cleanup this OQ exists to
+  prevent.
 
-  All share: (a) resources are runtime-spawned, not config-declared; (b)
-  ownership is derived from creation, not from a static ACL entry; (c) the
-  resource set churns continuously (instances start and stop constantly),
-  so any model requiring operator config edits per resource is a non-starter;
-  (d) the resource's lifecycle is bound to a process the call protocol
-  itself is managing, so ownership state and spawn/teardown must be coupled,
-  not two separate operator workflows.
+  The cost of Option 2 is a `check` signature change — a one-way door,
+  every call site and test updates. Per the project's decision principle
+  (implementation workload is a non-issue relative to semantic correctness
+  and long-term clarity; "path of least resistance compounded over many
+  decisions is strictly dominated"), this is implementation cost, not a
+  semantic cost, and does not bias the choice.
 
-  Solving this inside the docker crate spec would re-solve it identically in
-  each of those crates and they would diverge. The model has to live in
-  core/call, once.
+  **Refinement that makes Option 2 work cleanly: `OperationSpec` declares
+  where the resource ID lives in the input.** `OperationSpec` gains a
+  `resource_id_path: Option<String>` — a JSON pointer into the operation
+  input, e.g. `"$.containerId"` for `docker/container/exec`. The dispatcher
+  extracts the resource ID from the input using the spec-declared path,
+  passes it to `check`, and `check` asks the provider "does this identity
+  own `<resource_type>/<resource_id>` with action `<resource_action>`?" —
+  a single targeted lookup, not a whole-resource-set pull. The fit with
+  JSON Schema is load-bearing, not incidental: `OperationSpec.input_schema`
+  is already a JSON Schema, so `resource_id_path` is a pointer *within* an
+  existing schema on the same spec. The `OperationSpec` becomes fully
+  self-describing for authorization — what resource type, what action, and
+  *which input field* drives the resource lookup. No per-namespace
+  conventions, no handler-level knowledge, no "the dispatcher just knows."
+  The contract is on the spec, where it belongs.
 
-  **What the current model does, and why it doesn't fit.** Today
-  `Identity.resources: HashMap<String, Vec<String>>` is populated on two
-  paths, both static: from `PeerEntry.resources` (fingerprint/auth-token,
-  ADR-030) or from `CompositionAuthority.resources` (composition, ADR-015 /
-  ADR-022). `AccessControl::check`
-  (`crates/alknet-call/src/registry/spec.rs:59–108`) does a literal
-  `identity.resources.get(resource_type)` lookup and a string-equals match
-  on `resource_action`. There is no notion of "the resource set is dynamic"
-  in that function — it reads a map built when the identity was resolved.
-  `ConfigIdentityProvider` reads from `ArcSwap<DynamicConfig>` (hot-reloadable
-  config), and `IdentityStore` (ADR-035) adds async `put_peer` /
-  `update_peer` / `remove_peer` — but those are *administrative* mutations
-  (operator-grade peer-record management), not "peer X just spawned resource
-  Y at runtime; record that Y is owned by X." The resource ownership path is
-  a different concern from peer-record management, even if they end up
-  sharing storage.
+- **Open for the ADR.** The decisions above settle the storage shape and
+  the integration point. The ADR must still address:
 
-  **The one-way door.** Whether `Identity.resources` stays static-config-
-  sourced or gains a dynamic-ownership supplement (and what the trait shape
-  for that supplement is) determines what `AccessControl` declarations the
-  docker/tty/runner/fleet specs can make, what every `AccessControl::check`
-  call site reads, and what every consumer of `Identity` assumes. This is
-  core, not per-crate. The *mechanism* (a new `ResourceOwnershipProvider`
-  trait vs. extending `IdentityStore` vs. labels/ownership-tags on the
-  spawned resources themselves vs. a capability-style model) is two-way —
-  additive, reversible per the ADR-009 definition — but the model-level
-  decision is one-way.
+  1. **No-specific-resource operations (the `list` case).** Operations
+     with `resource_type` set but `resource_id_path` absent — e.g.
+     `docker/container/list`, which doesn't reference a specific container.
+     There the question is "does this peer have *any* resource of this
+     type?" rather than "does this peer own *this* resource?" Option 2
+     handles this naturally (check asks the provider "any resources of
+     type T for this identity?" when no specific ID is present), but the
+     exact semantics need to be pinned: does the ACL gate the whole call
+     (allow/deny), or does the handler filter the result to owned
+     containers (allow + filter)? The former is the scope-gating path; the
+     latter is the result-filtering path. They compose (scope-gate the
+     call, then filter the result), but the ADR should state which is the
+     default and how a spec declares which it wants. `list` is the case
+     that forces this; `exec`/`inspect`/`stop` against a specific
+     container are the clean case.
 
-  **Known consumers of the resolution.** Any spec that declares an
-  `AccessControl` with `resource_type`/`resource_action` against a
-  runtime-spawned resource set needs this resolved first. Today that's the
-  docker, tty, opencode-runner, and `alknet-container` specs; future
-  runner-shaped crates (any GPU-job runner, any "spawn a process and expose
-  it over the call protocol" crate) inherit the same requirement. The
-  resolution should make the model available in core/call so those specs
-  declare ACLs against it directly, rather than each crate inventing a
-  per-crate ownership layer.
+  2. **Teardown coupling.** The ownership store's write path (revoke on
+     teardown) must be coupled to the spawned resource's lifecycle, not
+     left to operator workflows. When a container dies or is removed, the
+     ownership entry must be revoked — otherwise the store accumulates
+     stale entries and an ACL check could reference a resource that no
+     longer exists. The coupling mechanism (the docker handler explicitly
+     calls revoke on container exit, vs. a background reaper, vs. TTL-based
+     expiry) is two-way-door mechanism work, but the ADR should state the
+     coupling requirement and the default mechanism.
 
-  **Phase 0 may be warranted.** Given the one-way door at the model level
-  and the number of plausible mechanisms (each with different tradeoffs
-  around consistency, teardown coupling, fleet-scale state, and how a
-  remote spoke's spawned resources are represented on the hub), a targeted
-  research/POC pass before the ADR is likely the right sequencing — but
-  that's a decision to make once the candidate mechanisms are enumerated,
-  not something this OQ pre-commits.
+  3. **Fleet representation (spoke resources on the hub).** When a worker
+     spoke spawns a container and exposes it to the hub over the call
+     protocol, the hub's ownership store needs to represent "peer X owns
+     resource R" for routing/ACL on the hub side. Whether the spoke pushes
+     ownership records to the hub on spawn, the hub derives them from
+     `from_call`-discovered operations, or the spoke owns the ACL decision
+     and the hub forwards — is a real question with cross-node state
+     implications. The POC summary's §6 head-worker/machine-node model
+     frames the topology; this question is where that topology meets the
+     ownership model. Likely the most consequential of the three open
+     questions.
+
+  4. **Composition interaction.** ADR-015/022 populate
+     `CompositionAuthority.resources` for internal composition calls. With
+     dynamic ownership, an internal composition that targets a runtime-
+     spawned resource (a handler composing `docker/container/exec` against
+     a specific container) needs the composition authority to be checkable
+     against the ownership store too, not just against the static
+     `CompositionAuthority.resources` map. Whether `CompositionAuthority`
+     grows a dynamic-ownership path parallel to `Identity`, or composition
+     always runs under the caller's ownership, or some third option — needs
+     to be stated so the privilege model stays coherent with the ownership
+     model.
+
+  These are genuine open questions, not deferred decisions — the ADR must
+  answer them. They were surfaced by choosing Option 2 + `resource_id_path`
+  rather than by leaving the integration point undecided; recording them
+  here so the ADR drafting starts from a known set of specifics to work
+  out, not from a blank page.
+
 - **Cross-references**: ADR-009 (door-type-as-deferral anti-pattern),
   ADR-015, ADR-022 (the static `CompositionAuthority.resources` model this
-  questions), ADR-030, ADR-035 (`IdentityStore` — administrative peer
-  mutations, a different concern from runtime resource ownership),
+  extends — see open question 4), ADR-030, ADR-033 (repo/adapter pattern —
+  reused for the ownership store), ADR-035 (`IdentityStore` —
+  administrative peer mutations, a different concern from runtime resource
+  ownership, but the sync-read + ArcSwap + honker-NOTIFY shape is reused),
   [auth.md](crates/core/auth.md) (`Identity.resources`, `AccessControl::check`
-  interaction),
+  interaction — both under edit by this decision),
   [operation-registry.md](crates/call/operation-registry.md) (`AccessControl`,
-  `OperationSpec`),
+  `OperationSpec` — `resource_id_path` addition),
   [alknet-docker POC summary](../../research/alknet-docker/poc-summary.md)
   §"Open Unknowns" #3
