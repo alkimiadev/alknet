@@ -625,9 +625,10 @@ they don't revert. If superseded, mark the old one and create a new one.
 ### OQ-NN: <Question>
 
 - **Origin**: [spec-doc.md]
-- **Status**: open | resolved
+- **Status**: open | resolved | deferred(scope) | partially resolved
 - **Priority**: high | medium | low
 - **Resolution**: (when resolved)
+- **Blocked on**: (when deferred — concrete dependency that would unblock)
 - **Cross-references**: OQ-NN, ADR-NNN
 ```
 

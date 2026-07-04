@@ -7,6 +7,12 @@ last_updated: 2026-07-04
 
 Questions are organized by theme. Each question has a stable OQ-ID for cross-referencing from spec documents.
 
+**Status values**:
+- `open` — Needs to be resolved now. Has a clear path to resolution.
+- `resolved` — Decided. The resolution is stated cleanly, without caveats about how it could be changed later.
+- `deferred(scope)` — Cannot be resolved yet. The information doesn't exist. Has a concrete blocking condition (e.g., "blocked on: alknet-agent crate spec"). Not a failure — scope management.
+- `partially resolved` — Some aspects decided, others deferred or open.
+
 Door type classifications follow ADR-009 — they describe **reversal cost** (how expensive it is to undo), not urgency:
 - **One-way door**: Reversal requires rewriting significant code or permanently closes a capability. Getting it wrong is expensive — requires ADR before implementation.
 - **Two-way door**: Reversal is cheap or additive. Getting it wrong is recoverable — decide, implement, revert if needed.
@@ -50,7 +56,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 - **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: Static registration at startup. `HandlerRegistry` is immutable after construction. ALPN strings in the TLS `ServerConfig` are derived from the registry at startup — adding a handler at runtime requires rebuilding the TLS config. The `ArcSwap<HandlerRegistry>` pattern can be applied later if needed (two-way door). See ADR-010.
+- **Resolution**: Static registration at startup. `HandlerRegistry` is immutable after construction. ALPN strings in the TLS `ServerConfig` are derived from the registry at startup. See ADR-010.
 
   **Scope clarification (ADR-024)**: This resolution applies to the
   **`HandlerRegistry`** (ALPN string → `ProtocolHandler`), which is what
@@ -191,7 +197,7 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: medium
-- **Resolution**: alknet-call uses `/{service}/{op}` (e.g., `/fs/readFile`, `/agent/chat`, `/services/list`). This is the correct format for the alknet-call crate — it is not a "Phase 1 simplification" but the right design for this architecture. The `/{node}/{service}/{op}` pattern from the reference implementation served a head/worker routing model that is a separate architectural concern. Remote dispatch (federation / node-level routing) would be a different mechanism at a different layer, not a prefix added to alknet-call's operation paths. If remote dispatch is ever needed, it would be addressed by a separate crate or a routing layer above the operation registry, not by changing alknet-call's path format. Two-way door — the path format can be extended later if needed, but `/{service}/{op}` is the correct design now.
+- **Resolution**: alknet-call uses `/{service}/{op}` (e.g., `/fs/readFile`, `/agent/chat`, `/services/list`). The `/{node}/{service}/{op}` pattern from the reference implementation served a head/worker routing model that is a separate architectural concern. Remote dispatch (federation / node-level routing) would be a different mechanism at a different layer, not a prefix added to alknet-call's operation paths. See ADR-005, ADR-012.
 - **Cross-references**: ADR-005, ADR-012
 
 ### OQ-14: Batch Operation Semantics
@@ -200,7 +206,7 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: low
-- **Resolution**: Batch is a client-side pattern — multiple `call.requested` events with correlated IDs, responses arrive independently. This is the correct protocol design, not a simplification to be "upgraded" later. QUIC's stream multiplexing already provides the concurrency and ordering guarantees that batch would need. Batch-specific event types (e.g., `batch.requested`, `batch.responded`) would add protocol complexity without clear benefit over sending multiple `call.requested` events. If a compelling use case for atomic batch semantics emerges, it can be added as a new event type without breaking existing clients. Two-way door.
+- **Resolution**: Batch is a client-side pattern — multiple `call.requested` events with correlated IDs, responses arrive independently. QUIC's stream multiplexing provides the concurrency and ordering guarantees that batch would need. Batch-specific event types (e.g., `batch.requested`, `batch.responded`) would add protocol complexity without clear benefit over sending multiple `call.requested` events. See ADR-012.
 - **Cross-references**: ADR-012
 
 ## Theme: alknet-call
@@ -220,7 +226,7 @@ These questions are acknowledged but not active. They will be promoted to open w
 - **Status**: resolved
 - **Door type**: One-way
 - **Priority**: high
-- **Resolution**: No vault operations are exposed over the call protocol for now. The vault is accessed only at the assembly layer (CLI binary at startup). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire. The `operation-registry.md` spec previously showed `vault/derive`, `vault/unlock`, and `vault/decrypt` registered as call protocol operations — that was a contradiction with ADR-008's "capability source" model and has been corrected. If a future use case requires exposing a vault operation over the call protocol (e.g., a restricted `vault/public-key` operation that returns only public key material for identity verification), it would require its own ADR with an explicit threat model justification. See ADR-014.
+- **Resolution**: No vault operations are exposed over the call protocol. The vault is accessed only at the assembly layer (CLI binary at startup). Handlers receive secret material through `OperationContext.capabilities`, not by calling vault operations over the wire. The `operation-registry.md` spec previously showed `vault/derive`, `vault/unlock`, and `vault/decrypt` registered as call protocol operations — that was a contradiction with ADR-008's "capability source" model and has been corrected. See ADR-014.
 - **Cross-references**: ADR-008, ADR-014, [operation-registry.md](crates/call/operation-registry.md)
 
 ### OQ-17: Abort Cascade Semantics for Nested Calls
@@ -510,9 +516,10 @@ is a feature extension, not an unmade architecture decision.
 ### OQ-32: Multi-Hop Federation
 
 - **Origin**: [ADR-029](decisions/029-peer-graph-routing-model.md) §3.7, `docs/research/alknet-call-peer-routing/findings.md` §3.7
-- **Status**: open (feature extension, not an unmade architecture decision)
+- **Status**: deferred(scope)
 - **Door type**: One-way (federation model), two-way (mechanism)
 - **Priority**: low
+- **Blocked on**: A concrete use case for multi-hop federation. The one-hop model covers all current use cases (head→worker, runner→hub).
 - **Resolution**: The model is **one-hop** — worker A does not transitively
   see worker B's ops through the head unless the head explicitly re-exports
   them. The peer-keyed overlay model extends to multi-hop without redesign
@@ -920,11 +927,14 @@ is a feature extension, not an unmade architecture decision.
 
 - **Origin**: [ADR-049](decisions/049-streaming-handler-for-subscriptions.md),
   [operation-registry.md](crates/call/operation-registry.md) §"OperationEnv"
-- **Status**: open (feature extension — a library to build, not a decision
-  to make before implementation)
+- **Status**: deferred(scope)
 - **Door type**: Two-way (additive utility library; no protocol or API-surface
   change)
 - **Priority**: low
+- **Blocked on**: A handler that needs stream operators and finds the existing
+  combinators (`Box::pin(stream::iter(...))`, `async_stream::stream!`,
+  `futures::stream`) insufficient. The operators library is a convenience, not
+  a prerequisite for any handler.
 - **Resolution**: ADR-049 establishes that stream composition (filter, map,
   combine, window, dedupe) is a **handler-level concern**, not a protocol
   composition concern. `OperationEnv::invoke()` is request/response-only;
@@ -937,7 +947,7 @@ is a feature extension, not an unmade architecture decision.
 
   The Rust analogue — a stream-operators utility crate or module providing
   the same set of operators on `BoxStream<T>` / `impl Stream<Item = T>` — is
-  a **feature extension**, not an unmade architectural decision. Handlers can
+  a feature extension. Handlers can
   produce streams today without it (`Box::pin(stream::iter(...))`,
   `async_stream::stream!`, `futures::stream` combinators all work); the
   operators library is a convenience that reduces boilerplate for handlers

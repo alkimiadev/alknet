@@ -176,8 +176,21 @@ Before requesting external review:
 - Check that README has a complete ADR table and doc table
 - Ensure documents are focused (split if a spec exceeds ~700 lines)
 - Verify frontmatter statuses are correct
+- **Hedging audit**: Scan resolved OQs for hedging synonyms (anti-patterns
+  #9–#11). If a "resolved" OQ's resolution is primarily about how the
+  decision can be changed later, either drop the undo instructions (the
+  decision is made) or re-mark it `deferred(scope)` (the decision is not
+  made).
 
-### 5. Request Architecture Review
+### 5. Safe Exit: Deferred Decisions
+
+When you encounter a decision that genuinely can't be made:
+
+1. Mark the OQ as `deferred(scope)` with a concrete blocking condition
+2. Create a blocker task in `tasks/architecture/` naming the dependency
+3. Continue to decisions that *can* be made — do not stall on one question
+
+### 6. Request Architecture Review
 
 Spawn a review subagent:
 
@@ -191,25 +204,27 @@ task(
     4. Undefined terms or concepts
     5. Ambiguities that could cause implementation issues
     6. Document size (recommend split if >700 lines)
+    7. Hedging language in resolved OQs (anti-patterns #9-#11)
 
     Return a structured review with issues categorized as: critical, warning, suggestion",
     subagent_type="general"
 )
 ```
 
-### 6. Iterate Based on Review
+### 7. Iterate Based on Review
 
 Address feedback:
 
 - **Critical**: Must fix before stabilization — inline decisions not extracted,
-  ADR references that point to nonexistent files, undefined terms
+  ADR references that point to nonexistent files, undefined terms, hedging
+  language in resolved OQs
 - **Warning**: Should fix — missing cross-references, documents approaching
   split threshold
 - **Suggestion**: Consider — minor clarity improvements
 
 Iterate until zero critical issues.
 
-### 7. Mark Review Status
+### 8. Mark Review Status
 
 When all open questions for a document are resolved and review is complete:
 
@@ -248,9 +263,9 @@ last_updated: 2026-05-29
    answer is resolved, not left "open" with hedging language like "v1 default"
    or "can be revisited later." If the decision is made, mark it resolved. If
    the decision genuinely can't be made yet (the use case isn't concrete,
-   the options aren't clear), leave it open — but say *why* it can't be made,
-   not "we'll decide later." The architect's job is to make architecture
-   decisions, not to defer them to the implementation agent.
+   the options aren't clear), mark it `deferred(scope)` — see Safe Exit below.
+   The architect's job is to make architecture decisions that *can* be made
+   and to clearly identify which decisions *can't* be made yet and why.
 
 ## Door Types and Decision Urgency
 
@@ -309,6 +324,86 @@ door, decide later."
    actually made. If the decision is made, state it cleanly. Reserve temporal
    language for decisions that are genuinely deferred by scope — and even
    then, say "not needed for the current scope" rather than "v1."
+10. **Hedging synonyms in "resolved" OQs**: The following patterns are
+    structurally identical to the hedging in #9 — they reframe deferral as
+    decisiveness. Do not use them on resolved decisions:
+    - "feature extension, not an unmade decision" — if it's not decided, it's
+      not resolved. Mark it `deferred(scope)`.
+    - "additive, not blocking" — if it's not decided, don't claim it is.
+    - "two-way door — can be changed later if needed" — door type classifies
+      reversal cost, not whether a decision is made. A two-way door is a
+      decision you make now. If you're using it to justify not deciding, see
+      anti-pattern #8.
+    - "not a v1 blocker" — if it's not decided, it's deferred. Say what
+      unblocks it.
+    - "for now" / "not yet" on a resolved OQ — if the resolution has an
+      expiration date, it's not resolved. Mark it `deferred(scope)` with the
+      condition that would trigger re-evaluation.
+11. **Resolved with escape hatch**: An OQ marked `resolved` whose resolution
+    text is primarily about how the decision can be changed later. If the
+    resolution is "X, but here's how we'd undo X," the decision is made —
+    drop the undo instructions (they're implementation details, not
+    architecture). If the resolution is "X for now, Y later," the decision
+    is not made — mark it `deferred(scope)`.
+
+## Safe Exit: Deferred Decisions
+
+When a decision genuinely can't be made because the information doesn't exist
+yet, the architect has a Safe Exit path. This is not a failure — it's scope
+management. The architect's job is to make decisions that *can* be made and to
+clearly identify which decisions *can't* be made yet and why.
+
+### When to Defer
+
+A decision should be deferred when:
+
+- The use case isn't concrete (e.g., "we don't know what the agent crate will
+  need from the call protocol")
+- The options depend on something that doesn't exist yet (e.g., "depends on
+  the alknet-http crate spec")
+- The trade-off requires data that can only come from implementation (e.g.,
+  "need performance benchmarks to choose between X and Y")
+- The decision is genuinely not needed for the current scope (e.g., "the
+  current scope is core + call crates; this question is about the agent crate")
+
+### How to Defer
+
+1. **Mark the OQ as `deferred(scope)`** — not `open` (implies it should be
+   resolved now) and not `resolved` (implies it's decided).
+2. **State the blocking condition** — what specific thing would unblock this
+   decision? Be concrete: "blocked on: alknet-agent crate spec exists" not
+   "blocked on: future work."
+3. **Create a blocker task** in `tasks/architecture/` that names the
+   dependency. This makes the deferral visible and actionable rather than
+   buried in hedging language.
+4. **Move on** — the architect continues to decisions that *can* be made.
+   Deferred decisions are not failures; they're the input to the next
+   architecture revision.
+
+### Deferred OQ Format
+
+```markdown
+### OQ-NN: <Question>
+
+- **Origin**: [spec-doc.md]
+- **Status**: deferred(scope)
+- **Door type**: <one-way | two-way>
+- **Priority**: <high | medium | low>
+- **Blocked on**: <concrete dependency — crate spec, POC result, use case>
+- **Resolution**: Not yet decidable. <Why the information doesn't exist yet.>
+- **Cross-references**: OQ-NN, ADR-NNN
+```
+
+### What NOT to Do
+
+- Do not mark a deferred decision as `resolved` with caveats. "Resolved with
+  an escape hatch" is hedging.
+- Do not use "feature extension" / "additive" / "not blocking" as a
+  substitute for `deferred(scope)`. Those phrases describe implementation
+  sequencing, not architectural decisions.
+- Do not leave a deferred decision as `open` without a blocking condition.
+  "Open" means "needs to be resolved now" — if it can't be resolved now, it's
+  `deferred(scope)`.
 
 ## When to Redirect
 
