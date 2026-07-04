@@ -103,6 +103,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [047](decisions/047-remove-direct-call-http-surface.md) | Remove the Direct-Call HTTP Surface; Gateway Is the Sole Invoke Path | Proposed |
 | [048](decisions/048-websocket-native-session-not-gateway.md) | WebSocket Carries the Native Call-Protocol Session, Not the Gateway Shape | Accepted |
 | [049](decisions/049-streaming-handler-for-subscriptions.md) | Streaming Handler for Subscription Operations | Accepted |
+| [050](decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership for Runtime-Spawned Resources | Accepted |
 
 ## Open Questions
 
