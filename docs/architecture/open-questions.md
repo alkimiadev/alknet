@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-02
+last_updated: 2026-07-04
 ---
 
 # Open Questions
@@ -955,3 +955,115 @@ is a feature extension, not an unmade architecture decision.
 - **Cross-references**: ADR-049,
   [operation-registry.md](crates/call/operation-registry.md) §"OperationEnv",
   `/workspace/@alkdev/pubsub/src/operators.ts` (TS prior art)
+
+## Theme: Runtime-Spawned Resources and Ownership
+
+### OQ-42: Dynamic Resource Ownership for Runtime-Spawned Resources
+
+- **Origin**: [alknet-docker POC summary](../../research/alknet-docker/poc-summary.md)
+  §"Open Unknowns" #3 (container-as-resource identity model); generalized
+  during the Phase 1 review pass triggered by that research finding.
+- **Status**: open
+- **Door type**: One-way (the `Identity.resources` → `AccessControl::check`
+  model in core/call), two-way (the mechanism for supplementing it)
+- **Priority**: high — blocks the alknet-docker, alknet-tty, opencode-runner
+  wrapper, and `alknet-container` (fleet normalization) crate specs. None of
+  those specs can declare their `AccessControl` shapes until this is resolved,
+  because the model available to them determines what ACL declarations are
+  even expressible. Permitting "docker picks a per-crate default and the
+  others follow" is the door-type-as-deferral anti-pattern (ADR-009 §"What
+  this framework is NOT"): each crate bakes in an ACL shape and downstream
+  crates build on whatever default was picked, making the "cheap reversal"
+  expensive.
+- **Resolution**: Not yet made. This OQ records the issue and its scope so the
+  architecture workflow can see it; the resolution requires an ADR (and,
+  given the one-way door, likely a Phase 0 research/POC pass first).
+
+  **The issue, generalized.** The alknet-docker POC research flagged that
+  containers are a natural resource for `AccessControl` (`resource_type:
+  "container"`, `resource_action: "exec"`), but containers are created at
+  runtime — the resource set is dynamic, and "who can exec into container C"
+  is a function of "who created C," not of a static `PeerEntry.resources`
+  entry an operator wrote. The POC agent's one-line summary — "the
+  `IdentityProvider` model in alknet-core is currently static (`PeerEntry`
+  set). Dynamic resource ownership needs a spec" — is accurate, and the
+  consequence it draws is the right one.
+
+  The issue is broader than the docker case that surfaced it. **Every crate
+  that spawns a thing at runtime and exposes it over the call protocol hits
+  the same shape:**
+
+  | Crate (some prospective) | Runtime-spawned resource | Ownership derivation |
+  |--------------------------|--------------------------|----------------------|
+  | alknet-docker | container ID | who created the container |
+  | alknet-tty | a TTY session (often bound to a container) | who opened the session |
+  | opencode-runner wrapper (a runner crate that starts an opencode instance in a container and wraps its OpenAPI surface via `alknet-http`'s `from_openapi`) | an opencode instance | who started the instance |
+  | `alknet-container` (fleet normalization, per the POC summary's §6 boundary) | a normalized container across multiple hosts | transitively, who created the underlying container |
+
+  All share: (a) resources are runtime-spawned, not config-declared; (b)
+  ownership is derived from creation, not from a static ACL entry; (c) the
+  resource set churns continuously (instances start and stop constantly),
+  so any model requiring operator config edits per resource is a non-starter;
+  (d) the resource's lifecycle is bound to a process the call protocol
+  itself is managing, so ownership state and spawn/teardown must be coupled,
+  not two separate operator workflows.
+
+  Solving this inside the docker crate spec would re-solve it identically in
+  each of those crates and they would diverge. The model has to live in
+  core/call, once.
+
+  **What the current model does, and why it doesn't fit.** Today
+  `Identity.resources: HashMap<String, Vec<String>>` is populated on two
+  paths, both static: from `PeerEntry.resources` (fingerprint/auth-token,
+  ADR-030) or from `CompositionAuthority.resources` (composition, ADR-015 /
+  ADR-022). `AccessControl::check`
+  (`crates/alknet-call/src/registry/spec.rs:59–108`) does a literal
+  `identity.resources.get(resource_type)` lookup and a string-equals match
+  on `resource_action`. There is no notion of "the resource set is dynamic"
+  in that function — it reads a map built when the identity was resolved.
+  `ConfigIdentityProvider` reads from `ArcSwap<DynamicConfig>` (hot-reloadable
+  config), and `IdentityStore` (ADR-035) adds async `put_peer` /
+  `update_peer` / `remove_peer` — but those are *administrative* mutations
+  (operator-grade peer-record management), not "peer X just spawned resource
+  Y at runtime; record that Y is owned by X." The resource ownership path is
+  a different concern from peer-record management, even if they end up
+  sharing storage.
+
+  **The one-way door.** Whether `Identity.resources` stays static-config-
+  sourced or gains a dynamic-ownership supplement (and what the trait shape
+  for that supplement is) determines what `AccessControl` declarations the
+  docker/tty/runner/fleet specs can make, what every `AccessControl::check`
+  call site reads, and what every consumer of `Identity` assumes. This is
+  core, not per-crate. The *mechanism* (a new `ResourceOwnershipProvider`
+  trait vs. extending `IdentityStore` vs. labels/ownership-tags on the
+  spawned resources themselves vs. a capability-style model) is two-way —
+  additive, reversible per the ADR-009 definition — but the model-level
+  decision is one-way.
+
+  **Known consumers of the resolution.** Any spec that declares an
+  `AccessControl` with `resource_type`/`resource_action` against a
+  runtime-spawned resource set needs this resolved first. Today that's the
+  docker, tty, opencode-runner, and `alknet-container` specs; future
+  runner-shaped crates (any GPU-job runner, any "spawn a process and expose
+  it over the call protocol" crate) inherit the same requirement. The
+  resolution should make the model available in core/call so those specs
+  declare ACLs against it directly, rather than each crate inventing a
+  per-crate ownership layer.
+
+  **Phase 0 may be warranted.** Given the one-way door at the model level
+  and the number of plausible mechanisms (each with different tradeoffs
+  around consistency, teardown coupling, fleet-scale state, and how a
+  remote spoke's spawned resources are represented on the hub), a targeted
+  research/POC pass before the ADR is likely the right sequencing — but
+  that's a decision to make once the candidate mechanisms are enumerated,
+  not something this OQ pre-commits.
+- **Cross-references**: ADR-009 (door-type-as-deferral anti-pattern),
+  ADR-015, ADR-022 (the static `CompositionAuthority.resources` model this
+  questions), ADR-030, ADR-035 (`IdentityStore` — administrative peer
+  mutations, a different concern from runtime resource ownership),
+  [auth.md](crates/core/auth.md) (`Identity.resources`, `AccessControl::check`
+  interaction),
+  [operation-registry.md](crates/call/operation-registry.md) (`AccessControl`,
+  `OperationSpec`),
+  [alknet-docker POC summary](../../research/alknet-docker/poc-summary.md)
+  §"Open Unknowns" #3

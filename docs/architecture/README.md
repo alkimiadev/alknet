@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-02
+last_updated: 2026-07-04
 ---
 
 # Alknet Architecture
@@ -154,6 +154,9 @@ See [open-questions.md](open-questions.md) for the full tracker.
 - **OQ-38**: WebTransport standalone relay service scope — the standalone relay (future `alknet-relay`, fork of iroh-relay with WebTransport proxy fallback) is distinct from the in-process ALPN-stream-proxy (ADR-040); scope question, not deferral
 - **OQ-39**: ~~`to_openapi` published-spec versioning~~ — **resolved by ADR-045** (`info.version` semver tracks the gateway endpoint contract, not the operation set; per-caller operations discovered via `/search`)
 - **OQ-41**: Stream operators library — a handler-level utility library (filter, map, batch, dedupe, window, etc. on `BoxStream<T>`), prior art in `@alkdev/pubsub/operators.ts`; feature extension, not an architectural decision (the architecture decision — stream composition is handler-level, not protocol-level — is made in ADR-049)
+
+**Open (blocking, requires ADR before the dependent crate specs):**
+- **OQ-42**: Dynamic resource ownership for runtime-spawned resources — surfaced by the alknet-docker POC (containers as `AccessControl` resources), generalized to every "spawn a thing at runtime and expose it over the call protocol" crate (docker, tty, opencode-runner wrapper, `alknet-container` fleet layer). The current `Identity.resources` → `AccessControl::check` model is static (config-sourced via `PeerEntry`/`CompositionAuthority`); runtime-spawned resources with derived ownership don't fit. One-way door at the model level (core/call), two-way at the mechanism level. High priority — blocks the docker/tty/runner/fleet crate specs. Likely warrants a Phase 0 research/POC pass before the ADR.
 
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
