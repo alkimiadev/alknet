@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-03
+last_updated: 2026-07-05
 ---
 
 # alknet-tty — Phase 0 Research Findings
@@ -78,6 +78,8 @@ HTTP polling.
 | russh source | `/workspace/russh/` | `server::Handler` — `pty_request` (allocates PTY), `window_change` (resize), `signal` (signal forwarding), `shell_request`/`exec_request`. These are the SSH-side operations a `SshTtyBackend` wraps. |
 | alknet-runtime research | `docs/research/alknet-runtime/summary.md` | The "operation host" pattern — a node that exposes ops on a registry. alknet-tty is the same pattern for process execution: a node that can run a process and stream its I/O. |
 | Rust std::process | stdlib | `Command`, `Stdio` (piped stdin/stdout/stderr), `Child::wait` (exit code). The local-process backend. The threading/deadlock caveat (must read stdout/stderr concurrently with writing stdin to avoid pipe-buffer deadlock) is handled by the bidirectional pump, same as docker attach. |
+| **alknet-tty POC** | `/workspace/alknet-tty-poc/` | **Phase 0 local-PTY validation POC** (built 2026-07-05). Implements the chunk codec with `stream_type: 3` (control), the control message schema (resize/signal/eof/exit as JSON), and a `portable_pty`-backed `LocalPty` bridged to async via std threads + tokio mpsc. Two integration tests (`tests/integration.rs`, `tests/signal.rs`) validate the full round-trip: negotiate → PTY alloc → bidirectional echo via `cat` → mid-session resize → EOF → exit code; and SIGINT forwarding to `sleep` → non-zero exit. Source of the two new REQ-TTY-01 / REQ-TTY-02 requirements below. |
+| portable_pty source | `~/.cargo/registry/src/.../portable-pty-0.9.0/src/lib.rs` | `PtySystem::openpty`, `MasterPty` (`try_clone_reader` → `Box<dyn Read + Send>`, `take_writer` → `Box<dyn Write + Send>`, `resize(&self)`), `SlavePty::spawn_command`, `Child` (`wait` blocks, `clone_killer` → `Send+Sync`, `process_id`). **Blocking std::io API, not async** — the load-bearing constraint that drives REQ-TTY-01. |
 
 ## The Wire Format: From POC to Spec
 
@@ -500,6 +502,11 @@ crates.
 - Add `portable_pty` for the PTY case (terminal semantics, resize, signals).
 - **Result**: a working runner/terminal endpoint with no docker or SSH
   dependency.
+- **Status (2026-07-05)**: the PTY case is validated by the
+  `/workspace/alknet-tty-poc` POC — control channel, resize, signal
+  forwarding, and exit-code propagation all proven against a real
+  `portable_pty` PTY. The piped-runner case (no PTY) remains unproven by
+  POC but is lower-risk (the docker POC already validated piped pumping).
 
 **Step 3: DockerTtyBackend.**
 - In alknet-docker: `impl TtyBackend for DockerTtyBackend` wrapping
@@ -527,6 +534,11 @@ alknet-tty additions:
    backend receives it. For docker this requires `tty: true` on the exec
    and `bollard::exec::resize_exec`. Small POC, validates the control
    channel mechanism.
+   **Status (2026-07-05)**: the control channel mechanism itself is now
+   validated by `/workspace/alknet-tty-poc` (resize + signal + eof + exit
+   all round-trip against a real PTY). The docker-specific variant
+   (`bollard::exec::resize_exec`) is still unproven but is a thin wrapper
+   over the same control-chunk path.
 
 2. **PTY allocation via docker exec with TTY** — `CreateExecOptions { tty:
    true }` allocates a real PTY. Validate that stdout/stderr merge
@@ -537,13 +549,140 @@ Both are extensions to the existing POC, not new POCs. The wire format and
 bidirectional pump are already proven; these just confirm the control
 channel and PTY-specific paths.
 
+### De-risk POC: local PTY (built 2026-07-05)
+
+A separate POC, `/workspace/alknet-tty-poc`, validates the local-PTY path
+(Step 2 above) against `portable_pty` 0.9. It is not an extension of the
+docker POC; it exists because the local backend has a constraint the
+docker path doesn't — `portable_pty` is a blocking std::io API, and the
+POC exists primarily to discover how that constraint shapes the
+`TtyBackend` trait.
+
+**What the POC validated:**
+
+- **The `stream_type: 3` control channel works mid-session.** A resize
+  control chunk sent while `cat` is running reaches `MasterPty::resize`
+  without disturbing the data stream. SIGINT forwarding reaches the child
+  process group and kills it.
+- **Exit code on a control chunk (DP-5) is the right call.** The
+  `{"type":"exit","code":N}` chunk fires after the child is reaped and is
+  the last control chunk before stream close. The one-way door holds.
+- **JSON control messages (DP-3) are fine.** No measurable cost; control
+  chunks are rare (resize on window drag, one signal per Ctrl-C).
+- **Signal forwarding must target the process group, not just the child.**
+  `libc::kill(-pgid, sig)` reaches the shell's children; `kill(pid, sig)`
+  alone leaves orphaned children. This works because `portable_pty` sets
+  the child as session leader when `controlling_tty` is true (the
+  default). See REQ-TTY-02 below.
+
+**What the POC discovered (new requirements):**
+
+See the "Requirements from the local-PTY POC" section below for
+REQ-TTY-01 and REQ-TTY-02 — two constraints that fell out of building the
+  PTY bridge and that the Phase 1 spec must record. These were
+  open questions (OQ-TTY-01) or undocumented assumptions (signal delivery)
+  before the POC; doing the POC first turned them into grounded
+  requirements.
+
+## Requirements from the local-PTY POC
+
+Two requirements surfaced from building `/workspace/alknet-tty-poc` that
+were not knowable from reading the portable_pty docs alone. They constrain
+the `TtyBackend` trait shape (Phase 1's `tty-backend.md` spec) and the
+local backend's signal-delivery contract (`tty-local.md`). Recording them
+here so the Architect doesn't re-derive them.
+
+### REQ-TTY-01: the `TtyBackend` trait must accommodate blocking backends
+
+`portable_pty`'s API is blocking `std::io::{Read, Write}` and a blocking
+`Child::wait()` — there is no async variant. The local-PTY POC bridges
+this with three dedicated std threads (reader, writer, waiter) feeding
+tokio mpsc channels; the async-facing `LocalPty` then exposes
+`mpsc::Receiver<Bytes>` for stdout, `mpsc::Sender<StdinCmd>` for stdin,
+and `oneshot::Receiver<i32>` for exit. This is the same pattern wezterm
+(the primary portable_pty consumer) uses.
+
+The Phase 1 `TtyHandle` sketch in §"The Backend Trait" above has
+`stdin: Box<dyn AsyncWrite + Send + Unpin>`,
+`stdout: Pin<Box<dyn Stream<Item = Bytes> + Send>>`, and
+`exit_code: BoxFuture<...>`. That shape *can* be satisfied by the local
+backend via the channel bridge (tokio mpsc implements AsyncRead/AsyncWrite
+via `tokio-util` codecs, and a `oneshot::Receiver` is a Future), but the
+spec must state explicitly that:
+
+1. **Backends are not required to be natively async.** A backend may
+   expose blocking handles internally and bridge them; the trait's
+   async-facing types are the *adapter-side* contract, not a constraint on
+   the backend's implementation.
+2. **The bridging pattern (blocking → tokio mpsc/oneshot via std threads
+   or `spawn_blocking`) is a documented, supported implementation
+   strategy**, not a workaround. The local backend will use it. Other
+   blocking-API backends (if any) may use it too.
+3. **`exit_code` should be a `Future` the adapter awaits, not a method on
+   `TtyHandle`.** This resolves the first half of OQ-TTY-01: a
+   `oneshot::Receiver<i32>` (or any `BoxFuture<'static, i32>`) lets the
+   adapter `select` between exit and stream-close without coupling to the
+   handle's other fields. The local backend's waiter thread produces exactly
+   this shape for free.
+
+This is the inversion of the usual "design the trait, then implement"
+flow: building the POC *first* showed that the trait sketch was
+*almost* right, but the assumption that backends would be natively async
+was hidden, and would have surfaced as a re-spec in Phase 1 had we not
+built it.
+
+### REQ-TTY-02: signal forwarding must target the process group
+
+`libc::kill(pid, sig)` on the spawned child's pid alone is *insufficient*
+for terminal semantics: a shell running under a PTY will have spawned
+children (a `find | grep` pipeline, a `make` with sub-makes), and those
+children will not receive the signal. A real terminal forwards Ctrl-C to
+the *foreground process group*, which (under job-control shells) is the
+process group the shell most recently spawned for the foreground job.
+
+`portable_pty` makes the child a session leader (when
+`controlling_tty = true`, the default), so the child's pid *is* its
+process-group id, and `libc::kill(-pid, sig)` (the negative pid) reaches
+the whole group. The POC's `PtyControl::signal` uses exactly this —
+`kill(-pgid, sig)` with a fallback to `kill(pid, sig)` if the group
+signal fails (e.g. the child already exited).
+
+The Phase 1 `tty-local.md` spec must record:
+
+1. **The local backend MUST forward signals to the child's process
+   group, not just the child pid.** Using `kill(-pgid, sig)` when the
+   child is a session leader (the portable_pty default).
+2. **The local backend MUST spawn the child as a session leader with a
+   controlling tty.** This is `portable_pty`'s default
+   (`CommandBuilder::set_controlling_tty(true)`); the spec should
+   document that disabling it (e.g. for container-boundary workarounds)
+   breaks signal forwarding and is therefore not supported for the
+   terminal use case.
+3. **The `TtyControl::signal` contract is "best-effort delivery to the
+   foreground process group,"** not "the child pid receives the signal."
+   Unknown signal names fall back to the backend's default kill
+   (portable_pty's `ChildKiller::kill` sends SIGHUP); known names map to
+   `libc` signal numbers and are sent to the group.
+
+This resolves the signal-delivery half of OQ-TTY-01 and pre-empts a
+class of "Ctrl-C doesn't kill my `cargo build`" bugs that would
+otherwise surface in Phase 2/3.
+
 ## Open Questions to Carry into Phase 1
 
-- **OQ-TTY-01 (backend trait shape)**: the exact `TtyHandle` field set —
+- **OQ-TTY-01 (backend trait shape)**: ~~the exact `TtyHandle` field set —
   is `control` a separate trait object or are resize/signal methods on
   `TtyHandle` directly? Does `exit_code` belong on the handle or is it a
-  separate `Future` the adapter awaits? Resolved by Phase 1 spec; the POC
-  extension informs the decision.
+  separate `Future` the adapter awaits?~~ **Resolved 2026-07-05 by the
+  local-PTY POC** — see REQ-TTY-01: `exit_code` is a `Future` the adapter
+  awaits; backends may be blocking-API and bridge to async via std
+  threads + mpsc. The remaining open shape question is `control`: a
+  separate `Box<dyn TtyControl + Send + Unpin>` trait object (as the
+  sketch shows) vs methods on `TtyHandle`. The POC used a separate
+  cloneable `PtyControl` struct (resize + signal), which worked cleanly
+  because the control-chunk dispatcher needs to be `Clone` to hand off
+  to the spawned pump task. Phase 1 should confirm `control` as a
+  separate `Clone` trait object.
 - **OQ-TTY-02 (terminal modes)**: SSH's `pty_request` carries TTY modes
   (echo, raw, canonical, etc.) as a packed bitmask. Does alknet-tty
   support these, or use the backend's defaults? The common case is
@@ -568,14 +707,18 @@ channel and PTY-specific paths.
 
 ## Next Steps (Phase 0 → Phase 1)
 
-1. **POC extension**: extend `/workspace/alknet-docker-poc` with
-   `stream_type: 3` (control) and `tty: true` exec to validate the control
-   channel and PTY allocation. Timeboxed; the wire format is already
-   proven, these are extensions.
+1. **POC extension (docker side)**: extend `/workspace/alknet-docker-poc`
+   with `stream_type: 3` (control) and `tty: true` exec to validate the
+   docker-specific control channel and PTY allocation. Timeboxed; the wire
+   format is already proven, these are extensions.
+   **Note (2026-07-05)**: the control channel mechanism itself and the
+   local-PTY path are now validated by `/workspace/alknet-tty-poc` (see
+   "Requirements from the local-PTY POC" above). What remains is the
+   docker-specific resize path (`bollard::exec::resize_exec`).
 2. **You decide** on the DP recommendations (or amend them). DP-1 (local
-   backend placement) and DP-5 (exit code on control chunk) are the
-   load-bearing choices. DP-2, DP-3, DP-4, DP-6 are defaults recommended
-   as-is.
+   backend placement) and DP-5 (exit code on control chunk, now
+   POC-validated) are the load-bearing choices. DP-2, DP-3 (now
+   POC-validated), DP-4, DP-6 are defaults recommended as-is.
 3. **Phase 1 (Architect)**: produce `docs/architecture/crates/tty/README.md`
    + component specs (`tty-wire.md` for the chunk format + control
    messages, `tty-backend.md` for the `TtyBackend` trait + `TtyHandle`,
@@ -585,6 +728,13 @@ channel and PTY-specific paths.
    local backend placement, exit code on control chunk), and the OQs above
    in `open-questions.md`. Update `docs/architecture/README.md` index and
    ADR table.
+   **Carry REQ-TTY-01 and REQ-TTY-02 into `tty-backend.md` and
+   `tty-local.md` respectively** — they are requirements, not open
+   questions, and the spec must state them as such. The POC at
+   `/workspace/alknet-tty-poc` is the reference implementation for both;
+   the Architect should read `src/local_pty.rs` (the blocking→async
+   bridge) and `src/session.rs` (the pump that consumes the bridged
+   handles) before drafting the trait spec.
 
 ## References
 
@@ -616,3 +766,16 @@ channel and PTY-specific paths.
   SSH; `LocalTtyBackend` removes that requirement
 - `docs/research/alknet-runtime/summary.md` — the "operation host" pattern
   (alknet-tty is the same pattern for process execution)
+- **`/workspace/alknet-tty-poc/`** — **Phase 0 local-PTY validation POC
+  (built 2026-07-05)**. `src/raw.rs` (chunk codec + stream_type 3),
+  `src/control.rs` (JSON control schema), `src/local_pty.rs` (the
+  blocking→async bridge that drives REQ-TTY-01),
+  `src/session.rs` (the bidirectional pump / session lifecycle),
+  `tests/integration.rs` (`cat` echo + resize + EOF + exit),
+  `tests/signal.rs` (SIGINT forwarding to `sleep`).
+- **`portable-pty` 0.9 source** (in `~/.cargo/registry/src/.../portable-pty-0.9.0/`)
+  — `src/lib.rs` (`PtySystem`, `MasterPty`, `SlavePty`, `Child`,
+  `ChildKiller` traits; blocking `std::io` API), `src/cmdbuilder.rs`
+  (`CommandBuilder`, `set_controlling_tty` — the spawn semantics
+  REQ-TTY-02 depends on). Read before drafting `tty-backend.md` /
+  `tty-local.md`.
