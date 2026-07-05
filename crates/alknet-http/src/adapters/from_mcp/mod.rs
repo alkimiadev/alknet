@@ -180,6 +180,7 @@ pub(crate) fn build_spec(tool: &Tool, namespace: &str) -> OperationSpec {
         output_schema,
         error_schemas,
         AccessControl::default(),
+        None,
     )
 }
 

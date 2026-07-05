@@ -135,6 +135,7 @@ impl GatewayDispatch {
             env,
             abort_policy: AbortPolicy::default(),
             internal: false,
+            ownership: None,
         }
     }
 }
@@ -204,6 +205,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -216,6 +218,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -231,6 +234,7 @@ mod tests {
                     serde_json::json!({}),
                     vec![],
                     acl,
+                    None,
                 ),
                 HandlerKind::Once(make_handler(|input, context| async move {
                     ResponseEnvelope::ok(context.request_id, input)
@@ -278,6 +282,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 

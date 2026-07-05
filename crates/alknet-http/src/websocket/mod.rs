@@ -72,6 +72,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 

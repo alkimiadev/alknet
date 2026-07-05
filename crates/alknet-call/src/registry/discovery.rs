@@ -38,6 +38,7 @@ pub fn services_list_spec() -> OperationSpec {
         }),
         vec![],
         AccessControl::default(),
+        None,
     )
 }
 
@@ -54,6 +55,7 @@ pub fn services_schema_spec() -> OperationSpec {
         operation_spec_schema(),
         vec![],
         AccessControl::default(),
+        None,
     )
 }
 
@@ -93,6 +95,7 @@ pub fn services_list_peers_spec() -> OperationSpec {
         }),
         vec![],
         AccessControl::default(),
+        None,
     )
 }
 
@@ -221,7 +224,11 @@ pub fn services_list_handler(registry: Arc<OperationRegistry>) -> Handler {
             let ops: Vec<Value> = registry
                 .list_operations()
                 .into_iter()
-                .filter(|spec| spec.access_control.check(calling_identity).is_allowed())
+                .filter(|spec| {
+                    spec.access_control
+                        .check(calling_identity, None, None)
+                        .is_allowed()
+                })
                 .map(|s| {
                     json!({
                         "name": s.name,
@@ -244,7 +251,11 @@ pub fn services_list_peers_handler(registry: Arc<OperationRegistry>) -> Handler 
             let local_ops: Vec<Value> = registry
                 .list_operations()
                 .into_iter()
-                .filter(|spec| spec.access_control.check(calling_identity).is_allowed())
+                .filter(|spec| {
+                    spec.access_control
+                        .check(calling_identity, None, None)
+                        .is_allowed()
+                })
                 .map(|s| {
                     json!({
                         "name": s.name,
@@ -265,9 +276,11 @@ pub fn services_list_peers_handler(registry: Arc<OperationRegistry>) -> Handler 
                     .filter(|name| {
                         let spec = registry.registration(name);
                         match spec {
-                            Some(reg) => {
-                                reg.spec.access_control.check(calling_identity).is_allowed()
-                            }
+                            Some(reg) => reg
+                                .spec
+                                .access_control
+                                .check(calling_identity, None, None)
+                                .is_allowed(),
                             None => true,
                         }
                     })
@@ -341,6 +354,7 @@ mod tests {
             json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -353,6 +367,7 @@ mod tests {
             json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -403,6 +418,7 @@ mod tests {
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         }
     }
 
@@ -423,6 +439,7 @@ mod tests {
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         }
     }
 
@@ -443,6 +460,7 @@ mod tests {
             json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -530,6 +548,7 @@ mod tests {
                     json!({}),
                     vec![],
                     AccessControl::default(),
+                    None,
                 ),
                 HandlerKind::Stream(echo_streaming_handler()),
                 OperationProvenance::Local,
@@ -553,6 +572,7 @@ mod tests {
                         http_status: None,
                     }],
                     AccessControl::default(),
+                    None,
                 ),
                 HandlerKind::Once(echo_handler()),
                 OperationProvenance::Local,
@@ -759,6 +779,7 @@ mod tests {
                 required_scopes: vec!["fs:read".to_string()],
                 ..Default::default()
             },
+            None,
         );
         let json_val = spec_to_json(&spec);
         let error_schemas = json_val
@@ -868,6 +889,7 @@ mod tests {
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         };
         let response = handler(serde_json::json!({}), ctx).await;
         let output = response.result.expect("ok response");
@@ -951,6 +973,7 @@ mod tests {
             abort_policy: crate::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         };
         let response = handler(serde_json::json!({}), ctx).await;
         let output = response.result.expect("ok response");

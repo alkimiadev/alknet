@@ -1,7 +1,7 @@
 ---
 id: call/registry/dispatch-resource-id-extraction
 name: Wire dispatch path to extract resource_id from input and thread OwnershipProvider to AccessControl::check (ADR-050 §2a, §4a)
-status: pending
+status: done
 depends_on: [call/registry/operation-spec-resource-id-path, call/registry/access-control-ownership-check]
 scope: moderate
 risk: medium

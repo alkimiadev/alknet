@@ -139,7 +139,17 @@ impl OperationRegistry {
             context.identity.clone()
         };
 
-        if let AccessResult::Forbidden(message) = acl.check(identity.as_ref()) {
+        let resource_id = registration
+            .spec
+            .resource_id_path
+            .as_ref()
+            .and_then(|path| extract_json_pointer(&input, path));
+
+        if let AccessResult::Forbidden(message) = acl.check(
+            identity.as_ref(),
+            resource_id.as_deref(),
+            context.ownership.as_deref(),
+        ) {
             return ResponseEnvelope::forbidden(request_id, message);
         }
 
@@ -191,7 +201,17 @@ impl OperationRegistry {
             context.identity.clone()
         };
 
-        if let AccessResult::Forbidden(message) = acl.check(identity.as_ref()) {
+        let resource_id = registration
+            .spec
+            .resource_id_path
+            .as_ref()
+            .and_then(|path| extract_json_pointer(&input, path));
+
+        if let AccessResult::Forbidden(message) = acl.check(
+            identity.as_ref(),
+            resource_id.as_deref(),
+            context.ownership.as_deref(),
+        ) {
             return Box::pin(stream::once(async move {
                 ResponseEnvelope::forbidden(request_id, message)
             }));
@@ -385,6 +405,38 @@ where
     Arc::new(move |input, context| Box::pin(f(input, context)))
 }
 
+/// Extract a string value from `input` at a JSON-pointer-ish path described
+/// by `$.field` or `$.field/sub` (a leading `$` followed by a slash-separated
+/// pointer, the same shape `serde_json::Value::pointer` expects after the
+/// leading `/` is restored). Also tolerates the dotted form `$.a.b` for
+/// shallow nested lookups (translated to `/a/b`).
+///
+/// Returns `None` if the path is malformed, the field is missing, or the
+/// value at the path is not a string. Graceful — never panics (ADR-050 §2a):
+/// a missing field simply yields `resource_id: None`, and the caller's
+/// `AccessControl::check` decides whether to deny based on whether the spec
+/// requires a specific resource ID.
+pub(crate) fn extract_json_pointer(input: &Value, path: &str) -> Option<String> {
+    let trimmed = path.strip_prefix('$')?;
+    if trimmed.is_empty() {
+        return None;
+    }
+    let pointer = if let Some(rest) = trimmed.strip_prefix('/') {
+        format!("/{}", rest)
+    } else {
+        let dotted = trimmed.replace('.', "/");
+        if let Some(rest) = dotted.strip_prefix('/') {
+            format!("/{}", rest)
+        } else {
+            format!("/{}", dotted)
+        }
+    };
+    input
+        .pointer(pointer.as_str())
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +445,7 @@ mod tests {
     use crate::registry::env::OperationEnv;
     use crate::registry::spec::{AccessControl, OperationType};
     use alknet_core::auth::Identity;
+    use alknet_core::ownership::OwnershipProvider;
     use std::collections::HashMap;
     use std::time::Duration;
 
@@ -436,6 +489,30 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal,
+            ownership: None,
+        }
+    }
+
+    fn root_context_with_ownership(
+        request_id: &str,
+        identity: Option<Identity>,
+        ownership: Option<Arc<dyn OwnershipProvider>>,
+        scoped_env: ScopedPeerEnv,
+    ) -> OperationContext {
+        OperationContext {
+            request_id: request_id.to_string(),
+            parent_request_id: None,
+            identity,
+            handler_identity: None,
+            forwarded_for: None,
+            capabilities: Capabilities::new(),
+            metadata: HashMap::new(),
+            scoped_env,
+            env: Arc::new(NoopEnv),
+            abort_policy: AbortPolicy::default(),
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
+            internal: false,
+            ownership,
         }
     }
 
@@ -460,6 +537,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -472,6 +550,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -948,6 +1027,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -1234,6 +1314,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -1246,6 +1327,308 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
+    }
+
+    struct MockOwnership {
+        owned: Vec<(String, String)>,
+    }
+
+    impl OwnershipProvider for MockOwnership {
+        fn owns(
+            &self,
+            _identity: &Identity,
+            resource_type: &str,
+            resource_id: &str,
+            _action: &str,
+        ) -> bool {
+            self.owned
+                .iter()
+                .any(|(rt, rid)| rt == resource_type && rid == resource_id)
+        }
+
+        fn owned_resources(&self, _identity: &Identity, resource_type: &str) -> Vec<String> {
+            self.owned
+                .iter()
+                .filter(|(rt, _)| rt == resource_type)
+                .map(|(_, rid)| rid.clone())
+                .collect()
+        }
+
+        fn owns_any(&self, _identity: &Identity, resource_type: &str) -> bool {
+            self.owned.iter().any(|(rt, _)| rt == resource_type)
+        }
+    }
+
+    fn empty_identity(id: &str) -> Identity {
+        Identity {
+            id: id.to_string(),
+            scopes: vec![],
+            resources: HashMap::new(),
+        }
+    }
+
+    fn resource_spec(
+        name: &str,
+        acl: AccessControl,
+        resource_id_path: Option<&str>,
+    ) -> OperationSpec {
+        OperationSpec::new(
+            name,
+            OperationType::Query,
+            Visibility::External,
+            serde_json::json!({}),
+            serde_json::json!({}),
+            vec![],
+            acl,
+            resource_id_path.map(|s| s.to_string()),
+        )
+    }
+
+    #[test]
+    fn extract_json_pointer_resolves_single_field() {
+        let input = serde_json::json!({"containerId": "abc123"});
+        assert_eq!(
+            extract_json_pointer(&input, "$.containerId"),
+            Some("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_json_pointer_missing_field_returns_none() {
+        let input = serde_json::json!({"other": 1});
+        assert_eq!(extract_json_pointer(&input, "$.containerId"), None);
+    }
+
+    #[test]
+    fn extract_json_pointer_non_string_value_returns_none() {
+        let input = serde_json::json!({"containerId": 42});
+        assert_eq!(extract_json_pointer(&input, "$.containerId"), None);
+    }
+
+    #[test]
+    fn extract_json_pointer_no_leading_dollar_returns_none() {
+        let input = serde_json::json!({"containerId": "abc"});
+        assert_eq!(extract_json_pointer(&input, "containerId"), None);
+    }
+
+    #[test]
+    fn extract_json_pointer_empty_after_dollar_returns_none() {
+        let input = serde_json::json!({"a": "b"});
+        assert_eq!(extract_json_pointer(&input, "$"), None);
+    }
+
+    #[test]
+    fn extract_json_pointer_nested_slash_path() {
+        let input = serde_json::json!({"data": {"id": "xyz"}});
+        assert_eq!(
+            extract_json_pointer(&input, "$.data/id"),
+            Some("xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_json_pointer_nested_dotted_path() {
+        let input = serde_json::json!({"data": {"id": "xyz"}});
+        assert_eq!(
+            extract_json_pointer(&input, "$.data.id"),
+            Some("xyz".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_with_ownership_provider_allows_owned_resource() {
+        let mut registry = OperationRegistry::new();
+        let acl = AccessControl {
+            resource_type: Some("container".to_string()),
+            resource_action: Some("exec".to_string()),
+            ..Default::default()
+        };
+        registry
+            .register(HandlerRegistration::new(
+                resource_spec("container/exec", acl, Some("$.containerId")),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let provider: Arc<dyn OwnershipProvider> = Arc::new(MockOwnership {
+            owned: vec![("container".to_string(), "c1".to_string())],
+        });
+        let ctx = root_context_with_ownership(
+            "req-owns",
+            Some(empty_identity("alice")),
+            Some(provider),
+            ScopedPeerEnv::empty(),
+        );
+        let response = registry
+            .invoke(
+                "container/exec",
+                serde_json::json!({"containerId": "c1"}),
+                ctx,
+            )
+            .await;
+        assert!(response.result.is_ok(), "owned resource should be allowed");
+    }
+
+    #[tokio::test]
+    async fn invoke_with_ownership_provider_forbids_unowned_resource() {
+        let mut registry = OperationRegistry::new();
+        let acl = AccessControl {
+            resource_type: Some("container".to_string()),
+            resource_action: Some("exec".to_string()),
+            ..Default::default()
+        };
+        registry
+            .register(HandlerRegistration::new(
+                resource_spec("container/exec", acl, Some("$.containerId")),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let provider: Arc<dyn OwnershipProvider> = Arc::new(MockOwnership {
+            owned: vec![("container".to_string(), "c1".to_string())],
+        });
+        let ctx = root_context_with_ownership(
+            "req-not-owns",
+            Some(empty_identity("alice")),
+            Some(provider),
+            ScopedPeerEnv::empty(),
+        );
+        let response = registry
+            .invoke(
+                "container/exec",
+                serde_json::json!({"containerId": "c2"}),
+                ctx,
+            )
+            .await;
+        match response.result {
+            Err(e) => {
+                assert_eq!(e.code, "FORBIDDEN");
+                assert!(e.message.contains("container/c2"));
+            }
+            other => panic!("expected FORBIDDEN, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_with_ownership_provider_missing_field_falls_back_to_owns_any() {
+        let mut registry = OperationRegistry::new();
+        let acl = AccessControl {
+            resource_type: Some("container".to_string()),
+            resource_action: Some("exec".to_string()),
+            ..Default::default()
+        };
+        registry
+            .register(HandlerRegistration::new(
+                resource_spec("container/exec", acl, Some("$.containerId")),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let provider: Arc<dyn OwnershipProvider> = Arc::new(MockOwnership {
+            owned: vec![("container".to_string(), "c1".to_string())],
+        });
+        let ctx = root_context_with_ownership(
+            "req-missing",
+            Some(empty_identity("alice")),
+            Some(provider),
+            ScopedPeerEnv::empty(),
+        );
+        let response = registry
+            .invoke("container/exec", serde_json::json!({}), ctx)
+            .await;
+        assert!(
+            response.result.is_ok(),
+            "missing field → resource_id None → owns_any path allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_with_ownership_provider_missing_field_forbids_when_not_owns_any() {
+        let mut registry = OperationRegistry::new();
+        let acl = AccessControl {
+            resource_type: Some("container".to_string()),
+            resource_action: Some("exec".to_string()),
+            ..Default::default()
+        };
+        registry
+            .register(HandlerRegistration::new(
+                resource_spec("container/exec", acl, Some("$.containerId")),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let provider: Arc<dyn OwnershipProvider> = Arc::new(MockOwnership {
+            owned: vec![("volume".to_string(), "v1".to_string())],
+        });
+        let ctx = root_context_with_ownership(
+            "req-missing-denied",
+            Some(empty_identity("alice")),
+            Some(provider),
+            ScopedPeerEnv::empty(),
+        );
+        let response = registry
+            .invoke("container/exec", serde_json::json!({}), ctx)
+            .await;
+        match response.result {
+            Err(e) => {
+                assert_eq!(e.code, "FORBIDDEN");
+                assert!(e.message.contains("container"));
+            }
+            other => panic!("expected FORBIDDEN, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_without_ownership_provider_falls_back_to_static_resources() {
+        let mut registry = OperationRegistry::new();
+        let acl = AccessControl {
+            resource_type: Some("container".to_string()),
+            resource_action: Some("exec".to_string()),
+            ..Default::default()
+        };
+        registry
+            .register(HandlerRegistration::new(
+                resource_spec("container/exec", acl, Some("$.containerId")),
+                HandlerKind::Once(echo_handler()),
+                OperationProvenance::Local,
+                None,
+                None,
+                Capabilities::new(),
+            ))
+            .unwrap();
+        let mut resources = HashMap::new();
+        resources.insert("container".to_string(), vec!["exec".to_string()]);
+        let identity = Identity {
+            id: "alice".to_string(),
+            scopes: vec![],
+            resources,
+        };
+        let ctx =
+            root_context_with_ownership("req-static", Some(identity), None, ScopedPeerEnv::empty());
+        let response = registry
+            .invoke(
+                "container/exec",
+                serde_json::json!({"containerId": "c1"}),
+                ctx,
+            )
+            .await;
+        assert!(
+            response.result.is_ok(),
+            "no provider wired → static Identity.resources fallback allows"
+        );
     }
 }

@@ -139,6 +139,7 @@ impl OperationEnv for LocalOperationEnv {
                 .unwrap_or_else(ScopedPeerEnv::empty),
             env: parent.env.clone(),
             internal: true,
+            ownership: parent.ownership.clone(),
         };
 
         self.registry.invoke(&name, input, context).await
@@ -397,6 +398,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         }
     }
 
@@ -418,6 +420,7 @@ mod tests {
                     serde_json::json!({}),
                     vec![],
                     AccessControl::default(),
+                    None,
                 ),
                 HandlerKind::Once(handler),
                 OperationProvenance::Local,

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
+use alknet_core::ownership::OwnershipProvider;
 use alknet_core::types::StreamError;
 use futures::stream::StreamExt;
 use serde_json::Value;
@@ -70,6 +71,7 @@ pub struct Dispatcher {
     pub registry: Arc<OperationRegistry>,
     pub identity_provider: Arc<dyn IdentityProvider>,
     pub session_source: Option<Arc<dyn SessionOverlaySource + Send + Sync>>,
+    pub ownership_provider: Option<Arc<dyn OwnershipProvider>>,
     pub default_timeout: Duration,
 }
 
@@ -82,6 +84,7 @@ impl Dispatcher {
             registry,
             identity_provider,
             session_source: None,
+            ownership_provider: None,
             default_timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -96,6 +99,11 @@ impl Dispatcher {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.default_timeout = timeout;
+        self
+    }
+
+    pub fn with_ownership_provider(mut self, provider: Arc<dyn OwnershipProvider>) -> Self {
+        self.ownership_provider = Some(provider);
         self
     }
 
@@ -182,6 +190,7 @@ impl Dispatcher {
             env: stub_env,
             abort_policy: AbortPolicy::default(),
             internal: false,
+            ownership: self.ownership_provider.clone(),
         };
         context.env = self.compose_root_env(connection, &context);
         context
@@ -432,6 +441,7 @@ impl Clone for Dispatcher {
             registry: Arc::clone(&self.registry),
             identity_provider: Arc::clone(&self.identity_provider),
             session_source: self.session_source.clone(),
+            ownership_provider: self.ownership_provider.clone(),
             default_timeout: self.default_timeout,
         }
     }
@@ -524,6 +534,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -539,6 +550,7 @@ mod tests {
                     serde_json::json!({}),
                     vec![],
                     acl,
+                    None,
                 ),
                 HandlerKind::Once(make_handler(|input, context| async move {
                     ResponseEnvelope::ok(context.request_id, input)
@@ -1001,6 +1013,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 

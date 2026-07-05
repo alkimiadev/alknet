@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alknet_core::auth::{AuthContext, IdentityProvider};
+use alknet_core::ownership::OwnershipProvider;
 use alknet_core::types::{Connection, HandlerError, ProtocolHandler};
 use async_trait::async_trait;
 
@@ -60,6 +61,11 @@ impl CallAdapter {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.dispatcher = self.dispatcher.with_timeout(timeout);
+        self
+    }
+
+    pub fn with_ownership_provider(mut self, provider: Arc<dyn OwnershipProvider>) -> Self {
+        self.dispatcher = self.dispatcher.with_ownership_provider(provider);
         self
     }
 
@@ -224,6 +230,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -237,6 +244,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -257,6 +265,7 @@ mod tests {
                     serde_json::json!({}),
                     vec![],
                     acl,
+                    None,
                 ),
                 HandlerKind::Once(handler),
                 OperationProvenance::Local,
@@ -548,6 +557,7 @@ mod tests {
                 serde_json::json!({}),
                 vec![],
                 AccessControl::default(),
+                None,
             ),
             HandlerKind::Once(echo_handler()),
             OperationProvenance::FromCall,
@@ -583,6 +593,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: context.deadline,
             internal: false,
+            ownership: None,
         };
         let response = context
             .env
@@ -615,6 +626,7 @@ mod tests {
                 serde_json::json!({}),
                 vec![],
                 AccessControl::default(),
+                None,
             ),
             HandlerKind::Once(echo_handler()),
             OperationProvenance::FromCall,
@@ -641,6 +653,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: context.deadline,
             internal: false,
+            ownership: None,
         };
         let response = context
             .env

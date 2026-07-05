@@ -40,6 +40,7 @@ fn external_spec(name: &str) -> OperationSpec {
         serde_json::json!({}),
         vec![],
         AccessControl::default(),
+        None,
     )
 }
 
@@ -308,6 +309,7 @@ async fn from_call_discovers_and_forwards_over_quic_loopback() {
         abort_policy: alknet_call::registry::context::AbortPolicy::default(),
         deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
         internal: true,
+        ownership: None,
     };
 
     let response = tokio::time::timeout(

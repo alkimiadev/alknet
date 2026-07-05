@@ -253,6 +253,7 @@ fn rebuild_spec_for(
         output_schema,
         error_schemas,
         access_control,
+        None,
     ))
 }
 
@@ -582,6 +583,7 @@ mod tests {
             json!({}),
             vec![],
             AccessControl::default(),
+            None,
         );
         let handler = make_forwarding_handler(
             Arc::new(CallConnection::new(stub_connection())),
@@ -638,6 +640,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         }
     }
 
@@ -1090,6 +1093,7 @@ mod tests {
                 json!({}),
                 vec![],
                 AccessControl::default(),
+                None,
             ),
             HandlerKind::Stream(handler),
             OperationProvenance::FromCall,

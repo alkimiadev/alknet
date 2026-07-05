@@ -261,7 +261,7 @@ fn access_check_for_op(
 ) -> Option<String> {
     let name = operation.strip_prefix('/').unwrap_or(operation);
     let reg = registry.registration(name)?;
-    if let AccessResult::Forbidden(message) = reg.spec.access_control.check(identity) {
+    if let AccessResult::Forbidden(message) = reg.spec.access_control.check(identity, None, None) {
         return Some(message);
     }
     None
@@ -349,6 +349,7 @@ mod tests {
             json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -361,6 +362,7 @@ mod tests {
             json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -428,6 +430,7 @@ mod tests {
             json!({}),
             vec![],
             acl,
+            None,
         )
     }
 

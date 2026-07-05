@@ -62,6 +62,7 @@ fn test_context(request_id: &str, caps: Capabilities) -> OperationContext {
         abort_policy: AbortPolicy::default(),
         deadline: Some(Instant::now() + Duration::from_secs(30)),
         internal: true,
+        ownership: None,
     }
 }
 

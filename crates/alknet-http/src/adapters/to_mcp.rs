@@ -488,6 +488,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 

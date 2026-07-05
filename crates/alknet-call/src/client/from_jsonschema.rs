@@ -107,6 +107,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -124,6 +125,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal: true,
+            ownership: None,
         }
     }
 

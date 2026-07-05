@@ -326,6 +326,7 @@ impl OperationEnv for OverlayOperationEnv {
         let composition_authority;
         let scoped_env;
         let access_control;
+        let resource_id_path;
         {
             let overlay = self.overlay.read();
             let Some(registration) = overlay.get(&name) else {
@@ -338,6 +339,7 @@ impl OperationEnv for OverlayOperationEnv {
                 .clone()
                 .unwrap_or_else(ScopedPeerEnv::empty);
             access_control = registration.spec.access_control.clone();
+            resource_id_path = registration.spec.resource_id_path.clone();
         }
 
         let caller_identity = if parent.internal {
@@ -348,7 +350,14 @@ impl OperationEnv for OverlayOperationEnv {
         } else {
             parent.identity.clone()
         };
-        if let AccessResult::Forbidden(message) = access_control.check(caller_identity.as_ref()) {
+        let resource_id = resource_id_path
+            .as_ref()
+            .and_then(|path| crate::registry::registration::extract_json_pointer(&input, path));
+        if let AccessResult::Forbidden(message) = access_control.check(
+            caller_identity.as_ref(),
+            resource_id.as_deref(),
+            parent.ownership.as_deref(),
+        ) {
             return ResponseEnvelope::forbidden(parent.request_id.clone(), message);
         }
 
@@ -368,6 +377,7 @@ impl OperationEnv for OverlayOperationEnv {
             scoped_env,
             env: parent.env.clone(),
             internal: true,
+            ownership: parent.ownership.clone(),
         };
 
         match handler {
@@ -487,6 +497,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -525,6 +536,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(Instant::now() + Duration::from_secs(30)),
             internal: true,
+            ownership: None,
         }
     }
 
@@ -1002,6 +1014,7 @@ mod tests {
                 serde_json::json!({}),
                 vec![],
                 AccessControl::default(),
+                None,
             ),
             HandlerKind::Stream(streaming_handler),
             OperationProvenance::FromCall,

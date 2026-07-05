@@ -560,6 +560,7 @@ mod tests {
             json!({}),
             errors,
             AccessControl::default(),
+            None,
         )
     }
 
@@ -1015,6 +1016,7 @@ mod tests {
                     json!({}),
                     vec![error("INTERNAL_ERROR", Some(418))],
                     AccessControl::default(),
+                    None,
                 ),
                 HandlerKind::Once(noop_handler()),
                 OperationProvenance::Local,

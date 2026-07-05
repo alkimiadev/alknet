@@ -313,6 +313,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             acl,
+            None,
         )
     }
 
@@ -325,6 +326,7 @@ mod tests {
             serde_json::json!({}),
             vec![],
             AccessControl::default(),
+            None,
         )
     }
 
@@ -568,6 +570,7 @@ mod tests {
                     serde_json::json!({}),
                     vec![],
                     AccessControl::default(),
+                    None,
                 ),
                 HandlerKind::Once(make_handler(|input, ctx| async move {
                     ResponseEnvelope::ok(ctx.request_id, input)
@@ -928,6 +931,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(Instant::now() + Duration::from_secs(30)),
             internal: false,
+            ownership: None,
         }
     }
 
@@ -948,6 +952,7 @@ mod tests {
             abort_policy: AbortPolicy::default(),
             deadline: Some(Instant::now() + Duration::from_secs(30)),
             internal: true,
+            ownership: None,
         }
     }
 

@@ -427,6 +427,7 @@ impl FromOpenAPI {
             output_schema,
             error_schemas,
             AccessControl::default(),
+            None,
         );
 
         let path_template = path.to_string();
@@ -967,6 +968,7 @@ mod tests {
             abort_policy: alknet_call::registry::context::AbortPolicy::default(),
             deadline: Some(std::time::Instant::now() + Duration::from_secs(30)),
             internal: true,
+            ownership: None,
         }
     }
 

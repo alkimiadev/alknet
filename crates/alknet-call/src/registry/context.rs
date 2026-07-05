@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use alknet_core::auth::Identity;
+use alknet_core::ownership::OwnershipProvider;
 use alknet_core::types::Capabilities;
 use serde_json::Value;
 
@@ -30,6 +31,10 @@ pub struct OperationContext {
     pub abort_policy: AbortPolicy,
     pub deadline: Option<Instant>,
     pub internal: bool,
+    /// `None` when no ownership provider is wired (backward compat —
+    /// `check` falls back to static `Identity.resources` path). Wired by
+    /// the assembly layer via `CallAdapter`/`Dispatcher` (ADR-050).
+    pub ownership: Option<Arc<dyn OwnershipProvider>>,
 }
 
 impl OperationContext {
