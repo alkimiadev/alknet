@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-28
+last_updated: 2026-07-05
 ---
 
 # Authentication
@@ -294,18 +294,160 @@ schema shape, the `StoreError` type, the writer's-own-process cache
 coherence details, and why honker is a hard dependency of the SQLite
 adapter rather than an option).
 
+## Ownership Provider and Store (ADR-050)
+
+Runtime-spawned resources (containers, TTYs, workspace processes) have
+derived ownership: whoever spawned the resource owns it. The static
+`Identity.resources` model (populated from `PeerEntry` or
+`CompositionAuthority` at connection/registration time) can't represent
+this — the resource didn't exist when the identity was resolved. ADR-050
+resolves this with a fourth instance of the repo/adapter pattern
+(ADR-033): an `OwnershipProvider` read trait (sync, consulted by
+`AccessControl::check` on the dispatch hot path) and an `OwnershipStore`
+write trait (async, called by handlers that manage resource lifecycles),
+with an in-memory default adapter.
+
+```rust
+/// Read side: consulted by AccessControl::check on the dispatch hot path.
+/// Sync — called in the dispatch loop, no .await. Fourth instance of the
+/// repo/adapter pattern (ADR-033), alongside IdentityProvider (ADR-004),
+/// IdentityStore (ADR-035), and CredentialStore (ADR-031).
+pub trait OwnershipProvider: Send + Sync + 'static {
+    /// Does `identity` own `resource_type/resource_id` with `action`?
+    /// Called when AccessControl has resource_type + resource_action set
+    /// and the dispatcher has extracted resource_id from the input via
+    /// OperationSpec.resource_id_path (ADR-050 §2a).
+    fn owns(
+        &self,
+        identity: &Identity,
+        resource_type: &str,
+        resource_id: &str,
+        action: &str,
+    ) -> bool;
+
+    /// What resources of `resource_type` does `identity` own?
+    /// Called for the `list` case (resource_type set, resource_id_path
+    /// absent) — the result-filter path (ADR-050 §4a). Returns the set of
+    /// resource IDs the caller owns, for the handler to filter against.
+    fn owned_resources(
+        &self,
+        identity: &Identity,
+        resource_type: &str,
+    ) -> Vec<String>;
+
+    /// Does `identity` own *any* resource of `resource_type`?
+    /// Called for the `list` case — the scope-gate path (ADR-050 §4a).
+    /// Cheap boolean for the "allow if scoped" default.
+    fn owns_any(
+        &self,
+        identity: &Identity,
+        resource_type: &str,
+    ) -> bool;
+}
+
+/// Write side: called by the handler that manages the resource lifecycle.
+/// Async — not on the dispatch hot path. The handler calls `record` on
+/// spawn and `revoke` on teardown (ADR-050 §4b — handler-driven, not a
+/// reaper).
+#[async_trait]
+pub trait OwnershipStore: Send + Sync + 'static {
+    /// Record that `identity` spawned `resource_type/resource_id`.
+    /// Called by the docker handler after `docker/container/create`
+    /// succeeds.
+    async fn record(
+        &mut self,
+        identity: &Identity,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<(), OwnershipError>;
+
+    /// Revoke ownership of `resource_type/resource_id`.
+    /// Called by the docker handler on container exit / removal
+    /// (ADR-050 §4b — handler-driven teardown).
+    async fn revoke(
+        &mut self,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<(), OwnershipError>;
+}
+
+/// In-memory default adapter. Carries the docker/runner cases with no
+/// backend dependency — ownership is runtime state, meaningless across
+/// restarts (a container ID from a previous process doesn't exist).
+/// A persistence adapter (sqlite/honker-backed, for a hub that wants
+/// fleet ownership to survive restarts) is separable and built when a
+/// concrete use case forces it — same pattern as `alknet-store-sqlite`
+/// (ADR-035).
+pub struct InMemoryOwnershipStore { /* HashMap<...> */ }
+```
+
+The read/write split mirrors ADR-035: `OwnershipProvider` (read, sync) is
+the trait the dispatch path depends on; `OwnershipStore` (write, async) is
+the trait the handler lifecycle calls. The in-memory default implements
+both. A persistence adapter would implement both with an in-memory read
+cache backed by SQLite, same as `SqliteIdentityProvider` implements
+`IdentityProvider` (sync, cached) + `IdentityStore` (async write).
+
+### How it integrates with `AccessControl::check`
+
+`AccessControl::check` grows a parameter for the ownership provider (or
+reads one carried on `OperationContext`). When `ownership` is `None`,
+`check` falls back to the static `Identity.resources` path — operations
+with static resource sets work unchanged. The ownership provider is an
+additional check, not a replacement. See
+[operation-registry.md](../call/operation-registry.md) §"AccessControl"
+for the updated `check` signature and the dispatch flow.
+
+### Access pattern: proxy-only (ADR-050 §3)
+
+The base model is **"spawner owns, proxy to share, teardown revokes"** —
+no grant/transfer mechanism in the core ownership store. A coordinator
+that spawns a container re-exports the docker operations it wants to
+expose via `from_call` (ADR-017) or composes them in its own handlers;
+the coordinator is the direct caller to the docker endpoint; docker's
+ownership store sees the coordinator as owner and caller; the check
+passes. The end user's identity rides as `forwarded_for` metadata
+(ADR-032), and the coordinator handles its own end-user-level ACL.
+
+"Poking holes" (the grant pattern — giving an end user direct
+call-protocol access to a spawned resource) is a downstream-app concern,
+not a core-model concern. A future grant mechanism is additive (a new
+method on the ownership store trait), stated as reversal-cost
+classification, not deferral.
+
+### Per-node ownership (ADR-050 §4c)
+
+The ownership store is **per-node** — each node records its local
+ownership. There is no cross-node ownership propagation in the base model.
+The hub's "who is this for" mapping is app state, not core ownership
+state. The proxy pattern keeps ownership local: the spoke sees the hub as
+the owner, and the hub's end-user ACL is its own layer.
+
 ### Resource-scoped ACLs
 
-`Identity.resources` is populated on two paths:
+`Identity.resources` is populated on two paths (static), plus a third
+path (dynamic, ADR-050) that consults the ownership provider at check
+time:
 
 | Path | Source of `resources` | Use case |
 |------|----------------------|----------|
 | `PeerEntry` resolution (fingerprint or auth_token) | `PeerEntry.resources` (ADR-030) | External authenticated callers with per-peer resource binding |
 | Composition (`CompositionAuthority::as_identity`, ADR-015/022) | `CompositionAuthority.resources` | Internal composition calls with declared resource binding |
+| Dynamic ownership (ADR-050) | `OwnershipProvider::owns` / `owned_resources` | Runtime-spawned resources with derived ownership (containers, TTYs, workspace processes) — not carried on `Identity.resources`; consulted by `AccessControl::check` at check time via the ownership provider |
 
-`ApiKeyEntry`-resolved identities have empty `resources` — API keys grant scopes only. An `OperationSpec` that declares `resource_type`/`resource_action` returns `FORBIDDEN` when the caller authenticated via `ApiKeyEntry`, but succeeds when the caller authenticated via `PeerEntry` (fingerprint or auth_token) with matching `resources`.
+The static paths (`PeerEntry`, `CompositionAuthority`) populate
+`Identity.resources` at resolution time. The dynamic path (ADR-050) does
+**not** populate `Identity.resources` — it consults the ownership provider
+at `AccessControl::check` time. When `AccessControl::check`'s `ownership`
+parameter is `None` (no ownership provider wired, or the operation has no
+`resource_type`), `check` falls back to the static `Identity.resources`
+path. When `ownership` is `Some`, `check` consults the provider for
+runtime-spawned resources. See [operation-registry.md](../call/operation-registry.md)
+§"AccessControl" for the `check` signature and dispatch flow.
 
-Changes to `DynamicConfig` via `ConfigReloadHandle` are reflected immediately — `ConfigIdentityProvider` reads from `ArcSwap` on every call.
+`ApiKeyEntry`-resolved identities have empty `resources` — API keys grant scopes only. An `OperationSpec` that declares `resource_type`/`resource_action` returns `FORBIDDEN` when the caller authenticated via `ApiKeyEntry` and no ownership provider is wired, but succeeds when the caller authenticated via `PeerEntry` (fingerprint or auth_token) with matching `resources`, or when the ownership provider confirms ownership (ADR-050 dynamic path).
+
+Changes to `DynamicConfig` via `ConfigReloadHandle` are reflected immediately — `ConfigIdentityProvider` reads from `ArcSwap` on every call. Ownership state changes (record/revoke) are reflected immediately by the in-memory `OwnershipStore`; a persistence adapter would use honker `NOTIFY` for cross-process cache invalidation (same pattern as `ConfigIdentityProvider`, ADR-035).
 
 ### Fingerprint string format
 
@@ -445,6 +587,7 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 | Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines traits + in-memory defaults; persistence adapters are separate crates |
 | Three remote roles and outgoing-only X.509 | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Public X.509 endpoint / transport relay / hub; `PeerEntry` asymmetry (pure-client X.509 is not a peer); client-side verifier by `PeerEntry` presence |
 | Concrete persistence adapter shapes | [ADR-035](../../decisions/035-concrete-persistence-adapter-shapes.md) | Read-sync / write-async split (`IdentityStore` async write trait); SQLite adapter caches in memory, honker NOTIFY for no-restart cache invalidation; `StoreError` type |
+| Dynamic resource ownership for runtime-spawned resources | [ADR-050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Fourth repo/adapter trait: `OwnershipProvider` (sync read, consulted by `AccessControl::check`) + `OwnershipStore` (async write, handler-driven lifecycle); proxy-only access pattern (spawner owns, proxy to share, teardown revokes); per-node ownership; `OperationSpec.resource_id_path` |
 
 ## Open Questions
 
@@ -452,6 +595,7 @@ The endpoint's `AlknetEndpoint` also holds `Arc<dyn IdentityProvider>` for endpo
 - **OQ-35** (dissolved): the "API key asymmetry" framing was wrong; `PeerEntry` supports multiple credential paths (fingerprints + auth_token_hash), `ApiKeyEntry` is for tokens that ARE the identity. See OQ-35 in open-questions.md.
 - **OQ-37** (resolved): X.509 outgoing-only case — three remote roles named (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry is correct (pure-client X.509 connections are not in the peer graph on the client side); client-side verifier selection by `PeerEntry` presence (CA verification for unknown X.509, fingerprint pin for known peers). See ADR-034 and OQ-37 in open-questions.md.
 - **OQ-36** (resolved): Concrete persistence adapter shapes — read-sync / write-async split (`IdentityStore` async write trait extends the sync `IdentityProvider` read trait); SQLite adapter caches in memory and uses honker NOTIFY/LISTEN for no-restart cache invalidation; `alknet-store-sqlite` crate implements both `IdentityStore` and `CredentialStore`. See ADR-035 and OQ-36 in open-questions.md.
+- **OQ-42** (resolved by ADR-050): Dynamic resource ownership for runtime-spawned resources — `OwnershipProvider` (sync read) + `OwnershipStore` (async write) as the fourth repo/adapter trait; `AccessControl::check` consults the ownership provider; `OperationSpec` gains `resource_id_path`; proxy-only access pattern; per-node ownership; composition = two orthogonal checks, ADR-015/022 unchanged. See ADR-050 and OQ-42 in open-questions.md.
 
 ## Security Constraints
 

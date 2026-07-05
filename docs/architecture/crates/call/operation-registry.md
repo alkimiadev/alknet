@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-02
+last_updated: 2026-07-05
 ---
 
 # Operation Registry
@@ -39,6 +39,15 @@ pub struct OperationSpec {
     pub output_schema: Value,     // JSON Schema for output
     pub error_schemas: Vec<ErrorDefinition>,  // Declared domain errors (ADR-023)
     pub access_control: AccessControl,
+    /// JSON pointer into the input for the resource ID, when
+    /// `access_control.resource_type` is set and the operation targets a
+    /// specific runtime-spawned resource (ADR-050). e.g., `"$.containerId"`
+    /// for `docker/container/exec`. Absent for no-specific-resource
+    /// operations (the `list` case — scope-gate + result-filter). The
+    /// dispatcher extracts the resource ID from the input using this path
+    /// and passes it to `AccessControl::check`. `None` for operations
+    /// with no `resource_type` or with static resource sets.
+    pub resource_id_path: Option<String>,
 }
 
 pub enum OperationType {
@@ -73,21 +82,75 @@ Visibility (ADR-015) controls whether an operation is callable from the wire. `E
 pub struct AccessControl {
     pub required_scopes: Vec<String>,          // AND-checked: caller must have ALL
     pub required_scopes_any: Option<Vec<String>>, // OR-checked: caller must have at LEAST ONE
-    pub resource_type: Option<String>,          // e.g., "service"
-    pub resource_action: Option<String>,        // e.g., "read"
+    pub resource_type: Option<String>,          // e.g., "service", "container"
+    pub resource_action: Option<String>,        // e.g., "read", "exec"
 }
 ```
+
+`AccessControl::check` consults an ownership provider for runtime-spawned
+resources (ADR-050). The signature:
+
+```rust
+impl AccessControl {
+    /// `ownership` is None when the operation has no `resource_type`
+    /// (pure scope check) or when no ownership provider is wired
+    /// (the static `Identity.resources` path — backward compatible).
+    /// `resource_id` is None for the `list` case (resource_type set,
+    /// `resource_id_path` absent — scope-gate + result-filter, ADR-050 §4a).
+    pub fn check(
+        &self,
+        identity: Option<&Identity>,
+        resource_id: Option<&str>,
+        ownership: Option<&dyn OwnershipProvider>,
+    ) -> bool {
+        // 1. Scope check (unchanged): identity.scopes ⊇ required_scopes.
+        //    If identity is None and scopes are required, deny here.
+        // 2. Resource check (only if self.resource_type is Some):
+        //    a. resource_id Some + ownership Some:
+        //         → p.owns(identity?, resource_type, resource_id, resource_action)
+        //    b. resource_id None + ownership Some (the `list` case):
+        //         → p.owns_any(identity?, resource_type)  [scope-gate]
+        //    c. ownership None → fall back to static
+        //       identity.resources[resource_type] ∋ resource_action
+        //       (backward compat for non-runtime resources)
+    }
+}
+```
+
+The `OwnershipProvider` trait (read side, sync — called on the dispatch hot
+path) and the `OwnershipStore` trait (write side, async — called by
+handlers that manage resource lifecycles) are defined in `alknet-core` per
+ADR-050's storage decision (fourth instance of the repo/adapter pattern,
+ADR-033). See [auth.md](../core/auth.md) §"Ownership Provider and Store"
+for the trait shapes and the in-memory default adapter.
+
+**The ownership provider is carried on `OperationContext`** (or threaded
+by the dispatcher), populated by the dispatch path from the registry's
+wiring. When `ownership` is `None`, `check` falls back to the static
+`Identity.resources` path — operations with static resource sets work
+unchanged. The ownership provider is an additional check, not a
+replacement.
+
+**The `resource_id` parameter** is extracted by the dispatcher from the
+operation input using `OperationSpec.resource_id_path` (ADR-050 §2a).
+When the spec has no `resource_id_path` (the `list` case), the dispatcher
+passes `resource_id: None`, and `check` takes the scope-gate path. The
+handler is separately responsible for result-filtering via
+`OwnershipProvider::owned_resources` (ADR-050 §4a).
 
 When a `call.requested` event arrives:
 1. The `CallAdapter` resolves the caller's `Identity` from `AuthContext` (and possibly an `AuthToken` in the payload)
 2. The registry checks operation **visibility** — if the operation is `Internal`, returns `call.error` with code `NOT_FOUND` (does not leak existence)
-3. The registry checks `access_control.check(identity)` — for external calls (`internal: false`), ACL runs against the **caller's identity**; for internal calls (`internal: true`), ACL runs against the **handler's identity** (ADR-015)
-4. If access is denied, the adapter returns `call.error` with code `FORBIDDEN`
-5. If the relevant identity is `None` and the operation has restrictions, the adapter returns `call.error` with code `FORBIDDEN` and message `"authentication required"`
+3. The dispatcher extracts `resource_id` from the input via `spec.resource_id_path` (if present)
+4. The registry checks `access_control.check(identity, resource_id, ownership)` — for external calls (`internal: false`), ACL runs against the **caller's identity**; for internal calls (`internal: true`), ACL runs against the **handler's identity** (ADR-015)
+5. If access is denied, the adapter returns `call.error` with code `FORBIDDEN`
+6. If the relevant identity is `None` and the operation has restrictions, the adapter returns `call.error` with code `FORBIDDEN` and message `"authentication required"`
 
 Operations with empty `AccessControl` (no required scopes, no resource checks) are accessible to all callers, including unauthenticated ones.
 
 **Internal calls and authority context**: When a handler invokes another operation through `OperationEnv`, the nested call is marked `internal: true`, meaning it originated from composition (not from a wire request). The `internal` flag switches the authority context: the ACL check runs against the composing handler's `handler_identity` (set at registration), not the caller's identity and not as a blanket skip. This prevents privilege escalation through composition — a handler can only compose operations its own identity is authorized for. See ADR-015.
+
+**Composition and dynamic ownership (ADR-050 §4d)**: When a handler composes an operation that targets a runtime-spawned resource (e.g., a coordinator composing `docker/container/exec` against a specific container), two checks must pass: (a) the coordinator's `CompositionAuthority` has the `container:exec` scope (static, ADR-015/022 unchanged), and (b) the coordinator owns this specific container (dynamic, ownership provider). The composition authority stays static — it doesn't grow a dynamic path. The ownership store handles the dynamic resource-level check. Both must pass; they're orthogonal. ADR-015 and ADR-022 are unchanged.
 
 ### Handler
 
@@ -841,6 +904,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `OperationContext` and `call.requested`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
 | ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~`remote_safe` marking on `HandlerRegistration`~~ — superseded by ADR-029 |
 | Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `StreamingHandler` type alongside `Handler`; `HandlerKind` enum on `HandlerRegistration` validated against `op_type`; `invoke_streaming()` on `OperationRegistry`; `invoke()` and `OperationEnv::invoke()` error with `INVALID_OPERATION_TYPE` on `Subscription` ops; composition stays request/response-only, stream composition is handler-level |
+| Dynamic resource ownership for runtime-spawned resources | [ADR-050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | `AccessControl::check` consults an `OwnershipProvider` (sync read trait, ADR-033 repo/adapter pattern); `OperationSpec` gains `resource_id_path` (JSON pointer into the input); proxy-only access pattern (spawner owns, proxy to share, teardown revokes); `list` = scope-gate + result-filter; teardown = automatic, handler-driven; composition = two orthogonal checks, ADR-015/022 unchanged |
 
 ## Open Questions
 
@@ -875,6 +939,12 @@ See [open-questions.md](../../open-questions.md) for full details.
   registry) resolved by ADR-030+033; OQ-35 (API key asymmetry) dissolved;
   OQ-36 (concrete persistence adapter shapes) resolved by ADR-035;
   OQ-37 (X.509 outgoing-only) resolved by ADR-034.
+- **OQ-42** (resolved by ADR-050): Dynamic resource ownership for
+  runtime-spawned resources — `AccessControl::check` consults an
+  `OwnershipProvider`; `OperationSpec` gains `resource_id_path`; proxy-only
+  access pattern; four edge specifics pinned (`list`, teardown, fleet,
+  composition). See [auth.md](../core/auth.md) §"Ownership Provider and
+  Store" for the trait shapes.
 
 ## References
 
@@ -888,4 +958,5 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-030: PeerEntry and Identity.id decoupling (`PeerId` source = `Identity.id` = `PeerEntry.peer_id`)
 - ADR-032: Forwarded-for identity (`forwarded_for` on `OperationContext` and `call.requested`; metadata only)
 - ADR-049: Streaming handler for subscriptions (`StreamingHandler`, `HandlerKind`, `invoke_streaming()`, `INVALID_OPERATION_TYPE`)
+- ADR-050: Dynamic resource ownership for runtime-spawned resources (`OwnershipProvider` consulted by `AccessControl::check`; `OperationSpec.resource_id_path`; proxy-only access pattern; composition = two orthogonal checks, ADR-015/022 unchanged)
 - Reference implementation: `/workspace/@alkdev/alknet-main/crates/alknet-core/src/call/`
