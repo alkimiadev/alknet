@@ -71,14 +71,9 @@ copied and also since rewritten.
 
 ## The Channel Decomposition (Core Insight)
 
-The initial research framed alknet-ssh's scope as a single massive v1: server
-+ client + SOCKS5 + bidirectional port forwarding, all at once. That framing
-made the crate feel unmanageably large and produced hedging language
-("v1 default," "can be revisited later," "two-way door, decide later") that
-proposed shipping non-functional or half-built versions. This revision
-dissolves that problem by recognizing that **SSH's channel multiplexer is the
-natural decomposition point**, and the features that felt like a massive scope
-are layers that stack on top of it — each functional on its own.
+SSH's channel multiplexer is the natural decomposition point. The features
+that make up alknet-ssh are layers that stack on top of it — each functional
+on its own.
 
 ### How SSH channels work
 
@@ -427,8 +422,7 @@ choice in the ssh spec.
 ### DP-4: Client + forwarding + SOCKS5 + SFTP scope — reframed as layer order
 *(Recommended: one-way door on "all in alknet-ssh"; two-way door on extraction)*
 
-The initial research framed this as "is all of this in v1?" — a massive scope
-question. The channel decomposition dissolves it. The question is not "do we
+The channel decomposition answers the scope question. The question is not "do we
 ship it all at once" but "what's the build order, and are all the layers in
 alknet-ssh?"
 

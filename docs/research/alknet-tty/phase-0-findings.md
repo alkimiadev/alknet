@@ -546,9 +546,10 @@ channel and PTY-specific paths.
   extension informs the decision.
 - **OQ-TTY-02 (terminal modes)**: SSH's `pty_request` carries TTY modes
   (echo, raw, canonical, etc.) as a packed bitmask. Does alknet-tty
-  support these, or defer to the backend's defaults? Likely defer for v1
-  (the common case is "default terminal modes"); the `modes` field in
-  `TerminalParams` is reserved for future use.
+  support these, or use the backend's defaults? The common case is
+  "default terminal modes" — the `modes` field in `TerminalParams` is
+  reserved for when a concrete use case requires mode control. Not
+  needed for the current scope.
 - **OQ-TTY-03 (flow control)**: the chunk format has no windowing (QUIC
   provides flow control on the bidi stream). Is this sufficient for
   high-throughput stdout (e.g., `cargo build` output)? QUIC's per-stream
