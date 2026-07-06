@@ -22,6 +22,8 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 
 **Next step**: The storage/repo-pattern ADRs (030–033) are accepted and amend the core and call specs. The next implementation phase is the ADR-029 migration (peer-keyed overlays, `PeerRef` routing, retire `remote_safe`/`trusted_peer`) with the ADR-030 `PeerEntry` change and the ADR-032 `forwarded_for` field folded in — the `OperationContext`, `from_call` handler, and `AuthPolicy` are all under edit, making this the cheapest window. After that: alknet-http implementation (specs drafted; `h3`/WebTransport deferred per ADR-044, browser bidirectional path uses WebSocket), which consumes the `CredentialStore` trait and the `OperationAdapter` contract. The alknet-ssh crate (the other post-core crate, specced in parallel) proceeds independently — it depends on `alknet-core`, not `alknet-call`.
 
+**alknet-tty specs drafted.** The alknet-tty crate (terminal session protocol handler — `ProtocolHandler` on `alknet/tty`, two-carriage wire format with a raw chunk codec + JSON control channel, backend-agnostic via a `TtyBackend` trait) now has architecture specs: [crates/tty/](crates/tty/) (overview, tty-wire, tty-backend, tty-adapter, tty-local) and four ADRs — [ADR-052](decisions/052-alknet-tty-wire-format-and-two-carriage.md) (wire format: `alknet/tty` ALPN, JSON negotiation frame then raw chunks, fixed channel set 0-3, control as JSON), [ADR-053](decisions/053-ttybackend-trait-and-ttyhandle.md) (`TtyBackend` trait + `TtyHandle`; `exit_code` as a `Future`; backends need not be natively async — REQ-TTY-01 from the local-PTY POC), [ADR-054](decisions/054-local-tty-backend-sibling-crate.md) (`alknet-tty-local` sibling crate behind a `local` feature re-export; PTY vs pipe per-session; the runner pattern preserved), [ADR-055](decisions/055-exit-code-on-control-chunk.md) (exit code on a stream_type 3 control chunk; "exit chunk is last" invariant; adapter owns the ordering). The specs are grounded in the alknet-docker POC (`docs/research/alknet-docker/poc-summary.md`) and the alknet-tty POC (`/workspace/alknet-tty-poc/`, built 2026-07-05), which validated the wire format, the control channel, the local-PTY bridge, and the signal-delivery contract (REQ-TTY-02). The docker and SSH backends are future crates that implement the `TtyBackend` trait — out of scope for this spec set, but the trait shape is committed so they can be built against it.
+
 ## Architecture Documents
 
 | Document | Status | Description |
@@ -44,6 +46,12 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [crates/http/http-adapters.md](crates/http/http-adapters.md) | draft | from_openapi (reqwest; JSON + YAML input per ADR-051) and to_openapi (projection); no-env-vars injection point |
 | [crates/http/http-mcp.md](crates/http/http-mcp.md) | draft | from_mcp / to_mcp (feature-gated), streamable-HTTP-only, stdio exclusion |
 | [crates/http/webtransport.md](crates/http/webtransport.md) | deferred | h3/WebTransport handler — deferred per ADR-044; browser bidirectional path uses WebSocket (see http-server.md). Spec kept intact for revival. |
+| [crates/tty/README.md](crates/tty/README.md) | draft | alknet-tty crate index |
+| [crates/tty/overview.md](crates/tty/overview.md) | draft | Crate purpose, two-carriage model, dependencies, ALPN, backend location map, feature gates |
+| [crates/tty/tty-wire.md](crates/tty/tty-wire.md) | draft | Wire format: negotiation frame (JSON carriage), raw chunk codec (`[stream_type: u8][length: u32 be][payload]`), control channel (stream_type 3, JSON control messages), sentinels |
+| [crates/tty/tty-backend.md](crates/tty/tty-backend.md) | draft | `TtyBackend` trait, `TtyParams`, `TtyHandle`, `TtyControl` — the backend inversion point. Carries REQ-TTY-01 (backends need not be natively async) |
+| [crates/tty/tty-adapter.md](crates/tty/tty-adapter.md) | draft | `TtyAdapter` (`ProtocolHandler` on `alknet/tty`): session lifecycle, three-pump bidirectional driver, negotiation errors, exit-chunk ordering (ADR-055), access control |
+| [crates/tty/tty-local.md](crates/tty/tty-local.md) | draft | `alknet-tty-local` sibling crate: `LocalTtyBackend` via `portable_pty` (PTY) and `std::process::Command` (pipe/runner). Carries REQ-TTY-02 (signal forwarding to the process group) |
 | [crates/vault/README.md](crates/vault/README.md) | stable | alknet-vault crate index |
 | [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | stable | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
 | [crates/vault/encryption.md](crates/vault/encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
@@ -105,6 +113,10 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [049](decisions/049-streaming-handler-for-subscriptions.md) | Streaming Handler for Subscription Operations | Accepted |
 | [050](decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership for Runtime-Spawned Resources | Accepted |
 | [051](decisions/051-yaml-input-for-from-openapi.md) | YAML Input Format for from_openapi | Accepted |
+| [052](decisions/052-alknet-tty-wire-format-and-two-carriage.md) | alknet-tty Wire Format and Two-Carriage Model | Accepted |
+| [053](decisions/053-ttybackend-trait-and-ttyhandle.md) | TtyBackend Trait and TtyHandle — the Backend Inversion Point | Accepted |
+| [054](decisions/054-local-tty-backend-sibling-crate.md) | Local TTY Backend as a Sibling Crate (`alknet-tty-local`) | Accepted |
+| [055](decisions/055-exit-code-on-control-chunk.md) | Exit Code on a Control Chunk (the Last Chunk Before Stream Close) | Accepted |
 
 ## Open Questions
 
@@ -160,9 +172,18 @@ See [open-questions.md](open-questions.md) for the full tracker.
 **Resolved (blocks lifted, ADR drafting can proceed):**
 - **OQ-42**: Dynamic resource ownership for runtime-spawned resources — **resolved**. Storage reuses the repo/adapter pattern (ADR-033, fourth instance); integration is Option 2 (`AccessControl::check` consults an ownership provider directly, `OperationSpec` gains `resource_id_path`); access pattern is proxy-only (spawner owns, proxy to share, teardown revokes; no grant mechanism in core — "poking holes" is a downstream-app concern, additive if ever needed). Four edge specifics pinned: `list` = scope-gate + result-filter; teardown = automatic, handler-driven; fleet = per-node ownership, downstream app tracks "who is this for"; composition = two orthogonal checks, ADR-015/022 unchanged. Ready for ADR drafting; dependent crate specs (docker, tty, runner, fleet) can declare their `AccessControl` shapes against this model.
 
+**Resolved by the alknet-tty spec set (ADR-052–055):**
+- **OQ-43**: `TtyControl` as a `Clone` trait object — **resolved**. `Arc`-backed `Clone` newtype; confirmed by the local-PTY POC's concrete `PtyControl`.
+- **OQ-47**: Stdin closure canonical signal — **resolved**. Either a zero-length stdin chunk or a `{"type":"eof"}` control chunk; both accepted; `eof` recommended.
+
 **Deferred (not active):**
 - **OQ-09**: WASM target boundaries — design constraint, not deliverable
 - **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
+- **OQ-44**: Terminal modes (TTY modes) — `TerminalParams.modes` reserved; default terminal modes suffice for the current scope; blocked on a concrete mode-control use case.
+- **OQ-46**: Runner API surface — the runner mechanism (pipe mode) is in alknet-tty; runner policy (job management, log persistence, task graph) is a downstream crate, not in scope; blocked on a concrete runner-policy use case.
+
+**Open (low risk, not blocking):**
+- **OQ-45**: Flow control for high-throughput stdout — QUIC per-stream flow control is expected to suffice; a high-volume POC would confirm.
 
 ## Document Lifecycle
 
