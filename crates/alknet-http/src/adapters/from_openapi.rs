@@ -109,6 +109,40 @@ impl OpenAPISpec {
         Self::from_value(raw)
     }
 
+    /// Parse a YAML OpenAPI document.
+    ///
+    /// The caller has declared the format, so this does not attempt JSON
+    /// first — YAML's coercion rules apply (see ADR-051 §2). YAML is parsed
+    /// to a `serde_json::Value` and then fed through the existing
+    /// [`from_value`](Self::from_value) path, so there is one internal
+    /// `OpenAPISpec` representation shared with the JSON path.
+    pub fn from_yaml(doc: &str) -> Result<Self, AdapterError> {
+        let raw: Value = yaml_serde::from_str(doc).map_err(|e| AdapterError::SchemaParse {
+            message: format!("invalid YAML: {e}"),
+        })?;
+        Self::from_value(raw)
+    }
+
+    /// Parse a raw OpenAPI document of unknown format.
+    ///
+    /// Detection is **JSON-first, YAML-fallback** (ADR-051 §2). JSON's
+    /// stricter grammar avoids YAML 1.1 boolean coercion (the bare tokens
+    /// `yes`/`no`/`on`/`off` would otherwise be coerced to booleans, silently
+    /// mutating `{"active": "yes"}` into `{"active": true}`). A JSON parse
+    /// succeeds for any valid JSON document; only on JSON failure does this
+    /// fall back to the YAML parser. A YAML-only document (no JSON braces)
+    /// fails JSON parse immediately and goes to the YAML path.
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "ADR-051 §1 names this an inherent constructor `from_str`, not a FromStr impl"
+    )]
+    pub fn from_str(doc: &str) -> Result<Self, AdapterError> {
+        match serde_json::from_str::<Value>(doc) {
+            Ok(raw) => Self::from_value(raw),
+            Err(_) => Self::from_yaml(doc),
+        }
+    }
+
     pub fn from_value(raw: Value) -> Result<Self, AdapterError> {
         if !raw.is_object() {
             return Err(AdapterError::SchemaParse {
@@ -1780,6 +1814,238 @@ mod tests {
         match response.result {
             Err(e) => assert_eq!(e.code, "HTTP_500"),
             other => panic!("expected HTTP_500, got {other:?}"),
+        }
+    }
+
+    fn minimal_spec_yaml() -> &'static str {
+        r#"
+openapi: 3.0.0
+info:
+  title: Test
+  version: 1.0.0
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+"#
+    }
+
+    #[tokio::test]
+    async fn from_yaml_parses_minimal_doc_yields_one_registration() {
+        let spec = OpenAPISpec::from_yaml(minimal_spec_yaml()).unwrap();
+        let adapter = adapter(spec, config("widgets", "https://api.example.com", None));
+        let bundles = adapter.import().await.unwrap();
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].spec.name, "widgets/listWidgets");
+        assert_eq!(bundles[0].spec.namespace, "widgets");
+        assert_eq!(bundles[0].spec.op_type, OperationType::Query);
+        assert_eq!(bundles[0].spec.visibility, Visibility::Internal);
+        assert_eq!(bundles[0].provenance, OperationProvenance::FromOpenAPI);
+        assert!(bundles[0].composition_authority.is_none());
+        assert!(bundles[0].scoped_env.is_none());
+    }
+
+    #[tokio::test]
+    async fn from_yaml_resolves_refs_in_input_schema() {
+        let doc = r##"
+openapi: 3.0.0
+info:
+  title: T
+  version: "1"
+components:
+  schemas:
+    Widget:
+      type: object
+      properties:
+        name:
+          type: string
+paths:
+  /w:
+    post:
+      operationId: w
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Widget"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+"##;
+        let spec = OpenAPISpec::from_yaml(doc).unwrap();
+        let bundles = adapter(spec, config("ns", "https://x", None))
+            .import()
+            .await
+            .unwrap();
+        let props = bundles[0]
+            .spec
+            .input_schema
+            .get("properties")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        let body = props.get("body").unwrap();
+        assert_eq!(body.get("type").unwrap(), "object");
+        assert!(body
+            .get("properties")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("name"));
+    }
+
+    #[tokio::test]
+    async fn from_str_json_doc_succeeds_via_json_path() {
+        let spec = OpenAPISpec::from_str(minimal_spec_json()).unwrap();
+        assert_eq!(spec.info.title, "Test");
+        assert_eq!(spec.info.version, "1.0.0");
+        let adapter = adapter(spec, config("widgets", "https://api.example.com", None));
+        let bundles = adapter.import().await.unwrap();
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].spec.name, "widgets/listWidgets");
+    }
+
+    #[tokio::test]
+    async fn from_str_yaml_doc_succeeds_via_yaml_fallback() {
+        let spec = OpenAPISpec::from_str(minimal_spec_yaml()).unwrap();
+        assert_eq!(spec.info.title, "Test");
+        assert_eq!(spec.info.version, "1.0.0");
+        let adapter = adapter(spec, config("widgets", "https://api.example.com", None));
+        let bundles = adapter.import().await.unwrap();
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].spec.name, "widgets/listWidgets");
+    }
+
+    #[tokio::test]
+    async fn from_str_json_doc_preserves_yes_string_against_yaml_coercion() {
+        // The JSON-first correctness guard from ADR-051 §2: a JSON doc with a
+        // string field whose value is "yes" must survive `from_str` with the
+        // string intact. JSON parses first; the YAML path (which would apply
+        // any YAML-specific coercion) never runs on a valid JSON doc.
+        //
+        // NOTE: `yaml_serde` 0.10.x implements YAML 1.2, where `yes` is a
+        // string regardless — so this guard is currently defensive rather
+        // than load-bearing. It locks in the JSON-first contract so that a
+        // future YAML-parser swap (to a YAML 1.1 crate) cannot silently
+        // regress JSON input. See the complementary
+        // `from_yaml_preserves_bare_yes_as_string_yaml_1_2_behavior` test
+        // for the explicit dependency-version documentation.
+        let doc_with_default = r#"{
+            "openapi": "3.0.0",
+            "info": { "title": "T", "version": "1" },
+            "paths": {
+                "/x": {
+                    "get": {
+                        "operationId": "x",
+                        "parameters": [
+                            {"name": "active", "in": "query", "schema": {"type": "string", "default": "yes"}}
+                        ],
+                        "responses": {
+                            "200": {"content": {"application/json": {"schema": {}}}}
+                        }
+                    }
+                }
+            }
+        }"#;
+        let spec = OpenAPISpec::from_str(doc_with_default).unwrap();
+        let adapter = adapter(spec, config("ns", "https://x", None));
+        let bundles = adapter.import().await.unwrap();
+        let active = &bundles[0].spec.input_schema["properties"]["active"];
+        assert_eq!(active["type"], "string");
+        assert_eq!(active["default"], Value::String("yes".to_string()));
+        assert_ne!(active["default"], Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn from_yaml_preserves_bare_yes_as_string_yaml_1_2_behavior() {
+        // Documents the actual behavior of `yaml_serde` 0.10.x (the
+        // dependency chosen in ADR-051 §3): it implements the YAML 1.2 core
+        // schema, NOT YAML 1.1. Under YAML 1.2, only `true`/`false` (and
+        // their case variants) are booleans — the bare tokens `yes`/`no`/
+        // `on`/`off`/`y`/`n` are plain strings.
+        //
+        // NOTE: ADR-051 §2's stated correctness rationale for JSON-first
+        // detection (that the maintained YAML serde crates coerce `yes`/`no`
+        // to booleans per YAML 1.1) does not hold for `yaml_serde` 0.10.x.
+        // The JSON-first rule in `from_str` is retained per the Accepted
+        // ADR — it is still a defensible defensive default (JSON's grammar
+        // is a strict subset of YAML and never exhibits any YAML-specific
+        // coercion, present or future), but the silent-mutation hazard the
+        // ADR cites is not present with this dependency version. The ADR's
+        // rationale should be amended separately.
+        let doc = r#"
+openapi: 3.0.0
+info:
+  title: T
+  version: "1"
+paths:
+  /x:
+    get:
+      operationId: x
+      parameters:
+        - name: active
+          in: query
+          schema:
+            type: string
+            default: yes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+"#;
+        let spec = OpenAPISpec::from_yaml(doc).unwrap();
+        let adapter = adapter(spec, config("ns", "https://x", None));
+        let bundles = adapter.import().await.unwrap();
+        let active = &bundles[0].spec.input_schema["properties"]["active"];
+        // yaml_serde 0.10.x (YAML 1.2 core schema) keeps bare `yes` as a string.
+        assert_eq!(active["default"], Value::String("yes".to_string()));
+        assert_ne!(active["default"], Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn from_yaml_malformed_returns_schema_parse() {
+        let result = OpenAPISpec::from_yaml("openapi: 3.0.0\ninfo: [unclosed");
+        match result {
+            Err(AdapterError::SchemaParse { message }) => {
+                assert!(message.contains("YAML"), "message was: {message}");
+            }
+            other => panic!("expected SchemaParse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn from_str_malformed_both_returns_schema_parse() {
+        // Neither valid JSON (unterminated string) nor valid YAML (tab indents
+        // are an error; we use an unterminated flow mapping that both parsers
+        // reject).
+        let malformed = "openapi: 3.0.0\ninfo: {title: \"T\npaths: [";
+        let result = OpenAPISpec::from_str(malformed);
+        assert!(matches!(result, Err(AdapterError::SchemaParse { .. })));
+    }
+
+    #[tokio::test]
+    async fn from_yaml_missing_paths_returns_schema_parse() {
+        let doc = r#"
+openapi: 3.0.0
+info:
+  title: x
+  version: "1"
+"#;
+        let result = OpenAPISpec::from_yaml(doc);
+        match result {
+            Err(AdapterError::SchemaParse { message }) => assert!(message.contains("paths")),
+            other => panic!("expected SchemaParse, got {other:?}"),
         }
     }
 }

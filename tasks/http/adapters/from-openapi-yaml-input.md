@@ -1,7 +1,7 @@
 ---
 id: http/adapters/from-openapi-yaml-input
 name: Add YAML input format to from_openapi (from_yaml + format-detecting from_str, JSON-first per ADR-051)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
