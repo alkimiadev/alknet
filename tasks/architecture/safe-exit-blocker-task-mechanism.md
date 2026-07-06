@@ -1,12 +1,13 @@
 ---
 id: architecture/safe-exit-blocker-task-mechanism
 name: Establish the tasks/architecture/ blocker-task half of the Safe Exit protocol
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: low
 impact: project
 level: planning
+tags: [convention]
 ---
 
 ## Description
@@ -58,6 +59,30 @@ it").
    role spec) so future deferrals create the blocker task as part of the Safe
    Exit step.
 
+## Summary
+
+Completed in the July 2026 architecture-task pass. Decisions:
+
+- **Format**: adopted the existing taskgraph frontmatter verbatim — no new
+  `blocks:` field. One edge type (`depends_on`) keeps the graph simple; the
+  reverse lookup uses `taskgraph dependents`. The OQ's `Blocked on:` text is
+  the human-readable pointer; the task `depends_on` is the machine-readable
+  edge. They serve different audiences (architect vs. planner/agent).
+- **External-trigger tasks**: the four `deferred(scope)` OQs (32, 41, 44, 46)
+  plus the two legacy `deferred` OQs (09, 10) each got an external-trigger
+  tracker task under `tasks/architecture/` tagged `[external-trigger,
+  deferred-oq]`. These represent the external condition (a use case arriving,
+  a crate being specced) that would unblock the OQ — they are not actionable
+  work, so `risk: trivial` and `level: research`.
+- **OQ-09/10 backfill**: added a structured `Blocked on:` field to both
+  (previously they used legacy `deferred` status with the reason in the
+  Resolution prose). The `open-questions.md` index now surfaces all six
+  deferred OQs with concrete blocking conditions in the Deferred/Blocked
+  section — no more "_(no explicit blocking condition recorded)_" placeholders.
+- **Convention doc**: the `docs/sdd_process.md` Task File Format section is
+  updated with the architecture-task level mapping and the Safe Exit
+  blocker-task pattern (separate edit).
+
 ## Out of scope
 
 - The DB-backed backend (no manual links, vector/text search) — that's a future
@@ -67,7 +92,9 @@ it").
 
 ## Verification
 
-- `tasks/architecture/` contains one blocker task per `deferred(scope)` OQ
-- Each blocker task's `depends_on` names the concrete unblocking condition (or
-  a task that represents it)
-- `docs/sdd_process.md` (or equivalent) references the convention
+- `tasks/architecture/` contains one external-trigger task per deferred OQ
+  (six total: OQ-09, 10, 32, 41, 44, 46).
+- Each OQ's `Blocked on:` field names its tracker task ID, and the
+  `open-questions.md` Deferred/Blocked section surfaces the condition inline.
+- `taskgraph validate` passes for `tasks/architecture/`.
+- `docs/sdd_process.md` references the convention.

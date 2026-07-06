@@ -1,7 +1,7 @@
 ---
 id: core/ownership-store-trait
 name: Add OwnershipProvider (sync read) + OwnershipStore (async write) traits and InMemoryOwnershipStore (ADR-050)
-status: done
+status: completed
 depends_on: []
 scope: moderate
 risk: low

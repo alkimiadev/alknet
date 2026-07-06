@@ -1,7 +1,7 @@
 ---
 id: call/registry/operation-spec-resource-id-path
 name: Add resource_id_path field to OperationSpec (ADR-050 §2a)
-status: done
+status: completed
 depends_on: []
 scope: single
 risk: low

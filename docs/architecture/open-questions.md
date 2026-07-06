@@ -160,13 +160,13 @@ filtering the tables above.
 
 ### OQ-09: WASM Target Boundaries
 
-- **Blocked on**: _(no explicit blocking condition recorded — see full file)_
+- **Blocked on**: A concrete server-side WASM use case, or a deliberate confirmation that WASM stays a client-side design constraint. Tracked as `architecture/oq-09-wasm-server-use-case` in `tasks/architecture/`.
 - **Priority**: low
 - **Full file**: [OQ-09](questions/009-wasm-target-boundaries.md)
 
 ### OQ-10: Git Adapter Scope — Smart Protocol Only or Full Server?
 
-- **Blocked on**: _(no explicit blocking condition recorded — see full file)_
+- **Blocked on**: Speccing the alknet-git crate — resolve this when that crate is specified, not deferred past it. Tracked as `architecture/oq-10-git-adapter-spec` in `tasks/architecture/`.
 - **Priority**: low
 - **Full file**: [OQ-10](questions/010-git-adapter-scope-smart-protocol-only-or-full-server.md)
 

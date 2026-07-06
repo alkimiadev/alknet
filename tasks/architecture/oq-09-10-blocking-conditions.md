@@ -1,12 +1,13 @@
 ---
 id: architecture/oq-09-10-blocking-conditions
 name: Add explicit Blocked on conditions to OQ-09 (WASM) and OQ-10 (Git Adapter)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
 impact: component
 level: decomposition
+tags: [convention]
 ---
 
 ## Description
@@ -39,8 +40,20 @@ Either:
 The decision content stays unchanged — this is a metadata-structure fix, not a
 re-resolution.
 
+## Summary
+
+Completed alongside `architecture/safe-exit-blocker-task-mechanism`. Added a
+structured `Blocked on:` field to both OQ-09 and OQ-10 in their per-OQ files,
+each pointing at its new external-trigger tracker task
+(`architecture/oq-09-wasm-server-use-case`,
+`architecture/oq-10-git-adapter-spec`). Kept the legacy `deferred` status
+rather than reframing to `deferred(scope)` — the distinction is no longer
+load-bearing now that both have explicit blocking conditions and tracker
+tasks. The `open-questions.md` Deferred/Blocked section now surfaces all six
+deferred OQs with concrete conditions inline — no placeholders remain.
+
 ## Verification
 
-The "Deferred / Blocked" section of `docs/architecture/open-questions.md` should
-show a concrete blocking condition for OQ-09 and OQ-10 instead of the "no
+The "Deferred / Blocked" section of `docs/architecture/open-questions.md`
+shows a concrete blocking condition for OQ-09 and OQ-10 instead of the "no
 explicit blocking condition recorded" placeholder.

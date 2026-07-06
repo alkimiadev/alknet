@@ -420,6 +420,27 @@ cost-benefit framework in taskgraph's framework docs for the reasoning.
 2. Fills in `## Summary` section
 3. Commits changes to worktree branch
 
+### Architecture work and the `level` field
+
+Architecture work uses the same taskgraph format as implementation work —
+there is no separate `architecture` level. The `level` enum
+(`planning, decomposition, implementation, review, research`) already covers
+architecture activities:
+
+| Architecture activity | `level` | Rationale |
+|---|---|---|
+| Writing an ADR (the decision) | `implementation` | The ADR *is* the deliverable — the implementation of an architecture decision. Calling it `planning` would mislabel the artifact. |
+| Decomposing a spec into ADRs + OQs | `decomposition` | Direct fit — breaking a large architecture area into decideable units. |
+| Architecture review pass | `review` | Direct fit. |
+| Research / POC before a decision | `research` | Direct fit. |
+| Spec writing (overview, component spec) | `implementation` | The spec is the deliverable. |
+| Seeding a backlog of OQs/ADRs for a crate | `planning` | The upfront graph-shaping pass. |
+
+Architecture tasks live under `tasks/architecture/` and use the standard
+task body sections (`## Description`, `## Work`, `## Verification`,
+`## Out of scope`). The `## Summary` section is filled on completion, same as
+implementation tasks.
+
 ## Safe Exit Protocol
 
 When a task becomes untendable:
@@ -444,6 +465,33 @@ When a task becomes untendable:
 2. Update original task: `status: blocked`, add blocker to `depends_on`
 3. Document in task notes
 4. Notify coordinator
+
+### Deferred OQs and the blocker-task half
+
+The Safe Exit protocol applies to architecture decisions too, not just
+implementation tasks. When an open question (OQ) is marked `deferred(scope)`,
+the deferral has two halves that must stay in sync:
+
+1. **The visibility half** (in `docs/architecture/`): the OQ's `Blocked on:`
+   field names the concrete blocking condition, and the `open-questions.md`
+   index surfaces it in the cross-theme **Deferred / Blocked** section so
+   "what's currently parked and why" is answerable at a glance. This is the
+   human-readable surface for the architect.
+2. **The machine-readable half** (in `tasks/architecture/`): an
+   external-trigger tracker task represents the unblocking condition. It is
+   tagged `[external-trigger, deferred-oq]`, has `risk: trivial` and
+   `level: research` (it is not actionable work — it tracks whether the
+   external condition has arrived), and its `id` is referenced from the OQ's
+   `Blocked on:` text. This is the surface for the task graph: `taskgraph`
+   tools can reason about it, and downstream work that depends on the
+   decision can declare `depends_on: [architecture/oq-NN-...]`.
+
+When the unblocking condition arrives (a use case materializes, a crate is
+specced), the tracker task is marked `completed` and the OQ transitions from
+`deferred(scope)` to `open` (or directly to `resolved` if no architecture
+decision remains). The two halves serve different audiences and use one edge
+type (`depends_on`) — the reverse lookup uses `taskgraph dependents`. Do not
+add a `blocks:` field; it duplicates the edge and creates a sync hazard.
 
 ## Review Injection
 

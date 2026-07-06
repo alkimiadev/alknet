@@ -1,7 +1,7 @@
 ---
 id: call/registry/access-control-ownership-check
 name: Update AccessControl::check to consult OwnershipProvider for dynamic resource ownership (ADR-050 §2)
-status: done
+status: completed
 depends_on: [core/ownership-store-trait]
 scope: moderate
 risk: medium
