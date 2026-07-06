@@ -65,8 +65,12 @@ impl OperationAdapter for FromOpenAPI {
 /// fork of the deprecated `serde_yaml`). Both paths produce the same
 /// `serde_json::Value`-based internal type — there is one
 /// `OpenAPISpec`, not a JSON and a YAML variant. `from_str` detects
-/// format by trying JSON first and falling back to YAML (correctness
-/// rule — ADR-051 §2).
+/// format by trying JSON first and falling back to YAML (defensive
+/// default — ADR-051 §2: JSON's stricter grammar is immune to any
+/// YAML-specific type interpretation, present or future; with
+/// `yaml_serde` 0.10.x's YAML 1.2 core schema the coercion the original
+/// rationale cited is not present, but JSON-first locks the contract
+/// against a future YAML-parser swap).
 pub struct OpenAPISpec {
     pub info: OpenAPIInfo,
     pub paths: BTreeMap<String, PathItem>,
@@ -106,7 +110,7 @@ The adapter:
 1. Parses the OpenAPI document (`OpenAPISpec` — `paths`, `components`,
    `$ref` resolution). Accepts JSON or YAML (ADR-051 — JSON via
    `serde_json`, YAML via `yaml_serde`; `from_str` detects format
-   JSON-first/YAML-fallback, a correctness rule — ADR-051 §2). On parse
+   JSON-first/YAML-fallback, a defensive default — ADR-051 §2). On parse
    failure, returns `AdapterError::SchemaParse`. The TS prior art
    (`@alkdev/operations/src/from_openapi.ts`) shows the parsing patterns:
    `resolveRef` for `$ref`, `resolveRefsRecursive` for nested refs,
@@ -418,10 +422,14 @@ once published, the 5-endpoint gateway shape is one-way.
 - **`from_openapi` error codes are prefixed `HTTP_<status>`.** No
   collision with protocol-level codes (ADR-023, review #002 W20).
 - **`from_openapi` accepts JSON and YAML; `from_str` detects format
-  JSON-first.** JSON-first is a correctness rule (ADR-051 §2), not a
-  style preference. `from_str` tries JSON first (strict grammar), falls
-  back to YAML only if JSON parse fails. `from_json`/`from_yaml` are
-  the explicit constructors for callers that know the format.
+  JSON-first.** JSON-first is a defensive default (ADR-051 §2 as
+  amended): JSON's stricter grammar is immune to any YAML-specific type
+  interpretation. With `yaml_serde` 0.10.x (YAML 1.2 core schema) the
+  coercion the original rationale cited is not present, but JSON-first
+  locks the contract against a future YAML-parser swap. `from_str` tries
+  JSON first, falls back to YAML only if JSON parse fails.
+  `from_json`/`from_yaml` are the explicit constructors for callers that
+  know the format.
 - **`to_openapi` is a pure projection.** It consumes the registry, does
   not produce entries for it. Not an `OperationAdapter`.
 - **`to_openapi` output is JSON.** The published gateway doc is served at
@@ -462,7 +470,7 @@ once published, the 5-endpoint gateway shape is one-way.
 | `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered. Supersedes ADR-036's original `to_openapi` "paths mirror `/{service}/{op}`" clause |
 | `to_openapi` published-spec versioning | [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | `info.version` semver tracks the gateway endpoint contract, not the operation set; consumers detect breaking changes via the major version |
 | Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_openapi` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`); SSE response → `BoxStream<ResponseEnvelope>`; `Query`/`Mutation` stay `HandlerKind::Once` |
-| YAML input + JSON-first format detection | [ADR-051](../../decisions/051-yaml-input-for-from-openapi.md) | `from_openapi` accepts JSON and YAML (`from_json`/`from_yaml`/`from_str`); `from_str` is JSON-first/YAML-fallback (correctness rule, §2); YAML dep is `yaml_serde`; `to_openapi` output stays JSON (out of scope, §4) |
+| YAML input + JSON-first format detection | [ADR-051](../../decisions/051-yaml-input-for-from-openapi.md) | `from_openapi` accepts JSON and YAML (`from_json`/`from_yaml`/`from_str`); `from_str` is JSON-first/YAML-fallback (defensive default, §2 amended — `yaml_serde` 0.10.x is YAML 1.2, not 1.1; JSON-first locks the contract against a future parser swap); YAML dep is `yaml_serde`; `to_openapi` output stays JSON (out of scope, §4) |
 
 ## Open Questions
 

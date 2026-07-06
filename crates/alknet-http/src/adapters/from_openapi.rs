@@ -112,7 +112,8 @@ impl OpenAPISpec {
     /// Parse a YAML OpenAPI document.
     ///
     /// The caller has declared the format, so this does not attempt JSON
-    /// first — YAML's coercion rules apply (see ADR-051 §2). YAML is parsed
+    /// first — whatever type interpretation the YAML parser's schema
+    /// applies is what the caller gets (see ADR-051 §2). YAML is parsed
     /// to a `serde_json::Value` and then fed through the existing
     /// [`from_value`](Self::from_value) path, so there is one internal
     /// `OpenAPISpec` representation shared with the JSON path.
@@ -126,12 +127,18 @@ impl OpenAPISpec {
     /// Parse a raw OpenAPI document of unknown format.
     ///
     /// Detection is **JSON-first, YAML-fallback** (ADR-051 §2). JSON's
-    /// stricter grammar avoids YAML 1.1 boolean coercion (the bare tokens
-    /// `yes`/`no`/`on`/`off` would otherwise be coerced to booleans, silently
-    /// mutating `{"active": "yes"}` into `{"active": true}`). A JSON parse
-    /// succeeds for any valid JSON document; only on JSON failure does this
-    /// fall back to the YAML parser. A YAML-only document (no JSON braces)
-    /// fails JSON parse immediately and goes to the YAML path.
+    /// stricter grammar is immune to any YAML-specific type interpretation,
+    /// so a JSON doc never reaches the YAML parser under `from_str`. This
+    /// is a defensive default: `yaml_serde` 0.10.x implements the YAML 1.2
+    /// core schema (where bare `yes`/`no`/`on`/`off` are strings, not
+    /// booleans), so the coercion hazard the original ADR rationale cited
+    /// is not present with this dependency version — but JSON-first locks
+    /// the contract against a future YAML-parser swap (e.g., to a YAML 1.1
+    /// crate where those tokens coerce to booleans). See the
+    /// `from_str_json_doc_preserves_yes_string_against_yaml_coercion` and
+    /// `from_yaml_preserves_bare_yes_as_string_yaml_1_2_behavior` tests for
+    /// the codified behavior. A YAML-only document (no JSON braces) fails
+    /// JSON parse immediately and goes to the YAML path.
     #[allow(
         clippy::should_implement_trait,
         reason = "ADR-051 §1 names this an inherent constructor `from_str`, not a FromStr impl"

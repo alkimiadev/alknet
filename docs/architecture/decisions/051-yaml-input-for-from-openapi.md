@@ -53,35 +53,54 @@ This is an additive API surface change (two-way door — constructors can be
 renamed/added; nothing downstream breaks). The constructors produce the same
 `OpenAPISpec`; the rest of the adapter is format-agnostic.
 
-### 2. Format detection is JSON-first, YAML-fallback — a correctness rule, not a style preference
+### 2. Format detection is JSON-first, YAML-fallback — a defensive default, not a style preference
 
-YAML 1.1 (the version the maintained Rust YAML crates implement — see §3)
-treats the bare tokens `yes`/`no`/`on`/`off`/`y`/`n` as booleans, and `1.0`
-as a float. OpenAPI specs routinely have **string** fields with these values
-(e.g., a query parameter named `active` with value `"yes"`, or an enum of
-`["on", "off", "auto"]`). If a JSON document is parsed through the YAML
-parser, `{"active": "yes"}` silently becomes `{"active": true}` — the
-string is lost, the schema is wrong, and the failure is silent (no error,
-just a mutated value that the forwarding handler then sends to the external
-API as a boolean where a string was expected).
+> **Amendment (2026-07-06):** The original §2 cited YAML 1.1
+> boolean-coercion (`yes`/`no`/`on`/`off` → booleans) as a *present
+> hazard* with the maintained Rust YAML crates, framing JSON-first as a
+> correctness guard against silent string→boolean mutation. A probe
+> during implementation verified this is factually wrong for the chosen
+> dependency: `yaml_serde` 0.10.x (and the deprecated `serde_yaml` 0.9)
+> implement the **YAML 1.2 core schema**, where only `true`/`false` (and
+> case variants) are booleans — the bare tokens `yes`/`no`/`on`/`off`/
+> `y`/`n` are plain strings. The coercion hazard the original rationale
+> cited does not exist with this dependency version. The JSON-first rule
+> is **retained** (Accepted ADR) — the rationale is reframed below as a
+> defensive default, not a guard against a present hazard. The decision
+> did not change; the rationale did.
 
-This is a correctness footgun, not a matter of error-message quality.
-`from_str` therefore tries JSON first: a JSON parse succeeds for any valid
-JSON document, and JSON's stricter grammar (`"yes"` is a string, `true` is a
-boolean — no ambiguity) avoids the YAML 1.1 coercion. Only if JSON parse
-fails does `from_str` fall back to YAML. A YAML-only document (with `openapi:
-3.0.0` at the top, no JSON braces) fails JSON parse immediately and goes to
-the YAML path. The net result: JSON docs are never exposed to YAML's type
-coercion, and YAML docs are parsed as YAML.
+JSON's grammar is a strict subset of YAML (under YAML 1.2) and never
+exhibits any YAML-specific type interpretation. Running a JSON document
+through a YAML parser is *currently* safe with `yaml_serde` 0.10.x — a
+JSON doc like `{"active": "yes"}` parses through the YAML path with
+`"yes"` intact as a string (YAML 1.2 core schema, verified by the
+`from_yaml_preserves_bare_yes_as_string_yaml_1_2_behavior` test).
+JSON-first detection is therefore not guarding against a present hazard
+with this dependency; it is a **defensive default that locks in the
+contract against a future YAML-parser swap**. If `yaml_serde` is ever
+swapped for a YAML 1.1 crate (where `yes`/`no`/`on`/`off` coerce to
+booleans), or if a future `yaml_serde` version tightens its core schema
+in a way that introduces type interpretation JSON doesn't have, the
+JSON-first rule ensures JSON input cannot be silently mutated by the
+YAML path. The contract is durable; the dependency is a two-way door
+(§3).
+
+The rule is cheap: `from_str` tries `serde_json::from_str` first (strict
+grammar, no YAML-specific interpretation), and only on JSON parse failure
+falls back to the YAML parser. A YAML-only document (with `openapi: 3.0.0`
+at the top, no JSON braces) fails JSON parse immediately and goes to the
+YAML path. The cost is one wasted parse attempt for YAML docs, paid once
+at adapter-import time (not per forwarded call — see Consequences).
 
 `from_yaml` (the explicit constructor) does not try JSON first — the caller
 has declared the format. This is correct: a caller that explicitly says
-"this is YAML" wants the YAML parse, including its coercion rules. If the
-caller is wrong (passes JSON to `from_yaml`), the YAML parser handles it —
-JSON is a syntactic subset of YAML, so it parses, but with the same
-silent string→boolean coercion as the `from_str` footgun above
-(`{"active": "yes"}` becomes `{"active": true}`, no error). The caller
-opted in by naming the format; `from_str` exists for the unsure caller.
+"this is YAML" wants the YAML parse, including whatever type
+interpretation the YAML parser applies. If the caller is wrong (passes
+JSON to `from_yaml`), the YAML parser handles it — JSON is a syntactic
+subset of YAML, so it parses, with whatever interpretation the YAML
+parser's schema applies (currently none for `yes`/`no` under YAML 1.2; a
+future YAML 1.1 swap would coerce). The caller opted in by naming the
+format; `from_str` exists for the unsure caller.
 
 ### 3. The YAML dependency is `yaml_serde` (the official YAML org fork of `serde_yaml`), not the deprecated `serde_yaml`
 
@@ -133,9 +152,13 @@ additive (a new endpoint, no breaking change to the JSON path). The
 - Format detection (`from_str`) makes fetch-and-import ergonomic: a caller
   that fetched a schema from a URL with no reliable Content-Type doesn't
   have to sniff the format itself.
-- JSON-first detection prevents the YAML 1.1 boolean-coercion footgun from
-  silently corrupting JSON docs. The rule is a correctness guard, not
-  cosmetic.
+- JSON-first detection is a defensive default that locks in the
+  contract against a future YAML-parser swap. With `yaml_serde` 0.10.x
+  (YAML 1.2 core schema) the coercion hazard the original rationale
+  cited is not present; JSON-first nonetheless ensures JSON input is
+  never exposed to YAML-specific type interpretation, present or
+  future. The rule is cheap (one wasted parse for YAML docs, paid once
+  at import time) and the contract is durable.
 - The maintained `yaml_serde` fork keeps the dependency off the archived
   `serde_yaml`; the swap is documented so a future maintainer doesn't
   re-derive why the crate name doesn't match the obvious name.
@@ -149,8 +172,9 @@ additive (a new endpoint, no breaking change to the JSON path). The
   trivial — `from_openapi` runs once at adapter-import time (not per
   forwarded call), so the double-parse happens once per imported service,
   not per request. Callers that know the format use `from_json`/`from_yaml`
-  directly and pay no double-parse. The correctness benefit (never running
-  JSON through YAML coercion) is worth the one-time cost.
+  directly and pay no double-parse. The defensive benefit (JSON input never
+  reaches the YAML parser, immune to any YAML-specific interpretation
+  present or future) is worth the one-time cost.
 
 ## Assumptions
 
@@ -161,13 +185,19 @@ additive (a new endpoint, no breaking change to the JSON path). The
    notes), both JSON and YAML constructors adapt in lockstep — the
    constructor is the adapter between wire format and internal type.
 
-2. **YAML 1.1 coercion is the only material difference for OpenAPI parsing.**
-   YAML 1.2 (where JSON is a true subset and `yes`/`no` are strings) would
-   make parse-everything-as-YAML safe. The maintained Rust crates are YAML
-   1.1; this ADR's JSON-first rule is the workaround. If a YAML 1.2 Rust
-   parser becomes the obvious choice later, the JSON-first rule becomes a
-   style preference rather than a correctness guard — but the rule stays
-   (no reason to run JSON through a YAML parser).
+2. **`yaml_serde` 0.10.x implements the YAML 1.2 core schema.** Verified
+   by a probe during implementation: bare `yes`/`no`/`on`/`off`/`y`/`n`
+   are plain strings, not booleans (codified by the
+   `from_yaml_preserves_bare_yes_as_string_yaml_1_2_behavior` test). The
+   original §2 rationale cited YAML 1.1 coercion as a present hazard; it
+   is not, with this dependency version. JSON-first detection is retained
+   as a defensive default (§2 as amended): a future swap to a YAML 1.1
+   crate, or a future `yaml_serde` schema tightening, cannot silently
+   regress JSON input because JSON never reaches the YAML path under
+   `from_str`. If the dependency swaps to a YAML 1.1 crate, the defensive
+   default becomes a load-bearing correctness guard — the rule is the
+   same either way, which is why it is stated as a contract rather than
+   as a workaround for a specific crate version.
 
 ## References
 
