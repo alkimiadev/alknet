@@ -29,7 +29,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | Document | Status | Description |
 |----------|--------|-------------|
 | [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types, design principles |
-| [open-questions.md](open-questions.md) | draft | Centralized OQ tracker with door-type classifications |
+| [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](open-questions/questions/) |
 | [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index |
 | [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection, BiStream, StreamError |
 | [crates/core/endpoint.md](crates/core/endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, shutdown |
@@ -120,70 +120,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 
 ## Open Questions
 
-See [open-questions.md](open-questions.md) for the full tracker.
-
-**Resolved one-way doors:**
-- **OQ-01**: BiStream type — trait with Connection parameter (ADR-007)
-- **OQ-02**: AuthContext timing — hybrid model (ADR-004)
-- **OQ-03**: ALPN naming — `alknet/` prefix, no version (ADR-006)
-- **OQ-05**: Multi-connectivity endpoint — quinn + iroh, both feature-gated (ADR-010)
-- **OQ-06**: ALPN per connection, not per stream (ADR-006)
-- **OQ-08**: Vault integration — CLI-embedded, assembly-layer only (ADR-008, ADR-014)
-- **OQ-16**: Safe vault operations for call protocol exposure — none for now (ADR-014)
-- **OQ-18**: Privilege model — `internal` = authority switch, External/Internal visibility, handler identity + scoped env (ADR-015)
-- **OQ-17**: Abort cascade — `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in (ADR-016)
-- **OQ-15**: Call protocol client and adapter contract — `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction (ADR-017)
-
-**Resolved two-way doors:**
-- **OQ-04**: Dynamic handler registration — static at startup (ADR-010); scoped to the `HandlerRegistry` (ALPN-level) by ADR-024, which governs `OperationRegistry` mutability separately
-- **OQ-07**: Call protocol scope — bidirectional streams, EventEnvelope, ID-based correlation (ADR-012)
-- **OQ-11**: Handler-level auth resolution observability — handlers store resolved identity on Connection (Option B); two identity scopes: connection-level (observability) and per-request (ACL)
-- **OQ-12**: TLS identity provisioning — two use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME designed in ADR-027; RawKey decoupled from iroh feature.
-- **OQ-13**: Operation path format — `/{service}/{op}` is the correct design for alknet-call, not a simplification
-- **OQ-14**: Batch operation semantics — multiple correlated `call.requested` events is the correct protocol design, not a simplification
-- **OQ-19**: Session-scoped registries — agent-written operations via `OperationEnv` trait layering; protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays as well.
-- **OQ-20**: Encryption key derivation — HD derivation from BIP39 seed, not PBKDF2; salt field unused in v2 (wire-format compat) (ADR-020)
-- **OQ-21**: Remote vault access — resolved (ADR-025): vault is local-only by construction; remote access requires a separate vault-server crate with its own ADR
-- **OQ-22**: Key rotation — version-indexed derivation paths; `rotate` method re-encrypts (ADR-021)
-- **OQ-23**: Handler identity registration path — registration bundle with provenance, composition authority, scoped env, capabilities (ADR-022)
-- **OQ-24**: Operation error schemas — declared domain errors with typed `details` payload; adapter fidelity for `from_openapi`/`to_openapi` (ADR-023)
-- **OQ-40**: reqwest client config and connection pooling — `ClientWithMiddleware` + `RetryTransientMiddleware` + inlined `RetryAfterMiddleware`; rebuild-and-swap hot-reload; per-request credential injection; agent-crate SSE normalization sits on top of the client, doesn't replace it
-
-**Resolved by the storage/repo-pattern ADRs (ADR-030–033):**
-- **OQ-33**: ~~PeerId stability~~ — **resolved by ADR-030** (logical id; source is `Identity.id` = `PeerEntry.peer_id`, stable across key rotation; UUID workaround removed)
-- **OQ-34**: ~~Persistent peer registry~~ — **resolved by ADR-030 + ADR-031 + ADR-033** (storage boundary: core defines repo traits + in-memory defaults; persistence adapters are separate crates)
-- **OQ-35**: ~~API key asymmetry~~ — **dissolved** (the framing was wrong; `PeerEntry` supports multiple credential paths)
-
-**Resolved by the call-completion / ADR-029 work:**
-- **OQ-27**: ~~`from_call` re-import trigger~~ — **resolved** (auto-re-import on connection establishment; `refresh()` is a feature addition)
-- **OQ-28**: ~~`from_call` namespace collision~~ — **resolved** (same-peer collision = error; cross-peer dissolved by ADR-029)
-- **OQ-29**: ~~CallClient TLS client-auth~~ — **resolved** (wire quinn client-auth; key-type-aware server cert verification; fingerprint normalization to `ed25519:` across quinn/iroh)
-- **OQ-30**: ~~`PeerRef::Any` routing policy~~ — **resolved** (insertion-order first-match; richer routing is a feature extension)
-- **OQ-31**: ~~`services/list-peers` re-export semantics~~ — **resolved** (opt-in `services/list-peers`; `services/list` is "own ops only")
-
-**Open (feature extensions, not blocking):**
-- **OQ-32**: Multi-hop federation — the one-hop model is the architectural commitment; multi-hop is a feature extension that doesn't break downstream
-- **OQ-36**: ~~Concrete persistence adapter shapes~~ — **resolved by ADR-035** (read-sync / write-async / honker-NOTIFY cache invalidation; `alknet-store-sqlite` crate; `IdentityStore` write trait; `CredentialStore::put`/`delete` async)
-- **OQ-37**: ~~X.509 outgoing-only case~~ — **resolved by ADR-034** (three remote roles named: public X.509 endpoint, transport relay, hub; `PeerEntry` asymmetry is correct; client-side verifier selection by `PeerEntry` presence)
-- **OQ-38**: WebTransport standalone relay service scope — the standalone relay (future `alknet-relay`, fork of iroh-relay with WebTransport proxy fallback) is distinct from the in-process ALPN-stream-proxy (ADR-040); scope question, not deferral
-- **OQ-39**: ~~`to_openapi` published-spec versioning~~ — **resolved by ADR-045** (`info.version` semver tracks the gateway endpoint contract, not the operation set; per-caller operations discovered via `/search`)
-- **OQ-41**: Stream operators library — a handler-level utility library (filter, map, batch, dedupe, window, etc. on `BoxStream<T>`), prior art in `@alkdev/pubsub/operators.ts`; feature extension, not an architectural decision (the architecture decision — stream composition is handler-level, not protocol-level — is made in ADR-049)
-
-**Resolved (blocks lifted, ADR drafting can proceed):**
-- **OQ-42**: Dynamic resource ownership for runtime-spawned resources — **resolved**. Storage reuses the repo/adapter pattern (ADR-033, fourth instance); integration is Option 2 (`AccessControl::check` consults an ownership provider directly, `OperationSpec` gains `resource_id_path`); access pattern is proxy-only (spawner owns, proxy to share, teardown revokes; no grant mechanism in core — "poking holes" is a downstream-app concern, additive if ever needed). Four edge specifics pinned: `list` = scope-gate + result-filter; teardown = automatic, handler-driven; fleet = per-node ownership, downstream app tracks "who is this for"; composition = two orthogonal checks, ADR-015/022 unchanged. Ready for ADR drafting; dependent crate specs (docker, tty, runner, fleet) can declare their `AccessControl` shapes against this model.
-
-**Resolved by the alknet-tty spec set (ADR-052–055):**
-- **OQ-43**: `TtyControl` as a `Clone` trait object — **resolved**. `Arc`-backed `Clone` newtype; confirmed by the local-PTY POC's concrete `PtyControl`.
-- **OQ-47**: Stdin closure canonical signal — **resolved**. Either a zero-length stdin chunk or a `{"type":"eof"}` control chunk; both accepted; `eof` recommended.
-
-**Deferred (not active):**
-- **OQ-09**: WASM target boundaries — design constraint, not deliverable
-- **OQ-10**: Git adapter scope — start with smart protocol, add ERC721 later
-- **OQ-44**: Terminal modes (TTY modes) — `TerminalParams.modes` reserved; default terminal modes suffice for the current scope; blocked on a concrete mode-control use case.
-- **OQ-46**: Runner API surface — the runner mechanism (pipe mode) is in alknet-tty; runner policy (job management, log persistence, task graph) is a downstream crate, not in scope; blocked on a concrete runner-policy use case.
-
-**Open (low risk, not blocking):**
-- **OQ-45**: Flow control for high-throughput stdout — QUIC per-stream flow control is expected to suffice; a high-volume POC would confirm.
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (47 OQs across 15 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](open-questions/questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 
