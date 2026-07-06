@@ -6,7 +6,7 @@ depends_on: []
 scope: moderate
 risk: low
 impact: project
-level: architecture
+level: planning
 ---
 
 ## Description

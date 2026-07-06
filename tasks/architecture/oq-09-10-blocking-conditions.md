@@ -3,10 +3,10 @@ id: architecture/oq-09-10-blocking-conditions
 name: Add explicit Blocked on conditions to OQ-09 (WASM) and OQ-10 (Git Adapter)
 status: pending
 depends_on: []
-scope: small
+scope: narrow
 risk: low
-impact: local
-level: architecture
+impact: component
+level: decomposition
 ---
 
 ## Description
