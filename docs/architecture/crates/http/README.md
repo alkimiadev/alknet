@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-30
+last_updated: 2026-07-06
 ---
 
 # alknet-http
@@ -19,7 +19,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [overview.md](overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
 | [http-server.md](http-server.md) | draft | `HttpAdapter` (`ProtocolHandler` for `h2`/`http/1.1` + WS upgrade route), axum over QUIC, Bearer auth, stealth, `/healthz`; WS hands off to the native session spec |
 | [websocket.md](websocket.md) | draft | WebSocket browser bidirectional path — native `EventEnvelope` call-protocol session (not the gateway shape, ADR-048); framing, dispatch, bidirectionality, connection-local Layer 2 overlay, browsers-are-not-peers rationale, streaming (native `call.responded`, no SSE), deferred `from_wss` adapter |
-| [http-adapters.md](http-adapters.md) | draft | `from_openapi` (reqwest client) and `to_openapi` (OpenAPI projection); no-env-vars invariant point |
+| [http-adapters.md](http-adapters.md) | draft | `from_openapi` (reqwest client; JSON + YAML input per ADR-051) and `to_openapi` (OpenAPI projection); no-env-vars invariant point |
 | [http-mcp.md](http-mcp.md) | draft | `from_mcp` / `to_mcp` (feature-gated), streamable-HTTP-only, stdio exclusion |
 | [webtransport.md](webtransport.md) | deferred | `h3`/WebTransport handler — **deferred per ADR-044**; spec kept intact for revival |
 
@@ -53,6 +53,8 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [046](../../decisions/046-assembly-layer-custom-http-routes.md) | Assembly-Layer Custom HTTP Routes on HttpAdapter | `extra_routes: Option<Router>` at construction; deployments add raw HTTP endpoints (e.g., OAI-compatible proxy, or a REST-like per-operation projection) that coexist with the default surface; default surface takes precedence on collision |
 | [047](../../decisions/047-remove-direct-call-http-surface.md) | Remove the Direct-Call HTTP Surface; Gateway Is the Sole Invoke Path | `POST /{service}/{op}` direct-call surface removed; the 5 gateway endpoints are the sole invoke path; per-caller `AccessControl`-filtered `/search` is the discovery; ADR-036's non-routing clauses survive |
 | [048](../../decisions/048-websocket-native-session-not-gateway.md) | WebSocket Carries the Native Call-Protocol Session, Not the Gateway Shape | WS is the native `EventEnvelope` session; the gateway endpoints (`/search`/`/schema`/`/call`/`/batch`/`/subscribe`) are HTTP-only and do not appear on WS; discovery via `services/list`/`services/schema` as call-protocol ops |
+| [049](../../decisions/049-streaming-handler-for-subscriptions.md) | Streaming Handler for Subscription Operations | `from_openapi` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`); SSE → `BoxStream<ResponseEnvelope>` |
+| [051](../../decisions/051-yaml-input-for-from-openapi.md) | YAML Input Format for from_openapi | `from_openapi` accepts JSON and YAML (`from_json`/`from_yaml`/`from_str`); `from_str` is JSON-first/YAML-fallback (correctness rule, §2); YAML dep is `yaml_serde` (maintained fork of deprecated `serde_yaml`); `to_openapi` output stays JSON (out of scope, §4) |
 
 ## Relevant Open Questions
 

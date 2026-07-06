@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-30
+last_updated: 2026-07-06
 ---
 
 # alknet-http — Overview
@@ -90,6 +90,7 @@ alknet-http
 ├── axum            (HTTP server — Router, extractors, middleware, WebSocket upgrade)
 ├── reqwest         (HTTP client — from_openapi/from_mcp forwarding)
 ├── hyper           (HTTP/1.1 + HTTP/2 framing; axum is built on hyper)
+├── yaml_serde      (YAML parse for from_openapi YAML input — ADR-051; maintained fork of serde_yaml)
 └── rmcp            (MCP streamable HTTP — feature-gated behind `mcp`)
 ```
 
@@ -198,6 +199,12 @@ features. A browser-facing hub also uses the default features — the
 browser bidirectional path is WebSocket, native to axum, no `h3` feature
 gate needed. A deployment that wants MCP tool import/export enables
 `mcp`.
+
+**`yaml_serde` is not feature-gated** — YAML OpenAPI is a first-class
+input format (vast.ai publishes a YAML schema), not an edge case. A
+deployment that imports a YAML-publishing provider must not have to
+remember a feature flag (ADR-051 §3). The dependency is small (pure
+Rust, no native code), consistent with the default-features philosophy.
 
 ## The No-Env-Vars Invariant
 

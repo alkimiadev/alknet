@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-05
+last_updated: 2026-07-06
 ---
 
 # Alknet Architecture
@@ -41,7 +41,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [crates/http/overview.md](crates/http/overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
 | [crates/http/http-server.md](crates/http/http-server.md) | draft | HttpAdapter for h2/http1.1 + WebSocket upgrade route, axum over QUIC, Bearer auth, stealth, /healthz |
 | [crates/http/websocket.md](crates/http/websocket.md) | draft | WebSocket browser bidirectional path — native `EventEnvelope` call-protocol session (not the gateway shape); framing, dispatch, bidirectionality, connection-local overlay, browsers-are-not-peers, deferred `from_wss` |
-| [crates/http/http-adapters.md](crates/http/http-adapters.md) | draft | from_openapi (reqwest) and to_openapi (projection); no-env-vars injection point |
+| [crates/http/http-adapters.md](crates/http/http-adapters.md) | draft | from_openapi (reqwest; JSON + YAML input per ADR-051) and to_openapi (projection); no-env-vars injection point |
 | [crates/http/http-mcp.md](crates/http/http-mcp.md) | draft | from_mcp / to_mcp (feature-gated), streamable-HTTP-only, stdio exclusion |
 | [crates/http/webtransport.md](crates/http/webtransport.md) | deferred | h3/WebTransport handler — deferred per ADR-044; browser bidirectional path uses WebSocket (see http-server.md). Spec kept intact for revival. |
 | [crates/vault/README.md](crates/vault/README.md) | stable | alknet-vault crate index |
@@ -104,6 +104,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [048](decisions/048-websocket-native-session-not-gateway.md) | WebSocket Carries the Native Call-Protocol Session, Not the Gateway Shape | Accepted |
 | [049](decisions/049-streaming-handler-for-subscriptions.md) | Streaming Handler for Subscription Operations | Accepted |
 | [050](decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership for Runtime-Spawned Resources | Accepted |
+| [051](decisions/051-yaml-input-for-from-openapi.md) | YAML Input Format for from_openapi | Accepted |
 
 ## Open Questions
 
