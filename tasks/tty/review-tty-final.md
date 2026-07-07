@@ -1,7 +1,7 @@
 ---
 id: tty/review-tty-final
 name: Final review of alknet-tty + alknet-tty-local for merge readiness
-status: pending
+status: completed
 depends_on: [tty/integration-test]
 scope: broad
 risk: low
