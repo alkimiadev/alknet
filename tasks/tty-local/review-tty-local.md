@@ -1,7 +1,7 @@
 ---
 id: tty-local/review-tty-local
 name: Review alknet-tty-local for REQ-TTY-01/02 and ADR-056 contract conformance
-status: pending
+status: completed
 depends_on: [tty-local/backend-impl]
 scope: moderate
 risk: low
