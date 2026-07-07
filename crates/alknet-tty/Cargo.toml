@@ -11,8 +11,13 @@ name = "alknet_tty"
 
 [features]
 default = []
-# `local` re-exports `alknet_tty_local::LocalTtyBackend`. The
-# `dep:alknet-tty-local` dependency is wired in task `tty/local-feature-reexport`.
+# ADR-054 prescribes `local = ["dep:alknet-tty-local"]` with a re-export in
+# `src/lib.rs`. Cargo rejects the cyclic dependency (alknet-tty →
+# alknet-tty-local → alknet-tty) even with an optional dep, so the
+# re-export is deferred to the assembly layer: a consumer that wants the
+# local backend depends on `alknet-tty-local` directly and registers
+# `LocalTtyBackend` in the `TtyAdapter` backend map. See ADR-054 §"The
+# feature-re-export compromise" and the deviation note in `src/lib.rs`.
 local = []
 
 [dependencies]
