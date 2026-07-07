@@ -16,17 +16,17 @@ The alknet-tty research (`docs/research/alknet-tty/phase-0-findings.md`)
 identified the `TtyBackend` trait as the inversion point. The guiding
 insight:
 
-> A terminal session is not an SSH concern, or a Docker concern — it is a
-> terminal concern. SSH and Docker are just two backends that can allocate
-> a PTY.
+> A terminal session is not an SSH concern, or a Docker concern — it is
+> a terminal concern. SSH and Docker are just two backends that can
+> allocate a PTY.
 
-The trait is what makes that insight load-bearing: alknet-tty defines the
-trait and the wire-format adapter; the backend crates (alknet-docker,
+The trait is what makes that insight load-bearing: alknet-tty defines
+the trait and the wire-format adapter; the backend crates (alknet-docker,
 alknet-ssh, alknet-tty-local) implement the trait. This preserves ADR-003's
-no-handler-depends-on-another-handler rule (amended by ADR-003 Amendment 1
-for protocol-foundation crates): alknet-tty depends on alknet-core;
-backend crates depend on alknet-tty for the trait; alknet-tty does not
-depend on any backend.
+no-handler-depends-on-another-handler rule: alknet-tty depends on
+alknet-core; backend crates depend on alknet-tty for the trait; alknet-tty
+does not depend on any backend (and, per ADR-057, does not depend on
+alknet-call either — the negotiation framing is self-contained).
 
 ### What the local-PTY POC discovered about the trait shape
 
@@ -403,9 +403,12 @@ impl doesn't break existing implementors); its return type
 - `/workspace/alknet-tty-poc/src/session.rs` — the adapter-side pump that
   consumes `TtyHandle`-shaped fields (the reference for how the adapter
   uses the trait)
-- [ADR-003](003-crate-decomposition.md) + Amendment 1 — no-handler-depends-
-  on-another-handler; alknet-tty depends on alknet-core; backends depend
-  on alknet-tty for the trait
+- [ADR-003](003-crate-decomposition.md) + Amendments 1 & 2 —
+  no-handler-depends-on-another-handler; alknet-tty depends on
+  alknet-core (no alknet-call per Am. 2 / ADR-057); backends depend on
+  alknet-tty for the trait
+- [ADR-057](057-alknet-tty-no-alknet-call-dep.md) — alknet-tty does not
+  depend on alknet-call (self-contained negotiation framing)
 - [ADR-007](007-bistream-type-definition.md) — `Connection`, `SendStream`,
   `RecvStream` (the adapter receives a `Connection`, accepts bidi streams,
   pumps per-session)

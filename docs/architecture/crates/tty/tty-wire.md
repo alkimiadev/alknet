@@ -49,13 +49,15 @@ rather than extensible — is in
 ### Phase 1: Negotiation Frame (JSON Carriage)
 
 The client opens a bidi stream (or the server accepts one) and writes a
-single length-prefixed JSON frame. The framing is byte-identical to
-alknet-call's `FrameFramedReader`/`FrameFramedWriter`
-(`crates/alknet-call/src/protocol/wire.rs`): a 4-byte big-endian length
-prefix + UTF-8 JSON body. alknet-tty reuses the framing *utility*
-(`FrameFramedReader`/`FrameFramedWriter`), not the `EventEnvelope` type —
-the negotiation payload is a tty-specific struct, not a `call.requested`
-event. See ADR-052 §5 and ADR-003 Amendment 1.
+single length-prefixed JSON frame. The framing is a 4-byte big-endian
+length prefix + UTF-8 JSON body — a self-contained ~30-line module in
+alknet-tty (read 4-byte length, bounds-check, read N bytes; write the
+inverse) on tokio's `AsyncRead`/`AsyncWrite`. The format coincides with
+alknet-call's `EventEnvelope` framing by convention (both are
+length-prefixed JSON), not by code reuse — alknet-tty does not depend on
+alknet-call. The negotiation payload is a tty-specific struct
+(`NegotiateRequest`), not a `call.requested` event. See ADR-052 §6 and
+ADR-057.
 
 The payload shape:
 
@@ -319,7 +321,7 @@ a session — see [tty-adapter.md](tty-adapter.md).
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | Wire format and two-carriage model | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | `alknet/tty` ALPN; JSON negotiation frame then raw chunks; fixed channel set 0-3; control as JSON |
-| `alknet-call` framing utility reuse | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | Negotiation frame uses `FrameFramedReader`/`FrameFramedWriter`, not `EventEnvelope` |
+| No alknet-call dependency (self-contained framing) | [ADR-057](../../decisions/057-alknet-tty-no-alknet-call-dep.md) | alknet-tty implements its own length-prefixed framing; format coincides with alknet-call's by convention, not by code reuse |
 | Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | `{"type":"exit","code":N}` on stream_type 3; "exit chunk is last" invariant |
 | Stdin closure canonical signal | OQ-47 | Either `eof` control chunk or zero-length stdin chunk; `eof` recommended |
 
@@ -339,8 +341,11 @@ See [open-questions.md](../../open-questions.md) for full details.
   — the wire format decision
 - [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) — the
   exit-chunk ordering the control channel carries
-- [ADR-003](../../decisions/003-crate-decomposition.md) Amendment 1 —
-  the `alknet-call` framing utility reuse
+- [ADR-003](../../decisions/003-crate-decomposition.md) Amendment 2 —
+  alknet-tty does not depend on alknet-call (self-contained framing)
+- [ADR-057](../../decisions/057-alknet-tty-no-alknet-call-dep.md) — the
+  dependency-edge decision (negotiation framing is self-contained in
+  alknet-tty)
 - `/workspace/alknet-tty-poc/src/raw.rs` — the chunk codec
   (`ChunkReader`/`ChunkWriter`, stream_type 0-3) this spec commits
 - `/workspace/alknet-tty-poc/src/control.rs` — the JSON control schema

@@ -77,12 +77,10 @@ separate ALPN, not a set of operations in the call protocol's
 The bidi stream has two phases:
 
 - **Negotiation (JSON carriage).** The client opens a bidi stream and
-  writes a single length-prefixed JSON frame — the same 4-byte
-  big-endian length prefix + UTF-8 JSON body framing as alknet-call's
-  `FrameFramedReader`/`FrameFramedWriter`
-  (`crates/alknet-call/src/protocol/wire.rs`). The frame carries the
-  terminal parameters and backend selector the server needs to allocate
-  the session:
+  writes a single length-prefixed JSON frame — a 4-byte big-endian
+  length prefix + UTF-8 JSON body. The frame carries the terminal
+  parameters and backend selector the server needs to allocate the
+  session:
 
   ```json
   {
@@ -209,17 +207,23 @@ chunk framing (stream_type byte first); the `0x00`-as-length-prefix vs
 `0x00`-as-invalid-stream_type disambiguation is what makes the two
 distinguishable on the wire.
 
-### 6. Negotiation frame reuses alknet-call's framing, not its types
+### 6. Negotiation framing is self-contained in alknet-tty (no alknet-call dependency)
 
-The 4-byte length prefix + JSON body is byte-identical to
-`alknet_call::protocol::wire::FrameFramedReader`/`FrameFramedWriter`.
-alknet-tty reuses the *framing utility* (the length-prefix read/write),
-not the `EventEnvelope` type — the negotiation payload is a
-tty-specific struct (`NegotiateRequest`), not a `call.requested` event.
-This keeps alknet-tty's dependency on alknet-call limited to the framing
-codec, not the call protocol's type system. (See ADR-053 for the
-dependency edge and ADR-003 Amendment 1 for the protocol-foundation
-exception.)
+The 4-byte length prefix + JSON body is implemented in alknet-tty as a
+small, self-contained module (~30 lines: read 4-byte BE length,
+bounds-check, read N bytes; write the inverse). The format coincides
+with alknet-call's `EventEnvelope` framing by convention (both are
+length-prefixed JSON) — not by code reuse. alknet-tty does not depend on
+alknet-call: the negotiation payload is a tty-specific struct
+(`NegotiateRequest`), not a `call.requested` `EventEnvelope`, and
+alknet-call's `FrameFramedReader::read_frame()` is hardcoded to
+deserialize `EventEnvelope` (the length-prefix read and the
+type-specific deserialize are one entangled call), so it is not reusable
+for a different payload type. alknet-tty implements its own framing on
+tokio's `AsyncRead`/`AsyncWrite`. See [ADR-057](057-alknet-tty-no-alknet-call-dep.md)
+for the decision (and the three options considered: duplicate / promote
+to alknet-core / use alknet-call) and [ADR-003](003-crate-decomposition.md)
+Amendment 2 for the dependency-edge clarification.
 
 ## Consequences
 
@@ -333,8 +337,10 @@ not.
   versions
 - [ADR-007](007-bistream-type-definition.md) — handler receives a
   `Connection`, accepts bidi streams
-- [ADR-003](003-crate-decomposition.md) Amendment 1 — alknet-call as
-  protocol-foundation crate (framing utility reuse)
+- [ADR-003](003-crate-decomposition.md) Amendment 2 — alknet-tty does
+  not depend on alknet-call; self-contained negotiation framing
+- [ADR-057](057-alknet-tty-no-alknet-call-dep.md) — the dependency-edge
+  decision this ADR's §6 reflects
 - [ADR-012](012-call-protocol-stream-model.md) — the call protocol's
   stream model (which tty is *not* using for the body, by design)
 - [ADR-049](049-streaming-handler-for-subscriptions.md) — the

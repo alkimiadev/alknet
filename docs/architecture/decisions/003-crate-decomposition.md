@@ -100,3 +100,29 @@ types," not "HTTP depends on SSH." This is within the spirit of this
 ADR's decomposition. The `alknet-call` → `alknet-http` edge is recorded
 in the `alknet-http` spec (`crates/http/overview.md`) and in the adapter
 location map (`crates/call/client-and-adapters.md`).
+
+### Amendment 2 (2026-07-07): alknet-tty does not depend on alknet-call
+
+Amendment 1's protocol-foundation framing was extended to alknet-tty in
+an earlier draft ("alknet-tty depends on alknet-call for the
+`FrameFramedReader`/`FrameFramedWriter` framing utility"). A
+pre-implementation sanity check found this was unsound:
+`FrameFramedReader::read_frame()` is hardcoded to deserialize
+`EventEnvelope` — the length-prefix read and the type-specific
+deserialize are one entangled call, not a separable "framing utility."
+alknet-tty's negotiation frame is a `NegotiateRequest`, not an
+`EventEnvelope`, so `read_frame()` cannot return what alknet-tty needs;
+the claimed reuse did not exist in a usable form.
+
+**Clarification:** alknet-tty does **not** depend on alknet-call.
+alknet-tty implements its own length-prefixed framing (~30 lines: 4-byte
+big-endian length + UTF-8 JSON body) directly on tokio's
+`AsyncRead`/`AsyncWrite`. The format coincides with alknet-call's
+framing by convention (both are length-prefixed JSON); the
+implementations are independent. The Amendment 1 protocol-foundation
+exception remains for alknet-http/agent/napi (which use alknet-call's
+`OperationSpec`/`Handler`/`OperationAdapter` types — actual type reuse,
+not framing glue); it no longer covers alknet-tty. See
+[ADR-057](057-alknet-tty-no-alknet-call-dep.md) for the full decision
+and the three options considered (duplicate / promote to core / use
+alknet-call).

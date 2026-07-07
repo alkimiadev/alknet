@@ -396,7 +396,7 @@ ALPN (`alknet/tty`), not hedged inside alknet-ssh.
 | Wire format | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | The chunk codec + control channel the adapter pumps to/from these handles |
 | Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | The adapter awaits `exit_code`, sends the exit chunk, closes |
 | Backend cleanup on session cancel | [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Dropping `exit_code` future (cancel) MUST kill the session target; contract on the `TtyBackend` trait |
-| Crate decomposition | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | alknet-tty depends on alknet-core; backends depend on alknet-tty for the trait |
+| Crate decomposition | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 2 | alknet-tty depends on alknet-core only (no alknet-call); backends depend on alknet-tty for the trait |
 
 ## Open Questions
 

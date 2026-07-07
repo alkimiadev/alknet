@@ -191,7 +191,7 @@ is NOT" — door type classifies reversal cost, not urgency.
 
 - `docs/research/alknet-tty/phase-0-findings.md` DP-1 — the placement
   question this ADR resolves
-- [ADR-003](003-crate-decomposition.md) + Amendment 1 — crate
+- [ADR-003](003-crate-decomposition.md) + Amendments 1 & 2 — crate
   decomposition rule (the sibling-crate placement preserves it)
 - [ADR-009](009-one-way-door-decision-framework.md) — door-type-as-deferral
   anti-pattern (this ADR's two-way-door classification is reversal cost,

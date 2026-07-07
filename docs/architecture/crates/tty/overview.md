@@ -73,9 +73,11 @@ A `alknet/tty` bidi stream has two phases (full detail in
 
 1. **Negotiation (JSON carriage).** The client writes a single
    length-prefixed JSON frame carrying the terminal parameters, backend
-   selector, command, and environment. The framing is byte-identical to
-   alknet-call's `FrameFramedReader`/`FrameFramedWriter` (the utility is
-   reused, not the `EventEnvelope` type — see Dependencies below).
+   selector, command, and environment. The framing is a 4-byte
+   big-endian length prefix + UTF-8 JSON body, self-contained in
+   alknet-tty (the format coincides with alknet-call's framing by
+   convention; alknet-tty does not depend on alknet-call — see
+   Dependencies below).
 
 2. **Raw carriage.** After the negotiation frame, the stream switches to
    the chunk format (`[stream_type: u8][length: u32 be][payload]`) for
@@ -99,34 +101,37 @@ the body, which is the part that is actually bytes. The full rationale
 alknet-tty
 ├── alknet-core   (ProtocolHandler, Connection, AuthContext, Identity, AccessControl,
 │                  OwnershipProvider — ADR-050 for terminal sessions as resources)
-├── alknet-call   (FrameFramedReader/FrameFramedWriter — framing utility reuse only,
-│                  NOT EventEnvelope or the call protocol types; ADR-003 Amendment 1)
 └── (no backend deps — portable_pty, bollard, russh are in the backend crates)
 ```
 
 alknet-tty is dependency-light: alknet-core (the handler interface and
-auth) and alknet-call's framing codec (the length-prefix utility for the
-negotiation frame). The heavy backend dependencies (`portable_pty`,
-`bollard`, `russh`) live in the backend crates, not here.
+auth) only. The negotiation framing is a self-contained ~30-line module
+in alknet-tty (4-byte BE length prefix + UTF-8 JSON body on tokio's
+`AsyncRead`/`AsyncWrite`). The heavy backend dependencies (`portable_pty`,
+`bollard`, `russh`) live in the backend crates, not here. alknet-tty
+does **not** depend on alknet-call — see [ADR-057](../../decisions/057-alknet-tty-no-alknet-call-dep.md).
 
-### The `alknet-call` dependency (ADR-003 Amendment 1)
+### Why no alknet-call dependency
 
-alknet-tty depends on alknet-call for the `FrameFramedReader`/
-`FrameFramedWriter` utility — the 4-byte length prefix + JSON body
-framing the negotiation frame uses. This is a *framing utility* reuse,
-not a dependency on the call protocol's type system: the negotiation
-payload is a tty-specific struct (`NegotiateRequest`), not a
-`call.requested` `EventEnvelope`. ADR-003's rule is "no handler crate
-depends on another handler crate," but `alknet-call` is both a handler
-(it implements `ProtocolHandler` on `alknet/call`) *and* the
-protocol-foundation crate. alknet-tty depending on alknet-call is "tty
-uses the call protocol's framing codec," not "tty depends on SSH." See
-[ADR-003 Amendment 1](../../decisions/003-crate-decomposition.md).
+An earlier draft had alknet-tty depending on alknet-call for the
+`FrameFramedReader`/`FrameFramedWriter` "framing utility." A
+pre-implementation check found this was unsound: `FrameFramedReader`'s
+`read_frame()` is hardcoded to deserialize `EventEnvelope` — the
+length-prefix read and the type-specific deserialize are one entangled
+call, not a separable utility. alknet-tty's negotiation payload is a
+`NegotiateRequest`, not an `EventEnvelope`, so the claimed reuse did not
+exist in a usable form. alknet-tty implements its own framing (the
+format coincides with alknet-call's by convention; the implementations
+are independent). The ~30 lines of length-prefix framing is an idiom,
+not a domain abstraction worth a cross-crate dependency. See
+[ADR-057](../../decisions/057-alknet-tty-no-alknet-call-dep.md) for the
+full decision and [ADR-003](../../decisions/003-crate-decomposition.md)
+Amendment 2 for the dependency-edge clarification.
 
-alknet-call stays lean — it has no `portable_pty`, no `bollard`, no
-backend deps. The `TtyBackend` implementations are opaque
-`Arc<dyn TtyBackend>` from the adapter's perspective: constructed by
-the assembly layer at startup, stored in the adapter's backend map,
+alknet-tty stays lean — it has no `portable_pty`, no `bollard`, no
+`alknet-call`, no backend deps. The `TtyBackend` implementations are
+opaque `Arc<dyn TtyBackend>` from the adapter's perspective: constructed
+by the assembly layer at startup, stored in the adapter's backend map,
 dispatched by the `backend` field of the negotiation frame.
 
 ## ALPN
@@ -164,7 +169,8 @@ alknet-tty (lean — no portable_pty, no bollard, no russh)
 ├── TtyParams, TerminalParams    (the allocation request)
 ├── TtyAdapter                   (ProtocolHandler on alknet/tty — session lifecycle)
 ├── wire format                  (ChunkReader/ChunkWriter, ControlMessage — ADR-052)
-└── negotiation framing          (reuses alknet-call's FrameFramedReader/Writer)
+└── negotiation framing          (self-contained ~30-line module; format coincides
+                                  with alknet-call's by convention — ADR-057)
 
 alknet-tty-local (sibling crate — ADR-054; behind alknet-tty's `local` feature re-export)
 ├── LocalTtyBackend              (impl TtyBackend — portable_pty for PTY, std::process for pipe)
@@ -214,9 +220,9 @@ PTY allocation code. See [ADR-054](../../decisions/054-local-tty-backend-sibling
 ## Architecture (component pointers)
 
 - **[tty-wire.md](tty-wire.md)** — the wire format: the negotiation
-  frame (JSON carriage, reusing alknet-call's framing), the raw chunk
-  codec (`[stream_type: u8][length: u32 be][payload]`), the four
-  stream types, the control channel (stream_type 3, JSON control
+  frame (JSON carriage, self-contained length-prefixed framing), the
+  raw chunk codec (`[stream_type: u8][length: u32 be][payload]`), the
+  four stream types, the control channel (stream_type 3, JSON control
   messages), sentinels, and the fixed-channel-set rationale.
 - **[tty-backend.md](tty-backend.md)** — the `TtyBackend` trait,
   `TtyParams`, `TtyHandle`, `TtyControl`. The inversion point between
@@ -248,7 +254,8 @@ PTY allocation code. See [ADR-054](../../decisions/054-local-tty-backend-sibling
 | Backend cleanup on session cancel | [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Dropping `exit_code` future (cancel) kills the session target; the adapter triggers it by dropping the `TtyHandle` |
 | ALPN-based protocol dispatch | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | `TtyAdapter` registers on `alknet/tty` |
 | ProtocolHandler trait | [ADR-002](../../decisions/002-protocol-handler-trait.md) | `TtyAdapter` implements `ProtocolHandler` |
-| Crate decomposition | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | alknet-tty depends on alknet-core + alknet-call (framing utility); backends depend on alknet-tty for the trait |
+| Crate decomposition | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 2 | alknet-tty depends on alknet-core only (no alknet-call); backends depend on alknet-tty for the trait |
+| No alknet-call dependency (self-contained framing) | [ADR-057](../../decisions/057-alknet-tty-no-alknet-call-dep.md) | alknet-tty implements its own length-prefixed framing; format coincides with alknet-call's by convention, not by code reuse |
 | ALPN string convention | [ADR-006](../../decisions/006-alpn-convention-and-connection-model.md) | `alknet/tty` is the custom ALPN; new ALPN for incompatible versions |
 | BiStream type definition | [ADR-007](../../decisions/007-bistream-type-definition.md) | `TtyAdapter` receives a `Connection`, accepts bidi streams |
 | Call protocol stream model (not used for body) | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | The raw carriage is *not* the call protocol's `EventEnvelope` streaming — by design |

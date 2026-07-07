@@ -27,7 +27,7 @@ the PTY (docker, SSH, local process) via a `TtyBackend` trait.
 |-----|-------|-----------|
 | [001](../../decisions/001-alpn-protocol-dispatch.md) | ALPN-Based Protocol Dispatch | `TtyAdapter` registers on `alknet/tty` |
 | [002](../../decisions/002-protocol-handler-trait.md) | ProtocolHandler Trait | `TtyAdapter` implements `ProtocolHandler` |
-| [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-tty depends on alknet-core; backends depend on alknet-tty (Amendment 1: alknet-call as protocol-foundation, framing utility reuse) |
+| [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-tty depends on alknet-core only (no alknet-call — Am. 2); backends depend on alknet-tty for the trait |
 | [006](../../decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | `alknet/tty` is the custom ALPN; one ALPN per connection; new ALPN for incompatible versions |
 | [007](../../decisions/007-bistream-type-definition.md) | BiStream Type Definition | `TtyAdapter` receives a `Connection`, accepts bidi streams, pumps per-session |
 | [009](../../decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Wire format is one-way; local backend placement is two-way (decided, not deferred) |
@@ -42,6 +42,7 @@ the PTY (docker, SSH, local process) via a `TtyBackend` trait.
 | [054](../../decisions/054-local-tty-backend-sibling-crate.md) | Local TTY Backend as a Sibling Crate | `alknet-tty-local` behind a `local` feature re-export; PTY vs pipe per-session |
 | [055](../../decisions/055-exit-code-on-control-chunk.md) | Exit Code on a Control Chunk | Exit code on stream_type 3; "exit chunk is last" invariant; adapter owns the ordering |
 | [056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Backend Cleanup on Session Cancel | Dropping the `exit_code` future (session cancel) MUST kill the session target; behavioral contract on the `TtyBackend` trait |
+| [057](../../decisions/057-alknet-tty-no-alknet-call-dep.md) | alknet-tty Does Not Depend on alknet-call | Self-contained negotiation framing (~30 lines); format coincides with alknet-call's by convention, not by code reuse |
 
 ## Relevant Open Questions
 
@@ -87,8 +88,9 @@ the PTY (docker, SSH, local process) via a `TtyBackend` trait.
    `TtyBackend`; the backend crates implement it. alknet-tty depends on
    alknet-core; backends depend on alknet-tty for the trait; alknet-tty
    does not depend on any backend. This preserves ADR-003's
-   no-handler-depends-on-another-handler rule (Amendment 1 for the
-   alknet-call framing utility reuse). See
+   no-handler-depends-on-another-handler rule. alknet-tty does not
+   depend on alknet-call either (the negotiation framing is
+   self-contained — ADR-057). See
    [tty-backend.md](tty-backend.md) and
    [ADR-053](../../decisions/053-ttybackend-trait-and-ttyhandle.md).
 
