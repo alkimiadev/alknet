@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # Open Questions
@@ -145,7 +145,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 |----|-------|--------|------|-----|
 | [OQ-43](questions/043-ttycontrol-as-a-clone-trait-object.md) | `TtyControl` as a `Clone` trait object | resolved | one | med |
 | [OQ-44](questions/044-terminal-modes-tty-modes.md) | Terminal Modes (TTY modes) | deferred(scope) | two | low |
-| [OQ-45](questions/045-flow-control-for-high-throughput-stdout.md) | Flow Control for High-Throughput stdout | open | two | low |
+| [OQ-45](questions/045-flow-control-for-high-throughput-stdout.md) | Flow Control for High-Throughput stdout | resolved | two | low |
 | [OQ-46](questions/046-runner-api-surface.md) | Runner API Surface | deferred(scope) | two | low |
 | [OQ-47](questions/047-stdin-closure-canonical-signal.md) | Stdin Closure Canonical Signal | resolved | two | low |
 

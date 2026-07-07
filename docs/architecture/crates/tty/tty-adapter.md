@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # alknet-tty — TtyAdapter and Session Lifecycle
@@ -204,16 +204,19 @@ revokes. The adapter's access control declares against the ADR-050 model:
   `identity.scopes` for the `tty:open` scope (or a deployment-configured
   scope) before allocating the session. A caller without the scope gets
   a negotiation error (`{"error":"forbidden"}`) and the stream closes.
-- **Resource ownership for backend-specific resources.** A docker
-  backend's session targets a specific container (`BackendParams::Docker
-  { container }`); the adapter extracts the container ID via the
-  `OperationSpec.resource_id_path` analog (here, a hardcoded field — the
-  tty adapter is not an `OperationSpec`, so the extraction is direct
-  from the negotiation frame's `container` field) and checks
-  `OwnershipProvider::owns(identity, "container", id, "tty")` if an
-  ownership provider is wired. A local backend's session has no
-  pre-existing resource — the process is the resource, and the caller
-  that opened the session owns it by construction.
+- **Resource ownership for backend-specific resources.** Some
+  backends target a pre-existing resource (a docker backend targets a
+  specific container); others create their own (a local backend's
+  process, an SSH backend's channel). The adapter delegates the
+  resource-id extraction to the backend via
+  `TtyBackend::resource_id(&params)` (ADR-053), which returns
+  `None` (no pre-existing resource — the session creates its own) or
+  `Some((kind, id))` (the caller must own this resource). The adapter
+  checks `OwnershipProvider::owns(identity, kind, id, "tty")` if an
+  ownership provider is wired and the backend returns `Some`. The
+  adapter does not parse backend-specific JSON itself — the extraction
+  is backend-driven, so adding a backend with a new resource shape (e.g.,
+  a Kubernetes backend targeting a pod) requires no adapter change.
 - **`forwarded_for` for proxied sessions.** A hub that proxies a
   terminal session to a worker carries the end user's identity as
   `forwarded_for` (ADR-032); the worker authorizes the hub (its direct
@@ -222,22 +225,23 @@ revokes. The adapter's access control declares against the ADR-050 model:
 The tty adapter is a `ProtocolHandler`, not an `OperationSpec`-registered
 operation — it doesn't go through the call protocol's
 `OperationRegistry::invoke()`. The access-control shape is the adapter's
-own (scope-gate + ownership check at negotiation), declaring against the
-ADR-050 model but not consuming `OperationSpec.resource_id_path` (that
-field is for call-protocol operations; the tty adapter is its own
-ALPN). See ADR-050 §"Specifics" for the model this declares against.
+own (scope-gate + backend-driven ownership check at negotiation),
+declaring against the ADR-050 model but not consuming
+`OperationSpec.resource_id_path` (that field is for call-protocol
+operations; the tty adapter is its own ALPN, and the resource-id
+extraction is delegated to the backend via `resource_id()` rather than
+a path expression). See ADR-050 §"Specifics" for the model this declares
+against.
 
-The concrete choices — the scope name (`tty:open`), the check-at-
-negotiation timing, and the hardcoded `container` field extraction for
-docker backend-specific resources (rather than a generic path like
-`OperationSpec.resource_id_path`) — are **two-way-door** choices within
-the one-way `TtyAdapter` shape. The scope name can be renamed (a
-deployment-configured scope, not a wire-format constant); the hardcoded
-field extraction can be generalized if a second backend with a different
-resource-id location appears (the adapter would branch by backend). No
-ADR is warranted for these until a second backend forces the
-generalization — they are reversible implementation choices, not
-architectural commitments.
+The concrete choice — the scope name (`tty:open`) and the
+check-at-negotiation timing — is a **two-way-door** choice within the
+one-way `TtyAdapter` shape. The scope name can be renamed (a
+deployment-configured scope, not a wire-format constant). The
+resource-id extraction is backend-driven via `resource_id()`, so new
+backends with new resource shapes require no adapter change — the
+generalization is already in place (ADR-053). No ADR is warranted for
+the scope name; it is a reversible implementation choice, not an
+architectural commitment.
 
 ### Connection and Stream Lifecycle
 
@@ -291,7 +295,7 @@ architectural commitments.
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-45** (open, low risk): Flow control for high-throughput stdout.
+- **OQ-45** (resolved): Flow control for high-throughput stdout — no application-level windowing; QUIC per-stream flow control is the backpressure mechanism.
 
 ## References
 

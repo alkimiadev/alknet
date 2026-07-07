@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # alknet-tty
@@ -48,7 +48,7 @@ the PTY (docker, SSH, local process) via a `TtyBackend` trait.
 |----|-------|--------|-----------|
 | OQ-43 | `TtyControl` trait object `Clone` constraint | resolved | `control: Option<Box<dyn TtyControl + Send + Unpin + Clone>>` via an `Arc`-backed `Clone` newtype; confirmed by the POC's concrete `PtyControl` |
 | OQ-44 | Terminal modes (TTY modes) | deferred(scope) | `TerminalParams.modes` reserved; default terminal modes suffice for current scope; blocked on a concrete mode-control use case |
-| OQ-45 | Flow control for high-throughput stdout | open (low risk) | QUIC per-stream flow control is expected to suffice; a high-volume POC would confirm |
+| OQ-45 | Flow control for high-throughput stdout | resolved | QUIC per-stream flow control is the backpressure mechanism (chain complete by construction); no application-level windowing. Reversal is an additive `ControlMessage` variant, not a wire-format change |
 | OQ-46 | Runner API surface | deferred(scope) | The runner mechanism (pipe mode) is in alknet-tty; runner policy (job management, log persistence, task graph) is a downstream crate, not in scope here |
 | OQ-47 | Stdin closure canonical signal | resolved | Either a zero-length stdin chunk or a `{"type":"eof"}` control chunk; both are accepted; the spec recommends `eof` for explicitness |
 

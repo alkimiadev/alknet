@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # alknet-tty — Wire Format
@@ -96,9 +96,11 @@ Fields:
 - `env` — environment variables (empty = inherit).
 
 Backend-specific selector fields ride alongside (e.g., `"container":
-"abc123"` for docker). The adapter parses the negotiation frame, extracts
-the `backend` string, and passes the backend-specific fields to the
-selected backend's `allocate()` as `BackendParams` (ADR-053).
+"abc123"` for docker). The adapter parses the negotiation frame,
+extracts the `backend` string, and passes the remaining backend-specific
+fields to the selected backend's `allocate()` as an opaque
+`serde_json::Map` (ADR-053) — the adapter does not interpret them; the
+backend deserializes its own strongly-typed params struct.
 
 After the negotiation frame, the stream switches to raw chunks. There is
 no `call.responded`/`call.completed` — this is not the call protocol.
@@ -239,8 +241,13 @@ a session — see [tty-adapter.md](tty-adapter.md).
   and servers parse. A 5th channel type requires a new ALPN
   (`alknet/tty/v2` per ADR-006), not a negotiated addition.
 - **No windowing.** The chunk format has no flow-control window; QUIC's
-  per-stream flow control handles backpressure. See OQ-45 (high-throughput
-  stdout; expected to suffice; a POC would confirm).
+  per-stream flow control is the backpressure mechanism (OQ-45 resolved:
+  the backpressure chain is complete by construction — QUIC flow control
+  → bounded drainer channel → bounded stdout channel → OS pipe/PTY
+  buffer → process `write()` blocks; no unbounded buffer breaks the
+  chain). The reversal path, if ever needed, is an additive
+  `ControlMessage` variant on stream_type 3, not a wire-format header
+  change.
 - **No negotiation round-trip.** The client writes the negotiation frame
   and starts sending chunks; the server reads the frame and starts
   pumping. There is no "the server acknowledges the negotiation before
@@ -268,7 +275,9 @@ a session — see [tty-adapter.md](tty-adapter.md).
 See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-44** (deferred(scope)): Terminal modes.
-- **OQ-45** (open, low risk): Flow control for high-throughput stdout.
+- **OQ-45** (resolved): Flow control for high-throughput stdout — no
+  application-level windowing; QUIC per-stream flow control is the
+  backpressure mechanism.
 - **OQ-47** (resolved): Stdin closure canonical signal.
 
 ## References

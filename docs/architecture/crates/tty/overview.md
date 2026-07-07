@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # alknet-tty — Overview
@@ -263,7 +263,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-43** (resolved): `TtyControl` as a `Clone` trait object.
 - **OQ-44** (deferred(scope)): Terminal modes (TTY modes).
-- **OQ-45** (open, low risk): Flow control for high-throughput stdout.
+- **OQ-45** (resolved): Flow control for high-throughput stdout — no application-level windowing; QUIC per-stream flow control is the backpressure mechanism.
 - **OQ-46** (deferred(scope)): Runner API surface.
 - **OQ-47** (resolved): Stdin closure canonical signal.
 

@@ -260,6 +260,16 @@ exception.)
   intentional (the tty session is not a call-protocol operation) but
   means the tty client is a separate small client, not a `CallClient`
   method.
+- **No application-level flow-control window (OQ-45 resolved).** The
+  chunk format carries no window; backpressure relies on QUIC's
+  per-stream flow control composing with the bounded channels in the
+  adapter's pump and the OS pipe/PTY buffer. This is sufficient by
+  construction (see §Assumptions 1). If a workload ever requires
+  sub-QUIC-window backpressure signaling, the reversal is an additive
+  `ControlMessage::WindowUpdate` (or similar) variant on stream_type 3
+  — a two-way-door extension to the control channel, not a wire-format
+  header change. The `type`-tagged enum's "unknown types ignored" rule
+  means older peers degrade gracefully if such a variant is introduced.
 
 ## Door type
 
@@ -277,11 +287,18 @@ not.
 
 ## Assumptions
 
-1. **QUIC per-stream flow control is sufficient for terminal output.**
-   The chunk format has no windowing — QUIC's bidi-stream flow control
-   handles backpressure. High-throughput stdout (e.g., `cargo build`
-   output) is expected to work; a concrete high-volume use case that
-   surfaces a flow-control problem would require revisiting. See OQ-45.
+1. **No application-level windowing; QUIC per-stream flow control is the
+   backpressure mechanism.** The chunk format carries no window field.
+   This is decided (OQ-45 resolved): the backpressure chain from a slow
+   client read all the way back to the child process's stdout write is
+   complete by construction — QUIC flow control → bounded drainer
+   channel → bounded stdout channel → OS pipe/PTY buffer → process
+   `write()` blocks. Every link awaits its producer; no unbounded buffer
+   breaks the chain. The reversal path, if a workload ever surfaces a
+   problem QUIC's defaults cannot handle, is an additive window-update
+   `ControlMessage` variant (a two-way-door extension to the control
+   channel, not a wire-format header change) — noted in §Consequences.
+   See OQ-45.
 
 2. **The negotiation frame fits in one chunk of the underlying stream's
    initial flow-control window.** The frame is small (terminal params +
