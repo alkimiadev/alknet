@@ -1,7 +1,7 @@
 ---
 id: tty/review-tty
 name: Review alknet-tty core crate for spec conformance before local backend begins
-status: pending
+status: completed
 depends_on: [tty/adapter]
 scope: moderate
 risk: low
