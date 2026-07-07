@@ -1,7 +1,7 @@
 ---
 id: tty/integration-test
 name: "End-to-end integration test: LocalTtyBackend + drive_session over real commands"
-status: pending
+status: completed
 depends_on: [tty/local-feature-reexport]
 scope: broad
 risk: medium
