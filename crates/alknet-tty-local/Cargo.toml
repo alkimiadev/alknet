@@ -1,0 +1,22 @@
+[package]
+name = "alknet-tty-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local TTY backend for alknet-tty: LocalTtyBackend via portable_pty (PTY mode) and std::process::Command (pipe/runner mode)"
+repository.workspace = true
+
+[lib]
+name = "alknet_tty_local"
+
+[dependencies]
+alknet-tty = { path = "../alknet-tty" }
+portable-pty = "0.8"
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+futures-core = "0.3"
+tracing = "0.1"
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

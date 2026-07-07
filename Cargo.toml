@@ -5,6 +5,7 @@ members = [
     "crates/alknet-call",
     "crates/alknet-http",
     "crates/alknet-tty",
+    "crates/alknet-tty-local",
 ]
 resolver = "2"
 
