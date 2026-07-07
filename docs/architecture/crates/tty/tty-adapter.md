@@ -10,7 +10,8 @@ The `TtyAdapter` is the `ProtocolHandler` for `alknet/tty`: it receives a
 a `TtyBackend` (ADR-053), and pumps bytes bidirectionally for the life of
 the session using the wire format (ADR-052). This document specifies the
 session lifecycle, the three-pump driver, negotiation errors, the
-exit-chunk ordering (ADR-055), and access control.
+exit-chunk ordering (ADR-055), session-cancel cleanup (ADR-056), and
+access control.
 
 ## What
 
@@ -138,23 +139,24 @@ After sending the error response, the adapter closes the write half of
 the bidi stream. The client reads the error frame and treats stream close
 as the failure signal. There is no `call.error` — this is not the call
 protocol; the error is a JSON response in the negotiation framing.
-
 **Framing disambiguation (success vs error).** Both a successful
 allocation (raw chunks) and a failed allocation (JSON error frame) begin
 with bytes the client must read before knowing which framing applies.
 The disambiguation is by the first byte: a JSON error frame's 4-byte
-big-endian length prefix always starts with `0x00` (error frames are
-small — under 16 MiB, so the high byte is zero), while a raw chunk's
-first byte is a `stream_type` in `{0, 1, 2, 3}`. A stream_type of `0`
-(stdin from server) is invalid — the server never sends stdin chunks — so
-the client distinguishes: read the first byte; if it is `0x00`, interpret
+big-endian length prefix always starts with `0x00` (error frames MUST
+be under 16 MiB — `MAX_CHUNK_LEN` — so the high byte is zero; this is
+a wire-format invariant, not an assumption), while a raw chunk's first
+byte is a `stream_type` in `{0, 1, 2, 3}`. A stream_type of `0` (stdin
+from server) is invalid — the server never sends stdin chunks — so the
+client distinguishes: read the first byte; if it is `0x00`, interpret
 the next 4 bytes as a big-endian length prefix and read that many bytes
-as a JSON error frame; otherwise interpret it as a `stream_type` byte and
-continue reading the raw chunk header. This is a one-way-door wire-format
-invariant (ADR-052): error frames use the negotiation framing (length
-prefix), success uses the raw chunk framing (stream_type byte first);
-the `0x00`-as-length-prefix vs `0x00`-as-invalid-stream_type
-disambiguation is what makes the two distinguishable on the wire.
+as a JSON error frame; otherwise interpret it as a `stream_type` byte
+and continue reading the raw chunk header. This is a one-way-door
+wire-format invariant (ADR-052): error frames use the negotiation
+framing (length prefix) and MUST be under 16 MiB; success uses the raw
+chunk framing (stream_type byte first); the `0x00`-as-length-prefix vs
+`0x00`-as-invalid-stream_type disambiguation is what makes the two
+distinguishable on the wire.
 
 ### Exit-Chunk Ordering (ADR-055)
 
@@ -247,19 +249,30 @@ architectural commitment.
 
 - **Connection drop**: when the QUIC connection closes, all in-flight
   sessions on that connection are cancelled. Each session's pump tasks
-  are dropped (Rust `Drop`); the backend's handles are dropped (the
-  local backend's reader/writer/waiter threads exit on channel close;
-  docker's bollard streams are dropped; SSH's channel closes). No
-  explicit cleanup is needed — `Drop` is the cleanup.
+  are dropped (Rust `Drop`); the `TtyHandle` is dropped; the
+  `exit_code` future is dropped without being driven to completion,
+  which triggers the backend's cancel-cleanup — the session target is
+  killed (ADR-056). For the local backend, the `exit_code` future's
+  `Drop` calls `ChildKiller::kill(SIGHUP)`, the child exits, the
+  waiter thread's `wait()` reaps it and exits, and the reader/writer
+  threads exit on channel close. For docker/SSH backends (future), the
+  `Drop` issues the backend's kill (container kill / channel close).
+  See ADR-056 for the contract and the mechanism.
 - **Stream reset**: when a bidi stream is reset mid-session, the
   `ChunkReader` returns a `RawError` (ConnectionClosed or Io). The pump
-  tasks exit; the backend's handles are dropped. No exit chunk is sent —
-  the stream is gone, the client that reset it already knows.
+  tasks exit; the `TtyHandle` is dropped; the cancel-cleanup runs
+  (ADR-056). No exit chunk is sent — the stream is gone, the client
+  that reset it already knows.
 - **Client cancel**: when the client closes the write half (or sends a
   zero-length stdin chunk / `eof` control chunk), the adapter signals
   EOF to the backend's stdin and keeps pumping stdout until the backend's
   stdout ends and the exit resolves. The session completes normally —
-  the exit chunk is sent — the client just stopped sending input.
+  the exit chunk is sent — the client just stopped sending input. This
+  is NOT a cancel from the adapter's perspective (the session runs to
+  completion); the cancel-cleanup (ADR-056) is not triggered. The
+  cancel-cleanup is triggered only when the *adapter* drops the handle
+  (connection drop, stream reset, panic), not when the client closes
+  the write half.
 
 ## Constraints
 
@@ -279,6 +292,16 @@ architectural commitment.
   with code N. A client that cancels mid-stream (closes the write half)
   won't see the exit chunk — that's correct; a cancelled stream doesn't
   have a deterministic exit.
+- **The adapter triggers backend cleanup by dropping the `TtyHandle`
+  (ADR-056).** On connection drop, stream reset, or pump-task panic, the
+  adapter's pump tasks are dropped, which drops the `TtyHandle`, which
+  drops the `exit_code` future without driving it to completion. The
+  `exit_code` future's `Drop` is the backend's cancel-cleanup path
+  (kill the session target). The adapter has no separate kill method to
+  call; the cleanup is wired into the `exit_code` future's `Drop` by the
+  backend. A backend that returns an `exit_code` future without a
+  kill-on-`Drop` guard violates the contract and will orphan processes
+  on cancel. See ADR-056.
 
 ## Design Decisions
 
@@ -287,6 +310,7 @@ architectural commitment.
 | Wire format and two-carriage model | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | The chunk codec + control channel the adapter pumps |
 | `TtyBackend` trait and `TtyHandle` | [ADR-053](../../decisions/053-ttybackend-trait-and-ttyhandle.md) | The backend the adapter dispatches to; the handles the adapter pumps |
 | Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | The "exit chunk is last" invariant the adapter enforces |
+| Backend cleanup on session cancel | [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Dropping `exit_code` future kills the session target; the adapter triggers it by dropping the `TtyHandle` on cancel |
 | ALPN-based protocol dispatch | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | `TtyAdapter` registers on `alknet/tty` |
 | ProtocolHandler receives `Connection` | [ADR-007](../../decisions/007-bistream-type-definition.md) | `TtyAdapter` accepts the connection, loops `accept_bi` |
 | Dynamic resource ownership | [ADR-050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Terminal sessions as runtime-spawned resources; the adapter's access-control shape |
@@ -305,6 +329,9 @@ See [open-questions.md](../../open-questions.md) for full details.
   backend trait the adapter dispatches to
 - [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) — the
   exit-chunk ordering the adapter enforces
+- [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) —
+  the cancel-cleanup contract the adapter triggers by dropping the
+  `TtyHandle` on session cancel
 - [ADR-050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md)
   — the ownership model the adapter's access control declares against
 - [ADR-007](../../decisions/007-bistream-type-definition.md) — `Connection`,

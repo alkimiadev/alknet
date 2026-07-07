@@ -59,11 +59,13 @@ oneshot::Receiver<i32>`. The trait shape below generalizes this.
 ### What the local-PTY POC did not resolve
 
 The POC used a separate cloneable `PtyControl` struct for resize/signal,
-not a `Box<dyn TtyControl + Send + Unpin>` trait object. The research
-noted this worked cleanly because the control-chunk dispatcher needs to be
-`Clone` to hand off to the spawned pump task. Phase 1 confirms the `control`
-field as a separate `Clone` trait object — see OQ-43 for the confirmation
-and the `Clone` constraint rationale.
+not a trait object. The research noted this worked cleanly because the
+control-chunk dispatcher needs to be `Clone` to hand off to the spawned
+pump task. Phase 1 confirms the `control` field as a separate
+`TtyControlHandle` newtype — a concrete `#[derive(Clone)]` struct
+wrapping `Arc<dyn TtyControl + Send + Sync>` (the trait is NOT `Clone`;
+`Clone` is not object-safe — see OQ-43). The newtype carries the
+`Clone`-ability; the trait stays object-safe.
 
 ## Decision
 
@@ -122,7 +124,7 @@ pub struct TerminalParams {
     pub rows: u16,
     pub pixel_width: u16,
     pub pixel_height: u16,
-    pub modes: serde_json::Value,  // reserved — see OQ-44
+    pub modes: serde_json::Value,  // reserved — OQ-44; backends MUST ignore content in v1
 }
 ```
 
@@ -209,14 +211,19 @@ below.
 ```rust
 pub struct TtyHandle {
     /// Stdin writer — bytes the adapter pumps from client stdin chunks.
-    pub stdin: Box<dyn AsyncWrite + Send + Unpin>,
+    /// `tokio::io::AsyncWrite` (the tokio flavor, not the `futures::io`
+    /// one — they are incompatible traits; the tokio stack is the
+    /// adapter's runtime).
+    pub stdin: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
     /// Stdout stream — bytes the adapter pumps to client stdout chunks.
     /// Ends when the backend's stdout reaches EOF (process exited,
     /// container output stream ended, SSH channel closed).
-    pub stdout: Pin<Box<dyn Stream<Item = Bytes> + Send>>,
+    /// `futures_core::Stream<Item = bytes::Bytes>` (re-exported by
+    /// `tokio_stream::StreamExt` for extension methods).
+    pub stdout: Pin<Box<dyn futures_core::Stream<Item = bytes::Bytes> + Send>>,
     /// Stderr stream — `None` for PTY backends (stdout/stderr merged
     /// into `stdout`). `Some` for pipe backends (separate streams).
-    pub stderr: Option<Pin<Box<dyn Stream<Item = Bytes> + Send>>>,
+    pub stderr: Option<Pin<Box<dyn futures_core::Stream<Item = bytes::Bytes> + Send>>>,
     /// Exit code — a `Future` the adapter awaits. Resolves when the
     /// process/container/SSH exec exits. The adapter sends the result
     /// as the `{"type":"exit","code":N}` control chunk (ADR-055) and
@@ -228,12 +235,12 @@ pub struct TtyHandle {
     /// hand it to the spawned control-chunk dispatcher. `None` only
     /// when the backend genuinely has no control path (e.g., a pipe
     /// backend with no PTY — signal still works via `kill(pid, sig)`,
-    /// but resize is a no-op). See OQ-43 for the trait-object-vs-methods
-    /// confirmation.
-    pub control: Option<Box<dyn TtyControl + Send + Unpin + Clone>>,
+    /// but resize is a no-op). See OQ-43 for the `TtyControlHandle`
+    /// newtype rationale.
+    pub control: Option<TtyControlHandle>,
 }
 
-pub trait TtyControl: Send {
+pub trait TtyControl: Send + Sync {
     /// Resize the terminal. Maps to SSH `window-change`, docker exec
     /// resize, or `ioctl(TIOCSWINSZ)` on a local PTY. No-op for pipe
     /// backends without a PTY (the adapter still calls it; the backend
@@ -245,6 +252,15 @@ pub trait TtyControl: Send {
     /// back to the backend's default kill.
     fn signal(&self, name: &str);
 }
+
+/// The `Clone`-able handle to a backend's control path. The `TtyControl`
+/// trait is NOT `Clone` (`Clone` is not object-safe — `fn clone(&self) ->
+/// Self` returns `Self`, which forbids `dyn` dispatch); the `Clone`-ability
+/// lives on this concrete newtype, which holds the trait object behind an
+/// `Arc`. The adapter clones the `Arc` to hand a handle to the spawned
+/// control-chunk dispatcher. See OQ-43.
+#[derive(Clone)]
+pub struct TtyControlHandle(Arc<dyn TtyControl + Send + Sync>);
 ```
 
 ### 4. Backends are not required to be natively async (REQ-TTY-01)
@@ -320,13 +336,16 @@ layer chooses what's available.
   full rationale and why the typed-enum alternative was rejected (Rust
   enums are closed; the earlier `SshChannelRef` variant was an output
   modeled as an input and created a dependency contradiction).
-- `Box<dyn TtyControl + Send + Unpin + Clone>` is an unusual trait-object
-  bound (`Clone` on a trait object requires a workaround — typically a
-  custom clone-via-`Arc` or a `Box<dyn TtyControl>` wrapped in a small
-  `Clone` newtype). This is the cost of the POC-discovered constraint
-  that the control-chunk dispatcher needs to be `Clone` to hand off to
-  the spawned pump task. See OQ-43 for the confirmation and the concrete
-  `Clone` newtype approach.
+- **`TtyControl` is not `Clone`; the `TtyControlHandle` newtype is.**
+  `Clone` is not object-safe (`fn clone(&self) -> Self` returns `Self`,
+  which forbids `dyn` dispatch), so `Box<dyn TtyControl + Clone>` does
+  not compile. The design splits the concerns: the `TtyControl` trait
+  stays object-safe (`Send + Sync`, no `Clone`); the `TtyControlHandle`
+  newtype (a concrete struct holding `Arc<dyn TtyControl + Send +
+  Sync>`) implements `Clone` by cloning the `Arc`. This is the cost of
+  the POC-discovered constraint that the control-chunk dispatcher needs
+  to be `Clone` to hand off to the spawned pump task. See OQ-43 for the
+  confirmation and the concrete newtype approach.
 - A backend that produces neither a PTY nor a process (a hypothetical
   "recorded session replay" backend) would have a no-op `TtyControl` and
   a synthetic `exit_code`. The trait accommodates it but the `TtyParams`
@@ -350,12 +369,15 @@ impl doesn't break existing implementors); its return type
 
 ## Assumptions
 
-1. **The `TtyControl` trait object can be made `Clone` via a small
-   newtype.** The POC used a concrete `PtyControl` struct (inherently
-   `Clone`). The trait-object form needs a `Clone` newtype wrapping the
-   `Box` (e.g., a struct holding `Arc<dyn TtyControl>` so `Clone` is an
-   `Arc` clone). This is a known Rust pattern; OQ-43 confirms the
-   approach.
+1. **The `TtyControl` trait is kept object-safe by NOT putting `Clone`
+   on it; the `TtyControlHandle` newtype holds the trait object behind an
+   `Arc` and implements `Clone` by cloning the `Arc`.** The POC used a
+   concrete `PtyControl` struct (inherently `Clone` — it held
+   `Arc<Mutex<...>>` fields). The newtype generalizes the POC's shape so
+   a backend produces its own control type via
+   `TtyControlHandle::new(Arc::new(MyControl))` without the adapter
+   knowing the concrete shape. `Clone` cannot live on the trait itself
+   (it is not object-safe); the newtype is the seam. OQ-43 confirms.
 
 2. **Backends produce a single session per `allocate()` call.** The
    adapter calls `allocate()` once per accepted bidi stream (one session

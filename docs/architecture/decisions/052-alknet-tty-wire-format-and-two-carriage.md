@@ -194,17 +194,18 @@ closes after it.
 allocation (raw chunks) and a failed allocation (JSON error frame) begin
 with bytes the client must read before knowing which framing applies.
 The disambiguation is by the first byte: a JSON error frame's 4-byte
-big-endian length prefix always starts with `0x00` (error frames are
-small — under 16 MiB, so the high byte is zero), while a raw chunk's
-first byte is a `stream_type` in `{0, 1, 2, 3}`. A stream_type of `0`
-(stdin from server) is invalid — the server never sends stdin chunks —
-so the client distinguishes: read the first byte; if it is `0x00`,
-interpret the next 4 bytes as a big-endian length prefix and read that
-many bytes as a JSON error frame; otherwise interpret it as a
-`stream_type` byte and continue reading the raw chunk header. This is a
-one-way-door wire-format invariant: error frames use the negotiation
-framing (length prefix), success uses the raw chunk framing
-(stream_type byte first); the `0x00`-as-length-prefix vs
+big-endian length prefix always starts with `0x00` (error frames MUST
+be under 16 MiB — `MAX_CHUNK_LEN` — so the high byte is zero; this is a
+wire-format invariant, not an assumption), while a raw chunk's first
+byte is a `stream_type` in `{0, 1, 2, 3}`. A stream_type of `0` (stdin
+from server) is invalid — the server never sends stdin chunks — so the
+client distinguishes: read the first byte; if it is `0x00`, interpret
+the next 4 bytes as a big-endian length prefix and read that many bytes
+as a JSON error frame; otherwise interpret it as a `stream_type` byte
+and continue reading the raw chunk header. This is a one-way-door
+wire-format invariant (ADR-052): error frames use the negotiation
+framing (length prefix) and MUST be under 16 MiB; success uses the raw
+chunk framing (stream_type byte first); the `0x00`-as-length-prefix vs
 `0x00`-as-invalid-stream_type disambiguation is what makes the two
 distinguishable on the wire.
 

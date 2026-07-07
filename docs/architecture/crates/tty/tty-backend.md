@@ -159,7 +159,7 @@ pub struct TerminalParams {
     pub rows: u16,
     pub pixel_width: u16,
     pub pixel_height: u16,
-    pub modes: serde_json::Value,  // reserved — OQ-44
+    pub modes: serde_json::Value,  // reserved — OQ-44; backends MUST ignore content in v1
 }
 ```
 
@@ -215,13 +215,18 @@ and why the typed-enum alternative (with `SshChannelRef`) was rejected.
 ```rust
 pub struct TtyHandle {
     /// Stdin writer — bytes the adapter pumps from client stdin chunks.
-    pub stdin: Box<dyn AsyncWrite + Send + Unpin>,
+    /// `tokio::io::AsyncWrite` (the tokio flavor, not the `futures::io`
+    /// one — they are incompatible traits; the tokio stack is the
+    /// adapter's runtime).
+    pub stdin: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
     /// Stdout stream — bytes the adapter pumps to client stdout chunks.
     /// Ends when the backend's stdout reaches EOF.
-    pub stdout: Pin<Box<dyn Stream<Item = Bytes> + Send>>,
+    /// `futures_core::Stream<Item = bytes::Bytes>` (re-exported by
+    /// `tokio_stream::StreamExt` for extension methods).
+    pub stdout: Pin<Box<dyn futures_core::Stream<Item = bytes::Bytes> + Send>>,
     /// Stderr stream — `None` for PTY backends (stdout/stderr merged
     /// into `stdout`). `Some` for pipe backends (separate streams).
-    pub stderr: Option<Pin<Box<dyn Stream<Item = Bytes> + Send>>>,
+    pub stderr: Option<Pin<Box<dyn futures_core::Stream<Item = bytes::Bytes> + Send>>>,
     /// Exit code — a `Future` the adapter awaits. Resolves when the
     /// process/container/SSH exec exits. The adapter sends the result
     /// as the `{"type":"exit","code":N}` control chunk (ADR-055) and
@@ -232,14 +237,14 @@ pub struct TtyHandle {
     /// Control handle (resize, signal) — `Clone` so the adapter can
     /// hand it to the spawned control-chunk dispatcher. `None` only
     /// when the backend genuinely has no control path. See OQ-43.
-    pub control: Option<Box<dyn TtyControl + Send + Unpin + Clone>>,
+    pub control: Option<TtyControlHandle>,
 }
 ```
 
-### `TtyControl` trait
+### `TtyControl` trait and `TtyControlHandle`
 
 ```rust
-pub trait TtyControl: Send {
+pub trait TtyControl: Send + Sync {
     /// Resize the terminal. Maps to SSH `window-change`, docker exec
     /// resize, or `ioctl(TIOCSWINSZ)` on a local PTY. No-op for pipe
     /// backends without a PTY.
@@ -250,15 +255,31 @@ pub trait TtyControl: Send {
     /// back to the backend's default kill.
     fn signal(&self, name: &str);
 }
+
+/// The `Clone`-able handle to a backend's control path. The `TtyControl`
+/// trait is NOT `Clone` (`Clone` is not object-safe — `fn clone(&self) ->
+/// Self` returns `Self`, which forbids `dyn` dispatch); the `Clone`-ability
+/// lives on this concrete newtype, which holds the trait object behind an
+/// `Arc`. The adapter clones the `Arc` to hand a handle to the spawned
+/// control-chunk dispatcher. See OQ-43.
+#[derive(Clone)]
+pub struct TtyControlHandle(Arc<dyn TtyControl + Send + Sync>);
+
+impl TtyControlHandle {
+    pub fn new(control: Arc<dyn TtyControl + Send + Sync>) -> Self { Self(control) }
+    pub fn resize(&self, c: u16, r: u16, pw: u16, ph: u16) { self.0.resize(c, r, pw, ph) }
+    pub fn signal(&self, name: &str) { self.0.signal(name) }
+}
 ```
 
-The `Clone` trait-object bound is satisfied via an `Arc`-backed `Clone`
-newtype (OQ-43): a small struct holding `Arc<dyn TtyControlInner>` where
-`TtyControlInner: Send + Sync` has the `resize`/`signal` methods, and
-the public `TtyControl` newtype implements `Clone` by cloning the
-`Arc`. The POC used a concrete `PtyControl` struct (inherently
-`Clone`); the trait-object form generalizes it so a backend can produce
-its own control type without the adapter knowing the concrete shape.
+The trait is kept object-safe by NOT putting `Clone` on it; the `Clone`
+newtype (`TtyControlHandle`) holds the trait object behind an `Arc`. The
+POC used a concrete `PtyControl` struct (inherently `Clone` — it held
+`Arc<Mutex<...>>` fields); this newtype generalizes the POC's shape so a
+backend produces its own control type via `TtyControlHandle::new(Arc::new(MyControl))`
+without the adapter knowing the concrete shape. See OQ-43 for the
+confirmation and the rationale for why `Clone` cannot live on the trait
+itself.
 
 ### REQ-TTY-01: backends are not required to be natively async
 
@@ -352,6 +373,19 @@ ALPN (`alknet/tty`), not hedged inside alknet-ssh.
   delivery to the foreground process group," not "the child pid receives
   the signal." See [tty-local.md](tty-local.md) REQ-TTY-02 for the
   process-group targeting and the fallback to the backend's default kill.
+- **Dropping the `exit_code` future MUST kill the session target
+  (ADR-056).** The `exit_code` field is a `BoxFuture<'static,
+  Result<i32, TtyError>>` whose `Drop`-on-cancel (i.e., dropped without
+  being driven to completion) MUST kill the child/container/SSH process.
+  This is a behavioral contract on the `TtyBackend` trait — the adapter
+  triggers it by dropping the `TtyHandle` on session cancel (connection
+  drop, stream reset); the backend wires the kill into the `exit_code`
+  future's `Drop`. A backend that returns a bare `oneshot::Receiver<i32>`
+  (or any future without a kill-on-`Drop` guard) as `exit_code`
+  violates the contract and will orphan processes on cancel. See
+  [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md)
+  and [tty-local.md](tty-local.md) §"Cancel-Cleanup (ADR-056)" for the
+  local backend's mechanism.
 
 ## Design Decisions
 
@@ -361,6 +395,7 @@ ALPN (`alknet/tty`), not hedged inside alknet-ssh.
 | Local backend as a sibling crate | [ADR-054](../../decisions/054-local-tty-backend-sibling-crate.md) | `alknet-tty-local` behind a `local` feature re-export |
 | Wire format | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | The chunk codec + control channel the adapter pumps to/from these handles |
 | Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | The adapter awaits `exit_code`, sends the exit chunk, closes |
+| Backend cleanup on session cancel | [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Dropping `exit_code` future (cancel) MUST kill the session target; contract on the `TtyBackend` trait |
 | Crate decomposition | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | alknet-tty depends on alknet-core; backends depend on alknet-tty for the trait |
 
 ## Open Questions
@@ -378,6 +413,9 @@ See [open-questions.md](../../open-questions.md) for full details.
   — the wire format the adapter pumps to/from these handles
 - [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) — the
   exit-chunk ordering the `exit_code` field feeds into
+- [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) —
+  the cancel-cleanup contract on this trait (`exit_code` future's
+  `Drop`-on-cancel kills the session target)
 - [ADR-054](../../decisions/054-local-tty-backend-sibling-crate.md) —
   the local backend's crate placement
 - `docs/research/alknet-tty/phase-0-findings.md` — §"The Backend Trait"

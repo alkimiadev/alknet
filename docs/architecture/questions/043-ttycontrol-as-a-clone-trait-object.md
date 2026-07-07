@@ -6,18 +6,22 @@
   shape open question the local-PTY POC resolved).
 - **Status**: resolved
 - **Door type**: One-way (the `TtyControl` trait shape is part of the
-  `TtyBackend` API surface — ADR-053), two-way (the concrete `Clone`
-  newtype mechanism)
+  `TtyBackend` API surface — ADR-053), two-way (the concrete
+  `TtyControlHandle` newtype mechanism)
 - **Priority**: medium
-- **Resolution**: `TtyHandle.control` is
-  `Option<Box<dyn TtyControl + Send + Unpin + Clone>>`. The `Clone`
-  trait-object bound is satisfied via an `Arc`-backed `Clone` newtype: a
-  small struct holding `Arc<dyn TtyControlInner>` where `TtyControlInner:
-  Send + Sync` has the `resize`/`signal` methods, and the public
-  `TtyControl` newtype implements `Clone` by cloning the `Arc`. The
-  local-PTY POC used a concrete `PtyControl` struct (inherently `Clone` —
-  it held `Arc<Mutex<...>>` fields); the trait-object form generalizes it
-  so a backend can produce its own control type without the adapter
+- **Resolution**: `TtyHandle.control` is `Option<TtyControlHandle>`.
+  `TtyControlHandle` is a concrete `#[derive(Clone)]` newtype wrapping
+  `Arc<dyn TtyControl + Send + Sync>`; the adapter clones the `Arc` to
+  hand a handle to the spawned control-chunk dispatcher. The
+  `TtyControl` trait itself is NOT `Clone` — `Clone` is not object-safe
+  (`fn clone(&self) -> Self` returns `Self`, which forbids `dyn`
+  dispatch), so `Box<dyn TtyControl + Clone>` does not compile. The
+  design splits the concerns: the trait stays object-safe (`Send +
+  Sync`, no `Clone`); the newtype carries the `Clone`-ability. The
+  local-PTY POC used a concrete `PtyControl` struct (inherently `Clone`
+  — it held `Arc<Mutex<...>>` fields); the newtype generalizes the POC's
+  shape so a backend produces its own control type via
+  `TtyControlHandle::new(Arc::new(MyControl))` without the adapter
   knowing the concrete shape. The `Clone` constraint exists because the
   adapter's control-chunk dispatcher needs to be handed off to the
   spawned pump task (the POC's `session::drive_session` clones

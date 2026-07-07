@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # alknet-tty — Local TTY Backend (`alknet-tty-local`)
@@ -104,10 +104,12 @@ pub enum StdinCmd {
    `StdinCmd::Bytes` and `flush` as a no-op; the `mpsc::Sender` is the
    sink).
 3. **Waiter thread** — blocking `Child::wait()` → `oneshot::Sender<i32>`
-   with the exit code. The async-facing `TtyHandle.exit_code` is the
-   `oneshot::Receiver<i32>`, wrapped as `BoxFuture<'static, Result<i32,
-   TtyError>>`. This is the `Future` the adapter awaits (ADR-053
-   REQ-TTY-01; ADR-055).
+   with the exit code. The async-facing `TtyHandle.exit_code` is a
+   `Future` wrapping this `oneshot::Receiver<i32>` PLUS a kill guard
+   holding the `portable_pty::ChildKiller` (see "Cancel-Cleanup
+   (ADR-056)" below). This is the `Future` the adapter awaits (ADR-053
+   REQ-TTY-01; ADR-055); its `Drop`-on-cancel kills the child
+   (ADR-056).
 
 `TtyHandle.stderr` is `None` (PTY backends merge stdout/stderr — kernel
 PTY property, one output stream from the slave).
@@ -163,6 +165,64 @@ The spec records:
 
 This pre-empts a class of "Ctrl-C doesn't kill my `cargo build`" bugs
 that would otherwise surface in Phase 2/3.
+
+### Cancel-Cleanup (ADR-056)
+
+The `TtyBackend` cleanup contract (ADR-056): **dropping the `exit_code`
+future kills the session target.** The local backend implements this for
+both PTY and pipe modes.
+
+**PTY mode.** `allocate()` obtains a `portable_pty::Child` (with
+`wait()`) and a `portable_pty::ChildKiller` (with `kill()`) — the two
+handles `portable_pty` exposes alongside each other. The `Child` moves
+into the waiter thread (which blocks on `wait()`). The `ChildKiller`
+moves into the `exit_code` future's `Drop` guard, alongside the
+`oneshot::Receiver<i32>` from the waiter thread. The future's `poll`
+delegates to the oneshot receiver (resolves on natural exit); the
+future's `Drop` (runs on cancel only — on resolve, the guard is
+disarmed) calls `ChildKiller::kill(SIGHUP)`:
+
+```rust
+struct LocalExitFuture {
+    rx: oneshot::Receiver<i32>,
+    killer: Option<portable_pty::ChildKiller>,  // None after resolve (disarmed)
+}
+
+impl Future for LocalExitFuture { /* poll delegates to rx; on Ready, take killer */ }
+impl Drop for LocalExitFuture {
+    fn drop(&mut self) {
+        if let Some(killer) = self.killer.take() {
+            let _ = killer.kill(SIGHUP);  // best-effort; child may already be exiting
+        }
+    }
+}
+```
+
+On cancel: the `Drop` kills the child (SIGHUP); the child exits; the
+waiter thread's `wait()` reaps it and exits (its `oneshot::send` fails
+silently — the receiver was dropped with the future, which is expected);
+the reader/writer threads exit on channel close. The child is reaped
+(no zombie) by the waiter thread's `wait()` returning after the kill.
+
+**Pipe mode.** The same pattern with `tokio::process::Child` instead of
+`portable_pty::Child`. The `exit_code` future's `Drop` guard holds the
+`Child` handle (or a `Child`-kill wrapper) and calls
+`Child::start_kill()` on cancel. The waiter task (`Child::wait()`)
+reaps the killed child.
+
+**The happy path is unaffected.** When the adapter drives `exit_code`
+to completion (the child exits naturally), the future resolves, the
+guard is disarmed (the `Option::take()` in `poll`'s `Ready` branch),
+and the subsequent `Drop` is a no-op. The contract is "kill on cancel;
+no-op on resolve."
+
+This closes the orphaned-process gap the local-PTY POC surfaced: a
+child that ignores stdin EOF (a daemon, a long-lived process with no
+stdin reader) is killed when the session is cancelled, not left
+running. The POC's `LocalPty::exit_code` was a bare
+`oneshot::Receiver<i32>` with no kill guard — an implementer who
+copies the POC's shape without the guard violates the contract. See
+ADR-056 for the contract and the trait-level rationale.
 
 ### Pipe Mode (`terminal: None`)
 
@@ -271,6 +331,14 @@ building runner policy into alknet-tty.
   dependency-free at construction — the `portable_pty` system is
   process-global. The assembly layer constructs one `LocalTtyBackend`
   and registers it as `"local"`.
+- **The `exit_code` future's `Drop`-on-cancel kills the child
+  (ADR-056).** The local backend MUST NOT return a bare
+  `oneshot::Receiver<i32>` as `TtyHandle.exit_code` — it must wrap it
+  in a `Future` whose `Drop` calls `ChildKiller::kill(SIGHUP)` (PTY) or
+  `Child::start_kill()` (pipe) when dropped without resolving. An
+  implementer who copies the POC's bare `oneshot::Receiver<i32>` shape
+  without the kill guard violates the contract and will orphan
+  processes on session cancel. See ADR-056.
 
 ## Design Decisions
 
@@ -280,6 +348,7 @@ building runner policy into alknet-tty.
 | `TtyBackend` trait and `TtyHandle` | [ADR-053](../../decisions/053-ttybackend-trait-and-ttyhandle.md) | The trait this backend implements; REQ-TTY-01 (backends need not be natively async) |
 | Wire format | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | The chunk codec + control channel the adapter pumps to/from this backend |
 | Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | The waiter thread's `oneshot::Receiver<i32>` feeds the exit chunk |
+| Backend cleanup on session cancel | [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) | The `exit_code` future's `Drop`-on-cancel kills the child via `ChildKiller` (PTY) / `start_kill` (pipe); the waiter thread reaps |
 
 ## Open Questions
 
@@ -294,6 +363,12 @@ See [open-questions.md](../../open-questions.md) for full details.
 - [ADR-053](../../decisions/053-ttybackend-trait-and-ttyhandle.md) — the
   trait this backend implements; REQ-TTY-01 (the blocking-backend
   accommodation)
+- [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) — the
+  waiter thread's `oneshot::Receiver<i32>` feeds the exit chunk
+- [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) —
+  the cancel-cleanup contract this backend implements (the `exit_code`
+  future's `Drop`-on-cancel kills the child via `ChildKiller` /
+  `start_kill`)
 - `docs/research/alknet-tty/phase-0-findings.md` — §"Requirements from
   the local-PTY POC" (REQ-TTY-01 and REQ-TTY-02, the load-bearing
   constraints this spec records)

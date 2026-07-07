@@ -245,6 +245,7 @@ PTY allocation code. See [ADR-054](../../decisions/054-local-tty-backend-sibling
 | `TtyBackend` trait and `TtyHandle` | [ADR-053](../../decisions/053-ttybackend-trait-and-ttyhandle.md) | The backend inversion point; `exit_code` as `Future`; backends need not be natively async (REQ-TTY-01) |
 | Local backend as a sibling crate | [ADR-054](../../decisions/054-local-tty-backend-sibling-crate.md) | `alknet-tty-local` behind a `local` feature re-export; PTY vs pipe per-session |
 | Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | `{"type":"exit","code":N}` on stream_type 3; "exit chunk is last" invariant; adapter owns the ordering |
+| Backend cleanup on session cancel | [ADR-056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Dropping `exit_code` future (cancel) kills the session target; the adapter triggers it by dropping the `TtyHandle` |
 | ALPN-based protocol dispatch | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | `TtyAdapter` registers on `alknet/tty` |
 | ProtocolHandler trait | [ADR-002](../../decisions/002-protocol-handler-trait.md) | `TtyAdapter` implements `ProtocolHandler` |
 | Crate decomposition | [ADR-003](../../decisions/003-crate-decomposition.md) Am. 1 | alknet-tty depends on alknet-core + alknet-call (framing utility); backends depend on alknet-tty for the trait |

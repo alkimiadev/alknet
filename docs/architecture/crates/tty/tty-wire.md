@@ -80,7 +80,13 @@ The payload shape:
 Fields:
 
 - `carriage` — `"raw"` for terminal sessions (the only carriage in v1).
-  Selects the post-negotiation byte format.
+  Selects the post-negotiation byte format. MUST be `"raw"` in v1; any
+  other value (e.g., `"json"`, an unknown carriage, or the field
+  absent) is a `malformed_negotiation` error and the adapter closes the
+  stream without entering raw mode. A future carriage (e.g., a
+  structured JSON-only mode for a non-terminal use case) is a v2
+  addition; in v1 the field is required and must be the literal
+  `"raw"`.
 - `backend` — the backend selector string (`"local"`, `"docker"`,
   `"ssh"`). The adapter dispatches to the registered `TtyBackend` by this
   key (ADR-053 §5).
@@ -94,6 +100,49 @@ Fields:
 - `cmd` — command vector (argv[0] + args). Non-empty.
 - `cwd` — working directory (`null` = inherit/default).
 - `env` — environment variables (empty = inherit).
+
+The Rust struct the adapter parses the frame into:
+
+```rust
+#[derive(Deserialize)]
+pub struct NegotiateRequest {
+    pub carriage: String,          // "raw" in v1; any other value → malformed_negotiation
+    pub backend: String,           // backend selector key ("local", "docker", "ssh")
+    pub tty: Option<TerminalParamsWire>,  // None = pipe mode (ADR-054)
+    pub cmd: Vec<String>,           // argv[0] + args; non-empty
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,       // None = inherit/default
+    #[serde(default)]
+    pub env: HashMap<String, String>,  // empty = inherit
+    #[serde(default)]
+    pub backend_params: serde_json::Map<String, serde_json::Value>,  // opaque; backend-deserialized
+    // plus backend-specific fields, captured into backend_params via serde(flatten)
+}
+
+#[derive(Deserialize)]
+pub struct TerminalParamsWire {
+    pub term: Option<String>,       // None = backend default
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub pixel_width: u16,
+    #[serde(default)]
+    pub pixel_height: u16,
+    #[serde(default)]
+    pub modes: serde_json::Value,   // reserved — OQ-44; backends MUST ignore content in v1
+}
+```
+
+Validation: `carriage` MUST be `"raw"` (else `malformed_negotiation`);
+`cmd` MUST be non-empty (else `malformed_negotiation`); `backend` MUST
+be a registered backend key (else `unknown_backend`). Backend-specific
+params validation is the backend's job (in `allocate()`); the adapter
+does not interpret `backend_params`. The struct's `serde(flatten)` for
+backend-specific fields means the negotiation frame's top-level JSON
+object carries both the shared fields (`carriage`, `backend`, `tty`,
+`cmd`, `cwd`, `env`) and the backend-specific fields (e.g.,
+`"container": "abc123"` for docker); the latter land in
+`backend_params`.
 
 Backend-specific selector fields ride alongside (e.g., `"container":
 "abc123"` for docker). The adapter parses the negotiation frame,
@@ -258,8 +307,12 @@ a session — see [tty-adapter.md](tty-adapter.md).
   allocate the session (unknown backend, PTY allocation failed, the
   command is invalid), it sends a JSON error response in the same
   length-prefixed framing as the negotiation frame and closes the stream
-  without entering raw mode. See [tty-adapter.md](tty-adapter.md)
-  §"Negotiation errors".
+  without entering raw mode. The error response MUST be under 16 MiB
+  (`MAX_CHUNK_LEN`) so the 4-byte big-endian length prefix's high byte
+  is `0x00` — this is what makes the framing-disambiguation trick
+  (first byte `0x00` = error frame, first byte `1`/`2`/`3` = raw chunk)
+  sound; it is a wire-format invariant, not an empirical observation.
+  See [tty-adapter.md](tty-adapter.md) §"Negotiation errors".
 
 ## Design Decisions
 

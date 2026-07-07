@@ -41,12 +41,13 @@ the PTY (docker, SSH, local process) via a `TtyBackend` trait.
 | [053](../../decisions/053-ttybackend-trait-and-ttyhandle.md) | TtyBackend Trait and TtyHandle | The backend trait, handle shape, blocking-backend accommodation (REQ-TTY-01) |
 | [054](../../decisions/054-local-tty-backend-sibling-crate.md) | Local TTY Backend as a Sibling Crate | `alknet-tty-local` behind a `local` feature re-export; PTY vs pipe per-session |
 | [055](../../decisions/055-exit-code-on-control-chunk.md) | Exit Code on a Control Chunk | Exit code on stream_type 3; "exit chunk is last" invariant; adapter owns the ordering |
+| [056](../../decisions/056-backend-cleanup-on-session-cancel.md) | Backend Cleanup on Session Cancel | Dropping the `exit_code` future (session cancel) MUST kill the session target; behavioral contract on the `TtyBackend` trait |
 
 ## Relevant Open Questions
 
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
-| OQ-43 | `TtyControl` trait object `Clone` constraint | resolved | `control: Option<Box<dyn TtyControl + Send + Unpin + Clone>>` via an `Arc`-backed `Clone` newtype; confirmed by the POC's concrete `PtyControl` |
+| OQ-43 | `TtyControl` trait object `Clone` constraint | resolved | `control: Option<TtyControlHandle>` via a `#[derive(Clone)]` newtype wrapping `Arc<dyn TtyControl + Send + Sync>`; the trait is NOT `Clone` (not object-safe) — the newtype carries `Clone`-ability; confirmed by the POC's concrete `PtyControl` |
 | OQ-44 | Terminal modes (TTY modes) | deferred(scope) | `TerminalParams.modes` reserved; default terminal modes suffice for current scope; blocked on a concrete mode-control use case |
 | OQ-45 | Flow control for high-throughput stdout | resolved | QUIC per-stream flow control is the backpressure mechanism (chain complete by construction); no application-level windowing. Reversal is an additive `ControlMessage` variant, not a wire-format change |
 | OQ-46 | Runner API surface | deferred(scope) | The runner mechanism (pipe mode) is in alknet-tty; runner policy (job management, log persistence, task graph) is a downstream crate, not in scope here |
