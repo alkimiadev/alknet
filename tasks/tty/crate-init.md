@@ -1,7 +1,7 @@
 ---
 id: tty/crate-init
 name: Initialize alknet-tty crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: low
@@ -130,4 +130,4 @@ adapter) fill these in.
 
 ## Summary
 
-> To be filled on completion
+> Created crates/alknet-tty with Cargo.toml (alknet-core path dep + tokio/bytes/futures-core/tokio-stream/serde/serde_json/async-trait/tracing/thiserror; no portable_pty/bollard/russh/alknet-call per ADR-057), the `local` feature gate declared with dep wiring deferred to tty/local-feature-reexport (cargo requires the dep declaration to use `dep:` syntax, and the sibling crate doesn't exist yet, so the feature is empty for now with a comment pointing to the wiring task), src/lib.rs with the crate doc comment and module declarations, and five skeleton modules (wire, control, negotiation, backend, adapter) with doc comments and TODO markers. Added the crate to the workspace members list. cargo check, clippy -D warnings, and fmt --check all pass.
