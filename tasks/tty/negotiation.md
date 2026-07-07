@@ -1,7 +1,7 @@
 ---
 id: tty/negotiation
 name: Implement negotiation frame (NegotiateRequest, length-prefixed framing, error response)
-status: pending
+status: completed
 depends_on: [tty/wire-codec]
 scope: narrow
 risk: medium
