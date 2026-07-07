@@ -1,0 +1,28 @@
+[package]
+name = "alknet-tty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal session protocol handler for the `alknet/tty` ALPN: wire format, TtyBackend trait, and TtyAdapter (ProtocolHandler)"
+repository.workspace = true
+
+[lib]
+name = "alknet_tty"
+
+[features]
+default = []
+# `local` re-exports `alknet_tty_local::LocalTtyBackend`. The
+# `dep:alknet-tty-local` dependency is wired in task `tty/local-feature-reexport`.
+local = []
+
+[dependencies]
+alknet-core = { path = "../alknet-core" }
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+futures-core = "0.3"
+tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tracing = "0.1"
+thiserror = "2"
