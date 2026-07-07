@@ -152,6 +152,7 @@ name = "alknet-tty-local"
 version = "0.1.0"
 dependencies = [
  "alknet-tty",
+ "async-trait",
  "bytes",
  "futures-core",
  "libc",
