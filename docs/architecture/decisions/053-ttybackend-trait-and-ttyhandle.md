@@ -76,6 +76,16 @@ pub trait TtyBackend: Send + Sync {
     /// adapter pumps. The `backend` field of the negotiation frame
     /// (ADR-052) selects which registered backend's `allocate` is called.
     async fn allocate(&self, params: &TtyParams) -> Result<TtyHandle, TtyError>;
+
+    /// The pre-existing resource this session targets, for ownership
+    /// checks (ADR-050). `None` = no pre-existing resource (the session
+    /// creates its own — local process, SSH channel). `Some((kind, id))`
+    /// = the session targets an existing resource the caller must own
+    /// (e.g., DockerTtyBackend returns `Some(("container", id))`). The
+    /// adapter calls this at negotiation to gate access; the backend
+    /// extracts the id from its own `backend_params`. Default `None`
+    /// (most backends create their own resource).
+    fn resource_id(&self, _params: &TtyParams) -> Option<(&'static str, String)> { None }
 }
 ```
 
@@ -98,12 +108,12 @@ pub struct TtyParams {
     pub cwd: Option<PathBuf>,
     /// Environment variables (backend-specific; empty = inherit).
     pub env: HashMap<String, String>,
-    /// Backend-specific selector fields from the negotiation frame
-    /// (e.g., `container` for docker, `SshChannelRef` for ssh). The
-    /// adapter parses the negotiation frame's backend-specific fields
-    /// and passes them here. The exact shape is backend-defined; the
-    /// adapter does not interpret it.
-    pub backend_params: BackendParams,
+    /// Backend-specific selector fields from the negotiation frame,
+    /// unparsed. The adapter passes the JSON object through verbatim; the
+    /// backend deserializes its own strongly-typed params struct from it.
+    /// alknet-tty has zero knowledge of any backend's params shape. See
+    /// §"Backend params are opaque" below.
+    pub backend_params: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct TerminalParams {
@@ -114,19 +124,85 @@ pub struct TerminalParams {
     pub pixel_height: u16,
     pub modes: serde_json::Value,  // reserved — see OQ-44
 }
-
-pub enum BackendParams {
-    Local,
-    Docker { container: String },
-    Ssh { channel: SshChannelRef },
-    // Extensible: a backend crate may add variants. (See Consequences.)
-}
 ```
 
 `terminal: None` is the pipe/runner case — no PTY, separate stdout/stderr
 (ADR-054). `terminal: Some` is the PTY case — stdout/stderr merged into
 the single stdout stream (`TtyHandle.stderr` is `None`), real terminal
 semantics (resize, signal delivery to process group).
+
+### Backend params are opaque
+
+`backend_params` is a `serde_json::Map<String, serde_json::Value>`, not a
+typed enum. The adapter passes the negotiation frame's backend-specific
+fields through verbatim; the backend deserializes its own
+strongly-typed params struct. alknet-tty has zero knowledge of any
+backend's params shape — not docker's `container`, not an SSH host
+selector, not anything.
+
+Each backend defines its own params struct:
+
+```rust
+// in alknet-docker
+#[derive(Deserialize)]
+struct DockerBackendParams { container: String }
+
+// in alknet-ssh
+#[derive(Deserialize)]
+struct SshBackendParams { /* host selector if multi-host; else empty */ }
+
+// in alknet-tty-local
+// no backend-specific params — backend_params is empty
+```
+
+And deserializes from `params.backend_params` inside `allocate()`:
+
+```rust
+impl TtyBackend for DockerTtyBackend {
+    async fn allocate(&self, params: &TtyParams) -> Result<TtyHandle, TtyError> {
+        let p: DockerBackendParams = serde_json::from_value(
+            serde_json::Value::Object(params.backend_params.clone())
+        ).map_err(|e| TtyError::Backend { message: e.to_string() })?;
+        // use p.container ...
+    }
+}
+```
+
+This is a complete inversion: the *trait* is inverted (backends
+implement, alknet-tty doesn't depend on them) and the *params* are
+inverted (backends define their own typed shape, alknet-tty doesn't carry
+it). A new backend crate requires zero changes to alknet-tty — no enum
+variant to add, no forward-reference type to place, no dependency edge.
+
+**Why not a typed enum.** The earlier draft of this ADR defined
+`BackendParams` as a `#[non_exhaustive]` enum with `Local`, `Docker {
+container }`, and `Ssh { channel: SshChannelRef }` variants. Three problems:
+
+1. **Rust enums are closed.** `#[non_exhaustive]` prevents *consumers*
+   from matching exhaustively, but only the *defining crate* (alknet-tty)
+   can add variants. A backend crate cannot add a variant; every new
+   backend requires modifying alknet-tty. The inversion is only partial.
+2. **`SshChannelRef` was an output, not an input.** The SSH channel is
+   what `allocate()` *opens* (`session.channel_open_session()` →
+   `pty_request` → `shell_request`). It doesn't exist until the backend
+   creates it; the client doesn't send one.
+3. **Dependency contradiction.** `SshChannelRef` "wraps a russh
+   `ChannelId` and session reference." If it lives in alknet-ssh,
+   alknet-tty depends on alknet-ssh (violates the inversion). If it lives
+   in alknet-tty, alknet-tty pulls in russh types (same violation).
+   Opaque params dissolve the contradiction — there is no
+   `SshChannelRef` type in alknet-tty at all.
+
+The earlier draft rejected `serde_json::Value` because "it loses type
+safety and forces the adapter to parse backend-specific JSON it
+shouldn't interpret." The first concern doesn't apply (each backend has
+its own strongly-typed struct via serde; type safety moves from
+alknet-tty to the backend where it belongs). The second was already
+inconsistent with the adapter, which hardcoded extraction of docker's
+`container` field for the ownership check — the adapter *was* parsing
+backend-specific JSON. The opaque approach removes that: the adapter
+delegates the resource-id extraction to the backend via `resource_id()`
+below.
 
 ### 3. `TtyHandle` — what a backend produces
 
@@ -233,17 +309,17 @@ layer chooses what's available.
 
 **Negative:**
 
-- `BackendParams` is an enum, which means a new backend crate adding a
-  variant modifies the enum. This is a two-way door (the enum is
-  `#[non_exhaustive]`; a new variant is additive, and the adapter's
-  `match` has a `_ => unsupported backend` arm), but it means
-  `BackendParams` lives in alknet-tty and backend crates extend it rather
-  than defining their own. An alternative — backend-specific params as
-  `serde_json::Value` — was rejected: it loses type safety and forces the
-  adapter to parse backend-specific JSON it shouldn't interpret. The
-  enum-with-`#[non_exhaustive]` trade is the right one: the adapter
-  dispatches by string key, the params enum carries the typed shape, and
-  new backends add variants additively.
+- **Backend params are opaque (`serde_json::Map`), not a typed enum.**
+  Each backend deserializes its own params struct; the adapter passes the
+  JSON through verbatim. The cost is one serde deserialize per
+  `allocate()` call (negligible — allocation is once per session, not on
+  the hot path). The benefit is a complete inversion: alknet-tty has
+  zero knowledge of any backend's params shape, and a new backend crate
+  requires zero changes to alknet-tty (no enum variant, no
+  forward-reference type). See §"Backend params are opaque" for the
+  full rationale and why the typed-enum alternative was rejected (Rust
+  enums are closed; the earlier `SshChannelRef` variant was an output
+  modeled as an input and created a dependency contradiction).
 - `Box<dyn TtyControl + Send + Unpin + Clone>` is an unusual trait-object
   bound (`Clone` on a trait object requires a workaround — typically a
   custom clone-via-`Arc` or a `Box<dyn TtyControl>` wrapped in a small
@@ -255,19 +331,22 @@ layer chooses what's available.
   "recorded session replay" backend) would have a no-op `TtyControl` and
   a synthetic `exit_code`. The trait accommodates it but the `TtyParams`
   shape (`cmd` is `Vec<String>`, `terminal` is `Option`) assumes
-  command-spawning. A non-command backend would need a different
-  `BackendParams` variant and a backend-internal `cmd` synthesis. Not a
-  current use case; the trait shape doesn't preclude it but doesn't
-  optimize for it.
+  command-spawning. A non-command backend would supply an empty `cmd`
+  and synthesize one internally. Not a current use case; the trait shape
+  doesn't preclude it but doesn't optimize for it.
 
 ## Door type
 
-**One-way.** The `TtyBackend` trait, `TtyHandle` field set, and
-`TtyControl` trait are the API surface every backend crate implements and
-the adapter consumes. Changing the trait shape after backends exist is a
-rewrite across crates. The `BackendParams` enum is `#[non_exhaustive]`
-(additive — two-way for new variants), but the trait and handle shapes are
-one-way.
+**One-way.** The `TtyBackend` trait method `allocate()`, the
+`TtyHandle` field set, and the `TtyControl` trait are the API surface
+every backend crate implements and the adapter consumes. Changing them
+after backends exist is a rewrite across crates. `backend_params` as an
+opaque `serde_json::Map` is part of the one-way `TtyParams` shape — the
+*carrier* is fixed (opaque JSON), but the *contents* are
+backend-defined and require no alknet-tty change for new backends. The
+`resource_id()` default method is additive (a new method with a default
+impl doesn't break existing implementors); its return type
+`Option<(&'static str, String)>` is one-way.
 
 ## Assumptions
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-07
 ---
 
 # alknet-tty — TtyBackend Trait and TtyHandle
@@ -83,6 +83,15 @@ pub trait TtyBackend: Send + Sync {
     /// adapter pumps. The `backend` field of the negotiation frame
     /// (ADR-052) selects which registered backend's `allocate` is called.
     async fn allocate(&self, params: &TtyParams) -> Result<TtyHandle, TtyError>;
+
+    /// The pre-existing resource this session targets, for ownership
+    /// checks (ADR-050). `None` = no pre-existing resource (the session
+    /// creates its own — local process, SSH channel). `Some((kind, id))`
+    /// = the session targets an existing resource the caller must own
+    /// (e.g., DockerTtyBackend returns `Some(("container", id))`). The
+    /// adapter calls this at negotiation to gate access; the backend
+    /// extracts the id from its own `backend_params`. Default `None`.
+    fn resource_id(&self, _params: &TtyParams) -> Option<(&'static str, String)> { None }
 }
 ```
 
@@ -136,10 +145,12 @@ pub struct TtyParams {
     pub cwd: Option<PathBuf>,
     /// Environment variables (empty = inherit).
     pub env: HashMap<String, String>,
-    /// Backend-specific selector fields from the negotiation frame.
-    /// The adapter parses the negotiation frame's backend-specific fields
-    /// and passes them here. The adapter does not interpret them.
-    pub backend_params: BackendParams,
+    /// Backend-specific selector fields from the negotiation frame,
+    /// unparsed. The adapter passes the JSON object through verbatim; the
+    /// backend deserializes its own strongly-typed params struct from it.
+    /// alknet-tty has zero knowledge of any backend's params shape.
+    /// See "Backend params are opaque" below.
+    pub backend_params: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct TerminalParams {
@@ -150,22 +161,7 @@ pub struct TerminalParams {
     pub pixel_height: u16,
     pub modes: serde_json::Value,  // reserved — OQ-44
 }
-
-#[non_exhaustive]
-pub enum BackendParams {
-    Local,
-    Docker { container: String },
-    Ssh { channel: SshChannelRef },
-    // Extensible: a backend crate may add variants. The adapter's match
-    // has a `_ => unsupported backend` arm.
-}
 ```
-
-`SshChannelRef` is a forward-reference type for the future
-`SshTtyBackend` (out of scope here; will be defined in the alknet-ssh
-crate — expected to wrap a russh `ChannelId` and session reference). It
-appears in the enum so the trait shape is committed; the concrete
-definition lives in the ssh backend crate when built.
 
 `terminal: None` is the pipe/runner case — no PTY, separate
 stdout/stderr. `terminal: Some` is the PTY case — stdout/stderr merged
@@ -173,6 +169,46 @@ into the single stdout stream (`TtyHandle.stderr` is `None`), real
 terminal semantics (resize, signal delivery to process group). The
 per-session choice is the backend's branch in `allocate()`, not a
 per-deployment choice — see ADR-054.
+
+### Backend params are opaque
+
+`backend_params` is a `serde_json::Map<String, serde_json::Value>`, not
+a typed enum. The adapter passes the negotiation frame's
+backend-specific fields through verbatim; the backend deserializes its
+own strongly-typed params struct. alknet-tty has zero knowledge of any
+backend's params shape — not docker's `container`, not an SSH host
+selector, not anything. Each backend defines its own params struct and
+deserializes from `params.backend_params` inside `allocate()`:
+
+```rust
+// in alknet-docker
+#[derive(Deserialize)]
+struct DockerBackendParams { container: String }
+
+impl TtyBackend for DockerTtyBackend {
+    async fn allocate(&self, params: &TtyParams) -> Result<TtyHandle, TtyError> {
+        let p: DockerBackendParams = serde_json::from_value(
+            serde_json::Value::Object(params.backend_params.clone())
+        ).map_err(|e| TtyError::Backend { message: e.to_string() })?;
+        // use p.container ...
+    }
+    fn resource_id(&self, params: &TtyParams) -> Option<(&'static str, String)> {
+        // extract for the ownership check — backend-driven, not adapter-hardcoded
+        let p: DockerBackendParams = serde_json::from_value(
+            serde_json::Value::Object(params.backend_params.clone())
+        ).ok()?;
+        Some(("container", p.container))
+    }
+}
+```
+
+This is a complete inversion: the *trait* is inverted (backends
+implement, alknet-tty doesn't depend on them) and the *params* are
+inverted (backends define their own typed shape, alknet-tty doesn't
+carry it). A new backend crate requires zero changes to alknet-tty — no
+enum variant to add, no forward-reference type to place, no dependency
+edge. See ADR-053 §"Backend params are opaque" for the full rationale
+and why the typed-enum alternative (with `SshChannelRef`) was rejected.
 
 ### `TtyHandle` — what a backend produces
 
@@ -290,14 +326,17 @@ ALPN (`alknet/tty`), not hedged inside alknet-ssh.
 
 ## Constraints
 
-- **The trait shape is one-way (ADR-053).** The `TtyBackend` trait,
-  `TtyHandle` field set, and `TtyControl` trait are the API surface every
-  backend crate implements and the adapter consumes. Changing them after
-  backends exist is a rewrite across crates.
-- **`BackendParams` is `#[non_exhaustive]`.** New backend crates add
-  variants additively; the adapter's `match` has a `_ => unsupported
-  backend` arm. This is a two-way-door extension point within the
-  one-way trait shape.
+- **The trait shape is one-way (ADR-053).** The `TtyBackend` trait
+  method `allocate()`, the `TtyHandle` field set, and the `TtyControl`
+  trait are the API surface every backend crate implements and the
+  adapter consumes. Changing them after backends exist is a rewrite
+  across crates.
+- **Backend params are opaque (`serde_json::Map`), not a typed enum.**
+  The carrier type is one-way (part of `TtyParams`), but the *contents*
+  are backend-defined: each backend deserializes its own
+  strongly-typed params struct, and a new backend crate requires zero
+  changes to alknet-tty. See "Backend params are opaque" above and
+  ADR-053 §"Backend params are opaque."
 - **The adapter, not the backend, owns the wire format.** Backends
   produce handles; the adapter pumps. A backend that wrote to the wire
   directly would break the wire-format invariants (the exit-chunk
