@@ -1,7 +1,7 @@
 ---
 id: tty-local/crate-init
 name: Initialize alknet-tty-local crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: [tty/backend-trait]
 scope: moderate
 risk: low
