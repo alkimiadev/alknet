@@ -138,6 +138,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-core",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
