@@ -137,7 +137,6 @@ dependencies = [
  "alknet-core",
  "async-trait",
  "bytes",
- "futures",
  "futures-core",
  "serde",
  "serde_json",
