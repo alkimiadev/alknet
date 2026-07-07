@@ -1,7 +1,7 @@
 ---
 id: tty/control-messages
 name: Implement ControlMessage enum and signal_from_name helper
-status: pending
+status: completed
 depends_on: [tty/crate-init]
 scope: single
 risk: low

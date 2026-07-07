@@ -1,7 +1,7 @@
 ---
 id: tty/wire-codec
 name: Implement raw chunk codec (ChunkReader/ChunkWriter, RawError, stream types)
-status: pending
+status: completed
 depends_on: [tty/crate-init]
 scope: narrow
 risk: low
