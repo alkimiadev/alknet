@@ -1,7 +1,7 @@
 ---
 id: tty/local-feature-reexport
 name: Wire alknet-tty `local` feature gate and re-export LocalTtyBackend
-status: pending
+status: completed
 depends_on: [tty/review-tty, tty-local/review-tty-local]
 scope: narrow
 risk: low
