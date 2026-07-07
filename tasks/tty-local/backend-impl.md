@@ -1,7 +1,7 @@
 ---
 id: tty-local/backend-impl
 name: Implement LocalTtyBackend (TtyBackend) branching on terminal Some/None
-status: pending
+status: completed
 depends_on: [tty-local/pty-mode, tty-local/pipe-mode]
 scope: narrow
 risk: low
