@@ -1,7 +1,7 @@
 ---
 id: tty/adapter
 name: Implement TtyAdapter (ProtocolHandler) and three-pump session driver
-status: pending
+status: completed
 depends_on: [tty/wire-codec, tty/control-messages, tty/negotiation, tty/backend-trait]
 scope: broad
 risk: high

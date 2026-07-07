@@ -1,7 +1,7 @@
 ---
 id: tty-local/pipe-mode
 name: Implement pipe mode (tokio::process, PipeControl, ADR-056 kill guard)
-status: pending
+status: completed
 depends_on: [tty-local/crate-init]
 scope: moderate
 risk: medium

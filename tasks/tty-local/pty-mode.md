@@ -1,7 +1,7 @@
 ---
 id: tty-local/pty-mode
 name: Implement PTY mode (three-thread bridge, PtyControl, REQ-TTY-02, ADR-056 kill guard)
-status: pending
+status: completed
 depends_on: [tty-local/crate-init]
 scope: broad
 risk: high
