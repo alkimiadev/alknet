@@ -13,10 +13,14 @@ name = "alknet_tty_local"
 alknet-tty = { path = "../alknet-tty" }
 portable-pty = "0.8"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 bytes = "1"
 futures-core = "0.3"
 tracing = "0.1"
 thiserror = "2"
+
+[dev-dependencies]
+tokio-stream = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
