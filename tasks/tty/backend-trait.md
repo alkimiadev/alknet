@@ -1,7 +1,7 @@
 ---
 id: tty/backend-trait
 name: Implement TtyBackend trait, TtyHandle, TtyControl, TtyParams, TtyError (ADR-053)
-status: pending
+status: completed
 depends_on: [tty/crate-init]
 scope: moderate
 risk: high
