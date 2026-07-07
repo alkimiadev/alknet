@@ -440,7 +440,7 @@ mod tests {
         let read = reader.read_frame().await.expect("read");
         assert_eq!(read.as_ref(), body);
 
-        let mut reclaimed = reader.into_inner();
+        let reclaimed = reader.into_inner();
         let mut leftover = [0u8; 4];
         a.write_all(b"tail").await.expect("write leftover");
         a.flush().await.expect("flush");
@@ -456,7 +456,7 @@ mod tests {
         let (mut a, mut b) = duplex(8 * 1024);
         let mut writer = NegotiationWriter::new(&mut a);
         writer.write_frame(b"x").await.expect("write");
-        let mut reclaimed = writer.into_inner();
+        let reclaimed = writer.into_inner();
         reclaimed.write_all(b"raw").await.expect("write raw");
         reclaimed.flush().await.expect("flush");
 
