@@ -313,7 +313,7 @@ let mut backends = HashMap::new();
 backends.insert("local".into(),
     Arc::new(LocalTtyBackend::new()) as Arc<dyn TtyBackend>);
 backends.insert("docker".into(),
-    Arc::new(DockerTtyBackend::new(docker_client)) as Arc<dyn TtyBackend>);
+    Arc::new(DockerTtyBackend::new(docker_client, "alknet".into())) as Arc<dyn TtyBackend>);
 backends.insert("ssh".into(),
     Arc::new(SshTtyBackend::new(ssh_session)) as Arc<dyn TtyBackend>);
 let tty_adapter = TtyAdapter::new(Arc::new(backends));
@@ -329,12 +329,13 @@ layer chooses what's available.
 | Backend | Crate | Status | Notes |
 |---------|-------|--------|-------|
 | `LocalTtyBackend` | `alknet-tty-local` (sibling, behind `local` feature) | in scope ([tty-local.md](tty-local.md)) | `portable_pty` (PTY) + `std::process` (pipe); the runner pattern |
-| `DockerTtyBackend` | `alknet-docker` or sibling adapter | future, out of scope here | wraps `bollard::attach_container` / `exec` with `tty: true` |
+| `DockerTtyBackend` | `alknet-docker` (behind `tty` feature) | specced ([docker-tty-backend.md](../docker/docker-tty-backend.md), [ADR-061](../../decisions/061-docker-tty-backend-in-alknet-docker.md)) | wraps `bollard::attach_container` / `exec` with `tty: true`; attach vs exec mode |
 | `SshTtyBackend` | `alknet-ssh` | future, out of scope here | wraps russh `pty_request` + `shell_request`/`exec_request`; dissolves alknet-ssh DP-5 PTY hedge |
 
-The docker and SSH backend crates are future work; this spec commits the
-trait shape they implement so they can be built against it without
-re-spec'ing the seam. The `DockerTtyBackend` is the natural extension of
+The SSH backend crate is future work; this spec commits the
+trait shape it implements so it can be built against it without
+re-spec'ing the seam. The `DockerTtyBackend` is now specced in
+[alknet-docker](../docker/docker-tty-backend.md) (ADR-061) — the natural extension of
 the alknet-docker POC's `drive_attach_raw` (`/workspace/alknet-docker-poc/src/ops.rs`)
 — with the trait, it becomes `impl TtyBackend for DockerTtyBackend`. The
 `SshTtyBackend` dissolves the alknet-ssh research's PTY hedge (DP-5):

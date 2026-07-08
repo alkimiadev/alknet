@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-08
 ---
 
 # Alknet Architecture
@@ -24,12 +24,14 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 
 **alknet-tty specs drafted.** The alknet-tty crate (terminal session protocol handler — `ProtocolHandler` on `alknet/tty`, two-carriage wire format with a raw chunk codec + JSON control channel, backend-agnostic via a `TtyBackend` trait) now has architecture specs: [crates/tty/](crates/tty/) (overview, tty-wire, tty-backend, tty-adapter, tty-local) and six ADRs — [ADR-052](decisions/052-alknet-tty-wire-format-and-two-carriage.md) (wire format: `alknet/tty` ALPN, JSON negotiation frame then raw chunks, fixed channel set 0-3, control as JSON), [ADR-053](decisions/053-ttybackend-trait-and-ttyhandle.md) (`TtyBackend` trait + `TtyHandle`; `exit_code` as a `Future`; backends need not be natively async — REQ-TTY-01 from the local-PTY POC; `TtyControlHandle` newtype for `Clone`-ability — `Clone` is not object-safe), [ADR-054](decisions/054-local-tty-backend-sibling-crate.md) (`alknet-tty-local` sibling crate behind a `local` feature re-export; PTY vs pipe per-session; the runner pattern preserved), [ADR-055](decisions/055-exit-code-on-control-chunk.md) (exit code on a stream_type 3 control chunk; "exit chunk is last" invariant; adapter owns the ordering), [ADR-056](decisions/056-backend-cleanup-on-session-cancel.md) (backend cleanup contract: dropping the `exit_code` future on session cancel MUST kill the session target — closes the orphaned-process gap the local-PTY POC surfaced for the waiter thread), [ADR-057](decisions/057-alknet-tty-no-alknet-call-dep.md) (alknet-tty does not depend on alknet-call — the negotiation framing is self-contained; the earlier "reuse `FrameFramedReader`" claim was unsound because the utility is welded to `EventEnvelope` deserialization). The specs are grounded in the alknet-docker POC (`docs/research/alknet-docker/poc-summary.md`) and the alknet-tty POC (`/workspace/alknet-tty-poc/`, built 2026-07-05), which validated the wire format, the control channel, the local-PTY bridge, and the signal-delivery contract (REQ-TTY-02). The docker and SSH backends are future crates that implement the `TtyBackend` trait — out of scope for this spec set, but the trait shape is committed so they can be built against it.
 
+**alknet-docker specs drafted.** The alknet-docker crate (docker operations on the shared `alknet/call` ALPN + `DockerTtyBackend` behind a `tty` feature) now has architecture specs: [crates/docker/](crates/docker/) (overview, docker-operations, docker-tty-backend) and six ADRs — [ADR-058](decisions/058-alknet-docker-on-alknet-call.md) (docker ops register on `alknet/call`, not a separate `alknet/docker` ALPN; the raw-carriage handoff the POC struggled with is dissolved by the alknet-tty extraction — interactive attach moved to `alknet/tty` via `DockerTtyBackend`, no `carriage` field on `call.requested`), [ADR-059](decisions/059-bollard-021-dependency-and-features.md) (bollard 0.21, verified current on crates.io; features `http`+`pipe`+`time`, no `ssl`/`ssh`/`websocket`/`buildkit` — single-host by construction, fleet is a call-protocol concern), [ADR-060](decisions/060-container-resource-model-and-label-namespace.md) (ADR-050 application to bollard: `alknet.managed`/`alknet.owner` labels; `list` `owned_only` flag; hosted-services operator role via the static-resource fallback; handler-driven `revoke` on `remove` with autonomous-death tolerance), [ADR-061](decisions/061-docker-tty-backend-in-alknet-docker.md) (`DockerTtyBackend` in alknet-docker behind a `tty` feature, not a sibling crate; attach vs exec mode; the POC's `drive_attach_raw` as the reference), [ADR-062](decisions/062-docker-client-injection-via-closure-capture.md) (the `Docker` client + `OwnershipStore` are closure-captured at registration time, not read from `OperationContext` and not smuggled through `Capabilities` — `Capabilities` is for secret material only per ADR-014; matches the `from_openapi` pattern), [ADR-063](decisions/063-exit-code-on-terminal-call-responded.md) (non-interactive exec puts `{ "exitCode": N, "terminal": true }` on a final `call.responded` before `call.completed` — `call.completed` stays empty, ADR-012 unchanged). The specs are grounded in the alknet-docker POC (`docs/research/alknet-docker/poc-summary.md`, `/workspace/alknet-docker-poc/`), which validated the hard parts (interactive attach, logs subscription, exec with exit code); the remaining lifecycle operations are mechanical bollard wrapping. The two use cases — disposable dev containers (coordinator-spawned, ownership-recorded) and long-running hosted services (operator-managed, static-resource fallback, per `/workspace/system/dev1/docker.md`) — both work through one `AccessControl` model (ADR-050/060). The `DockerTtyBackend` fills the `TtyBackend` row the alknet-tty spec left open. Four OQs (048–051) track deferred scope: network/volume ops, buildkit, system events subscription, and the full `CreateContainerOptions` surface (deferred to v1 implementation).
+
 ## Architecture Documents
 
 | Document | Status | Description |
 |----------|--------|-------------|
 | [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types, design principles |
-| [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](open-questions/questions/) |
+| [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](questions/) |
 | [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index |
 | [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection, BiStream, StreamError |
 | [crates/core/endpoint.md](crates/core/endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, shutdown |
@@ -52,6 +54,10 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [crates/tty/tty-backend.md](crates/tty/tty-backend.md) | draft | `TtyBackend` trait, `TtyParams`, `TtyHandle`, `TtyControl` — the backend inversion point. Carries REQ-TTY-01 (backends need not be natively async) |
 | [crates/tty/tty-adapter.md](crates/tty/tty-adapter.md) | draft | `TtyAdapter` (`ProtocolHandler` on `alknet/tty`): session lifecycle, three-pump bidirectional driver, negotiation errors, exit-chunk ordering (ADR-055), access control |
 | [crates/tty/tty-local.md](crates/tty/tty-local.md) | draft | `alknet-tty-local` sibling crate: `LocalTtyBackend` via `portable_pty` (PTY) and `std::process::Command` (pipe/runner). Carries REQ-TTY-02 (signal forwarding to the process group) |
+| [crates/docker/README.md](crates/docker/README.md) | draft | alknet-docker crate index |
+| [crates/docker/overview.md](crates/docker/overview.md) | draft | Crate purpose, two-role design (call ops + DockerTtyBackend), dependencies, ALPN, label namespace, feature gates, assembly-layer wiring |
+| [crates/docker/docker-operations.md](crates/docker/docker-operations.md) | draft | Operation surface: lifecycle (Query/Mutation), logs/exec/pull (Subscription via StreamingHandler), access control (ADR-050/060), label namespace, teardown coupling |
+| [crates/docker/docker-tty-backend.md](crates/docker/docker-tty-backend.md) | draft | `DockerTtyBackend` (impl `TtyBackend`): attach vs exec mode, `TtyHandle` field mapping, `TtyControl` → bollard resize/signal, `exit_code` Drop-kill (ADR-056) |
 | [crates/vault/README.md](crates/vault/README.md) | stable | alknet-vault crate index |
 | [crates/vault/mnemonic-derivation.md](crates/vault/mnemonic-derivation.md) | stable | BIP39, SLIP-0010, BIP-0032, derivation paths, key types |
 | [crates/vault/encryption.md](crates/vault/encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
@@ -119,10 +125,16 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [055](decisions/055-exit-code-on-control-chunk.md) | Exit Code on a Control Chunk (the Last Chunk Before Stream Close) | Accepted |
 | [056](decisions/056-backend-cleanup-on-session-cancel.md) | Backend Cleanup on Session Cancel (Drop of `exit_code` Kills) | Accepted |
 | [057](decisions/057-alknet-tty-no-alknet-call-dep.md) | alknet-tty Does Not Depend on alknet-call (Self-Contained Negotiation Framing) | Accepted |
+| [058](decisions/058-alknet-docker-on-alknet-call.md) | alknet-docker Registers on `alknet/call` (No Separate ALPN) | Accepted |
+| [059](decisions/059-bollard-021-dependency-and-features.md) | bollard 0.21 Dependency and Feature Selection | Accepted |
+| [060](decisions/060-container-resource-model-and-label-namespace.md) | Container Resource Model and Label Namespace | Accepted |
+| [061](decisions/061-docker-tty-backend-in-alknet-docker.md) | DockerTtyBackend in alknet-docker | Accepted |
+| [062](decisions/062-docker-client-injection-via-closure-capture.md) | Docker Client and OwnershipStore Injection via Closure Capture | Accepted |
+| [063](decisions/063-exit-code-on-terminal-call-responded.md) | Exit Code on a Terminal `call.responded` for Non-Interactive Exec | Accepted |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (47 OQs across 15 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](open-questions/questions/) (`NNN-slug.md`, mirroring the ADR convention).
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (51 OQs across 16 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 

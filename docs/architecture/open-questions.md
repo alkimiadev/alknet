@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-07
+last_updated: 2026-07-08
 ---
 
 # Open Questions
@@ -149,6 +149,15 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-46](questions/046-runner-api-surface.md) | Runner API Surface | deferred(scope) | two | low |
 | [OQ-47](questions/047-stdin-closure-canonical-signal.md) | Stdin Closure Canonical Signal | resolved | two | low |
 
+### alknet-docker
+
+| OQ | Title | Status | Door | Pri |
+|----|-------|--------|------|-----|
+| [OQ-48](questions/048-network-and-volume-operation-surface.md) | Network and Volume Operation Surface | deferred(scope) | two | low |
+| [OQ-49](questions/049-image-build-buildkit-scope.md) | Image Build (buildkit) Scope | deferred(scope) | two | low |
+| [OQ-50](questions/050-docker-system-events-subscription.md) | Docker System Events Subscription | deferred(scope) | two | low |
+| [OQ-51](questions/051-container-create-options-surface.md) | Container Create Options Surface | deferred(scope) | two | med |
+
 ## Deferred / Blocked
 
 The safe-exit visibility surface. These questions are parked because the
@@ -193,4 +202,28 @@ filtering the tables above.
 - **Blocked on**: a concrete runner-policy use case that forces the API surface (job management, log persistence, task graph integration).
 - **Priority**: low
 - **Full file**: [OQ-46](questions/046-runner-api-surface.md)
+
+### OQ-48: Network and Volume Operation Surface
+
+- **Blocked on**: a concrete use case for network or volume management over the call protocol. Dev containers use the default bridge network; hosted services declare networks/volumes in `docker compose`.
+- **Priority**: low
+- **Full file**: [OQ-48](questions/048-network-and-volume-operation-surface.md)
+
+### OQ-49: Image Build (buildkit) Scope
+
+- **Blocked on**: a concrete use case for building images over the call protocol. The current use cases pull pre-built images, not build them.
+- **Priority**: low
+- **Full file**: [OQ-49](questions/049-image-build-buildkit-scope.md)
+
+### OQ-50: Docker System Events Subscription
+
+- **Blocked on**: a concrete use case for prompt stale-ownership cleanup. The base model (ADR-060 §4) tolerates inert stale entries; the events subscription is a refinement.
+- **Priority**: low
+- **Full file**: [OQ-50](questions/050-docker-system-events-subscription.md)
+
+### OQ-51: Container Create Options Surface
+
+- **Blocked on**: v1 implementation — the `create` input JSON Schema is finalized when `register_docker_ops` is written and tested against bollard's `Config` struct. An architectural decision (ADR-060 §5), not a deferral past implementation.
+- **Priority**: medium
+- **Full file**: [OQ-51](questions/051-container-create-options-surface.md)
 
