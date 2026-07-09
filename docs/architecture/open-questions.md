@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-08
+last_updated: 2026-07-09
 ---
 
 # Open Questions
@@ -171,6 +171,7 @@ filtering the tables above.
 
 - **Blocked on**: A concrete server-side WASM use case, or a deliberate confirmation that WASM stays a client-side design constraint. Tracked as `architecture/oq-09-wasm-server-use-case` in `tasks/architecture/`.
 - **Priority**: low
+- **Amendment (2026-07-09)**: The `Connection` door is now open via `Connection::from_stream` (ADR-065) — a `Connection` can be constructed from any wasm-compatible stream. What remains closed is the **accept-loop runtime** (`tokio::spawn` does not run on WASM; `PendingRequestMap`/`CallAdapter` use tokio channels). The blocking condition (a concrete server-side WASM use case) is unchanged.
 - **Full file**: [OQ-09](questions/009-wasm-target-boundaries.md)
 
 ### OQ-10: Git Adapter Scope — Smart Protocol Only or Full Server?

@@ -24,10 +24,10 @@ The workspace decomposes into the following crates:
 
 | Crate | Responsibility | Depends on |
 |-------|---------------|------------|
-| `alknet-core` | ProtocolHandler trait, ALPN router, endpoint, BiStream, AuthContext, IdentityProvider, config, ArcSwap dynamic config | tokio, quinn, rustls, irpc, iroh (feature-gated, added by ADR-010) |
+| `alknet-core` | ProtocolHandler trait, ALPN router, endpoint, BiStream, AuthContext, IdentityProvider, config, ArcSwap dynamic config | tokio, quinn, rustls, iroh (feature-gated, added by ADR-010) |
 | `alknet-vault` | Local key vault: BIP39/SLIP-0010/AES-GCM key derivation, encryption | (standalone, no alknet-core) |
 | `alknet-ssh` | SshAdapter (russh, SOCKS5, port forwarding) | alknet-core, russh |
-| `alknet-call` | CallAdapter (JSON-RPC via irpc, operation registry, pub/sub, access control, call protocol client, adapter traits) | alknet-core, irpc |
+| `alknet-call` | CallAdapter (JSON-RPC via hand-rolled EventEnvelope framing, operation registry, pub/sub, access control, call protocol client, adapter traits) | alknet-core |
 | `alknet-agent` | Agent service: LLM execution loop (forked aisdk), tool dispatch via call protocol, provider key retrieval via vault | alknet-call |
 | `alknet-git` | GitAdapter (gix, pkt-line protocol) | alknet-core, gix |
 | `alknet-sftp` | SftpAdapter (russh-sftp protocol core) | alknet-core, russh-sftp |
@@ -72,7 +72,7 @@ alknet-napi is a thin projection layer — it exposes the Rust call protocol cli
 - ADR-001: ALPN-based protocol dispatch
 - ADR-002: ProtocolHandler trait
 - ADR-004: Auth as shared core (IdentityProvider)
-- ADR-005: irpc as call protocol foundation
+- ADR-005: irpc as call protocol foundation (superseded by ADR-064)
 
 ## Amendments
 
@@ -126,3 +126,18 @@ not framing glue); it no longer covers alknet-tty. See
 [ADR-057](057-alknet-tty-no-alknet-call-dep.md) for the full decision
 and the three options considered (duplicate / promote to core / use
 alknet-call).
+
+### Amendment 3 (2026-07-09): irpc is not a dependency of any crate
+
+The Decision table listed `irpc` as a dependency of `alknet-core` ("tokio,
+quinn, rustls, irpc, iroh") and `alknet-call` ("alknet-core, irpc"). This
+was carried over from the previous architecture and never verified against
+the implementation: **no `.rs` file in the workspace ever imported irpc**.
+The call protocol's wire format (`crates/alknet-call/src/protocol/wire.rs`)
+is hand-rolled length-prefixed JSON; the `EventEnvelope` shape was derived
+from the `@alkdev/pubsub` TypeScript prior art (ADR-013), not from irpc.
+The dead `irpc` / `irpc-derive` workspace deps and the `alknet-call` consumer
+dep were removed in commit `668d777`. See
+[ADR-064](064-irpc-never-integrated-hand-rolled-framing.md) for the full
+record (ADR-005, which accepted "irpc as the call protocol foundation," is
+superseded).

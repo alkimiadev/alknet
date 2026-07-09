@@ -259,9 +259,14 @@ protocol (SSH, SFTP, git) reads/writes the WebTransport stream as a
 `BiStream` (ADR-007). The `BiStream` trait (`AsyncRead + AsyncWrite +
 Send + Unpin`) was designed for this — a browser implements it over a
 WebTransport stream, and the WASM parser speaks the protocol over it.
-The WASM parsers are downstream artifacts (the SSH WASM client, the
-SFTP WASM client), not part of `alknet-http`; `russh-sftp`'s WASM
-targeting demonstrates feasibility, SSH is the next target.
+On the server side, the `h3` handler wraps each WebTransport stream as a
+`Connection` via `Connection::from_stream` (ADR-065) before handing it to
+the target ALPN handler — the target handler runs its normal protocol over
+the stream, unchanged from its QUIC path (the yield-once `accept_bi`
+contract makes a single WebTransport stream look like a one-stream
+connection). The WASM parsers are downstream artifacts (the SSH WASM
+client, the SFTP WASM client), not part of `alknet-http`; `russh-sftp`'s
+WASM targeting demonstrates feasibility, SSH is the next target.
 
 **Auth for proxied ALPN sessions:** the browser authenticates by bearer
 token on the WebTransport session request (the HTTP `Authorization`

@@ -2,7 +2,22 @@
 
 ## Status
 
-Accepted
+~~Accepted~~ → **Superseded** by [ADR-064](064-irpc-never-integrated-hand-rolled-framing.md)
+
+> **Superseded 2026-07-09.** This ADR accepted "irpc as the call protocol
+> foundation" based on the previous architecture's use of irpc. When the
+> call protocol was implemented, it turned out that **no `.rs` file in the
+> workspace ever imported irpc** — the `irpc` / `irpc-derive` workspace deps
+> were a Cargo.toml entry with no corresponding import. The wire protocol
+> (`crates/alknet-call/src/protocol/wire.rs`) is hand-rolled length-prefixed
+> JSON; the `EventEnvelope` shape was derived from the `@alkdev/pubsub`
+> TypeScript prior art (ADR-013), not from irpc. ADR-064 supersedes this
+> ADR and records the actual state: hand-rolled framing, no irpc
+> integration. The architectural properties this ADR sought (proven
+> length-prefixed JSON framing, cross-language JSON wire format, streaming)
+> are preserved by the hand-rolled implementation. The text below is kept
+> as the historical record of the decision that was made (and never
+> implemented as stated).
 
 ## Context
 
@@ -53,8 +68,11 @@ local-only by construction, not remote-capable by default).
 
 ## References
 
+- **Superseding ADR**: [ADR-064](064-irpc-never-integrated-hand-rolled-framing.md) — irpc was never integrated; hand-rolled framing is the actual state
+- ADR-013: Rust as canonical implementation (the `@alkdev/pubsub` prior art the `EventEnvelope` shape was actually derived from)
+- ADR-025: Vault local-only dispatch (dropped irpc from the vault; ADR-064 confirms irpc was never in alknet-call either)
 - Pivot proposal: `docs/research/pivot/alpn-service-architecture.md`
 - ADR-003: Crate decomposition
 - ADR-004: Auth as shared core (IdentityProvider)
-- irpc reference: `docs/research/references/iroh/irpc/` (see individual docs in that directory)
+- Call protocol wire format (actual): `crates/alknet-call/src/protocol/wire.rs`
 - The previous architecture had an equivalent decision in ADR-024 (bidirectional call protocol with EventEnvelope framing), which is archived in the reference implementation at `/workspace/@alkdev/alknet-main/`.

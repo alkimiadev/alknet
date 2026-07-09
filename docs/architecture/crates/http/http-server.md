@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-02
+last_updated: 2026-07-09
 ---
 
 # HTTP Server
@@ -84,12 +84,18 @@ that do know about alknet.
 
 ## Architecture
 
-### Running axum over a QUIC stream
+### Running axum over a bidirectional stream
 
 The `HttpAdapter::handle()` method for `h2`/`http/1.1`:
 
-1. Accepts one bidirectional stream from the QUIC connection
-   (`connection.accept_bi()` → `(SendStream, RecvStream)`).
+1. Accepts one bidirectional stream from the connection
+   (`connection.accept_bi()` → `(SendStream, RecvStream)`). Over QUIC
+   this is one of many streams the connection provides; over a
+   single-stream connection (TCP+TLS via `Connection::from_bidi`,
+   ADR-065) it is the one stream, yielded once then `ConnectionClosed`.
+   Either way, `accept_bi` returns the `(SendStream, RecvStream)` pair
+   the adapter needs — the handler code is transport-agnostic (ADR-065's
+   yield-once contract).
 2. Wraps the `(SendStream, RecvStream)` pair as a hyper
    `TokioIo`-compatible duplex stream — the same byte stream hyper
    expects for an HTTP connection.

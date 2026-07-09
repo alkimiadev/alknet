@@ -64,7 +64,7 @@ This is analogous to the reverse-proxy admin key pattern (ADR-028 in the reverse
 ## References
 
 - ADR-003: Crate decomposition (alknet-vault is standalone)
-- ADR-005: irpc as call protocol foundation (for alknet-call; the vault no longer uses irpc — see ADR-025)
+- ADR-005: irpc as call protocol foundation (superseded by ADR-064 — irpc was never integrated; the vault no longer uses irpc — see ADR-025)
 - ADR-009: One-way door decision framework
 - ADR-014: Secret material flow and capability injection (specifies the mechanism this ADR described in prose)
 - ADR-025: Vault local-only dispatch (dropped irpc from the vault; direct method calls only)

@@ -312,8 +312,11 @@ version of ADR-018's intent.
 ## References
 
 - ADR-005: irpc as call protocol foundation (this ADR amends the vault
-  reference in ADR-005's Decision and Consequences; irpc remains the
-  foundation for alknet-*call*, just not for alknet-*vault*)
+  reference in ADR-005's Decision and Consequences; ~~irpc remains the
+  foundation for alknet-*call*, just not for alknet-*vault*~~ — **this
+  claim is itself superseded by [ADR-064](064-irpc-never-integrated-hand-rolled-framing.md)**,
+  which records that irpc was never integrated into alknet-call either;
+  neither the vault nor the call protocol uses irpc)
 - ADR-008: Vault integration point (the vault is a capability source
   accessed at assembly time — this ADR makes that the *only* mode)
 - ADR-014: Secret material flow and capability injection (`DerivedKey`

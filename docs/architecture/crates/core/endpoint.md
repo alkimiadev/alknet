@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-22-17
+last_updated: 2026-07-09
 ---
 
 # Endpoint
@@ -37,9 +37,27 @@ A node can be reachable through different paths depending on its network context
 
 These are not interchangeable transports — they are **complementary connectivity modes**. A node behind NAT that also has a public IP can use both simultaneously. Both produce QUIC connections that dispatch through the same `HandlerRegistry` by ALPN string.
 
-### TCP is NOT an endpoint concern
+### TCP is NOT an endpoint struct concern (but CAN dispatch through the registry)
 
-Bare TCP (SSH over port 22) does not use QUIC or ALPN. In the new model, TCP access is handled by individual handlers — the SSH handler can listen on a TCP socket independently. This is a handler-specific concern, not a core endpoint concern.
+Bare TCP (SSH over port 22) does not use QUIC or ALPN. TCP access is not
+owned by the `AlknetEndpoint` struct — there is no `tcp:
+Option<TcpListener>` field. The endpoint manages QUIC connection sources
+(quinn + iroh) only.
+
+This does **not** mean TCP+TLS can't participate in ALPN dispatch. Since
+[ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md),
+`Connection::from_bidi(tls_stream, alpn, remote_addr)` constructs a
+`Connection` from any `TlsStream<TcpStream>` (or any `AsyncRead +
+AsyncWrite` pair). A TCP+TLS accept loop built *outside* the endpoint (by
+the assembly layer or a handler) can wrap each TLS stream as a
+`Connection` and dispatch through the **same `HandlerRegistry`** the
+endpoint uses, by the ALPN negotiated in the TLS handshake. This is not a
+parallel listener bypassing the core — it's the same ALPN dispatch, over
+a non-QUIC transport. `HttpAdapter`, `TtyAdapter`, and the call handler
+all work over the single stream unchanged (ADR-065's yield-once
+`accept_bi` contract). The TCP+TLS accept loop itself is a follow-up
+commit, not part of `AlknetEndpoint`; the primitive it needs
+(`from_bidi`) is in place.
 
 The reference implementation's TCP transport (`alknet-main/crates/alknet-core/src/transport/tcp.rs`) is SSH-specific. It doesn't generalize to the ALPN model.
 
@@ -228,7 +246,10 @@ Note: `TlsIdentity::RawKey` uses `Ed25519SecretKey` (alknet-core-owned,
 backed by `ed25519-dalek`), not `iroh::SecretKey`. It is available in
 quinn-only builds without the `iroh` feature. When the iroh transport is
 also configured, `build_iroh_endpoint` converts the key to
-`iroh::SecretKey::from_bytes` (ADR-027).
+`iroh::SecretKey::from_bytes` (ADR-027). The iroh dep is on `1.0`
+(`default-features = false, features = ["tls-aws-lc-rs"]`, matching the
+quinn path's aws-lc-rs crypto provider); migrated from `0.35` in commit
+`acd049e` (2026-07-09) — 6 API surface edits, no architectural change.
 
 ## Graceful Shutdown
 
@@ -289,7 +310,7 @@ Non-fatal errors within a handler. See [core-types.md](core-types.md) for detail
 |----------|-----|---------|
 | Multi-connectivity endpoint (quinn + iroh) | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Both optional, both feed same ALPN router |
 | Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Two-way door, start static, add ArcSwap later |
-| TCP is not an endpoint concern | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | TCP SSH is a handler concern, not core |
+| TCP is not an endpoint struct concern (but dispatches via `from_stream`) | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md), [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `AlknetEndpoint` is QUIC-only (no `tcp` field); a TCP+TLS loop outside the endpoint wraps streams via `from_bidi` and shares the registry |
 | No byte-peeking, ALPN dispatch only | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | TLS layer handles protocol detection |
 | Stealth mode = HTTP handler on standard ALPNs | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Decoy via ALPN routing, not byte-peek |
 | Network identity ≠ auth identity | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | TLS cert/NodeId = network, SSH key/token = auth |

@@ -201,8 +201,9 @@ makes the freeze explicit and enforceable by review.
 ## References
 
 - ADR-003: Crate decomposition (alknet-vault is standalone)
-- ADR-005: irpc as call protocol foundation (irpc remains the foundation
-  for alknet-*call*; the vault no longer uses irpc — see ADR-025)
+- ADR-005: irpc as call protocol foundation (superseded by ADR-064 — irpc
+  was never integrated into alknet-call; the vault no longer uses irpc
+  either — see ADR-025)
 - ADR-025: Vault local-only dispatch (dropped irpc from the vault; the
   vault uses direct method calls, no actor, no remote capability)
 - ADR-008: Vault integration point (CLI-embedded, assembly-layer only)

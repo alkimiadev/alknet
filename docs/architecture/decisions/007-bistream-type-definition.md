@@ -117,3 +117,53 @@ The BiStream trait is a thin convenience — `AsyncRead + AsyncWrite + Send + Un
 - OQ-01: BiStream type definition (resolved by this ADR)
 - iroh ProtocolHandler pattern: `docs/research/references/iroh/iroh/`
 - Pivot proposal: `docs/research/pivot/alpn-service-architecture.md`
+
+## Amendments
+
+### Amendment 1 (2026-07-09): `Connection::from_stream` opens the server-side door
+
+This ADR's "WASM constraint" section argued that if `Connection` (or
+BiStream) were bound to a QUIC library, WASM targets and alternative
+transports couldn't implement it — and that a trait-based `BiStream`
+preserves the *client-side* door. That argument was correct for `BiStream`
+(the trait) but incomplete for `Connection`: until ADR-065, `Connection`
+was a concrete type with only QUIC variants (`ConnectionKind::Quinn` /
+`ConnectionKind::Iroh`), plus a `ConnectionKind::Mock` test stub. There was
+no way to construct a `Connection` from a non-QUIC stream, which meant
+TCP+TLS, SSH channels, WebTransport streams, and wasm streams could not
+be dispatched through the `HandlerRegistry` — the *server-side* dispatch
+door was closed.
+
+**Resolved by [ADR-065](065-connection-from-stream-generic-single-stream.md):**
+`Connection::from_stream(send, recv, alpn, remote_addr)` and
+`Connection::from_bidi(stream, alpn, remote_addr)` construct a `Connection`
+from any `AsyncRead + AsyncWrite` pair. A new `ConnectionKind::Stream`
+variant holds a single read/write pair behind a `Mutex<Option<...>>` with a
+yield-once `accept_bi` contract (QUIC yields many streams; everything else
+yields one, then `ConnectionClosed`). Every existing `ProtocolHandler`
+works over the new kind **unchanged** — handlers that loop `accept_bi`
+(TtyAdapter) get one iteration; handlers that call once (HttpAdapter) get
+the stream directly. Both correct, no branching on transport.
+
+The stream-level `SendStreamKind::Mock` / `RecvStreamKind::Mock` variants
+(already generic `Box<dyn AsyncRead/Write>` — the name was wrong) are
+renamed to `Stream` and made load-bearing: `from_stream` calls
+`SendStream::from_stream` / `RecvStream::from_stream`.
+
+### Amendment 2 (2026-07-09): `MockConnection` / `ConnectionKind::Mock` removed
+
+This ADR's Decision section and the `Connection` sketch referenced "test
+mock" as one of the things `Connection` wraps. The implementation had a
+`MockConnection` trait and `ConnectionKind::Mock` variant for test-only
+full-connection mocks. ADR-065 removed both entirely: test stubs now use
+`Connection::from_stream(tokio::io::sink(), tokio::io::empty(), alpn,
+addr)` — `tokio::io::empty()` yields immediate EOF on read (handler exits
+cleanly), and `accept_bi` returns `ConnectionClosed` after the first take
+(run loop exits). One connection kind for production and tests, not two.
+The "test mock" concept this ADR references is now subsumed by
+`from_stream` — a test connection is just a single-stream connection with
+EOF-on-read.
+
+The server-side WASM door (OQ-09) is no longer closed by `Connection` being
+QUIC-bound — `from_stream` accepts any `AsyncRead + AsyncWrite`, including
+wasm-compatible streams. See OQ-09 for the updated resolution.

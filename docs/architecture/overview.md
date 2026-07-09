@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-23
+last_updated: 2026-07-09
 ---
 
 # Alknet Overview
@@ -35,7 +35,7 @@ alknet-core
 │   └── StaticConfig, DynamicConfig (ArcSwap)
 │
 ├── alknet-ssh        (depends on alknet-core, russh)
-├── alknet-call       (depends on alknet-core, irpc)
+├── alknet-call       (depends on alknet-core)
 │   ├── CallAdapter (server: ProtocolHandler for alknet/call)
 │   ├── Call client (send/receive over QUIC)
 │   ├── OperationSpec, OperationRegistry, AccessControl
@@ -95,7 +95,7 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 | ALPN | Handler | Description |
 |------|---------|-------------|
 | `alknet/ssh` | SshAdapter | SSH-2 handshake, channel multiplexing, SOCKS5, port forwarding |
-| `alknet/call` | CallAdapter | JSON-RPC via irpc: operations, streaming, pub/sub |
+| `alknet/call` | CallAdapter | JSON-RPC via hand-rolled EventEnvelope framing: operations, streaming, pub/sub |
 | `alknet/git` | GitAdapter | Git smart protocol over QUIC (gix, pkt-line) |
 | `alknet/sftp` | SftpAdapter | SFTP protocol (russh-sftp core) |
 | `alknet/msg` | MessageAdapter | E2E encrypted messaging, mixnet |
@@ -142,11 +142,11 @@ See [ADR-008](decisions/008-secret-service-integration.md) and [ADR-014](decisio
 
 ## Call Protocol
 
-alknet-call uses irpc as its foundation. The wire format is length-prefixed JSON (EventEnvelope framing). Operations are registered in an irpc registry with JSON Schema discovery. The call protocol supports request/response, streaming subscriptions, and pub/sub.
+alknet-call uses hand-rolled `EventEnvelope` framing (length-prefixed JSON). The wire format, operation registry, and dispatch are all hand-rolled in alknet-call — irpc was never integrated (ADR-064 supersedes ADR-005, which had accepted "irpc as the call protocol foundation" based on the previous architecture but was never implemented as stated). Operations are registered in a hand-rolled registry with JSON Schema discovery. The call protocol supports request/response, streaming subscriptions, and pub/sub.
 
 The call protocol's adapter contract (from_openapi, from_mcp, from_call, to_openapi, to_mcp) enables bidirectional composition — operations can be imported from external sources and exported to external protocols. These adapter traits are defined in Rust in alknet-call. The existing TypeScript `@alkdev/operations` library informed the design and may be adapted for browser use (see ADR-013).
 
-See [ADR-005](decisions/005-irpc-as-call-protocol-foundation.md) for the full rationale.
+See [ADR-064](decisions/064-irpc-never-integrated-hand-rolled-framing.md) for the full rationale (supersedes [ADR-005](decisions/005-irpc-as-call-protocol-foundation.md)).
 
 ## WASM Compatibility
 
@@ -159,7 +159,7 @@ The following types live in alknet-core and are used across handler crates:
 | Type | Purpose |
 |------|---------|
 | `ProtocolHandler` | The trait every handler implements |
-| `Connection` | QUIC connection (or mock) — handlers open/accept streams on it |
+| `Connection` | Transport connection (QUIC via quinn/iroh, or a generic single stream via `from_stream` — ADR-065) — handlers open/accept streams on it |
 | `BiStream` | Trait: `AsyncRead + AsyncWrite + Send + Unpin` — bidirectional byte stream |
 | `AuthContext` | Resolved identity for a connection (may be partial) |
 | `Identity` | Authenticated peer identity (inbound) |
@@ -195,7 +195,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [002](decisions/002-protocol-handler-trait.md) | ProtocolHandler Trait | One trait replaces StreamInterface/MessageInterface |
 | [003](decisions/003-crate-decomposition.md) | Crate Decomposition | One crate per protocol handler, core provides shared infra |
 | [004](decisions/004-auth-as-shared-core.md) | Auth as Shared Core | IdentityProvider in core, handlers extract credentials |
-| [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Call protocol uses irpc for registry, framing, dispatch |
+| [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | ~~Accepted~~ → **Superseded** by [ADR-064](decisions/064-irpc-never-integrated-hand-rolled-framing.md) (irpc was never integrated) |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | `alknet/` prefix, one ALPN per connection |
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | BiStream is a trait, handlers receive Connection not BiStream |
 | [008](decisions/008-secret-service-integration.md) | Vault Integration Point | CLI-embedded, vault is a capability source accessed at assembly time |

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-08
+last_updated: 2026-07-09
 ---
 
 # Alknet Architecture
@@ -26,6 +26,25 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 
 **alknet-docker specs drafted.** The alknet-docker crate (docker operations on the shared `alknet/call` ALPN + `DockerTtyBackend` behind a `tty` feature) now has architecture specs: [crates/docker/](crates/docker/) (overview, docker-operations, docker-tty-backend) and six ADRs — [ADR-058](decisions/058-alknet-docker-on-alknet-call.md) (docker ops register on `alknet/call`, not a separate `alknet/docker` ALPN; the raw-carriage handoff the POC struggled with is dissolved by the alknet-tty extraction — interactive attach moved to `alknet/tty` via `DockerTtyBackend`, no `carriage` field on `call.requested`), [ADR-059](decisions/059-bollard-021-dependency-and-features.md) (bollard 0.21, verified current on crates.io; features `http`+`pipe`+`time`, no `ssl`/`ssh`/`websocket`/`buildkit` — single-host by construction, fleet is a call-protocol concern), [ADR-060](decisions/060-container-resource-model-and-label-namespace.md) (ADR-050 application to bollard: `alknet.managed`/`alknet.owner` labels; `list` `owned_only` flag; hosted-services operator role via the static-resource fallback; handler-driven `revoke` on `remove` with autonomous-death tolerance), [ADR-061](decisions/061-docker-tty-backend-in-alknet-docker.md) (`DockerTtyBackend` in alknet-docker behind a `tty` feature, not a sibling crate; attach vs exec mode; the POC's `drive_attach_raw` as the reference), [ADR-062](decisions/062-docker-client-injection-via-closure-capture.md) (the `Docker` client + `OwnershipStore` are closure-captured at registration time, not read from `OperationContext` and not smuggled through `Capabilities` — `Capabilities` is for secret material only per ADR-014; matches the `from_openapi` pattern), [ADR-063](decisions/063-exit-code-on-terminal-call-responded.md) (non-interactive exec puts `{ "exitCode": N, "terminal": true }` on a final `call.responded` before `call.completed` — `call.completed` stays empty, ADR-012 unchanged). The specs are grounded in the alknet-docker POC (`docs/research/alknet-docker/poc-summary.md`, `/workspace/alknet-docker-poc/`), which validated the hard parts (interactive attach, logs subscription, exec with exit code); the remaining lifecycle operations are mechanical bollard wrapping. The two use cases — disposable dev containers (coordinator-spawned, ownership-recorded) and long-running hosted services (operator-managed, static-resource fallback, per `/workspace/system/dev1/docker.md`) — both work through one `AccessControl` model (ADR-050/060). The `DockerTtyBackend` fills the `TtyBackend` row the alknet-tty spec left open. Four OQs (048–051) track deferred scope: network/volume ops, buildkit, system events subscription, and the full `CreateContainerOptions` surface (deferred to v1 implementation).
 
+**Transport generalization sweep (2026-07-09).** Three commits landed a
+clean sweep discovered when building an external app against the crates:
+(1) the dead `irpc` / `irpc-derive` workspace deps were removed (no `.rs`
+file ever imported irpc — the wire protocol is hand-rolled), recorded by
+[ADR-064](decisions/064-irpc-never-integrated-hand-rolled-framing.md)
+(supersedes ADR-005, which had accepted "irpc as the call protocol
+foundation" based on the previous architecture but was never implemented
+as stated); (2) the iroh dep migrated `0.35 → 1.0.2` (6 API surface edits,
+no architectural change — unblocks `alknet-blobs`); (3)
+[ADR-065](decisions/065-connection-from-stream-generic-single-stream.md)
+adds `Connection::from_stream` / `from_bidi` — `Connection` now accepts any
+`AsyncRead + AsyncWrite` pair, unblocking TCP+TLS, SSH channel dispatch,
+WebTransport streams, and wasm streams through the same `HandlerRegistry`
+as QUIC connections, with zero handler code changes. The
+`MockConnection` / `ConnectionKind::Mock` test variants are removed (tests
+use `from_stream` with `tokio::io::sink`/`empty`). See
+[`docs/research/transport-generalization/findings.md`](../research/transport-generalization/findings.md)
+for the full trace.
+
 ## Architecture Documents
 
 | Document | Status | Description |
@@ -33,13 +52,13 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types, design principles |
 | [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](questions/) |
 | [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index |
-| [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection, BiStream, StreamError |
+| [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection (QUIC + `from_stream`), BiStream, StreamError |
 | [crates/core/endpoint.md](crates/core/endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, shutdown |
 | [crates/core/auth.md](crates/core/auth.md) | draft | AuthContext, Identity, IdentityProvider, AuthToken, resolution flow |
 | [crates/core/config.md](crates/core/config.md) | draft | StaticConfig, DynamicConfig, ArcSwap, ConfigReloadHandle |
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
-| [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, EventEnvelope framing, stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
-| [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery, irpc integration |
+| [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, hand-rolled EventEnvelope framing (no irpc — ADR-064), stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
+| [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery (hand-rolled, no irpc) |
 | [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (outbound connection opener), from_call / from_jsonschema, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern |
 | [crates/http/README.md](crates/http/README.md) | draft | alknet-http crate index |
 | [crates/http/overview.md](crates/http/overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
@@ -72,7 +91,7 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [002](decisions/002-protocol-handler-trait.md) | ProtocolHandler Trait | Accepted |
 | [003](decisions/003-crate-decomposition.md) | Crate Decomposition | Accepted |
 | [004](decisions/004-auth-as-shared-core.md) | Auth as Shared Core (IdentityProvider) | Accepted |
-| [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | Accepted |
+| [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | ~~Accepted~~ → **Superseded** by ADR-064 (irpc was never integrated) |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | Accepted |
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | Accepted |
 | [008](decisions/008-secret-service-integration.md) | Vault Integration Point | Accepted |
@@ -131,6 +150,8 @@ The alknet-call crate is **implemented and reviewed** — both the server-side c
 | [061](decisions/061-docker-tty-backend-in-alknet-docker.md) | DockerTtyBackend in alknet-docker | Accepted |
 | [062](decisions/062-docker-client-injection-via-closure-capture.md) | Docker Client and OwnershipStore Injection via Closure Capture | Accepted |
 | [063](decisions/063-exit-code-on-terminal-call-responded.md) | Exit Code on a Terminal `call.responded` for Non-Interactive Exec | Accepted |
+| [064](decisions/064-irpc-never-integrated-hand-rolled-framing.md) | irpc Was Never Integrated — Hand-Rolled EventEnvelope Framing | Accepted (supersedes ADR-005) |
+| [065](decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` — Generic Single-Stream Connections | Accepted |
 
 ## Open Questions
 

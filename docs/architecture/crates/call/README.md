@@ -1,19 +1,19 @@
 ---
 status: draft
-last_updated: 2026-06-27
-review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean. Call-completion gap (ADR-017 client/adapter surface) addressed 2026-06-26; ADR-029 migration pending.
+last_updated: 2026-07-09
+review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean. Call-completion gap (ADR-017 client/adapter surface) addressed 2026-06-26; ADR-029 migration pending. Transport generalization sweep (ADR-064 supersedes ADR-005; ADR-065 `from_stream`) synced 2026-07-09.
 ---
 
 # alknet-call
 
-Structured RPC over QUIC: operations, request/response, streaming subscriptions, and service discovery. Implements `ProtocolHandler` on ALPN `alknet/call`.
+Structured RPC: operations, request/response, streaming subscriptions, and service discovery. Implements `ProtocolHandler` on ALPN `alknet/call`. Runs over QUIC (quinn/iroh) and, via `Connection::from_stream` (ADR-065), over any `AsyncRead + AsyncWrite` transport.
 
 ## Documents
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [call-protocol.md](call-protocol.md) | draft | CallAdapter, EventEnvelope framing, stream model, PendingRequestMap, bidirectional calls |
-| [operation-registry.md](operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, service discovery, irpc integration |
+| [call-protocol.md](call-protocol.md) | draft | CallAdapter, hand-rolled EventEnvelope framing (no irpc — ADR-064), stream model, PendingRequestMap, bidirectional calls |
+| [operation-registry.md](operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, service discovery, hand-rolled framing (no irpc — ADR-064) |
 | [client-and-adapters.md](client-and-adapters.md) | draft | CallClient (outbound connection opener), from_call / from_jsonschema, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern |
 
 ## Applicable ADRs
@@ -22,10 +22,12 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 |-----|-------|-----------|
 | [001](../../decisions/001-alpn-protocol-dispatch.md) | ALPN-Based Protocol Dispatch | CallAdapter registers on ALPN `alknet/call` |
 | [002](../../decisions/002-protocol-handler-trait.md) | ProtocolHandler Trait | CallAdapter implements ProtocolHandler |
-| [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-call depends on alknet-core and irpc |
+| [003](../../decisions/003-crate-decomposition.md) | Crate Decomposition | alknet-call depends on alknet-core (no irpc — ADR-064) |
 | [013](../../decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Adapter traits defined in Rust; TS is reference/browser adaptation |
 | [004](../../decisions/004-auth-as-shared-core.md) | Auth as Shared Core | AuthContext passed to call handlers |
-| [005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | irpc provides framing and service dispatch |
+| [005](../../decisions/005-irpc-as-call-protocol-foundation.md) | ~~irpc as Call Protocol Foundation~~ | ~~Accepted~~ → **Superseded** by [ADR-064](../../decisions/064-irpc-never-integrated-hand-rolled-framing.md) (irpc was never integrated; framing is hand-rolled) |
+| [064](../../decisions/064-irpc-never-integrated-hand-rolled-framing.md) | Hand-Rolled EventEnvelope Framing | Wire format, registry, dispatch are hand-rolled in alknet-call; supersedes ADR-005 |
+| [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | Generic single-stream connections; unblocks TCP+TLS/SSH/WT/wasm dispatch |
 | [006](../../decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention | `alknet/call` ALPN, one ALPN per connection |
 | [007](../../decisions/007-bistream-type-definition.md) | BiStream Type Definition | CallAdapter receives Connection, not BiStream |
 | [008](../../decisions/008-secret-service-integration.md) | Vault Integration Point | Vault accessed at assembly layer, not on the wire |
@@ -72,7 +74,7 @@ Structured RPC over QUIC: operations, request/response, streaming subscriptions,
 2. **Protocol is symmetric**: Both sides can initiate calls. The server calling a client uses the same EventEnvelope format and correlation.
 3. **Stream-agnostic correlation**: PendingRequestMap correlates by request ID, not by stream. The protocol works with any stream arrangement.
 4. **Operation registry is layered**: The curated layer (`Local` provenance) is static — registered at startup by the CLI binary, immutable for the process lifetime. Session (`Session`) and imported (`FromCall` etc.) ops are dynamic overlays at their respective scopes (per-session, per-connection). The registry supports JSON Schema discovery. See ADR-024.
-5. **irpc is one dispatch backend**: Local operations dispatch directly. irpc service calls (in-process, type-safe) are internal. The call protocol is the external interface.
+5. **Hand-rolled dispatch (no irpc)**: Operations dispatch through the hand-rolled `OperationRegistry` (ADR-064). The call protocol is the external interface; internal handler dispatch uses `Handler`/`StreamingHandler` trait objects (ADR-049), not an irpc service.
 6. **Local dispatch only**: The operation registry dispatches to local handlers. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer, not a modification to alknet-call's path format.
 7. **No secret material on the wire**: The call protocol carries no private keys, API keys, mnemonics, or decrypted credentials. Handlers receive outbound credentials through `OperationContext.capabilities`, injected at the assembly layer. See ADR-014.
 8. **Abort cascades to descendants**: `call.aborted` for a parent request cascades to all non-terminal descendants. Default `abort-dependents`; `continue-running` opt-in. See ADR-016.

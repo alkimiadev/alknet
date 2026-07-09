@@ -5,7 +5,7 @@ last_updated: 2026-07-05
 
 # Operation Registry
 
-OperationSpec, Handler, OperationRegistry, AccessControl, service discovery, and irpc integration.
+OperationSpec, Handler, OperationRegistry, AccessControl, service discovery, and the hand-rolled framing (no irpc — ADR-064).
 
 ## What
 
@@ -185,7 +185,11 @@ pub type ResponseStream = Pin<Box<dyn Stream<Item = ResponseEnvelope> + Send>>;
 ```
 
 Both handlers are async — many operations (file I/O, HTTP service calls,
-irpc service calls, LLM streaming) are inherently asynchronous. A handler
+LLM streaming) are inherently asynchronous. A handler (whether it wraps a
+local function, an HTTP-backed OpenAPI operation, an LLM stream, or a
+`from_call` remote) is a `Future` (for `Query`/`Mutation`) or a `Stream`
+(for `Subscription`, ADR-049). The registry's `Handler` /
+`StreamingHandler` trait objects (ADR-049) abstract over this. A handler
 receives:
 
 - `input: Value` — the deserialized `payload` from the `call.requested` event
@@ -447,7 +451,7 @@ The CLI binary (or assembly layer) constructs the registry and passes it to the 
 
 ### OperationEnv
 
-The `OperationEnv` trait is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally, via an irpc service, or on a remote node.
+The `OperationEnv` trait is the universal composition mechanism. A handler calls `context.env.invoke("fs", "readFile", input, &context)` and gets a `ResponseEnvelope` back — regardless of whether the operation runs locally or on a remote node.
 
 **`OperationEnv` is request/response-only** (ADR-049). It returns a single `ResponseEnvelope` — no streaming variant exists. Calling `invoke()` on a `Subscription` op produces `CallError { code: "INVALID_OPERATION_TYPE", ... }` — composition cannot truncate a stream to its first value. Stream composition (filter, map, combine, window, dedupe) is a handler-level concern, not a protocol composition concern; see ADR-049 for the rationale and the `@alkdev/pubsub` `operators.ts` prior art.
 
@@ -736,7 +740,7 @@ Two things happen in `invoke()`:
 1. **Reachability check**: before constructing the child context, `invoke()` checks whether the requested op is in the parent's scoped env. If not, `NOT_FOUND`. This is the reachability control — a handler can only compose declared ops.
 2. **Authority propagation**: the child's `identity` is the parent's `handler_identity` (the parent's composition authority becomes the caller). The child's `handler_identity` is the child's own registration's `composition_authority` — so if the child itself composes further, its children inherit the child's authority. This is the principal/agent chain from ADR-015, now wired via ADR-022.
 
-Future work may add irpc service dispatch and remote call protocol dispatch as additional backends. The handler-facing API stays the same.
+Future work may add remote call protocol dispatch as an additional backend. The handler-facing API stays the same.
 
 **`OperationEnv` must remain a trait.** This is a constraint, not a suggestion. The trait-based design enables registry layering (ADR-024): the CallAdapter composes the root env per call from the curated base + active peer-keyed connection overlays + session overlay, and overlays wrap the base via trait layering. Session-scoped registries (OQ-19) and connection-scoped remote imports (ADR-017 `from_call`) are both overlays on the same base, using the same mechanism. The peer-keyed extension (`PeerCompositeEnv`, `invoke_peer`, ADR-029) composes on top of the same trait — it overrides the new peer-routing methods, not the base dispatch. Making `OperationEnv` concrete or hardcoding the global registry into the dispatch path would close both the session-overlay and connection-overlay patterns, and would prevent the peer-keyed routing model from composing. This is the same integration-point pattern as `IdentityProvider` (ADR-004). See OQ-19, ADR-024, and ADR-029.
 
@@ -774,18 +778,21 @@ from wire `operationId`s before lookup, so `services/schema` accepts both
 client reading the schema can produce typed error enums instead of generic
 error handling.
 
-### irpc Integration
+### Operation Registry (hand-rolled, no irpc)
 
-irpc and the operation registry serve different scopes:
+The operation registry is hand-rolled in alknet-call. ADR-005 accepted
+"irpc as the call protocol foundation," but no `.rs` file in the workspace
+ever imported irpc — the wire format (`wire.rs`), the operation registry,
+and the dispatch are all hand-rolled. ADR-064 supersedes ADR-005 and
+records the actual state. The table that previously contrasted "call
+protocol (external, JSON)" with "irpc services (internal, postcard)" is
+moot — there is no irpc layer.
 
-| Layer | Mechanism | Serialization | Scope |
-|-------|-----------|---------------|-------|
-| Call protocol (external) | `EventEnvelope` over QUIC streams | JSON | Cross-language, cross-node |
-| irpc services (internal) | `#[rpc_requests]` derive macro, `Service` trait | postcard (binary) | Rust-to-Rust, in-process or in-cluster |
-
-irpc services are an internal dispatch mechanism — they are not directly exposed on the call protocol. alknet-call itself uses irpc for its call-protocol framing (ADR-005); the vault no longer uses irpc (ADR-025 — direct method calls on `VaultServiceHandle`). The vault is accessed by the assembly layer (CLI binary) at startup, not by handlers at call time. See ADR-008 and ADR-014.
-
-If a handler internally uses an irpc-based service, the handler bridges the two: it receives JSON input from the call protocol, calls the irpc service in-process (postcard, type-safe), and serializes the result back to JSON for the call protocol response. This layering preserves irpc's type safety for internal calls while keeping the external interface cross-language.
+If a handler internally uses a postcard/binary RPC for in-process calls,
+that's a handler-internal choice, not an alknet-call integration. The
+operation registry's external interface is always JSON (the `EventEnvelope`
+wire format); the internal handler dispatch is a `Handler` /
+`StreamingHandler` trait object (ADR-049), not an irpc `Service`.
 
 ### Operation Registration at Startup
 
@@ -874,8 +881,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 ## Constraints
 
 - The registry is **layered by trust boundary** (ADR-024). The curated layer (`Local` provenance) is immutable after construction — adding a `Local` op requires restarting the process, which re-enters the startup trust boundary. Session (`Session`) and imported (`FromCall` etc.) ops are dynamic at their respective scopes (per-session, per-connection). The pre-ADR-024 blanket immutability claim was inherited by analogy from ADR-010's `HandlerRegistry` (ALPN-level) and did not apply to the operation registry — the TLS-config argument that justifies `HandlerRegistry` immutability does not touch the operation registry, which lives behind the single ALPN `alknet/call`.
-- Operation specs use JSON Schema. The call protocol's external interface is always JSON. irpc's postcard serialization is internal only.
-- `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths. irpc service dispatch is contracted but not built.
+- Operation specs use JSON Schema. The call protocol's external interface is always JSON. Internal handler dispatch is via `Handler` / `StreamingHandler` trait objects (ADR-049), not a binary RPC framework.
+- `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer — not a prefix added to operation paths.
 - The call protocol does not depend on any database. Operation specs are in-memory, populated at startup.
 - `OperationContext.internal` is set by `OperationEnv`, not by callers. A handler cannot mark its own call as internal. The `internal` flag switches authority context (composition authority for ACL), it does not skip ACL — see ADR-015, ADR-022.
 - **Operations have External/Internal visibility.** `Internal` operations return `NOT_FOUND` when called from the wire and are excluded from `services/list`. The assembly layer declares visibility at registration. See ADR-015.
@@ -890,7 +897,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| irpc as call protocol foundation | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc provides framing and service dispatch |
+| Hand-rolled EventEnvelope framing (irpc never integrated) | [ADR-064](../../decisions/064-irpc-never-integrated-hand-rolled-framing.md) | Hand-rolled framing, registry, dispatch; supersedes ADR-005 |
 | Call protocol stream model | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | Bidirectional streams, EventEnvelope, ID-based correlation |
 | Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | `HandlerRegistry` (ALPN-level) immutable after construction; `OperationRegistry` layered by ADR-024 (curated immutable, session/imported dynamic) |
 | Vault integration via assembly layer | [ADR-008](../../decisions/008-secret-service-integration.md) | Vault is a capability source, accessed at assembly time |
@@ -949,7 +956,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 ## References
 
 - [call-protocol.md](call-protocol.md) — CallAdapter, EventEnvelope, stream model, PendingRequestMap
-- ADR-005: irpc as call protocol foundation
+- ADR-064: Hand-rolled EventEnvelope framing (irpc never integrated; supersedes ADR-005)
 - ADR-008: Vault integration point
 - ADR-010: ALPN router and endpoint (static registration — applies to the `HandlerRegistry`, not the `OperationRegistry`; see ADR-024 for the distinction)
 - ADR-012: Call protocol stream model

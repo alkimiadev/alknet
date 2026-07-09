@@ -199,3 +199,59 @@ pub enum HandlerError {
 - Reference implementation: `alknet-main/crates/alknet-core/src/server/serve.rs`
 - Reference stealth mode: `alknet-main/crates/alknet-core/src/server/stealth.rs`
 - Reference iroh transport: `alknet-main/crates/alknet-core/src/transport/iroh_transport.rs`
+
+## Amendments
+
+### Amendment 1 (2026-07-09): TCP+TLS can dispatch through the ALPN router via `from_stream`
+
+This ADR's Decision section states: **"TCP mode is not an endpoint concern."**
+The rationale was that bare TCP (SSH over port 22) does not use QUIC or
+ALPN, so TCP access is handled by individual handlers listening on a TCP
+socket independently — a handler-specific concern, not a core endpoint
+concern.
+
+That rationale holds for *bare TCP* (no TLS, no ALPN). But
+**[ADR-065](065-connection-from-stream-generic-single-stream.md)** adds
+`Connection::from_stream` / `from_bidi`, which construct a `Connection`
+from any `AsyncRead + AsyncWrite` pair — including a
+`TlsStream<TcpStream>`. A TCP+TLS accept loop can now call
+`Connection::from_bidi(tls_stream, alpn, remote_addr)` and dispatch through
+the **same `HandlerRegistry`** as QUIC connections, by the ALPN negotiated
+in the TLS handshake. This is not a parallel listener bypassing the core —
+it's the same ALPN dispatch, over a non-QUIC transport.
+
+**Revised reading of "TCP is not an endpoint concern":** the
+`AlknetEndpoint` struct (quinn + iroh) remains QUIC-only — the endpoint
+does not own a TCP+TLS accept loop. But a TCP+TLS accept loop can be
+constructed *outside* the endpoint (by the assembly layer or a handler)
+and feed connections into the same `HandlerRegistry` the endpoint uses.
+The endpoint is one accept-loop source; a TCP+TLS loop is another source
+that shares the registry. The "not an endpoint concern" framing is
+preserved at the struct level (no `tcp: Option<TcpListener>` on
+`AlknetEndpoint`); the "TCP can't participate in ALPN dispatch" framing
+is **reversed** — `from_stream` is the primitive that lets TCP+TLS
+participate without changing the endpoint design.
+
+The unblocked follow-ups (not part of ADR-065, but enabled by it):
+
+- **Standard HTTP over TCP+TLS** (`api.alk.dev`'s requirement): a TLS
+  accept loop wraps each `TlsStream<TcpStream>` as a `Connection` via
+  `from_bidi` and dispatches to `HttpAdapter` by the negotiated ALPN
+  (`h2`/`http/1.1`). `HttpAdapter::handle` calls `accept_bi` once (yielded
+  by the single stream), then runs hyper over it — unchanged from the
+  QUIC path. No handler code changes.
+- **SSH channel dispatch**: an SSH handler wraps each russh channel as a
+  `Connection` via `from_stream` and dispatches by channel-type (treated as
+  the ALPN string) through `HandlerRegistry`. One SSH connection carries
+  heterogeneous channels — a multiplexing power QUIC's per-connection ALPN
+  doesn't provide natively.
+- **WebTransport stream dispatch** (parked per ADR-044, unblocked
+  structurally): the WT handler wraps each WT stream via `from_stream`.
+
+The `iroh 0.35 → 1.0.2` migration (commit `acd049e`, 2026-07-09) is a
+related cleanup: it bumps the iroh dep to 1.0, unblocking `alknet-blobs`
+(which pulls `iroh 1.0` transitively). It is not an architectural change —
+6 API surface edits in `endpoint.rs` / `types.rs` (the `Endpoint::builder`
+preset, `SecretKey::from_bytes`/`generate` signatures,
+`Connection::remote_id`/`alpn` return types). No ADR needed; the endpoint
+design is unchanged.

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-02
+last_updated: 2026-07-09
 ---
 
 # Call Protocol
@@ -23,7 +23,10 @@ The protocol must be:
 - **Stream-agnostic**: QUIC provides stream multiplexing; the protocol shouldn't impose additional constraints
 - **Discoverable**: Clients can query what operations exist and their schemas
 
-See ADR-005 for the decision to use irpc as the call protocol's foundation and ADR-012 for the stream model decision.
+See ADR-064 for the decision that the call protocol uses hand-rolled
+`EventEnvelope` framing (irpc was never integrated — ADR-005, which
+accepted "irpc as the call protocol foundation," is superseded) and ADR-012
+for the stream model decision.
 
 ## Architecture
 
@@ -210,7 +213,10 @@ The `Value` type is `serde_json::Value`. The envelope is JSON because it must be
 
 Binary payloads (postcard, protobuf) are base64-encoded as a JSON string within the `payload` field. The convention is: if an operation's output schema specifies a binary field, the handler encodes it as a base64 string and the client decodes it. The `EventEnvelope` structure is not aware of this convention — it carries a `serde_json::Value` and does not interpret the payload. This is a handler-level concern, not a protocol-level concern.
 
-This is the same framing used by irpc. The Rust implementation in alknet-call is canonical — the `@alkdev/pubsub` TypeScript adapters serve as a reference and browser adaptation, not a parallel implementation (see ADR-013).
+This is hand-rolled length-prefixed JSON framing (ADR-064), coincidentally
+the same shape irpc uses. The Rust implementation in alknet-call is
+canonical — the `@alkdev/pubsub` TypeScript adapters serve as a reference
+and browser adaptation, not a parallel implementation (see ADR-013).
 
 ### Event Types
 
@@ -546,7 +552,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 - Operation specs use JSON Schema. The envelope is always JSON. Binary payloads may be base64-encoded in the `payload` field.
 - Batch is not a protocol primitive — multiple `call.requested` events with correlated IDs provide equivalent semantics. See OQ-14.
 - The call protocol is transport-agnostic at the envelope level. The `EventEnvelope` framing can run over QUIC streams, WebSocket frames, or Worker `postMessage`. The `CallAdapter` is the QUIC-specific implementation. **The `EventEnvelope` shape (`{ type, id, payload }`) was derived from the `@alkdev/pubsub` `EventEnvelope` (`/workspace/@alkdev/pubsub/src/types.ts`), which already has a working WebSocket client/server implementation (`event-target-websocket-client.ts` / `event-target-websocket-server.ts`) and a generalized "event target" abstraction. The call protocol refined the envelope with typed event names (`call.requested`, `call.responded`, etc.) and structured payloads; the delta is small and well-defined, making a browser (and Node) WebSocket client straightforward to derive from the pubsub prior art. See ADR-044, [ADR-048](../../decisions/048-websocket-native-session-not-gateway.md), and [websocket.md](../http/websocket.md).
-- `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer. See ADR-005 and OQ-13.
+- `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer. See ADR-064 and OQ-13.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials, raw tokens) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. The wire format carries `serde_json::Value` and cannot enforce this at the type level — the constraint is architectural, enforced by the operation registry and by convention. Operations that need to share public key material use a dedicated operation that returns only the public component. See ADR-014.
 - **Abort cascades to descendants.** `call.aborted` for a parent request cascades to all non-terminal descendants in the call tree. Default policy is `abort-dependents`; `continue-running` is an opt-in. See ADR-016.
 
@@ -554,7 +560,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| irpc as call protocol foundation | [ADR-005](../../decisions/005-irpc-as-call-protocol-foundation.md) | irpc provides framing and service dispatch |
+| Hand-rolled EventEnvelope framing (irpc never integrated) | [ADR-064](../../decisions/064-irpc-never-integrated-hand-rolled-framing.md) | Hand-rolled length-prefixed JSON framing, operation registry, dispatch; supersedes ADR-005 (irpc was never imported) |
 | Call protocol stream model | [ADR-012](../../decisions/012-call-protocol-stream-model.md) | Bidirectional streams, EventEnvelope, ID-based correlation |
 | ALPN per connection | [ADR-006](../../decisions/006-alpn-convention-and-connection-model.md) | `alknet/call` is a distinct ALPN, one connection per ALPN |
 | ProtocolHandler receives Connection | [ADR-007](../../decisions/007-bistream-type-definition.md) | CallAdapter gets Connection, can accept/open multiple streams |
@@ -615,7 +621,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - [operation-registry.md](operation-registry.md) — OperationSpec, Handler, AccessControl, service discovery
 - [client-and-adapters.md](client-and-adapters.md) — CallClient, from_call, OperationAdapter, peer-keyed composition env
-- ADR-005: irpc as call protocol foundation
+- ADR-064: Hand-rolled EventEnvelope framing (irpc never integrated; supersedes ADR-005)
 - ADR-012: Call protocol stream model
 - ADR-029: Peer-graph routing model (peer-keyed overlays + `PeerRef` routing)
 - ADR-030: PeerEntry and Identity.id decoupling (`PeerId` source)
