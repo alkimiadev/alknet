@@ -456,36 +456,18 @@ mod tests {
     use crate::registry::context::CompositionAuthority;
     use crate::registry::registration::{make_handler, Handler, HandlerKind, OperationProvenance};
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
-    use alknet_core::types::{Capabilities, MockConnection};
+    use alknet_core::types::Capabilities;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::sync::Mutex as StdMutex;
     use std::time::{Duration, Instant};
 
-    struct StubConnection {
-        alpn: &'static [u8],
-        addr: Option<SocketAddr>,
-        closed: StdMutex<Option<(u32, String)>>,
-    }
-
-    impl MockConnection for StubConnection {
-        fn remote_alpn(&self) -> &[u8] {
-            self.alpn
-        }
-        fn remote_addr(&self) -> Option<SocketAddr> {
-            self.addr
-        }
-        fn close(&self, code: u32, reason: &str) {
-            *self.closed.lock().unwrap() = Some((code, reason.to_string()));
-        }
-    }
-
     fn stub_connection() -> Connection {
-        Connection::from_mock(Arc::new(StubConnection {
-            alpn: b"alknet/call",
-            addr: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-            closed: StdMutex::new(None),
-        }))
+        Connection::from_stream(
+            tokio::io::sink(),
+            tokio::io::empty(),
+            b"alknet/call".to_vec(),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
+        )
     }
 
     fn external_spec(name: &str) -> OperationSpec {

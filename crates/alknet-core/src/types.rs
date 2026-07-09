@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -230,7 +230,7 @@ enum SendStreamKind {
     Quinn(quinn::SendStream),
     #[cfg(feature = "iroh")]
     Iroh(iroh::endpoint::SendStream),
-    Mock(Box<dyn AsyncWrite + Send + Unpin>),
+    Stream(Box<dyn AsyncWrite + Send + Unpin>),
 }
 
 enum RecvStreamKind {
@@ -238,7 +238,7 @@ enum RecvStreamKind {
     Quinn(quinn::RecvStream),
     #[cfg(feature = "iroh")]
     Iroh(iroh::endpoint::RecvStream),
-    Mock(Box<dyn AsyncRead + Send + Unpin>),
+    Stream(Box<dyn AsyncRead + Send + Unpin>),
 }
 
 pub struct SendStream {
@@ -264,10 +264,9 @@ impl SendStream {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn from_mock(stream: impl AsyncWrite + Send + Unpin + 'static) -> Self {
+    pub fn from_stream(stream: impl AsyncWrite + Send + Unpin + 'static) -> Self {
         Self {
-            kind: SendStreamKind::Mock(Box::new(stream)),
+            kind: SendStreamKind::Stream(Box::new(stream)),
         }
     }
 }
@@ -287,10 +286,9 @@ impl RecvStream {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn from_mock(stream: impl AsyncRead + Send + Unpin + 'static) -> Self {
+    pub fn from_stream(stream: impl AsyncRead + Send + Unpin + 'static) -> Self {
         Self {
-            kind: RecvStreamKind::Mock(Box::new(stream)),
+            kind: RecvStreamKind::Stream(Box::new(stream)),
         }
     }
 }
@@ -306,7 +304,7 @@ impl AsyncWrite for SendStream {
             SendStreamKind::Quinn(s) => AsyncWrite::poll_write(std::pin::Pin::new(s), cx, buf),
             #[cfg(feature = "iroh")]
             SendStreamKind::Iroh(s) => AsyncWrite::poll_write(std::pin::Pin::new(s), cx, buf),
-            SendStreamKind::Mock(s) => {
+            SendStreamKind::Stream(s) => {
                 AsyncWrite::poll_write(std::pin::Pin::new(s.as_mut()), cx, buf)
             }
         }
@@ -321,7 +319,7 @@ impl AsyncWrite for SendStream {
             SendStreamKind::Quinn(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s), cx),
             #[cfg(feature = "iroh")]
             SendStreamKind::Iroh(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s), cx),
-            SendStreamKind::Mock(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s.as_mut()), cx),
+            SendStreamKind::Stream(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s.as_mut()), cx),
         }
     }
 
@@ -334,8 +332,8 @@ impl AsyncWrite for SendStream {
             SendStreamKind::Quinn(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
             #[cfg(feature = "iroh")]
             SendStreamKind::Iroh(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
-            SendStreamKind::Mock(s) => {
-                AsyncWrite::poll_shutdown(std::pin::Pin::new(s.as_mut()), cx)
+            SendStreamKind::Stream(s) => {
+                AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx)
             }
         }
     }
@@ -352,7 +350,7 @@ impl AsyncRead for RecvStream {
             RecvStreamKind::Quinn(s) => AsyncRead::poll_read(std::pin::Pin::new(s), cx, buf),
             #[cfg(feature = "iroh")]
             RecvStreamKind::Iroh(s) => AsyncRead::poll_read(std::pin::Pin::new(s), cx, buf),
-            RecvStreamKind::Mock(s) => {
+            RecvStreamKind::Stream(s) => {
                 AsyncRead::poll_read(std::pin::Pin::new(s.as_mut()), cx, buf)
             }
         }
@@ -364,14 +362,12 @@ enum ConnectionKind {
     Quinn(quinn::Connection),
     #[cfg(feature = "iroh")]
     Iroh(iroh::endpoint::Connection),
-    Mock(Arc<dyn MockConnection + Send + Sync>),
+    Stream(StreamConn),
 }
 
-#[allow(dead_code)]
-pub trait MockConnection: Send + Sync {
-    fn remote_alpn(&self) -> &[u8];
-    fn remote_addr(&self) -> Option<SocketAddr>;
-    fn close(&self, code: u32, reason: &str);
+struct StreamConn {
+    stream: Mutex<Option<(SendStream, RecvStream)>>,
+    remote_addr: Option<SocketAddr>,
 }
 
 pub struct Connection {
@@ -405,16 +401,52 @@ impl Connection {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn from_mock(mock: Arc<dyn MockConnection + Send + Sync>) -> Self {
-        let alpn = mock.remote_alpn().to_vec();
+    /// Construct a `Connection` from a pre-split read/write pair.
+    /// `accept_bi()` yields this pair once, then returns `ConnectionClosed`.
+    /// `open_bi()` returns `StreamClosed` (a single stream can't open new streams).
+    pub fn from_stream(
+        send: impl AsyncWrite + Send + Unpin + 'static,
+        recv: impl AsyncRead + Send + Unpin + 'static,
+        alpn: Vec<u8>,
+        remote_addr: Option<SocketAddr>,
+    ) -> Self {
         Self {
-            kind: ConnectionKind::Mock(mock),
+            kind: ConnectionKind::Stream(StreamConn {
+                stream: Mutex::new(Some((
+                    SendStream::from_stream(send),
+                    RecvStream::from_stream(recv),
+                ))),
+                remote_addr,
+            }),
             alpn,
             identity: OnceLock::new(),
         }
     }
 
+    /// Convenience for a single bidirectional stream (e.g. `TlsStream<TcpStream>`).
+    /// Splits internally via `tokio::io::split`.
+    pub fn from_bidi(
+        stream: impl AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        alpn: Vec<u8>,
+        remote_addr: Option<SocketAddr>,
+    ) -> Self {
+        let (recv, send) = tokio::io::split(stream);
+        Self::from_stream(send, recv, alpn, remote_addr)
+    }
+
+    /// Yield the next bidirectional stream this connection provides.
+    ///
+    /// # Transport semantics
+    ///
+    /// - **QUIC (quinn/iroh)**: returns a new bidi stream on each call.
+    ///   `ConnectionClosed` when the underlying connection closes.
+    /// - **TCP+TLS / single-stream**: yields the underlying stream on the
+    ///   first call, then `ConnectionClosed` on all subsequent calls.
+    ///   A single transport stream cannot open new application streams.
+    ///
+    /// Handlers that loop `accept_bi` (e.g. `TtyAdapter`) get one session
+    /// per single-stream connection; handlers that call once (e.g.
+    /// `HttpAdapter`) get the stream directly. Both are correct.
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
         match &self.kind {
             #[cfg(feature = "quinn")]
@@ -427,7 +459,13 @@ impl Connection {
                 let (send, recv) = c.accept_bi().await.map_err(map_iroh_connection_error)?;
                 Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
             }
-            ConnectionKind::Mock(_) => Err(StreamError::StreamClosed),
+            ConnectionKind::Stream(sc) => {
+                let mut guard = sc.stream.lock().expect("stream mutex poisoned");
+                match guard.take() {
+                    Some(pair) => Ok(pair),
+                    None => Err(StreamError::ConnectionClosed),
+                }
+            }
         }
     }
 
@@ -443,7 +481,7 @@ impl Connection {
                 let (send, recv) = c.open_bi().await.map_err(map_iroh_connection_error)?;
                 Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
             }
-            ConnectionKind::Mock(_) => Err(StreamError::StreamClosed),
+            ConnectionKind::Stream(_) => Err(StreamError::StreamClosed),
         }
     }
 
@@ -457,7 +495,7 @@ impl Connection {
             ConnectionKind::Quinn(c) => Some(c.remote_address()),
             #[cfg(feature = "iroh")]
             ConnectionKind::Iroh(_) => None,
-            ConnectionKind::Mock(m) => m.remote_addr(),
+            ConnectionKind::Stream(sc) => sc.remote_addr,
         }
     }
 
@@ -473,7 +511,9 @@ impl Connection {
                 let code = iroh::endpoint::VarInt::from(code);
                 c.close(code, reason.as_bytes());
             }
-            ConnectionKind::Mock(m) => m.close(code, reason),
+            ConnectionKind::Stream(sc) => {
+                let _ = sc.stream.lock().expect("stream mutex poisoned").take();
+            }
         }
     }
 
@@ -517,31 +557,13 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    struct MockConn {
-        alpn: &'static [u8],
-        addr: Option<SocketAddr>,
-        closed: std::sync::Mutex<Option<(u32, String)>>,
-    }
-
-    #[allow(dead_code)]
-    impl MockConnection for MockConn {
-        fn remote_alpn(&self) -> &[u8] {
-            self.alpn
-        }
-        fn remote_addr(&self) -> Option<SocketAddr> {
-            self.addr
-        }
-        fn close(&self, code: u32, reason: &str) {
-            *self.closed.lock().unwrap() = Some((code, reason.to_string()));
-        }
-    }
-
-    fn mock_connection() -> Connection {
-        Connection::from_mock(Arc::new(MockConn {
-            alpn: b"alknet/test",
-            addr: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234)),
-            closed: std::sync::Mutex::new(None),
-        }))
+    fn test_connection() -> Connection {
+        Connection::from_stream(
+            tokio::io::sink(),
+            tokio::io::empty(),
+            b"alknet/test".to_vec(),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234)),
+        )
     }
 
     #[test]
@@ -607,7 +629,7 @@ mod tests {
 
     #[test]
     fn set_identity_once_succeeds_twice_errors() {
-        let conn = mock_connection();
+        let conn = test_connection();
         let id = Identity {
             id: "alk_test".to_string(),
             scopes: vec!["relay:connect".to_string()],
@@ -622,7 +644,7 @@ mod tests {
 
     #[test]
     fn identity_get_returns_set_value() {
-        let conn = mock_connection();
+        let conn = test_connection();
         assert!(conn.identity().is_none());
         let id = Identity {
             id: "alk_test".to_string(),
@@ -634,8 +656,8 @@ mod tests {
     }
 
     #[test]
-    fn connection_remote_alpn_and_addr_from_mock() {
-        let conn = mock_connection();
+    fn connection_remote_alpn_and_addr_from_stream() {
+        let conn = test_connection();
         assert_eq!(conn.remote_alpn(), b"alknet/test");
         assert_eq!(
             conn.remote_addr(),

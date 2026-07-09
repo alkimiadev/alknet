@@ -290,30 +290,13 @@ mod tests {
         })
     }
 
-    struct StubConnection {
-        alpn: &'static [u8],
-        addr: Option<SocketAddr>,
-        closed: StdMutex<Option<(u32, String)>>,
-    }
-
-    impl alknet_core::types::MockConnection for StubConnection {
-        fn remote_alpn(&self) -> &[u8] {
-            self.alpn
-        }
-        fn remote_addr(&self) -> Option<SocketAddr> {
-            self.addr
-        }
-        fn close(&self, code: u32, reason: &str) {
-            *self.closed.lock().unwrap() = Some((code, reason.to_string()));
-        }
-    }
-
     fn stub_connection() -> Connection {
-        Connection::from_mock(Arc::new(StubConnection {
-            alpn: b"alknet/call",
-            addr: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-            closed: StdMutex::new(None),
-        }))
+        Connection::from_stream(
+            tokio::io::sink(),
+            tokio::io::empty(),
+            b"alknet/call".to_vec(),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
+        )
     }
 
     #[test]
@@ -1210,8 +1193,8 @@ mod tests {
         let frame = encode_frame(&EventEnvelope::aborted("parent-1"));
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(frame));
         let (send, _recv_sink) = tokio::io::duplex(64);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         adapter.handle_stream(conn.clone(), send, recv).await;
 
@@ -1250,8 +1233,8 @@ mod tests {
         let frame = encode_frame(&EventEnvelope::aborted("does-not-exist"));
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(frame));
         let (send, _recv_sink) = tokio::io::duplex(64);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         adapter.handle_stream(conn.clone(), send, recv).await;
 

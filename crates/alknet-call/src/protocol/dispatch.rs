@@ -456,35 +456,18 @@ mod tests {
     };
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
-    use alknet_core::types::{Capabilities, MockConnection};
+    use alknet_core::types::Capabilities;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Mutex as StdMutex;
 
-    struct StubConnection {
-        alpn: &'static [u8],
-        addr: Option<SocketAddr>,
-        closed: StdMutex<Option<(u32, String)>>,
-    }
-
-    impl MockConnection for StubConnection {
-        fn remote_alpn(&self) -> &[u8] {
-            self.alpn
-        }
-        fn remote_addr(&self) -> Option<SocketAddr> {
-            self.addr
-        }
-        fn close(&self, code: u32, reason: &str) {
-            *self.closed.lock().unwrap() = Some((code, reason.to_string()));
-        }
-    }
-
     fn stub_connection() -> alknet_core::types::Connection {
-        alknet_core::types::Connection::from_mock(Arc::new(StubConnection {
-            alpn: b"alknet/call",
-            addr: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-            closed: StdMutex::new(None),
-        }))
+        alknet_core::types::Connection::from_stream(
+            tokio::io::sink(),
+            tokio::io::empty(),
+            b"alknet/call".to_vec(),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
+        )
     }
 
     struct StaticIdentityProvider {
@@ -1197,8 +1180,8 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         dp.handle_stream(conn, send, recv).await;
 
@@ -1236,8 +1219,8 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         dp.handle_stream(conn, send, recv).await;
 
@@ -1272,8 +1255,8 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         dp.handle_stream(conn, send, recv).await;
 
@@ -1303,8 +1286,8 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         dp.handle_stream(conn, send, recv).await;
 
@@ -1363,8 +1346,8 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, _sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_mock(send);
-        let recv = alknet_core::types::RecvStream::from_mock(recv);
+        let send = alknet_core::types::SendStream::from_stream(send);
+        let recv = alknet_core::types::RecvStream::from_stream(recv);
 
         let conn_clone = Arc::clone(&conn);
         let dp_clone = dp.clone();
