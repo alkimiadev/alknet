@@ -332,9 +332,7 @@ impl AsyncWrite for SendStream {
             SendStreamKind::Quinn(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
             #[cfg(feature = "iroh")]
             SendStreamKind::Iroh(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
-            SendStreamKind::Stream(s) => {
-                AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx)
-            }
+            SendStreamKind::Stream(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
         }
     }
 }
