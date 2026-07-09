@@ -567,7 +567,7 @@ impl OperationAdapter for FromOpenAPI {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_request(
+pub(crate) fn build_request(
     base_url: &str,
     path_template: &str,
     method: &str,
@@ -656,7 +656,7 @@ fn build_request(
     Ok((http_method, url, body, headers))
 }
 
-fn value_to_path_segment(value: &Value) -> String {
+pub(crate) fn value_to_path_segment(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
@@ -666,7 +666,7 @@ fn value_to_path_segment(value: &Value) -> String {
     }
 }
 
-fn value_to_query(value: &Value) -> String {
+pub(crate) fn value_to_query(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
@@ -677,7 +677,7 @@ fn value_to_query(value: &Value) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn forward(
+pub(crate) async fn forward(
     http_client: &Arc<SharedHttpClient>,
     base_url: &str,
     path_template: &str,
@@ -790,7 +790,7 @@ async fn forward(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn forward_stream(
+pub(crate) fn forward_stream(
     http_client: &Arc<SharedHttpClient>,
     base_url: &str,
     path_template: &str,
@@ -921,11 +921,11 @@ fn forward_stream(
     Box::pin(sse)
 }
 
-struct SseEvent {
-    data: String,
+pub(crate) struct SseEvent {
+    pub(crate) data: String,
 }
 
-fn parse_sse_frames(buffer: &str) -> (Vec<SseEvent>, String) {
+pub(crate) fn parse_sse_frames(buffer: &str) -> (Vec<SseEvent>, String) {
     let mut events = Vec::new();
     let text = if let Some(stripped) = buffer.strip_prefix('\u{feff}') {
         stripped

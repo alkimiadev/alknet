@@ -8,11 +8,9 @@
 
 mod call_client;
 mod from_call;
-mod from_jsonschema;
 
 pub use call_client::{CallClient, CallCredentials, ClientError, RemoteIdentity};
 pub use from_call::{from_call, FromCallConfig};
-pub use from_jsonschema::{from_jsonschema, FromJsonSchema};
 
 use crate::registry::registration::HandlerRegistration;
 
@@ -54,7 +52,7 @@ pub enum AdapterError {
 ///
 /// Async because `from_call` requires async discovery (`services/list` +
 /// `services/schema` over a QUIC connection); sync adapters (e.g.
-/// `from_jsonschema`, `from_openapi` reading a static spec) trivially satisfy
+/// `from_openapi` reading a static spec) trivially satisfy
 /// an async trait — their `import()` bodies contain no `.await` points.
 ///
 /// See ADR-017 §5 (`docs/architecture/decisions/017-call-protocol-client-and-adapter-contract.md`)

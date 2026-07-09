@@ -8,6 +8,7 @@
 //! `docs/architecture/crates/http/http-adapters.md` and
 //! `docs/architecture/crates/http/http-mcp.md`.
 
+pub mod from_jsonschema;
 pub mod from_openapi;
 
 #[cfg(feature = "mcp")]
@@ -18,6 +19,7 @@ pub mod to_mcp;
 
 pub mod to_openapi;
 
+pub use from_jsonschema::FromJsonSchema;
 pub use from_openapi::{FromOpenAPI, HttpAuthScheme, HttpServiceConfig, OpenAPISpec};
 pub use to_openapi::to_openapi;
 
