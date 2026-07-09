@@ -15,7 +15,6 @@ quinn = ["dep:quinn", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfi
 
 [dependencies]
 alknet-core = { path = "../alknet-core" }
-irpc = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

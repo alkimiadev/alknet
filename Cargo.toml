@@ -16,5 +16,3 @@ license = "MIT OR Apache-2.0"
 repository = "https://git.alk.dev/alkdev/alknet"
 
 [workspace.dependencies]
-irpc = "0.16"
-irpc-derive = "0.16"
