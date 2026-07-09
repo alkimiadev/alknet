@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-05
+last_updated: 2026-07-09
 ---
 
 # Operation Registry
@@ -74,7 +74,7 @@ Operation names use slash-based paths without a leading slash, aligned with URL 
 
 The `namespace` field is derived from the name: for `fs/readFile` it's `fs`, for `agent/chat` it's `agent`. It's a convenience accessor for ACL matching and service grouping.
 
-Visibility (ADR-015) controls whether an operation is callable from the wire. `External` operations are wire-facing — they appear in `services/list` and accept `call.requested` from clients. `Internal` operations are composition-only — they return `NOT_FOUND` (not `FORBIDDEN`) when called from the wire, and do not appear in `services/list`. The assembly layer declares visibility at registration. All import adapters (`from_openapi`, `from_mcp`, `from_jsonschema`, `from_call`) register operations as `Internal` by default (they're composition material, not directly callable); the handler that composes them is `External`.
+Visibility (ADR-015) controls whether an operation is callable from the wire. `External` operations are wire-facing — they appear in `services/list` and accept `call.requested` from clients. `Internal` operations are composition-only — they return `NOT_FOUND` (not `FORBIDDEN`) when called from the wire, and do not appear in `services/list`. The assembly layer declares visibility at registration. All import adapters (`from_openapi`, `from_mcp`, `from_jsonschema`, `from_call`) register operations as `Internal` by default (they're composition material, not directly callable); the handler that composes them is `External`. (`from_jsonschema` is now a real HTTP-backed adapter in `alknet-http` per ADR-066, not the schema-only placeholder it was.)
 
 ### AccessControl
 
@@ -383,7 +383,7 @@ pub enum OperationProvenance {
     FromOpenAPI,     // HTTP forwarding stub (from_openapi), leaf
     FromMCP,         // MCP forwarding stub (from_mcp), leaf
     FromCall,        // QUIC forwarding stub (from_call), leaf locally
-    FromJsonSchema,  // JSON Schema definition, no handler — schema only
+    FromJsonSchema,  // HTTP forwarding stub (from_jsonschema, single endpoint), leaf
     Session,         // Agent-written, sandboxed, can compose within sandbox
 }
 ```
@@ -394,8 +394,18 @@ pub enum OperationProvenance {
 | `FromOpenAPI` | No (leaf) | No | Internal |
 | `FromMCP` | No (leaf) | No | Internal |
 | `FromCall` | No (leaf in local registry) | No | Internal |
-| `FromJsonSchema` | N/A (no handler) | No | N/A |
+| `FromJsonSchema` | No (leaf) | No | Internal |
 | `Session` | Yes (within sandbox) | Yes — scopes set at sandbox creation | Internal always |
+
+> **ADR-066 update.** `FromJsonSchema` was originally a schema-only
+> provenance with no handler (the old row read "N/A (no handler) /
+> N/A"). ADR-066 moved `from_jsonschema` to `alknet-http` as a real
+> HTTP-backed single-endpoint adapter with a reqwest forwarding
+> handler. `FromJsonSchema` is now a leaf, same trust model as
+> `FromOpenAPI` (HTTP endpoint trusted; handler is a forwarding stub).
+> The "schema-only, no handler" concept is removed — schema validation
+> without a handler is served by consuming `OperationSpec` directly,
+> not by registering a placeholder op.
 
 #### CompositionAuthority
 
@@ -906,7 +916,8 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 | Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Curated (static, immutable) + session and connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
-| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`from_jsonschema`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md) |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md). ~~`from_jsonschema` clause superseded by ADR-066~~ |
+| `from_jsonschema` as HTTP-backed single-endpoint adapter | [ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) | Moved `from_jsonschema` from `alknet-call` (broken schema-only placeholder) to `alknet-http` as a real reqwest-backed single-endpoint adapter; `FromJsonSchema` provenance stays in `alknet-call` as a leaf (now handler-bearing, not "no handler") |
 | Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` (the field this doc's `HandlerRegistration` previously gained) |
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `OperationContext` and `call.requested`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
 | ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~`remote_safe` marking on `HandlerRegistration`~~ — superseded by ADR-029 |

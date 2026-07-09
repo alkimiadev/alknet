@@ -1,19 +1,21 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-09
 ---
 
-# HTTP Adapters — from_openapi and to_openapi
+# HTTP Adapters — from_openapi, from_jsonschema, and to_openapi
 
-The OpenAPI-direction adapters: `from_openapi` imports external HTTP APIs
-as call-protocol operations (reqwest-backed forwarding handlers), and
+The OpenAPI-direction adapters plus the single-endpoint adapter:
+`from_openapi` imports external HTTP APIs described by a full OpenAPI
+document, `from_jsonschema` imports a single non-standard / non-OpenAPI
+HTTP endpoint described by a caller-supplied `OperationSpec`, and
 `to_openapi` generates an OpenAPI spec from the local registry's
-`External` operations. This document covers both, the error fidelity
-(ADR-023), and the no-env-vars credential injection point.
+`External` operations. This document covers all three, the error
+fidelity (ADR-023), and the no-env-vars credential injection point.
 
 ## What
 
-Two adapters, both in `alknet-http`:
+Three adapters, all in `alknet-http`:
 
 1. **`from_openapi`** — parses an OpenAPI document, constructs a
    `HandlerRegistration` bundle per OpenAPI operation with a forwarding
@@ -23,7 +25,15 @@ Two adapters, both in `alknet-http`:
    `alknet-call`, ADR-017 §5). Provenance is `FromOpenAPI` (leaf,
    `composition_authority: None`, `scoped_env: None`, `Internal` by
    default — ADR-015/022).
-2. **`to_openapi`** — generates an OpenAPI document from the local
+2. **`from_jsonschema`** — registers a single HTTP endpoint as a
+   call-protocol operation, one at a time, for non-standard /
+   non-OpenAPI / basic REST endpoints that don't have a full OpenAPI
+   document. The caller supplies an `OperationSpec` + `HttpServiceConfig`
+   + path template + HTTP method; the adapter builds one
+   `HandlerRegistration` with a reqwest forwarding handler (the same
+   handler shape as `from_openapi`) and `FromJsonSchema` provenance.
+   Implements `OperationAdapter`. See ADR-066.
+3. **`to_openapi`** — generates an OpenAPI document from the local
    registry's `External` operations. A pure projection: it consumes the
    registry, it does not produce entries for it (ADR-017 §5 — the `to_*`
    adapters are outbound projections, not `OperationAdapter`
@@ -271,6 +281,80 @@ source other than `OperationContext.capabilities`. See
 [overview.md](overview.md) and
 [client-and-adapters.md](../call/client-and-adapters.md).
 
+### from_jsonschema
+
+`from_jsonschema` registers a single HTTP endpoint as a call-protocol
+operation, one at a time. It is functionally similar to `from_openapi`
+but for one endpoint instead of a full OpenAPI document — for
+non-standard, non-OpenAPI, or basic REST endpoints that don't have a
+`paths` object, an `operationId`, or `components`. The caller supplies
+the schema directly; the adapter builds a reqwest forwarding handler
+identical in shape to `from_openapi`'s. See
+[ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md).
+
+```rust
+pub struct FromJsonSchema {
+    spec: OperationSpec,
+    config: HttpServiceConfig,
+    path_template: String,
+    method: String,
+    http_client: Arc<SharedHttpClient>,
+}
+
+#[async_trait]
+impl OperationAdapter for FromJsonSchema {
+    async fn import(&self) -> Result<Vec<HandlerRegistration>, AdapterError>;
+}
+```
+
+The adapter:
+
+1. Takes an `OperationSpec` (name, op type, input/output JSON Schema,
+   `error_schemas`, `access_control`, `visibility`), an
+   `HttpServiceConfig` (base URL, auth scheme, default headers — the
+   same config type `from_openapi` uses), a path template
+   (e.g. `/users/{id}/posts`), and an HTTP method (e.g. `GET`).
+2. Builds one `HandlerRegistration`:
+   - `spec` = the caller-supplied `OperationSpec` (the caller already
+     has the JSON Schemas; no parsing needed).
+   - `handler` = a reqwest forwarding handler, identical in shape to
+     `from_openapi`'s: builds the HTTP request (path-template
+     substitution, query params, body), injects credentials from
+     `context.capabilities`, sends via the shared HTTP client, parses
+     the response (JSON / text / binary — same content-type branching).
+     For `Subscription` op type, registers a `StreamingHandler`
+     (ADR-049) expecting `text/event-stream`.
+   - `provenance` = `FromJsonSchema` (leaf, `composition_authority: None`,
+     `scoped_env: None` — ADR-022).
+   - `capabilities` = the credentials the forwarding handler needs
+     (same no-env-vars path as `from_openapi`).
+3. Returns the single bundle. The caller registers it in the
+   `OperationRegistry`.
+
+#### Relationship to from_openapi
+
+`from_jsonschema` is functionally similar to `from_openapi` but for one
+endpoint instead of a full OpenAPI document. The two adapters share the
+forwarding-handler implementation, the credential injection path, the
+error-fidelity rule (`HTTP_<status>` prefix, ADR-023), the streaming
+shape (ADR-049), and the no-env-vars invariant (ADR-014). The difference
+is purely the input shape: a full document vs. a single endpoint. See
+[ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md)
+§"Relationship to `from_openapi`" for the comparison table.
+
+#### Origin (ADR-066)
+
+`from_jsonschema` was originally placed in `alknet-call` (ADR-017 §5) as a
+schema-only adapter with a `NOT_FOUND`-returning placeholder handler —
+broken, because an op in the registry needs a real handler.
+[ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) moved
+it to `alknet-http` and gave it a real reqwest forwarding handler. The
+`FromJsonSchema` provenance variant stays in `alknet-call`
+(`OperationProvenance`); only the adapter implementation moved. See
+[ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) for the
+full rationale (why the placeholder was broken, why the "schema-only"
+concept conflated two things, why it was mispaced in `alknet-call`).
+
 ### to_openapi
 
 ```rust
@@ -397,6 +481,14 @@ its errors are typed. The agent crate's LLM provider calls go through
 `from_openapi`-imported operations — that's how the no-env-vars
 invariant makes aisdk's env-var reads unreachable.
 
+`from_jsonschema` fills the gap that `from_openapi` can't: endpoints
+that have no OpenAPI document. A non-standard REST endpoint, a basic
+internal API, or a third-party service with only a JSON Schema
+description can be registered as a call-protocol operation one at a
+time, with the same reqwest forwarding handler and the same
+no-env-vars credential path. The caller supplies the schema; the
+adapter supplies the handler. See ADR-066.
+
 `to_openapi` is how external systems discover the alknet operation
 surface. A client generator, a human developer, or a `fetch`-based
 client reads the OpenAPI doc to learn the gateway's shape (5 fixed
@@ -415,12 +507,15 @@ once published, the 5-endpoint gateway shape is one-way.
 - **`from_openapi`/`from_mcp` handlers read credentials from
   `OperationContext.capabilities`, not `std::env::var`.** This is the
   no-env-vars invariant (ADR-014). The handler implementations are
-  verified against this invariant.
+  verified against this invariant. `from_jsonschema` shares this
+  invariant — same handler shape, same credential path (ADR-066).
 - **`from_openapi`-registered ops are `Internal` by default.** They are
   composition material, not directly callable from the wire (ADR-015).
-  The handler that composes them is `External`.
+  The handler that composes them is `External`. `from_jsonschema`
+  ops are `Internal` by default for the same reason (ADR-066).
 - **`from_openapi` error codes are prefixed `HTTP_<status>`.** No
   collision with protocol-level codes (ADR-023, review #002 W20).
+  `from_jsonschema` shares this rule (ADR-066).
 - **`from_openapi` accepts JSON and YAML; `from_str` detects format
   JSON-first.** JSON-first is a defensive default (ADR-051 §2 as
   amended): JSON's stricter grammar is immune to any YAML-specific type
@@ -460,7 +555,8 @@ once published, the 5-endpoint gateway shape is one-way.
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| `from_openapi` is an `OperationAdapter` | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Async trait; produces `HandlerRegistration` bundles |
+| `from_openapi` is an `OperationAdapter` | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Async trait; produces `HandlerRegistration` bundles. ~~`from_jsonschema` clause superseded by ADR-066~~ |
+| `from_jsonschema` as HTTP-backed single-endpoint adapter in alknet-http | [ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) | Moved `from_jsonschema` from `alknet-call` (broken schema-only placeholder) to `alknet-http` as a real reqwest-backed single-endpoint adapter; `FromJsonSchema` provenance stays in `alknet-call` as a leaf |
 | `to_openapi` is a projection, not an adapter | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Consumes the registry, doesn't produce entries |
 | Adapter-registered ops are `Internal` | [ADR-015](../../decisions/015-privilege-model-and-authority-context.md) | `from_openapi` ops are composition material |
 | `from_openapi` provenance is a leaf | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | `composition_authority: None`, `scoped_env: None` |
@@ -469,7 +565,7 @@ once published, the 5-endpoint gateway shape is one-way.
 | HTTP path = operation path (~~direct-call surface~~) | [ADR-036](../../decisions/036-http-to-call-operation-mapping.md) → superseded by [ADR-047](../../decisions/047-remove-direct-call-http-surface.md) | ~~`POST /{service}/{op}` → `call.requested`~~ — removed; the gateway `/call` with `{ operation, input }` is the sole invoke path; `to_openapi` describes the gateway, not a per-operation surface |
 | `to_openapi` gateway pattern | [ADR-042](../../decisions/042-openapi-gateway-pattern.md) | 5 fixed gateway endpoints (search/schema/call/batch/subscribe), not one path per operation; per-caller AccessControl-filtered. Supersedes ADR-036's original `to_openapi` "paths mirror `/{service}/{op}`" clause |
 | `to_openapi` published-spec versioning | [ADR-045](../../decisions/045-to-openapi-gateway-spec-versioning.md) | `info.version` semver tracks the gateway endpoint contract, not the operation set; consumers detect breaking changes via the major version |
-| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_openapi` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`); SSE response → `BoxStream<ResponseEnvelope>`; `Query`/`Mutation` stay `HandlerKind::Once` |
+| Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_openapi` / `from_jsonschema` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`); SSE response → `BoxStream<ResponseEnvelope>`; `Query`/`Mutation` stay `HandlerKind::Once` |
 | YAML input + JSON-first format detection | [ADR-051](../../decisions/051-yaml-input-for-from-openapi.md) | `from_openapi` accepts JSON and YAML (`from_json`/`from_yaml`/`from_str`); `from_str` is JSON-first/YAML-fallback (defensive default, §2 amended — `yaml_serde` 0.10.x is YAML 1.2, not 1.1; JSON-first locks the contract against a future parser swap); YAML dep is `yaml_serde`; `to_openapi` output stays JSON (out of scope, §4) |
 
 ## Open Questions
@@ -492,6 +588,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md)
   — `OperationAdapter` trait, `to_*` are projections
+- [ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) —
+  `from_jsonschema` as HTTP-backed single-endpoint adapter in
+  `alknet-http` (supersedes ADR-017 §5's `from_jsonschema` clause)
 - [ADR-023](../../decisions/023-operation-error-schemas.md) — error
   fidelity, `HTTP_<status>` prefix rule
 - [overview.md](overview.md) — adapter location map, no-env-vars

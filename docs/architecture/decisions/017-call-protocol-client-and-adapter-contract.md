@@ -182,8 +182,12 @@ Implementations:
 - `FromMCP` — imports from an MCP server (MCP-backed handlers)
 - `FromCall` — imports from a remote call protocol endpoint
   (call-protocol-backed handlers)
-- `FromJsonSchema` — imports from a JSON Schema definition (schema-only, no
-  handler — used for validation or client generation)
+- ~~`FromJsonSchema` — imports from a JSON Schema definition (schema-only, no
+  handler — used for validation or client generation)~~ — **superseded by
+  [ADR-066](066-from-jsonschema-as-http-adapter.md)**: `from_jsonschema` is
+  now an HTTP-backed single-endpoint adapter in `alknet-http` (reqwest
+  forwarding handler, not a schema-only placeholder); `FromJsonSchema`
+  provenance stays in `alknet-call` as a handler-bearing leaf.
 
 The `to_*` adapters are outbound projections, not `OperationAdapter`
 implementations — they consume the registry, they don't produce entries for it.
@@ -191,7 +195,10 @@ implementations — they consume the registry, they don't produce entries for it
 The specific trait signatures (error types, configuration parameters) are
 two-way doors for implementation. The one-way doors are the architectural
 commitments: adapters produce `HandlerRegistration` bundles (ADR-022), the
-trait is async (required by `from_call`), and adapters live in alknet-call.
+trait is async (required by `from_call`), and the adapter *trait* lives in
+`alknet-call` while adapter *implementations* live with their transport
+(HTTP-backed adapters in `alknet-http` per ADR-066; QUIC-backed `from_call`
+in `alknet-call`). See `client-and-adapters.md` §"Adapter Location Map."
 
 ### 6. Cross-node call tree and abort cascade
 
@@ -405,9 +412,27 @@ OQ-28.
 ### Operational spec
 
 The gap this ADR left to implementation — the `CallClient` API, the
-`from_call`/`from_jsonschema` flows, the trait signature, the adapter
-location map, the no-env-vars invariant, and the exchange-of-operations
-pattern — is specified in
+`from_call` flow, the trait signature, the adapter location map, the
+no-env-vars invariant, and the exchange-of-operations pattern — is
+specified in
 [client-and-adapters.md](../crates/call/client-and-adapters.md). That document
 is the operational complement to this ADR; this ADR remains the architectural
 authority.
+
+## Amendments (2026-07-09)
+
+### `from_jsonschema` clause superseded by ADR-066
+
+The §5 `FromJsonSchema` implementation listing ("schema-only, no handler")
+is **superseded by [ADR-066](066-from-jsonschema-as-http-adapter.md)**.
+`from_jsonschema` is now an HTTP-backed single-endpoint adapter in
+`alknet-http` (reqwest forwarding handler, same shape as `from_openapi`),
+not a schema-only placeholder in `alknet-call`. The `FromJsonSchema`
+provenance variant stays in `alknet-call` (`OperationProvenance`) but is
+now a handler-bearing leaf, not a "no handler" entry. The "schema-only,
+no handler" concept is removed — schema validation without a handler is
+served by consuming `OperationSpec` directly. The §5 "adapters live in
+alknet-call" one-way-door statement is corrected above to "the adapter
+trait lives in `alknet-call`; implementations live with their transport."
+See [ADR-066](066-from-jsonschema-as-http-adapter.md) and
+[client-and-adapters.md](../crates/call/client-and-adapters.md) §"from_jsonschema".

@@ -45,6 +45,21 @@ use `from_stream` with `tokio::io::sink`/`empty`). See
 [`docs/research/transport-generalization/findings.md`](../research/transport-generalization/findings.md)
 for the full trace.
 
+**`from_jsonschema` relocation (ADR-066).** The `from_jsonschema`
+adapter was originally placed in `alknet-call` (ADR-017 §5) as a
+schema-only adapter with a `NOT_FOUND`-returning placeholder handler —
+broken, because an op in the registry needs a real handler.
+[ADR-066](decisions/066-from-jsonschema-as-http-adapter.md) moves it to
+`alknet-http` as a real reqwest-backed single-endpoint adapter
+(functionally similar to `from_openapi`, but one endpoint at a time),
+for non-standard / non-OpenAPI / basic REST endpoints that don't have a
+full OpenAPI document. The `FromJsonSchema` provenance variant stays in
+`alknet-call` (now a handler-bearing leaf, not a "no handler" entry).
+The "schema-only, no handler" concept is removed — schema validation
+without a handler is served by consuming `OperationSpec` directly. The
+adapter location map is now consistent: all HTTP-backed adapters
+(`from_openapi`, `from_mcp`, `from_jsonschema`) live in `alknet-http`.
+
 ## Architecture Documents
 
 | Document | Status | Description |
@@ -59,12 +74,12 @@ for the full trace.
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, hand-rolled EventEnvelope framing (no irpc — ADR-064), stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
 | [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery (hand-rolled, no irpc) |
-| [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (outbound connection opener), from_call / from_jsonschema, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern |
+| [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (outbound connection opener), from_call, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern (from_jsonschema moved to alknet-http per ADR-066) |
 | [crates/http/README.md](crates/http/README.md) | draft | alknet-http crate index |
 | [crates/http/overview.md](crates/http/overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
 | [crates/http/http-server.md](crates/http/http-server.md) | draft | HttpAdapter for h2/http1.1 + WebSocket upgrade route, axum over QUIC, Bearer auth, stealth, /healthz |
 | [crates/http/websocket.md](crates/http/websocket.md) | draft | WebSocket browser bidirectional path — native `EventEnvelope` call-protocol session (not the gateway shape); framing, dispatch, bidirectionality, connection-local overlay, browsers-are-not-peers, deferred `from_wss` |
-| [crates/http/http-adapters.md](crates/http/http-adapters.md) | draft | from_openapi (reqwest; JSON + YAML input per ADR-051) and to_openapi (projection); no-env-vars injection point |
+| [crates/http/http-adapters.md](crates/http/http-adapters.md) | draft | from_openapi (reqwest; JSON + YAML input per ADR-051), from_jsonschema (single-endpoint reqwest forwarding handler per ADR-066), and to_openapi (projection); no-env-vars injection point |
 | [crates/http/http-mcp.md](crates/http/http-mcp.md) | draft | from_mcp / to_mcp (feature-gated), streamable-HTTP-only, stdio exclusion |
 | [crates/http/webtransport.md](crates/http/webtransport.md) | deferred | h3/WebTransport handler — deferred per ADR-044; browser bidirectional path uses WebSocket (see http-server.md). Spec kept intact for revival. |
 | [crates/tty/README.md](crates/tty/README.md) | draft | alknet-tty crate index |
@@ -103,12 +118,12 @@ for the full trace.
 | [014](decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Accepted |
 | [015](decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | Accepted |
 | [016](decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | Accepted |
-| [017](decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | Accepted |
+| [017](decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | Accepted (`from_jsonschema` clause superseded by ADR-066) |
 | [018](decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Accepted |
 | [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | Accepted |
 | [020](decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | Accepted |
 | [021](decisions/021-key-rotation-via-version-indexed-paths.md) | Key Rotation via Version-Indexed Paths | Accepted |
-| [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Accepted |
+| [022](decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, and Composition Authority | Accepted (`FromJsonSchema` row superseded by ADR-066) |
 | [023](decisions/023-operation-error-schemas.md) | Operation Error Schemas | Accepted |
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Accepted |
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Accepted |
@@ -152,6 +167,7 @@ for the full trace.
 | [063](decisions/063-exit-code-on-terminal-call-responded.md) | Exit Code on a Terminal `call.responded` for Non-Interactive Exec | Accepted |
 | [064](decisions/064-irpc-never-integrated-hand-rolled-framing.md) | irpc Was Never Integrated — Hand-Rolled EventEnvelope Framing | Accepted (supersedes ADR-005) |
 | [065](decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` — Generic Single-Stream Connections | Accepted |
+| [066](decisions/066-from-jsonschema-as-http-adapter.md) | `from_jsonschema` as HTTP-Backed Single-Endpoint Adapter in alknet-http | Accepted (supersedes the `from_jsonschema` clause of ADR-017 §5 and the `FromJsonSchema` provenance row of ADR-022) |
 
 ## Open Questions
 

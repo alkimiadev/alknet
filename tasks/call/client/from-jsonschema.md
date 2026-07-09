@@ -7,6 +7,7 @@ scope: narrow
 risk: low
 impact: isolated
 level: implementation
+superseded_by: [http/adapters/from-jsonschema]
 ---
 
 ## Description

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-09
 ---
 
 # alknet-http
@@ -19,7 +19,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [overview.md](overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
 | [http-server.md](http-server.md) | draft | `HttpAdapter` (`ProtocolHandler` for `h2`/`http/1.1` + WS upgrade route), axum over QUIC, Bearer auth, stealth, `/healthz`; WS hands off to the native session spec |
 | [websocket.md](websocket.md) | draft | WebSocket browser bidirectional path — native `EventEnvelope` call-protocol session (not the gateway shape, ADR-048); framing, dispatch, bidirectionality, connection-local Layer 2 overlay, browsers-are-not-peers rationale, streaming (native `call.responded`, no SSE), deferred `from_wss` adapter |
-| [http-adapters.md](http-adapters.md) | draft | `from_openapi` (reqwest client; JSON + YAML input per ADR-051) and `to_openapi` (OpenAPI projection); no-env-vars invariant point |
+| [http-adapters.md](http-adapters.md) | draft | `from_openapi` (reqwest client; JSON + YAML input per ADR-051), `from_jsonschema` (single-endpoint reqwest forwarding handler per ADR-066), and `to_openapi` (OpenAPI projection); no-env-vars invariant point |
 | [http-mcp.md](http-mcp.md) | draft | `from_mcp` / `to_mcp` (feature-gated), streamable-HTTP-only, stdio exclusion |
 | [webtransport.md](webtransport.md) | deferred | `h3`/WebTransport handler — **deferred per ADR-044**; spec kept intact for revival |
 
@@ -36,8 +36,8 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [014](../../decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow | `from_openapi`/`from_mcp` are the credential injection point |
 | [015](../../decisions/015-privilege-model-and-authority-context.md) | Privilege Model | Adapter-registered ops are `Internal` by default |
 | [017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `OperationAdapter` trait; `to_*` are projections; published-spec contract |
-| [022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, Composition Authority | `from_openapi`/`from_mcp` produce leaf bundles |
-| [023](../../decisions/023-operation-error-schemas.md) | Operation Error Schemas | `from_openapi`/`to_openapi` error fidelity; `HTTP_<status>` error codes |
+| [022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Handler Registration, Provenance, Composition Authority | `from_openapi`/`from_mcp`/`from_jsonschema` produce leaf bundles (`FromJsonSchema` now handler-bearing per ADR-066) |
+| [023](../../decisions/023-operation-error-schemas.md) | Operation Error Schemas | `from_openapi`/`from_jsonschema`/`to_openapi` error fidelity; `HTTP_<status>` error codes |
 | [027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign | Browsers require X.509; applies to WebTransport (deferred) and any browser-facing TLS |
 | [034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Outgoing-Only X.509 and Three Peer Roles | Browsers are not alknet peers (§4 amended by ADR-044 §5 with the addressability rationale) |
 | [036](../../decisions/036-http-to-call-operation-mapping.md) | HTTP-to-Call Operation Mapping | ~~Direct path mapping~~ — **routing superseded by ADR-047**; non-routing clauses survive (SSE projection, Bearer auth, `/healthz`, stealth, error mapping) |
@@ -55,6 +55,7 @@ protocol), and hosts the HTTP-backed call-protocol adapters
 | [048](../../decisions/048-websocket-native-session-not-gateway.md) | WebSocket Carries the Native Call-Protocol Session, Not the Gateway Shape | WS is the native `EventEnvelope` session; the gateway endpoints (`/search`/`/schema`/`/call`/`/batch`/`/subscribe`) are HTTP-only and do not appear on WS; discovery via `services/list`/`services/schema` as call-protocol ops |
 | [049](../../decisions/049-streaming-handler-for-subscriptions.md) | Streaming Handler for Subscription Operations | `from_openapi` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`); SSE → `BoxStream<ResponseEnvelope>` |
 | [051](../../decisions/051-yaml-input-for-from-openapi.md) | YAML Input Format for from_openapi | `from_openapi` accepts JSON and YAML (`from_json`/`from_yaml`/`from_str`); `from_str` is JSON-first/YAML-fallback (defensive default, §2 amended — `yaml_serde` 0.10.x is YAML 1.2, not 1.1); YAML dep is `yaml_serde` (maintained fork of deprecated `serde_yaml`); `to_openapi` output stays JSON (out of scope, §4) |
+| [066](../../decisions/066-from-jsonschema-as-http-adapter.md) | `from_jsonschema` as HTTP-Backed Single-Endpoint Adapter in alknet-http | Moved `from_jsonschema` from `alknet-call` (broken schema-only placeholder) to `alknet-http` as a real reqwest-backed single-endpoint adapter; `FromJsonSchema` provenance stays in `alknet-call` as a handler-bearing leaf; supersedes ADR-017 §5's `from_jsonschema` clause and ADR-022's `FromJsonSchema` row |
 
 ## Relevant Open Questions
 

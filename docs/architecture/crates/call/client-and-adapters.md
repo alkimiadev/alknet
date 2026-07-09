@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-02
+last_updated: 2026-07-09
 ---
 
 # alknet-call — Client and Adapters
@@ -9,14 +9,16 @@ The outbound half of the call protocol: opening connections, importing remote
 operations, and the adapter contract that ties import-style adapters together.
 This document covers what ADR-017 specced but the server-side implementation
 (`call-protocol.md`, `operation-registry.md`) did not include — the `CallClient`
-that *opens* a connection, the `from_call`/`from_jsonschema` adapters, and the
-`OperationAdapter` trait. The server-side `CallAdapter` and `CallConnection`
+that *opens* a connection, the `from_call` adapter, and the
+`OperationAdapter` trait. (`from_jsonschema` was originally specced here
+too, but ADR-066 moved it to `alknet-http` — see §"from_jsonschema" below.)
+The server-side `CallAdapter` and `CallConnection`
 dispatch loop are covered in `call-protocol.md`; this document covers the
 client-side connection-establishment half and the adapter surface.
 
 ## What
 
-This document specifies four components, all in `alknet-call`:
+This document specifies three components, all in `alknet-call`:
 
 1. **`CallClient`** — opens an outbound `alknet/call` QUIC connection and
    produces a `CallConnection`. The dispatch loop is shared with the
@@ -27,11 +29,18 @@ This document specifies four components, all in `alknet-call`:
    via `services/list` + `services/schema` (already implemented in
    `registry/discovery.rs`) and registers them in the connection's Layer 2
    overlay as `FromCall`-provenance leaves with forwarding handlers.
-3. **`from_jsonschema`** — schema-only registration: produces
-   `HandlerRegistration` bundles with no handler, for validation, discovery,
-   and composition-graph construction without a runtime.
-4. **`OperationAdapter` trait** — the async trait that `from_call`,
+3. **`OperationAdapter` trait** — the async trait that `from_call`,
    `from_openapi`, `from_mcp`, and `from_jsonschema` all implement.
+
+> **`from_jsonschema` moved.** ADR-066 moved `from_jsonschema` from
+> `alknet-call` to `alknet-http` and gave it a real reqwest-backed
+> forwarding handler (it was a broken schema-only placeholder before).
+> It is now an HTTP-backed single-endpoint adapter for non-standard /
+> non-OpenAPI / basic REST endpoints, functionally similar to
+> `from_openapi` but one endpoint at a time. See
+> [`crates/http/http-adapters.md`](../http/http-adapters.md) §"from_jsonschema".
+> The `FromJsonSchema` provenance variant stays in `alknet-call`
+> (`OperationProvenance`); only the adapter implementation moved.
 
 It also records two cross-cutting architectural mechanisms that the adapter
 surface rests on:
@@ -58,8 +67,8 @@ trait is the enabling gap for `alknet-http`'s `from_openapi`/`from_mcp`.
 
 ADR-017 specced this surface. This document is the spec that operationally
 fills the gap ADR-017 left to implementation: the `CallClient` API, the
-`from_call`/`from_jsonschema` flows, the trait signature, the adapter
-location, the credential invariant, and the bilateral pattern. The gap
+`from_call` flow, the trait signature, the adapter location, the credential
+invariant, and the bilateral pattern. The gap
 analysis (`docs/research/alknet-call-completion/gap-analysis.md`) identified
 four decisions (DC-1..4) needed before implementation. DC-1 was initially
 resolved by ADR-028 (`remote_safe`/`trusted_peer`), but a subsequent research
@@ -377,29 +386,31 @@ want to disclose the originator. See [ADR-032](../../decisions/032-forwarded-for
 
 ### from_jsonschema
 
-Schema-only registration: produces `HandlerRegistration` bundles with no
-handler (`FromJsonSchema` provenance). Used for validation, discovery, and
-composition-graph construction without a runtime — type-checking a composition
-plan without executing it, building a UI of available operations without
-standing up the transports, etc.
+`from_jsonschema` was originally specified here (ADR-017 §5) as a
+schema-only adapter in `alknet-call` — a placeholder handler returning
+`NOT_FOUND`. That was broken: an op in the registry needs a real handler,
+and the "schema-only, no handler" concept conflated schema validation
+(a planning activity that doesn't need a registry entry) with operation
+registration (which always needs a handler).
 
-```rust
-pub fn from_jsonschema(
-    spec: OperationSpec,
-    schema: serde_json::Value,
-) -> HandlerRegistration;
-```
+[ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) moved
+`from_jsonschema` to `alknet-http` as an HTTP-backed single-endpoint
+adapter: the caller supplies an `OperationSpec` + `HttpServiceConfig` +
+path template + method, and the adapter builds one
+`HandlerRegistration` with a real reqwest forwarding handler and
+`FromJsonSchema` provenance. It is functionally similar to `from_openapi`
+but one endpoint at a time, for non-standard / non-OpenAPI / basic REST
+endpoints that don't have a full OpenAPI document. See
+[`crates/http/http-adapters.md`](../http/http-adapters.md) §"from_jsonschema".
 
-Distinct from `from_call` (gap analysis DC-5, confirmed not a decision):
+The schema-validation-without-a-handler use case (the original stated
+purpose) is served by consuming `OperationSpec` directly — the spec
+already carries the input/output JSON Schemas. No adapter, no registry
+entry, no handler is needed for that.
 
-| | `from_jsonschema` | `from_call` |
-|---|---|---|
-| Schema source | Provided directly (caller fetches, passes in) | Discovered over wire (`services/list` + `services/schema`) |
-| Handler at call time | None (schema-only, `FromJsonSchema` provenance) | Forwards over QUIC (`FromCall` provenance, leaf) |
-| Use case | Type validation, discovery, composition graph construction | Actually invoking remote operations |
-
-Keeping them separate preserves the "schema-only, no execution" use case
-(type checking, safe composition planning without runtime).
+The `FromJsonSchema` provenance variant stays in `alknet-call`
+(`OperationProvenance` in `registry/registration.rs`); only the adapter
+implementation moved.
 
 ### OperationAdapter trait
 
@@ -433,8 +444,9 @@ door, recorded here.
 
 Implementations:
 - `FromCall` — QUIC-backed (in `alknet-call`).
-- `FromJsonSchema` — pure parse, no transport (in `alknet-call`).
 - `FromOpenAPI` — HTTP-backed (in `alknet-http`).
+- `FromJsonSchema` — HTTP-backed, single-endpoint (in `alknet-http` per
+  ADR-066; was a broken schema-only placeholder in `alknet-call`).
 - `FromMCP` — MCP streamable-HTTP-backed (in `alknet-http`, feature-gated).
 
 The `to_*` adapters (`to_openapi`, `to_mcp`) are outbound projections, not
@@ -451,12 +463,12 @@ dependencies live.**
 alknet-call (lean — no HTTP client, no HTTP server)
 ├── OperationAdapter trait          (the contract — async, per ADR-017 §5)
 ├── from_call                     (QUIC — discovers remote ops via call protocol)
-├── from_jsonschema               (pure parse — caller fetches the doc, passes it in)
 └── CallClient                    (outbound connection opener — the #1 gap)
 
 alknet-http (owns HTTP server + HTTP client — separate crate, separate Phase 0)
 ├── ProtocolHandler for h2/http1.1/h3   (axum server — inbound HTTP)
 ├── from_openapi                   (parse OpenAPI doc + reqwest forwarding handler)
+├── from_jsonschema                (single-endpoint reqwest forwarding handler — ADR-066)
 ├── to_openapi                     (generate OpenAPI doc from local registry)
 ├── from_mcp  (feature-gated)       (import remote MCP tools over streamable HTTP — reqwest)
 └── to_mcp    (feature-gated)       (expose local ops as MCP tools over streamable HTTP — axum)
@@ -591,12 +603,10 @@ Based on the gap analysis and the downstream unblock chain:
    already-implemented `services/list` + `services/schema` discovery API.
 
 3. **`OperationAdapter` trait** (enabling) — the async trait. Small,
-   standalone, unblocks `alknet-http` Phase 1.
+   standalone, unblocks `alknet-http` Phase 1 (including `from_jsonschema`
+   per ADR-066).
 
-4. **`from_jsonschema`** (medium, standalone) — schema-only registration, no
-   handler. Small.
-
-5. **DC-1 resolution** (peer-graph routing model, ADR-029) — the
+4. **DC-1 resolution** (peer-graph routing model, ADR-029) — the
    peer-keyed overlay + `AccessControl`-based peer authorization model that
    replaces ADR-028's `remote_safe`/`trusted_peer`. This is a structural
    change to `CompositeOperationEnv` (→ `PeerCompositeEnv`), the dispatch
@@ -617,10 +627,12 @@ Based on the gap analysis and the downstream unblock chain:
 
 ## Constraints
 
-- **No HTTP in alknet-call.** `from_openapi`/`from_mcp`/`to_openapi`/`to_mcp`
-  live in `alknet-http`. The `OperationAdapter` trait and the QUIC-backed
-  adapters (`from_call`, `from_jsonschema`) live in `alknet-call`. See
-  Adapter Location Map.
+- **No HTTP in alknet-call.** `from_openapi`/`from_mcp`/`from_jsonschema`/
+  `to_openapi`/`to_mcp` live in `alknet-http`. The `OperationAdapter`
+  trait and the QUIC-backed adapter (`from_call`) live in `alknet-call`.
+  `from_jsonschema` was originally (mis)placed in `alknet-call` as a
+  schema-only placeholder; ADR-066 moved it to `alknet-http` as a real
+  HTTP-backed adapter. See Adapter Location Map.
 - **No secret material on the wire.** `CallCredentials` carries vault-derived
   material for the *outbound* connection (TLS identity, auth token); the
   call protocol's wire format carries no private keys, API keys, or decrypted
@@ -669,7 +681,8 @@ Based on the gap analysis and the downstream unblock chain:
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction; trait is async; adapters produce `HandlerRegistration` bundles |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction; trait is async; adapters produce `HandlerRegistration` bundles. ~~`from_jsonschema` clause superseded by ADR-066~~ |
+| `from_jsonschema` as HTTP-backed single-endpoint adapter in alknet-http | [ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) | Moved `from_jsonschema` from `alknet-call` (broken schema-only placeholder) to `alknet-http` as a real reqwest-backed single-endpoint adapter; `FromJsonSchema` provenance stays in `alknet-call` as a leaf |
 | Peer-graph routing model (DC-1, supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via existing `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` |
 | PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `PeerId` source changes from UUID to `Identity.id` (= `PeerEntry.peer_id`, stable across key rotation); `Identity.id` decoupled from crypto material on the fingerprint path |
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `call.requested` and `OperationContext`; the `from_call` handler populates it; metadata only, never used by `AccessControl::check` |

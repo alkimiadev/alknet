@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-06
+last_updated: 2026-07-09
 ---
 
 # alknet-http — Overview
@@ -154,7 +154,6 @@ implementations live where their transport dependencies live.
 alknet-call (lean — no HTTP client, no HTTP server)
 ├── OperationAdapter trait       (the contract — async, ADR-017 §5)
 ├── from_call                    (QUIC — discovers remote ops via call protocol)
-├── from_jsonschema              (pure parse — caller fetches the doc, passes it in)
 └── CallClient                   (outbound connection opener)
 
 alknet-http (owns HTTP server + HTTP client)
@@ -162,6 +161,7 @@ alknet-http (owns HTTP server + HTTP client)
 ├── [WS upgrade → native session] (hands the WS message stream to the shared Dispatcher —
 │                                not an adapter; see websocket.md, ADR-048)
 ├── from_openapi                 (parse OpenAPI doc + reqwest forwarding handler)
+├── from_jsonschema              (single-endpoint reqwest forwarding handler — ADR-066)
 ├── to_openapi                   (generate OpenAPI doc from local registry)
 ├── from_mcp   (feature-gated)   (import remote MCP tools over streamable HTTP — reqwest)
 ├── to_mcp     (feature-gated)   (expose local ops as MCP tools over streamable HTTP — axum)
@@ -169,10 +169,12 @@ alknet-http (owns HTTP server + HTTP client)
                                  from_call-aligned, same-protocol; see websocket.md §"Future")
 ```
 
-`alknet-call` never sees the HTTP client. The `from_openapi`/`from_mcp`
-forwarding handlers are opaque `Arc<dyn Handler>` from the registry's
-perspective. `alknet-call` stays lean; `alknet-http` owns both HTTP
-directions.
+`alknet-call` never sees the HTTP client. The `from_openapi`/
+`from_mcp`/`from_jsonschema` forwarding handlers are opaque
+`Arc<dyn Handler>` from the registry's perspective. `alknet-call` stays
+lean; `alknet-http` owns both HTTP directions. `from_jsonschema` was
+originally (mis)placed in `alknet-call` as a schema-only placeholder;
+ADR-066 moved it to `alknet-http` as a real HTTP-backed adapter.
 
 ## Feature Gates
 
@@ -208,9 +210,9 @@ Rust, no native code), consistent with the default-features philosophy.
 
 ## The No-Env-Vars Invariant
 
-The `from_openapi`/`from_mcp` forwarding handlers are the **credential
-injection point** for the no-env-vars architecture. The path (from the
-gap analysis):
+The `from_openapi`/`from_mcp`/`from_jsonschema` forwarding handlers are
+the **credential injection point** for the no-env-vars architecture. The
+path (from the gap analysis):
 
 ```
 vault → assembly layer → Capabilities → HandlerRegistration.capabilities
@@ -227,8 +229,9 @@ through `from_openapi` operations that carry the credential in
 
 **This is a spec-level invariant**: no handler reads outbound
 credentials from any source other than `OperationContext.capabilities`.
-The `from_openapi`/`from_mcp` implementations in `alknet-http` are
-verified against this invariant. See ADR-014 and
+The `from_openapi`/`from_mcp`/`from_jsonschema` implementations in
+`alknet-http` are verified against this invariant (same handler shape —
+`from_jsonschema` per ADR-066). See ADR-014 and
 [client-and-adapters.md](../call/client-and-adapters.md).
 
 ## Architecture (component pointers)
@@ -245,7 +248,9 @@ verified against this invariant. See ADR-014 and
   browsers-are-not-peers rationale, streaming (native `call.responded`,
   no SSE), and the deferred `from_wss` adapter.
 - **[http-adapters.md](http-adapters.md)** — `from_openapi` (parse
-  OpenAPI, build forwarding handlers with `reqwest`) and `to_openapi`
+  OpenAPI, build forwarding handlers with `reqwest`),
+  `from_jsonschema` (single-endpoint reqwest forwarding handler for
+  non-standard/non-OpenAPI endpoints, ADR-066), and `to_openapi`
   (generate an OpenAPI doc from the registry's `External` operations).
   Error fidelity per ADR-023.
 - **[http-mcp.md](http-mcp.md)** — `from_mcp`/`to_mcp` (feature-gated),

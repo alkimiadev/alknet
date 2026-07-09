@@ -123,7 +123,9 @@ pub enum OperationProvenance {
     /// QUIC forwarding stub (from_call). Leaf in the local registry —
     /// forwards calls to a remote node; cannot compose locally.
     FromCall,
-    /// JSON Schema definition (from_jsonschema), no handler — schema only.
+    /// HTTP forwarding stub (from_jsonschema, single endpoint), leaf —
+    /// cannot compose. (ADR-066: was "no handler — schema only"; now a
+    /// real reqwest-backed forwarding handler in alknet-http.)
     FromJsonSchema,
     /// Agent-written, sandboxed, can compose within sandbox bounds.
     Session,
@@ -136,12 +138,22 @@ pub enum OperationProvenance {
 | `FromOpenAPI` | No (leaf) | No | Internal | HTTP endpoint trusted; handler is a forwarding stub |
 | `FromMCP` | No (leaf) | No | Internal | MCP server trusted; handler is a forwarding stub |
 | `FromCall` | No (leaf in local registry) | No | Internal | Remote node trusted; handler is a forwarding stub |
-| `FromJsonSchema` | N/A (no handler) | No | N/A | N/A |
+| `FromJsonSchema` | No (leaf) | No | Internal | HTTP endpoint trusted; handler is a forwarding stub (ADR-066) |
 | `Session` | Yes (within sandbox) | Yes — scopes set by assembly layer at sandbox creation | Internal always | Untrusted code in sandbox |
 
+> **ADR-066 amendment (2026-07-09).** The `FromJsonSchema` row
+> previously read "N/A (no handler) / N/A / N/A" — `from_jsonschema`
+> was a schema-only placeholder in `alknet-call` with a
+> `NOT_FOUND`-returning handler.
+> [ADR-066](066-from-jsonschema-as-http-adapter.md) moved the adapter
+> to `alknet-http` as a real HTTP-backed single-endpoint adapter with a
+> reqwest forwarding handler. `FromJsonSchema` is now a leaf, same
+> trust model as `FromOpenAPI` (HTTP endpoint trusted; handler is a
+> forwarding stub). The "schema-only, no handler" concept is removed.
+
 Only `Local` and `Session` ops get composition authority. Leaves
-(`FromOpenAPI`, `FromMCP`, `FromCall`) don't compose, so they don't get one.
-The assembly layer does not invent identities for leaves.
+(`FromOpenAPI`, `FromMCP`, `FromCall`, `FromJsonSchema`) don't compose, so
+they don't get one. The assembly layer does not invent identities for leaves.
 
 ### 2. Composition authority replaces `handler_identity: Identity`
 
