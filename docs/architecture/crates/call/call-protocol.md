@@ -474,7 +474,7 @@ fn build_root_context(
         metadata: HashMap::new(),        // fresh per request
         deadline: Some(Instant::now() + self.default_timeout),  // root deadline (W7)
         scoped_env: registration.scoped_env.clone()
-            .unwrap_or_else(ScopedOperationEnv::empty),  // from the bundle, empty for leaves
+            .unwrap_or_else(ScopedPeerEnv::empty),  // from the bundle, empty for leaves
         // Per-call env composition (ADR-024 + ADR-029): the root env is a
         // PeerCompositeEnv — the curated base + this connection's imported-
         // ops overlay (peer-keyed in the head's aggregation env, ADR-029 §1)
@@ -590,8 +590,9 @@ See [open-questions.md](../../open-questions.md) for full details.
   variants (`DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`,
   `SamePeerCollision`); `#[non_exhaustive]`. See
   [client-and-adapters.md](client-and-adapters.md).
-- **OQ-27** (resolved): `from_call` re-import trigger — auto-re-import on
-  connection establishment. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a manual
+  free function; the assembly layer calls it after `connect()`. See
+  [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer collision
   = error; cross-peer dissolved by ADR-029 (separate sub-overlays). See
   [client-and-adapters.md](client-and-adapters.md).

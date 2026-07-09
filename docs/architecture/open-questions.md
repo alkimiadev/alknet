@@ -158,6 +158,14 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-50](questions/050-docker-system-events-subscription.md) | Docker System Events Subscription | deferred(scope) | two | low |
 | [OQ-51](questions/051-container-create-options-surface.md) | Container Create Options Surface | deferred(scope) | two | med |
 
+### alknet-hub
+
+| OQ | Title | Status | Door | Pri |
+|----|-------|--------|------|-----|
+| [OQ-52](questions/052-callconnection-wait-for-close.md) | CallConnection::wait_for_close() for supervision loop | open | two | med |
+| [OQ-53](questions/053-backoff-config-defaults.md) | BackoffConfig default policy | open | two | low |
+| [OQ-54](questions/054-inbound-worker-hook-placement.md) | Inbound worker on_worker_connected hook placement | open | two | low |
+
 ## Deferred / Blocked
 
 The safe-exit visibility surface. These questions are parked because the

@@ -243,7 +243,7 @@ pub struct OperationContext {
     /// Populated from the registration bundle's `scoped_env` (ADR-022).
     /// The reachability check in `OperationEnv::invoke()` consults
     /// `scoped_env.allows(&name)`. This is data, not a dispatch trait.
-    pub scoped_env: ScopedOperationEnv,
+    pub scoped_env: ScopedPeerEnv,
     /// Composition dispatch trait. A handler calls `env.invoke(...)` to
     /// compose child operations. This is `Arc<dyn OperationEnv>` (a trait
     /// object), not a concrete struct — the trait-object design is what
@@ -303,7 +303,7 @@ impl OperationContext {
 - `forwarded_for`: The original caller when this call was forwarded by a `from_call` handler (ADR-032). **Metadata only** — `AccessControl::check` never reads it; the ACL always authorizes the direct caller's `identity`. Handlers may read it for logging, auditing, per-user rate limiting, or application context. Populated from `call.requested.forwarded_for` by the dispatch path; set to `None` for composed children (wire-ingress only). The forwarder's claim, not a verified identity — a malicious hub can lie (same property as HTTP `X-Forwarded-For`). See ADR-032.
 - `capabilities`: Outbound credentials the handler may use (decrypted API keys, scoped vault access) — see [Capability Injection](#capability-injection) below
 - `metadata`: Request-scoped context (tracing IDs, connection info). **Must not hold secret material** — see ADR-014. **Does not propagate through `OperationEnv::invoke()`** — nested calls get fresh metadata. The tracing link between parent and child is `parent_request_id`, not metadata propagation. Anything a handler needs to pass to a child goes in the call `input`.
-- `scoped_env`: The reachability set — the operations this handler may compose. Populated from the registration bundle's `scoped_env` (ADR-022). The reachability check in `OperationEnv::invoke()` consults `scoped_env.allows(&name)`. This is *data* (a `ScopedOperationEnv` struct), not a dispatch trait. `None`/empty for leaves.
+- `scoped_env`: The reachability set — the operations this handler may compose. Populated from the registration bundle's `scoped_env` (ADR-022). The reachability check in `OperationEnv::invoke()` consults `scoped_env.allows(&name)`. This is *data* (a `ScopedPeerEnv` struct), not a dispatch trait. `None`/empty for leaves.
 - `env`: The composition dispatch trait (`Arc<dyn OperationEnv + Send + Sync>`). A handler calls `context.env.invoke(...)` to compose child operations. This is a trait object, not a concrete struct — the trait-object design enables registry layering (ADR-024): the CallAdapter composes the root env per call from the active layers (curated base + connection overlay + session overlay), and overlays wrap the base via trait layering. Same pattern as `IdentityProvider` (ADR-004). See ADR-024.
 - `internal`: When `true`, this call originated from composition (a handler calling another operation via `OperationEnv`), not from a wire request. This switches the authority context: ACL runs against `handler_identity`, not `identity`. The `internal` field uses module-private construction — handlers construct `OperationContext` through `OperationEnv::invoke()` which sets `internal: true`, or through the `CallAdapter` dispatch path which sets `internal: false`. The field is not `pub` for writes; only `pub fn is_internal(&self) -> bool` is exposed for reads. See ADR-015.
 
@@ -433,24 +433,37 @@ impl CompositionAuthority {
 - `scoped_env`: The set of operations this handler may reach via `env.invoke()`. `None` for leaves (empty env). The reachability control from ADR-015.
 - `capabilities`: Outbound credentials (decrypted API keys, signing keys). Populated by the assembly layer from the vault at registration time. See [Capability Injection](#capability-injection).
 
-The `OperationRegistryBuilder` provides a fluent API with convenience methods for common cases. The builder absorbs the `HandlerKind` wrapping internally — `.with_local()` and `.with_leaf()` take the raw `Handler` (or `StreamingHandler`) and wrap it in the right `HandlerKind` based on `spec.op_type` (ADR-049):
+The `OperationRegistryBuilder` provides a fluent API with convenience methods for common cases. The builder validates handler kind against `spec.op_type` at registration time — `with_local` / `with_leaf` accept `Handler` (for `Query`/`Mutation` ops), `with_local_streaming` / `with_leaf_streaming` accept `StreamingHandler` (for `Subscription` ops). Passing a `StreamingHandler` to `with_local` or a `Handler` to `with_local_streaming` is a registration-time error:
 
 ```rust
 // with_local: Local provenance, full bundle — all 5 args required.
+// Accepts Handler (for Query/Mutation ops). Validates op_type at registration.
 // with_local(spec, handler, composition_authority, scoped_env, capabilities)
-// The builder inspects spec.op_type and wraps in HandlerKind::Once
-// (Query/Mutation) or HandlerKind::Stream (Subscription) automatically.
+
+// with_local_streaming: Local provenance, full bundle — all 5 args required.
+// Accepts StreamingHandler (for Subscription ops). Validates op_type at registration.
+// with_local_streaming(spec, streaming_handler, composition_authority, scoped_env, capabilities)
+
+// with_leaf: Leaf provenance (default FromOpenAPI), no composition authority.
+// Accepts Handler (for Query/Mutation ops).
+// with_leaf(spec, handler, capabilities)
+
+// with_leaf_streaming: Leaf provenance (default FromOpenAPI), no composition authority.
+// Accepts StreamingHandler (for Subscription ops).
+// with_leaf_streaming(spec, streaming_handler, capabilities)
+
+// with_leaf_provenance / with_leaf_streaming_provenance: explicit provenance variant.
 let registry = OperationRegistryBuilder::new()
     // Built-in service discovery (Local, no composition — empty authority, empty env, empty caps)
     .with_local(services_list_spec(), Arc::new(services_list_handler),
-                CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
+                CompositionAuthority::none(), ScopedPeerEnv::empty(), Capabilities::new())
     .with_local(services_schema_spec(), Arc::new(schema_handler),
-                CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
+                CompositionAuthority::none(), ScopedPeerEnv::empty(), Capabilities::new())
     // Agent handler (Local, Subscription — streams call.responded as the
-    // LLM generates tokens; builder wraps in HandlerKind::Stream)
-    .with_local(agent_chat_spec(), Arc::new(agent_chat_streaming_handler),
+    // LLM generates tokens; uses with_local_streaming for the StreamingHandler)
+    .with_local_streaming(agent_chat_spec(), Arc::new(agent_chat_streaming_handler),
                 CompositionAuthority::new("agent-chat", ["llm:call", "fs:read", "vastai:query"]),
-                ScopedOperationEnv::new(["fs/readFile", "vastai/listMachines", "llm/generate"]),
+                ScopedPeerEnv::new(["fs/readFile", "vastai/listMachines", "llm/generate"]),
                 Capabilities::new().with_api_key("google", google_api_key))
     // Imported ops (leaves — no authority, no scoped env; capabilities for outbound HTTP)
     .with_leaf(vastai_listMachines_spec(), Arc::new(vastai_handler), vastai_credentials)
@@ -621,7 +634,7 @@ impl OperationEnv for LocalOperationEnv {
             abort_policy: policy,                             // Explicit policy (from invoke() default or invoke_with_policy)
             deadline: parent.deadline,                        // Inherit parent's deadline (children don't get a fresh 30s)
             scoped_env: registration.scoped_env.clone()
-                .unwrap_or_else(ScopedOperationEnv::empty),  // Child's own scoped env (empty for leaves)
+                .unwrap_or_else(ScopedPeerEnv::empty),  // Child's own scoped env (empty for leaves)
             // Dispatch trait: the child inherits the parent's env (the same
             // composite of curated base + active overlays). See ADR-024.
             env: parent.env.clone(),
@@ -820,9 +833,9 @@ let vastai_credentials = Capabilities::new().with_http_token("vastai", vastai_to
 let registry = OperationRegistryBuilder::new()
     // Built-in service discovery (Local, no composition — empty caps)
     .with_local(services_list_spec(), Arc::new(services_list_handler),
-                CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
+                CompositionAuthority::none(), ScopedPeerEnv::empty(), Capabilities::new())
     .with_local(services_schema_spec(), Arc::new(schema_handler),
-                CompositionAuthority::none(), ScopedOperationEnv::empty(), Capabilities::new())
+                CompositionAuthority::none(), ScopedPeerEnv::empty(), Capabilities::new())
     // Agent handler (Local, Subscription — composes; streaming handler
     // wrapped in HandlerKind::Stream by the builder per ADR-049)
     .with(HandlerRegistration {
@@ -831,7 +844,7 @@ let registry = OperationRegistryBuilder::new()
         provenance: OperationProvenance::Local,
         composition_authority: Some(CompositionAuthority::new(
             "agent-chat", ["llm:call", "fs:read", "vastai:query"])),
-        scoped_env: Some(ScopedOperationEnv::new(
+        scoped_env: Some(ScopedPeerEnv::new(
             ["fs/readFile", "vastai/listMachines", "llm/generate"])),
         capabilities: Capabilities::new().with_api_key("google", google_api_key),
     })
@@ -940,9 +953,10 @@ See [open-questions.md](../../open-questions.md) for full details.
   variants: `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`,
   `SamePeerCollision` (replaces flat `Conflict`). `#[non_exhaustive]`. See
   [client-and-adapters.md](client-and-adapters.md).
-- **OQ-27** (resolved): `from_call` re-import trigger — auto-re-import on
-  connection establishment. `CallConnection::refresh()` is a feature
-  addition, not an unmade decision. See [client-and-adapters.md](client-and-adapters.md).
+- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a manual
+  free function; the assembly layer calls it after `connect()`. A
+  `CallConnection::refresh()` method is a genuine feature addition —
+  non-breaking, additive. See [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer
   collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
   `namespace_prefix` is optional local-naming sugar. See

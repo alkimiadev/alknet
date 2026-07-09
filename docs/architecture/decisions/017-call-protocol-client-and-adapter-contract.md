@@ -390,15 +390,19 @@ where `AdapterError` is a crate-level enum. The *presence* of the error type
 is recorded in [client-and-adapters.md](../crates/call/client-and-adapters.md);
 the exact variants are the two-way-door remainder, tracked as OQ-26.
 
-### DC-2 — from_call re-import on reconnection: default set
+### DC-2 — from_call re-import on reconnection: manual free function
 
 Assumption 4 noted re-import "happens on reconnection or is triggered
-explicitly." The v1 default is **auto-re-import on connection establishment**.
-The overlay is per-connection (Layer 2, ADR-024), so re-import is naturally
-scoped; a stale overlay dies with the connection. Explicit re-import via a
-future `CallConnection::refresh()` is additive. Two-way door; recorded in
+explicitly." The decision is **manual**: `from_call` is a free function; the
+assembly layer calls it after `connect()`. The overlay is per-connection
+(Layer 2, ADR-024), so re-import on reconnect is naturally scoped; a stale
+overlay dies with the connection. A `CallConnection::refresh()` method for
+mid-connection re-discovery is a genuine feature addition — non-breaking,
+additive — if a deployment needs manual re-discovery without
+drop-and-reconnect. Two-way door; recorded in
 [client-and-adapters.md](../crates/call/client-and-adapters.md); tracked as
-OQ-27.
+OQ-27. See [ADR-069](069-from-call-manual-free-function.md) for the full
+rationale.
 
 ### DC-3 — from_call namespace collision: default set
 

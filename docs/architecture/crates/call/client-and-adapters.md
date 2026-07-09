@@ -352,11 +352,14 @@ The flow (ADR-017 §3):
 4. The caller registers the bundles via
    `CallConnection::register_imported_all()`.
 
-**Re-import on reconnection** (DC-2, OQ-27): `from_call` runs automatically on
-connection establishment. The overlay is per-connection (Layer 2, ADR-024), so
-a stale overlay dies with the connection; re-import on reconnect is naturally
-scoped to the new connection. This is the v1 default; explicit re-import via a
-future `CallConnection::refresh()` is additive.
+**Re-import on reconnection** (DC-2, OQ-27): `from_call` is a free function;
+the assembly layer calls it after `connect()`. The overlay is per-connection
+(Layer 2, ADR-024), so a stale overlay dies with the connection; re-import on
+reconnect is naturally scoped to the new connection. A
+`CallConnection::refresh()` method for mid-connection re-discovery is a
+genuine feature addition — non-breaking, additive — if a deployment needs
+manual re-discovery without drop-and-reconnect. See
+[ADR-069](../../decisions/069-from-call-manual-free-function.md).
 
 **Namespace collision** (DC-3, OQ-28): under the peer-graph model (ADR-029),
 cross-peer collision dissolves — same name on different peers is fine (they
@@ -649,8 +652,10 @@ Based on the gap analysis and the downstream unblock chain:
   holds a `PeerCompositeEnv` with `connections: HashMap<PeerId, Arc<dyn OperationEnv>>`,
   not a singular connection overlay. `invoke_peer()` routes to the right peer
   via `PeerRef::Specific` / `PeerRef::Any` (ADR-029 §1-2).
-- **`from_call` re-import is auto-on-reconnect.** v1 default; the overlay is
-  per-connection so re-import is naturally scoped (DC-2, OQ-27).
+- **`from_call` is a manual free function.** The assembly layer calls it after
+  `connect()`. The overlay is per-connection so re-import on reconnect is
+  naturally scoped (DC-2, OQ-27). See
+  [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **`from_call` namespace collision is same-peer only.** Cross-peer collision
   dissolves (same name on different peers is fine — separate sub-overlays,
   ADR-029 §5). Same-peer collision stays an error. `namespace_prefix` is
@@ -713,9 +718,10 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-26** (resolved): `AdapterError` variants — `DiscoveryFailed`,
   `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`
   (replaces flat `Conflict`). `#[non_exhaustive]`.
-- **OQ-27** (resolved): `from_call` re-import trigger — auto-re-import on
-  connection establishment. `CallConnection::refresh()` is a feature
-  addition, not an unmade decision.
+- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a manual
+  free function; the assembly layer calls it after `connect()`. A
+  `CallConnection::refresh()` method is a genuine feature addition —
+  non-breaking, additive. See [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer
   collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
   `namespace_prefix` is optional local-naming sugar.

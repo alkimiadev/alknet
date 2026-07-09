@@ -97,6 +97,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/encryption.md](crates/vault/encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
 | [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
+| [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — aggregated peer env, connection lifecycle, worker supervision, service discovery |
 
 ## ADR Table
 
@@ -168,10 +169,13 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [064](decisions/064-irpc-never-integrated-hand-rolled-framing.md) | irpc Was Never Integrated — Hand-Rolled EventEnvelope Framing | Accepted (supersedes ADR-005) |
 | [065](decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` — Generic Single-Stream Connections | Accepted |
 | [066](decisions/066-from-jsonschema-as-http-adapter.md) | `from_jsonschema` as HTTP-Backed Single-Endpoint Adapter in alknet-http | Accepted (supersedes the `from_jsonschema` clause of ADR-017 §5 and the `FromJsonSchema` provenance row of ADR-022) |
+| [067](decisions/067-aggregated-peer-env-wiring.md) | Aggregated Peer-Environment Wiring for Hub Deployments | Proposed |
+| [068](decisions/068-peer-composite-env-peer-operations.md) | PeerCompositeEnv::peer_operations Override | Proposed |
+| [069](decisions/069-from-call-manual-free-function.md) | from_call Is a Manual Free Function, Not Auto-Wired | Proposed |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (51 OQs across 16 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (54 OQs across 17 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 

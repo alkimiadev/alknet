@@ -58,7 +58,7 @@ Structured RPC: operations, request/response, streaming subscriptions, and servi
 | OQ-19 | Session-scoped operation registries | resolved | Agent-written operations overlaid on curated registry via `OperationEnv` trait layering. Protocol doesn't need changes; `OperationEnv` must remain a trait. Generalized by ADR-024 to cover connection-scoped overlays. |
 | OQ-25 | ~~Remote-safe marking shape~~ | **dissolved** (ADR-029) | `remote_safe`/`trusted_peer` retired; peer authorization is `AccessControl::check(peer_identity)` |
 | OQ-26 | OperationAdapter error type (AdapterError variants) | **resolved** | `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`; `#[non_exhaustive]` |
-| OQ-27 | from_call re-import trigger | **resolved** | Auto-re-import on connection establishment; `refresh()` is a feature addition |
+| OQ-27 | from_call re-import trigger | **resolved** | `from_call` is a manual free function; the assembly layer calls it after `connect()`. `refresh()` is a genuine feature addition. See ADR-069. |
 | OQ-28 | from_call namespace collision | **resolved** | Same-peer collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays) |
 | OQ-29 | CallClient TLS client-auth | **resolved** | Wire quinn client-auth; key-type-aware server cert verification; fingerprint normalization |
 | OQ-30 | `PeerRef::Any` routing policy | **resolved** | Insertion-order first-match; richer routing is a feature extension |
