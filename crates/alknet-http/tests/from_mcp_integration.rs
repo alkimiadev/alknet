@@ -13,7 +13,7 @@ use alknet_call::client::OperationAdapter;
 use alknet_call::protocol::wire::ResponseEnvelope;
 use alknet_call::registry::context::{AbortPolicy, OperationContext, ScopedPeerEnv};
 use alknet_call::registry::env::OperationEnv;
-use alknet_call::registry::registration::OperationProvenance;
+use alknet_call::registry::registration::{HandlerKind, OperationProvenance};
 use alknet_core::types::Capabilities;
 use alknet_http::adapters::FromMCP;
 use axum::Router;
@@ -170,7 +170,10 @@ async fn forwarding_handler_calls_echo_and_returns_structured_content() {
     let caps = Capabilities::new().with_http_token("mcp", "unused-on-server".to_string());
     let ctx = test_context("req-echo", caps);
     let input = serde_json::json!({ "msg": "hello" });
-    let response = (echo.handler)(input, ctx).await;
+    let response = match &echo.handler {
+        HandlerKind::Once(h) => h(input, ctx).await,
+        HandlerKind::Stream(_) => panic!("expected Once handler for echo tool"),
+    };
 
     assert_eq!(response.request_id, "req-echo");
     match response.result {
@@ -193,7 +196,10 @@ async fn forwarding_handler_calls_legacy_and_returns_content_blocks() {
         .expect("legacy tool present");
 
     let ctx = test_context("req-legacy", Capabilities::new());
-    let response = (legacy.handler)(serde_json::json!({}), ctx).await;
+    let response = match &legacy.handler {
+        HandlerKind::Once(h) => h(serde_json::json!({}), ctx).await,
+        HandlerKind::Stream(_) => panic!("expected Once handler for legacy tool"),
+    };
 
     match response.result {
         Ok(Value::Array(blocks)) => {
@@ -217,7 +223,10 @@ async fn forwarding_handler_does_not_read_env_vars() {
         .expect("echo tool present");
 
     let ctx = test_context("req-noenv", Capabilities::new());
-    let response = (echo.handler)(serde_json::json!({ "x": 1 }), ctx).await;
+    let response = match &echo.handler {
+        HandlerKind::Once(h) => h(serde_json::json!({ "x": 1 }), ctx).await,
+        HandlerKind::Stream(_) => panic!("expected Once handler for echo tool"),
+    };
     assert!(response.result.is_ok(), "handler works without env var");
     std::env::remove_var("MCP_TOKEN");
 }
