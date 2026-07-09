@@ -467,7 +467,7 @@ fn dispatch_iroh(
 
 #[cfg(feature = "iroh")]
 fn extract_iroh_client_fingerprint(connection: &iroh::endpoint::Connection) -> Option<String> {
-    let node_id = connection.remote_node_id().ok()?;
+    let node_id = connection.remote_id();
     Some(format!("ed25519:{}", node_id))
 }
 
@@ -678,14 +678,13 @@ async fn build_iroh_endpoint(
     static_config: &StaticConfig,
     alpns: &[Vec<u8>],
 ) -> Result<iroh::Endpoint, EndpointError> {
-    let mut builder = iroh::Endpoint::builder();
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal);
 
     if let Some(TlsIdentity::RawKey(secret_key)) = static_config.tls_identity.as_ref() {
         let iroh_key = iroh::SecretKey::from_bytes(&secret_key.as_bytes());
         builder = builder.secret_key(iroh_key);
     } else {
-        let mut csprng = rand::rngs::OsRng;
-        builder = builder.secret_key(iroh::SecretKey::generate(&mut csprng));
+        builder = builder.secret_key(iroh::SecretKey::generate());
     }
 
     builder = builder.alpns(alpns.to_vec());

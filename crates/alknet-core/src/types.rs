@@ -397,7 +397,7 @@ impl Connection {
 
     #[cfg(feature = "iroh")]
     pub fn from_iroh(conn: iroh::endpoint::Connection) -> Self {
-        let alpn = conn.alpn().unwrap_or_default();
+        let alpn = conn.alpn().to_vec();
         Self {
             kind: ConnectionKind::Iroh(conn),
             alpn,
