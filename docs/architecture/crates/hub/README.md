@@ -5,10 +5,11 @@ last_updated: 2026-07-09
 
 # alknet-hub
 
-The hub pattern as a reusable crate: aggregated peer environment, connection
-lifecycle hooks, worker supervision, and service discovery across connected
-peers. Consumes `alknet-call` types; provides the assembly-layer wiring every
-hub needs.
+The hub pattern as a reusable crate: peer lifecycle management, connection
+supervision, and service discovery across connected peers. The call-protocol
+strategy (operation import via `from_call`, routing via `PeerCompositeEnv`)
+is the first and primary strategy; the core peer lifecycle is
+protocol-agnostic.
 
 ## What
 
@@ -18,19 +19,26 @@ not introduce new types — it wires the existing `PeerCompositeEnv`,
 `CallClient`, `CallAdapter`, `from_call`, and `Dispatcher` types into a
 coherent hub runtime.
 
-A hub is a call-protocol node that:
+The hub has two layers:
 
-1. **Aggregates multiple worker connections** into a single
-   `PeerCompositeEnv` shared across all calls.
-2. **Discovers worker operations** via `from_call` on connection establishment.
-3. **Supervises worker connections** — reconnects on drop with backoff,
-   re-discovers ops on reconnect, detaches on disconnect.
-4. **Exposes service discovery** — `services/list-peers` returns each
-   connected worker's operation list.
+1. **Core peer lifecycle** — protocol-agnostic. The hub knows which peers are
+   connected, manages their connection lifecycle (dial, accept, disconnect,
+   reconnect with backoff), and resolves their identities. This layer does not
+   know what a peer *does* — it only knows that a peer is connected and has an
+   identity.
 
-The crate provides these four capabilities. A downstream consumer (alkapi,
-any future hub) constructs a `Hub`, registers its curated operations, and
-starts accepting/dialing workers. The hub handles the rest.
+2. **Call-protocol strategy** — the first strategy. When a call-protocol peer
+   connects, the hub discovers its operations via `from_call`, registers them
+   in the aggregated `PeerCompositeEnv`, and routes operation calls to the
+   right peer via `PeerRef`. This is the strategy that handles the majority of
+   real-world hub use cases (docker workers, agent tool dispatch, service
+   composition).
+
+Future strategies (tty, blobs, custom protocols) plug into the same core peer
+lifecycle. A QUIC connection can multiplex multiple protocols over separate
+streams — a single peer connection could carry both call-protocol operations
+and tty sessions. The hub's core lifecycle manages the connection; each
+strategy manages its own protocol-specific state on top.
 
 ## Why
 
@@ -55,10 +63,11 @@ independently, `alknet-hub` provides it once, as a reusable crate.
 
 ## Architecture
 
-### Hub struct
+### Core: Hub struct and peer lifecycle
 
-The `Hub` is the central type. It owns the aggregated `PeerCompositeEnv`, the
-`OperationRegistry`, and the `Dispatcher`:
+The `Hub` is the central type. It owns the aggregated `PeerCompositeEnv`
+(used by the call-protocol strategy), the `OperationRegistry`, and the
+`Dispatcher`:
 
 ```rust
 pub struct Hub {
@@ -103,9 +112,10 @@ impl Hub {
 The `Hub` exposes builder methods for optional hooks (`with_session_source`,
 `with_ownership_provider`, `with_timeout`) that delegate to the `Dispatcher`.
 
-### Worker connection lifecycle
+### Call-protocol strategy
 
-The hub provides two paths for worker connections:
+The call-protocol strategy is what the hub *does* when a call-protocol peer
+connects: discover its operations, register them, and make them routable.
 
 #### Inbound workers (workers dial the hub)
 
@@ -114,9 +124,10 @@ The hub's `CallAdapter` accepts inbound connections. The hub provides an
 
 ```rust
 impl Hub {
-    /// Called by the assembly layer when a worker connects inbound (via
-    /// CallAdapter::handle). Runs from_call, registers the bundles in the
-    /// connection's overlay, and attaches the peer to the aggregated env.
+    /// Called by the assembly layer when a call-protocol worker connects
+    /// inbound (via CallAdapter::handle). Runs from_call, registers the
+    /// bundles in the connection's overlay, and attaches the peer to the
+    /// aggregated env.
     pub async fn on_worker_connected(
         &self,
         connection: &CallConnection,
@@ -129,9 +140,12 @@ impl Hub {
         let bundles = from_call(connection, config).await?;
         connection.register_imported_all(bundles);
 
+        // Acquire write lock on the aggregated env and attach this peer's
+        // connection overlay. The lock is held only for the HashMap insert
+        // (connection-rate, not call-rate).
         self.aggregated_env
             .write()
-            .unwrap()
+            .expect("aggregated env lock poisoned")
             .attach_peer(peer_id.clone(), connection.overlay_env());
 
         Ok(peer_id)
@@ -139,10 +153,21 @@ impl Hub {
 
     /// Called by the assembly layer when a worker disconnects (run_loop exits).
     pub fn on_worker_disconnected(&self, peer_id: &PeerId) {
-        self.aggregated_env.write().unwrap().detach_peer(peer_id);
+        self.aggregated_env
+            .write()
+            .expect("aggregated env lock poisoned")
+            .detach_peer(peer_id);
     }
 }
 ```
+
+> **Note on `expect`**: The `RwLock` is held only for the duration of the
+> `HashMap` insert/remove. A poisoned lock indicates a panic in another thread
+> while holding the write lock — an unrecoverable state. The `expect` message
+> documents this invariant. The implementation may use a different concurrency
+> primitive (e.g. `ArcSwap`) that avoids poisoning entirely; the spec
+> describes the intent (acquire exclusive access, insert/remove, release),
+> not the mechanism.
 
 #### Outbound workers (hub dials workers)
 
@@ -153,8 +178,8 @@ configurable backoff:
 
 ```rust
 impl Hub {
-    /// Dial a worker, discover its operations, and attach it to the
-    /// aggregated env. Returns the worker's PeerId and the live
+    /// Dial a call-protocol worker, discover its operations, and attach it
+    /// to the aggregated env. Returns the worker's PeerId and the live
     /// CallConnection.
     pub async fn dial_worker(
         &self,
@@ -177,13 +202,13 @@ impl Hub {
 
         self.aggregated_env
             .write()
-            .unwrap()
+            .expect("aggregated env lock poisoned")
             .attach_peer(peer_id.clone(), connection.overlay_env());
 
         Ok((peer_id, connection))
     }
 
-    /// Supervise an outbound worker connection: dial, discover, attach.
+    /// Supervise an outbound call-protocol worker: dial, discover, attach.
     /// On disconnect, detach and retry with backoff. Runs until the
     /// Hub is dropped (the returned JoinHandle can be aborted).
     pub fn supervise_worker(
@@ -269,6 +294,34 @@ The hub registers the built-in service discovery operations (`services/list`,
 `services/list-peers` handler returns each connected worker's operation list
 via `PeerCompositeEnv::peer_operations` (ADR-068).
 
+### Extension points for future strategies
+
+The call-protocol strategy is the first strategy. The hub's core peer
+lifecycle is protocol-agnostic — it manages connections and identities
+regardless of what protocol runs over them. Future strategies plug into the
+same lifecycle:
+
+- **TTY strategy**: When a peer connects that supports `alknet/tty`, the hub
+  registers the peer as a terminal session provider. A tty request routes to
+  the right peer based on identity, not operation name. The strategy manages
+  its own routing table (peer → tty backend), separate from
+  `PeerCompositeEnv`.
+
+- **Blobs strategy**: When a peer connects that supports `alknet/blobs`, the
+  hub registers the peer as a blob store provider. Blob requests route by
+  content hash or peer identity.
+
+Each strategy is additive — it registers its own connection-establish and
+connection-drop hooks on the hub's core lifecycle. The strategies are
+independent; a single QUIC connection can carry multiple protocols over
+separate streams (QUIC multiplexing). The hub's core manages the connection;
+each strategy manages its own protocol-specific state.
+
+These strategies are not specced here. The architecture keeps the door open
+by separating core lifecycle from protocol-specific strategy. The
+call-protocol strategy is the first and primary strategy because it handles
+the majority of real-world hub use cases.
+
 ### HubError
 
 ```rust
@@ -298,11 +351,13 @@ pub enum HubError {
   the hub composes their ops. Worker A does not transitively see worker B's
   ops through the hub unless the hub explicitly re-exports them (ADR-029
   Assumption 5).
-- **Ownership reaping.** Stale ownership entries from autonomously-dead
-  containers are tolerated (ADR-050 §4b). The hub does not add a reaper.
 - **Worker provisioning.** The hub does not spawn workers, configure them, or
   manage their lifecycle beyond connection supervision. Worker provisioning
   is an assembly-layer concern.
+- **Non-call-protocol strategies.** The tty, blobs, and other protocol
+  strategies are not specced or implemented. The architecture keeps the door
+  open by separating core peer lifecycle from protocol-specific strategy;
+  each strategy is additive.
 
 ## Crate dependencies
 

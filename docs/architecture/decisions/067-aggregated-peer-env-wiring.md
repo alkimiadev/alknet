@@ -104,8 +104,13 @@ pub fn compose_root_env(
         .and_then(|s| s.overlay_for(context));
 
     if let Some(aggregated) = &self.aggregated_env {
-        // Clone the shared aggregated env (cheap — all fields are Arc).
-        let mut env = aggregated.read().unwrap().clone();
+        // Acquire read lock on the shared aggregated env, clone it (cheap —
+        // all fields are Arc), and release the lock. The clone is the
+        // per-call snapshot; the lock is not held for the call duration.
+        let mut env = aggregated
+            .read()
+            .expect("aggregated env lock poisoned")
+            .clone();
         // Attach the current connection's overlay as an override for this
         // call only. The current connection's overlay is the authoritative
         // view of *that* peer; the aggregated env is the authoritative view
@@ -146,10 +151,10 @@ let adapter = CallAdapter::new(registry, identity_provider)
     .with_aggregated_env(Arc::clone(&aggregated));
 ```
 
-The hub calls `aggregated.write().unwrap().attach_peer(peer_id, overlay)` on
-every worker connection-establish (after `from_call` populates the overlay)
-and `detach_peer(&peer_id)` on every disconnect. The `RwLock` write is held
-only for the `HashMap` insert/remove — connection-rate, not call-rate.
+The hub calls `attach_peer(peer_id, overlay)` on the aggregated env on every
+worker connection-establish (after `from_call` populates the overlay) and
+`detach_peer(&peer_id)` on every disconnect. The write lock is held only for
+the `HashMap` insert/remove — connection-rate, not call-rate.
 
 ### 5. `PeerCompositeEnv` gains `Clone`
 
