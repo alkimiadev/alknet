@@ -2,33 +2,28 @@
 
 - **Origin**:
   [crates/docker/docker-operations.md](crates/docker/docker-operations.md)
-  §"Out of scope for v1";
+  §"Operation Surface";
   [ADR-060](decisions/060-container-resource-model-and-label-namespace.md)
   §4 (autonomous-death tolerance).
-- **Status**: deferred(scope)
+- **Status**: resolved
 - **Door type**: Two-way
 - **Priority**: low
-- **Blocked on**: a concrete use case for prompt stale-ownership
-  cleanup. The base model (ADR-060 §4) tolerates stale ownership
-  entries from autonomous container death (a `--rm` exit, external
-  `docker rm`, daemon restart) — they're inert (a reused container ID
-  gets a fresh `record` on its next `create`). A reaper that
-  subscribes to docker daemon events would clean them promptly, but
-  the promptness gain is marginal for the current use cases.
-- **Resolution**: Not yet decidable. bollard's `events()`
-  (system.rs:128) returns a `Stream<SystemEventsMessage>` of daemon
-  events (container start/stop/die/destroy, image pull, etc.). A
-  `docker/system/events` `Subscription` operation would surface these
-  as `call.responded` frames; the ownership store could subscribe
-  internally to revoke on `destroy` events. The deferral is scope:
-  the base model works without it; the events subscription is a
-  refinement for when prompt cleanup matters (e.g., a high-churn
-  coordinator that spawns/removes many containers and wants the
-  ownership store to stay tight). Adding it is additive (a new
-  operation + an internal store subscription) and does not break the
-  existing surface.
+- **Resolution**: `docker/system/events` is included in v1 as a
+  `Subscription` operation. bollard's `events()` returns
+  `Stream<SystemEventsMessage>` — the same `StreamingHandler` pattern
+  already wired for `logs`, `exec`, and `image/pull`. The operation
+  surfaces daemon events (container start/stop/die/destroy, image
+  pull/tag/delete, etc.) as `call.responded` frames. The internal
+  ownership-store subscription for stale-entry cleanup on `destroy`
+  events is a follow-up refinement — the operation itself is the
+  architecture decision. The use case is already documented in
+  ADR-060 §4 (autonomous container death leaves stale ownership
+  entries); the operation is cheap to add (same mechanical
+  `StreamingHandler` mapping as the three existing streaming ops) and
+  generally useful beyond ownership cleanup (any consumer may want
+  daemon events).
 - **Cross-references**:
   [ADR-060](decisions/060-container-resource-model-and-label-namespace.md)
-  §4 (teardown coupling — stale-entry tolerance is the base model
-  this subscription would refine),
+  §4 (teardown coupling — stale-entry tolerance is the base model;
+  the events subscription provides the prompt-cleanup path),
   [crates/docker/docker-operations.md](crates/docker/docker-operations.md)

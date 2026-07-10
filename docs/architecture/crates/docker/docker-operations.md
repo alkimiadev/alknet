@@ -67,13 +67,13 @@ applied.
 | `docker/image/list` | Query | `list_images` | (none) | |
 | `docker/image/pull` | Subscription | `create_image` | (none) | StreamingHandler; progress events |
 | `docker/image/inspect` | Query | `inspect_image` | (none) | |
+| `docker/system/events` | Subscription | `events` | (none) | StreamingHandler; daemon events (container start/stop/die/destroy, image pull/tag/delete, etc.) |
 
 **Out of scope for v1 (deferred):**
 
 - Network operations (`docker/network/*`) — OQ-048.
 - Volume operations (`docker/volume/*`) — OQ-048.
 - Image build (`docker/image/build` with buildkit) — OQ-049.
-- System events (`docker/system/events`) — OQ-050.
 - Full `CreateContainerOptions` surface (mounts, port bindings,
   networks) — OQ-051. v1 `create` accepts the image, command, env,
   labels, and name; the full options surface is a v1 implementation
@@ -181,9 +181,11 @@ overwritten by the handler to prevent a caller spoofing ownership).
 3. Returns `call.responded` with an empty/ok result.
 
 Autonomous container death (a `--rm` exit, external `docker rm`,
-daemon restart) is tolerated — stale ownership entries are not
-promptly cleaned up (no reaper); they're inert (a reused container ID
-gets a fresh `record` on its next `create`). See ADR-060 §4.
+daemon restart) is tolerated — stale ownership entries are inert
+(a reused container ID gets a fresh `record` on its next `create`).
+The `docker/system/events` subscription provides the prompt-cleanup
+path (internal ownership-store subscription on `destroy` events).
+See ADR-060 §4.
 
 ### `docker/container/list` — scope-gate + optional result-filter
 
@@ -317,6 +319,44 @@ each progress event → `call.responded`, stream end → `call.completed`.
 No exit code (image pull has no exit code; success is stream end
 without error).
 
+#### `docker/system/events`
+
+Maps `bollard::system::events()` (returns
+`Stream<Item = Result<SystemEventsMessage, Error>>`) to a stream of
+`call.responded` frames. Same shape as logs: each daemon event
+(container start/stop/die/destroy, image pull/tag/delete, network
+create/connect, volume create/mount, etc.) → `call.responded`, stream
+end on client disconnect or daemon connection close →
+`call.completed`.
+
+```rust
+let docker_clone = docker.clone();
+let handler: StreamingHandler = Arc::new(move |_input, _ctx| {
+    let docker = docker_clone.clone();
+    Box::pin(async_stream::stream! {
+        let mut stream = docker.events(None::<EventsOptions<String>>);
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(event) => yield ResponseEnvelope::ok(serde_json::to_value(event)
+                    .unwrap_or_default()),
+                Err(e) => yield ResponseEnvelope::error(CallError {
+                    code: "DOCKER_ERROR".into(),
+                    message: e.to_string(),
+                    retryable: false, details: None,
+                }),
+            }
+        }
+    }) as ResponseStream
+});
+```
+
+The operation has no `resource_id_path` and no `resource_type` — it
+surfaces daemon-wide events, not per-container events. The scope
+check (`system:events`) gates the call. The internal ownership-store
+subscription for stale-entry cleanup on `destroy` events is a
+follow-up refinement — the operation itself is the architecture
+decision.
+
 ### Access Control
 
 The operations declare `AccessControl` against the ADR-050 model,
@@ -407,6 +447,24 @@ Images are not runtime-spawned resources with per-caller ownership
 — they're shared daemon state. The scope check gates; no ownership
 provider consultation.
 
+#### System events (`system/events`)
+
+```rust
+OperationSpec {
+    name: "docker/system/events",
+    access_control: AccessControl {
+        required_scopes: vec!["system:events".into()],
+        // no resource_type — daemon-wide events, not per-resource
+        ..
+    },
+    // no resource_id_path
+    ..
+}
+```
+
+Scope-gate only. The operation surfaces daemon-wide events; there is
+no per-resource ownership to check.
+
 ### Error Schemas (ADR-023)
 
 Each operation declares its domain error codes in
@@ -475,10 +533,11 @@ connection, not a call operation). This is the same boundary as
   existing container whose ownership was recorded at create time
   (or which pre-exists and is reached via the static fallback).
 - **Stale ownership entries are tolerated.** Autonomous container
-  death leaves a stale entry; no reaper cleans it promptly. The
-  entry is inert (a reused container ID gets a fresh `record`). A
-  `docker/system/events` subscription for prompt cleanup is deferred
-  (OQ-050).
+  death leaves a stale entry; the `docker/system/events` subscription
+  provides the prompt-cleanup path (internal ownership-store
+  subscription on `destroy` events). Until that internal subscription
+  is wired, stale entries are inert (a reused container ID gets a
+  fresh `record`).
 - **`owned_only` on `list` is the caller's choice.** Default
   `false` (returns all); `true` filters to the caller's containers.
   The default and the two cases are decided in ADR-060 §2; the scope
@@ -505,7 +564,6 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-048** (deferred(scope)): Network and volume operation surface.
 - **OQ-049** (deferred(scope)): Image build (buildkit) scope.
-- **OQ-050** (deferred(scope)): Docker system events subscription.
 - **OQ-051** (deferred(scope)): Container create options surface.
 
 ## References

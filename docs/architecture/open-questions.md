@@ -155,7 +155,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 |----|-------|--------|------|-----|
 | [OQ-48](questions/048-network-and-volume-operation-surface.md) | Network and Volume Operation Surface | deferred(scope) | two | low |
 | [OQ-49](questions/049-image-build-buildkit-scope.md) | Image Build (buildkit) Scope | deferred(scope) | two | low |
-| [OQ-50](questions/050-docker-system-events-subscription.md) | Docker System Events Subscription | deferred(scope) | two | low |
+| [OQ-50](questions/050-docker-system-events-subscription.md) | Docker System Events Subscription | resolved | two | low |
 | [OQ-51](questions/051-container-create-options-surface.md) | Container Create Options Surface | deferred(scope) | two | med |
 
 ### alknet-hub
@@ -223,12 +223,6 @@ filtering the tables above.
 - **Blocked on**: a concrete use case for building images over the call protocol. The current use cases pull pre-built images, not build them.
 - **Priority**: low
 - **Full file**: [OQ-49](questions/049-image-build-buildkit-scope.md)
-
-### OQ-50: Docker System Events Subscription
-
-- **Blocked on**: a concrete use case for prompt stale-ownership cleanup. The base model (ADR-060 §4) tolerates inert stale entries; the events subscription is a refinement.
-- **Priority**: low
-- **Full file**: [OQ-50](questions/050-docker-system-events-subscription.md)
 
 ### OQ-51: Container Create Options Surface
 

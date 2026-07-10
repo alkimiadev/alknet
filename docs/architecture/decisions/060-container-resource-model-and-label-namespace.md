@@ -234,16 +234,12 @@ alknet-managed remove path, with autonomous-death tolerance**:
 The tolerance for stale entries is intentional: ownership is runtime
 state (ADR-050 assumption 4), meaningless across restarts. The
 in-memory default store loses all entries on restart; a persistence
-adapter would cache and invalidate. A reaper that subscribes to docker
-daemon death events would be more prompt but adds a subscription
-surface for a marginal gain (the stale entry is inert — it can't grant
-access to a container that doesn't exist, and a reused container ID
-gets a fresh `record` on its next `create`).
-
-A future "prompt stale-entry cleanup" feature is additive: a
-`docker/system/events` subscription operation (deferred, OQ-050) that
-the ownership store could subscribe to. The base model tolerates stale
-entries; the prompt-cleanup path is a refinement.
+adapter would cache and invalidate. The `docker/system/events`
+subscription operation provides the prompt-cleanup path: the
+ownership store subscribes internally to `destroy` events and revokes
+stale entries. Until that internal subscription is wired, stale
+entries are inert (a reused container ID gets a fresh `record` on
+its next `create`).
 
 ### 5. `docker/container/create` records ownership; `start`/`stop`/`restart` do not
 
@@ -271,8 +267,8 @@ event; the lifecycle operations are management of an existing resource.
   `managed` flag marks alknet-spawned containers; the `owner` label
   carries the peer id for the `list` filter and the cross-check.
 - Teardown is handler-driven on the alknet path and tolerant of
-  autonomous death on the non-alknet path. No reaper subscription
-  surface in the base model.
+  autonomous death on the non-alknet path. The `docker/system/events`
+  subscription provides the prompt-cleanup path for stale entries.
 - ADR-050's model is applied without amendment. The `list` case
   (specific #4a), the teardown coupling (#4b), and the
   backward-compat static-resource fallback (#2) all map cleanly to
@@ -308,13 +304,14 @@ event; the lifecycle operations are management of an existing resource.
 ## Door type
 
 **One-way (label schema, ownership model application) + two-way (label
-prefix, stale-entry policy).** The label schema (two labels,
+prefix).** The label schema (two labels,
 `<prefix>.managed` + `<prefix>.owner`) and the
 create-records/remove-revokes ownership coupling are one-way: clients
 and the ownership store depend on the labels and the record/revoke
 timing. The label prefix (default `alknet`) is two-way-door config. The
-stale-entry policy (tolerate, no reaper) is two-way — a reaper
-subscription is an additive refinement.
+`docker/system/events` subscription provides the prompt-cleanup path
+for stale entries; the internal ownership-store subscription is a
+follow-up refinement.
 
 ## References
 

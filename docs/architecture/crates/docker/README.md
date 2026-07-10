@@ -17,14 +17,14 @@ sessions into containers.
 alknet-docker does two things:
 
 1. **Call operations.** A set of `OperationSpec`-registered operations
-   (`docker/container/*`, `docker/image/*`) on the shared
-   `alknet/call` ALPN, mapping bollard's docker API to the call
-   protocol's `Query` / `Mutation` / `Subscription` dispatch paths.
+   (`docker/container/*`, `docker/image/*`, `docker/system/events`) on
+   the shared `alknet/call` ALPN, mapping bollard's docker API to the
+   call protocol's `Query` / `Mutation` / `Subscription` dispatch paths.
    Lifecycle (create/start/stop/remove/list/inspect) is `Query`/
-   `Mutation`; logs, non-interactive exec, and image pull are
-   `Subscription` (streaming via `StreamingHandler`, ADR-049). The
-   operations declare `AccessControl` against the ADR-050 container-
-   as-resource model. Decided in
+   `Mutation`; logs, non-interactive exec, image pull, and system
+   events are `Subscription` (streaming via `StreamingHandler`,
+   ADR-049). The operations declare `AccessControl` against the
+   ADR-050 container-as-resource model. Decided in
    [ADR-058](../../decisions/058-alknet-docker-on-alknet-call.md).
 
 2. **`DockerTtyBackend`** (behind the `tty` feature). An
@@ -90,7 +90,7 @@ docs):
 |----|-------|--------|-----------|
 | OQ-048 | Network and volume operation surface | deferred(scope) | Network/volume CRUD deferred; v1 is containers + images |
 | OQ-049 | Image build (buildkit) scope | deferred(scope) | `buildkit` feature deferred; v1 has `image/pull` + `image/list` + `image/inspect` |
-| OQ-050 | Docker system events subscription | deferred(scope) | `docker/system/events` subscription for stale-ownership cleanup deferred |
+| OQ-050 | Docker system events subscription | resolved | `docker/system/events` included in v1 as a `Subscription` operation; internal ownership-store subscription for cleanup is a follow-up refinement |
 | OQ-051 | Container create options surface | deferred(scope) | Full `CreateContainerOptions` (mounts, port bindings, networks) surface deferred to v1 implementation |
 
 ## Key Design Principles

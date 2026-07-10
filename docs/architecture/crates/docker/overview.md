@@ -93,6 +93,7 @@ container?" branch.
 | `docker/image/list` | Query | `list_images` | JSON |
 | `docker/image/pull` | Subscription | `create_image` | JSON (StreamingHandler) |
 | `docker/image/inspect` | Query | `inspect_image` | JSON |
+| `docker/system/events` | Subscription | `events` | JSON (StreamingHandler) |
 
 Interactive exec (`tty: true`) and interactive attach are **not** call
 operations — they are `alknet/tty` sessions via `DockerTtyBackend`.
@@ -318,7 +319,6 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-048** (deferred(scope)): Network and volume operation surface.
 - **OQ-049** (deferred(scope)): Image build (buildkit) scope.
-- **OQ-050** (deferred(scope)): Docker system events subscription.
 - **OQ-051** (deferred(scope)): Container create options surface.
 
 ## References
