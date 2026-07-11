@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-11
+last_updated: 2026-07-12
 ---
 
 # alknet-channels — Phase 0 Research Findings
@@ -1285,6 +1285,56 @@ then a `channel/close` operation on channel 0 signals completion. The
 ordering between the exit chunk and the close operation must be preserved:
 the exit chunk must be written and flushed before the close operation is
 sent. This is an implementation constraint, not a design change.
+
+### Single-stream throughput ceiling and the recursive escape hatch
+
+All channels on one `alknet/channels` connection share one transport
+stream's flow-control window. On QUIC that's one bidi stream's window; on
+TCP it's the connection's. A slow consumer on one channel can backpressure
+others (DP-5's bounded-buffer mitigation handles memory exhaustion but not
+throughput). For high-throughput bulk transfer (e.g., a large file
+download), parallel QUIC bidi streams or parallel connections will beat one
+multiplexed stream — same trade-off as HTTP/2-over-TLS vs HTTP/3-over-QUIC.
+
+This is **not a channels concern**. The 9-byte chunk overhead is
+negligible; the cost is the shared transport window, which is a property of
+the underlying transport, not the channels multiplexer. The channels layer
+is deliberately not a throughput optimizer — it's a multiplexing proxy.
+
+The **recursive composition** (§Recursive Composition) is the escape hatch,
+but not in the "cross-connection token" sense. The answer is simpler: a
+client that wants parallel throughput opens **N independent
+`alknet/channels` connections** and load-balances across them (e.g., a file
+transfer splits byte ranges across channels on different connections).
+Each connection is self-contained — its own channel 0, its own flow-control
+window, its own backpressure. No token, no cross-wiring between
+connections, no shared state across the connections. The `Connection`
+abstraction already treats each one uniformly.
+
+What the channels layer deliberately does **not** do:
+
+- **No cross-connection channels.** A channel on connection B is not
+  openable from connection A's channel 0. Each channels connection is
+  self-contained; its channel 0 orchestrates only its own channels.
+- **No cross-connection coordination primitives.** No token exchange, no
+  shared `channel_id` namespace, no "open a channel on that other
+  connection" operation. That coordination belongs at the call-protocol /
+  application layer ("open another channels connection, here's its
+  address"), not inside the channels multiplexer.
+- **No parallel-transfer optimization in the channels layer.** Splitting a
+  download across N connections and N channels is a **client optimization for
+  a specific edge case** (fast file transfer). It's a real and useful
+  concern, but it's a downstream client concern — the fs/storage client
+  decides to open N connections and chunk the byte ranges. The channels
+  layer's job is to carry one channel's bytes well; the client's job is to
+  decide how many channels connections it needs.
+
+For the intended use cases (TTY sessions, SSH, tunnels, call operations)
+the single-stream ceiling will not bite — network RTT and handler work
+dominate, and SSH tunneling (which has the same single-stream property) works
+fine even for port-forwarding Redis. The throughput ceiling only matters for
+bulk file transfer, and there the application uses multiple connections —
+same as any multiplexer.
 
 ## Open Questions to Carry into Phase 1
 
