@@ -36,8 +36,11 @@ generalization of two existing patterns:
 The generalization: a chunk header of `(channel_id: u32, stream_type: u8,
 length: u32)` — 9 bytes — that multiplexes an arbitrary number of channels,
 each with up to 256 sub-stream types, over a single transport. Channel 0 is
-reserved for the call protocol (the control plane). All other channels are
-data channels opened via call operations on channel 0.
+pre-negotiated as `alknet/call` — the call protocol. Every other channel is
+opened dynamically via call operations on channel 0, and channel open is
+**bidirectional**: either side can open a channel to the other, just like
+the call protocol's operation overlay where each side populates what
+operations they can call.
 
 The guiding insight:
 
@@ -46,8 +49,8 @@ The guiding insight:
 > handles. The differences are only in how they're *opened* (negotiation) and
 > what *multiplexing layer* carries them. Once you normalize to
 > `AsyncRead + AsyncWrite`, the architecture collapses into a simple shape:
-> the call protocol is the universal control plane, channels are the universal
-> data plane, and ACL governs everything.
+> every channel is just an ALPN routed through the same `HandlerRegistry`,
+> channel 0 is just `alknet/call` pre-negotiated, and ACL governs everything.
 
 ## The Problem This Solves
 
@@ -80,15 +83,20 @@ can't even *reference* these other streams — there's no "stream token" or
 ### What channels provides
 
 A single `alknet/channels` connection carries:
-- Channel 0: the call protocol (JSON `EventEnvelope` frames)
-- Channel N: a TTY session (raw bytes, stdin/stdout/stderr/control)
-- Channel M: an SSH connection (SSH binary protocol)
-- Channel K: a tunnel (raw bytes, bidirectional proxy)
+- Channel 0: `alknet/call` (pre-negotiated — both sides route it to the `CallAdapter`)
+- Channel N: `alknet/tty` (opened dynamically via `channel/open`)
+- Channel M: `alknet/ssh` (opened dynamically via `channel/open`)
+- Channel K: `alknet/tunnel` (opened dynamically via `channel/open`)
 
 All on one QUIC connection (or one TCP connection, or one WebTransport
-session). The call protocol on channel 0 orchestrates channel open/close and
-type-specific control. The data channels carry whatever bytes the target
-protocol needs.
+session). Channel 0 is not a special "control plane" — it's just the
+`alknet/call` ALPN, pre-negotiated so both sides know to route it to the
+`CallAdapter` without an explicit `channel/open` exchange. Every other
+channel works exactly the same way: reassemble chunks into a stream, look up
+the ALPN in the `HandlerRegistry`, hand off to the handler. Channel open is
+bidirectional — either side can open a channel to the other, just like the
+call protocol's operation overlay where each side populates what operations
+they can call.
 
 ## The Wire Format
 
@@ -102,25 +110,28 @@ protocol needs.
 [length: u32 be]`). The `channel_id` field is the addition — it's what turns
 a fixed 4-channel multiplexer into an arbitrary N-channel multiplexer.
 
-### Channel 0: the control plane
+### Channel 0: pre-negotiated as `alknet/call`
 
-Channel 0 carries the call protocol. Its chunks use `stream_type` to
-disambiguate framing:
+Channel 0 is not a special "control plane" with its own framing. It is
+simply the `alknet/call` ALPN, pre-negotiated: both sides know that channel
+0 is routed to the `CallAdapter` without an explicit `channel/open`
+exchange. The call protocol runs on channel 0 exactly as it runs on a
+top-level `alknet/call` QUIC connection — `EventEnvelope` frames on a
+bidirectional stream.
+
+Channel 0's chunks use `stream_type` to disambiguate framing:
 
 | stream_type | purpose |
 |-------------|---------|
 | 0 | `EventEnvelope` frame (JSON, length-prefixed — the call protocol wire format) |
-| 1-255 | reserved for future control-plane sub-streams |
-
-Channel 0 is opened implicitly when the `alknet/channels` connection is
-established. No negotiation frame is needed — both sides know channel 0 is
-the call protocol.
+| 1-255 | reserved for future sub-streams |
 
 ### Data channels (1..N)
 
-Data channels carry protocol-specific bytes. The `stream_type` byte
-decomposes the channel into sub-streams, following the TTY crate's proven
-model:
+Every other channel works exactly the same way as channel 0: reassemble
+chunks into a stream, look up the ALPN in the `HandlerRegistry`, hand off to
+the handler. The `stream_type` byte decomposes the channel into sub-streams,
+following the TTY crate's proven model:
 
 | stream_type | direction | purpose |
 |-------------|-----------|---------|
@@ -137,11 +148,14 @@ open time.
 
 ### Channel lifecycle
 
-1. **Open**: client sends a `channel/open` call operation on channel 0 with
-   `{ alpn, params }`. Server validates ACL, allocates the handler, returns
+1. **Open**: either side sends a `channel/open` call operation on channel 0
+   with `{ alpn, params }`. The receiving side validates ACL, looks up the
+   ALPN in the `HandlerRegistry`, allocates the handler, and returns
    `{ channel_id, stream_types }`. The `stream_types` field declares which
    sub-streams are active for this channel (e.g., `[0, 1, 2, 3]` for TTY,
-   `[0, 1]` for a tunnel).
+   `[0, 1]` for a tunnel). Channel open is **bidirectional** — a hub can
+   expose a resource a worker consumes, or a worker can expose a resource
+   the hub consumes, just like the call protocol's operation overlay.
 2. **Data**: both sides read/write chunks on the assigned `channel_id`. Each
    side reassembles chunks for a given `(channel_id, stream_type)` into a
    stream. The reassembled streams are presented to the handler as
@@ -157,12 +171,12 @@ open time.
 
 ### Framing disambiguation
 
-The TTY crate's framing disambiguation trick (ADR-052 §5) carries forward:
-error frames on channel 0 start with `0x00` (the high byte of a
-length-prefixed JSON frame under 16 MiB). Data chunks on channels 1+ start
-with a non-zero `channel_id` high byte (channel 0 is reserved for control).
-Within a data channel, `stream_type` 0 (stdin) from the server is invalid,
-so `0x00` as the first byte of a chunk from the server is unambiguous.
+The TTY crate's framing disambiguation trick (ADR-052 §5) carries forward.
+Channel 0 is just another channel — its chunks have `channel_id=0` in the
+header. The disambiguation between channel 0 (call protocol) and data
+channels is by `channel_id`, not by a special first-byte trick. Within a
+channel, `stream_type` 0 (stdin) from the server is invalid, so `0x00` as
+the first byte of a chunk payload from the server is unambiguous.
 
 ## The Channel Connection Abstraction
 
@@ -174,9 +188,15 @@ order-preserving within a `(channel_id, stream_type)` pair — chunks arrive
 in order because they ride on a single ordered transport (QUIC stream, TCP
 connection).
 
-The reassembled streams are presented through the same `Connection`
-abstraction that alknet-core already defines (`crates/alknet-core/src/
-types.rs`):
+Channel 0 is reassembled exactly like any other channel. The reassembled
+stream for `(channel_id=0, stream_type=0)` is handed to the `CallAdapter`
+as a `Connection`. The `CallAdapter` doesn't know it's inside a channels
+connection — it sees a `Connection` yielding bidi streams, same as if it
+were a top-level QUIC connection.
+
+For data channels (1..N), the reassembled streams are presented through the
+same `Connection` abstraction that alknet-core already defines
+(`crates/alknet-core/src/types.rs`):
 
 ```rust
 // A channels connection presents the same interface as a QUIC connection
@@ -186,7 +206,7 @@ impl ChannelConnection {
 }
 ```
 
-Internally, `accept_bi` / `open_bi` map to channel open/close operations on
+Internally, `accept_bi` / `open_bi` map to `channel/open` call operations on
 channel 0, and the returned `SendStream` / `RecvStream` are backed by chunk
 reassembly on the assigned `channel_id`.
 
@@ -195,14 +215,20 @@ reassembly on the assigned `channel_id`.
 A `ChannelConnection` holds a reference to the same `HandlerRegistry` that
 the outer `AlknetEndpoint` uses. When a `channel/open` arrives with an ALPN
 string, the channels handler looks up the ALPN in the registry, validates
-ACL, and hands the reassembled streams to the handler. The handler doesn't
+ACL, and hands the reassembled stream to the handler. The handler doesn't
 know it's inside a channels connection — it sees a `Connection` yielding bidi
 streams, same as if it were a top-level QUIC connection.
 
+Channel 0 is not special — it's just `alknet/call` pre-negotiated. Both
+sides know to route channel 0 to the `CallAdapter` without an explicit
+`channel/open` exchange. Every other channel is opened dynamically via
+`channel/open` on channel 0, and the open is bidirectional: either side can
+initiate.
+
 This means every existing and future `ProtocolHandler` works inside channels
-without modification. The `TtyAdapter`, the future `SshAdapter`, a tunnel
-handler — they all just see a `Connection`. The channels layer is a
-transparent proxy.
+without modification. The `CallAdapter`, `TtyAdapter`, the future
+`SshAdapter`, a tunnel handler — they all just see a `Connection`. The
+channels layer is a transparent proxy.
 
 ### Recursive composition
 
@@ -242,17 +268,25 @@ lifecycle.
 ### alknet-call
 
 The call protocol is unchanged. It remains JSON-only, `EventEnvelope`-based.
-What changes is that it gains a new class of operations: channel lifecycle
-operations.
+It runs on channel 0 exactly as it runs on a top-level `alknet/call` QUIC
+connection — the `CallAdapter` receives a `Connection` and dispatches
+operations. The only difference is that the `Connection` is backed by chunk
+reassembly on channel 0 rather than by a QUIC bidi stream.
+
+What changes is that the call protocol gains a new class of operations:
+channel lifecycle operations.
 
 New call operations:
-- `channel/open` — open a data channel with a given ALPN and params
+- `channel/open` — open a data channel with a given ALPN and params.
+  Bidirectional: either side can initiate.
 - `channel/close` — close a data channel
 - `channel/control` — send a control message on a channel's stream_type 3
 
 Existing call operations are unchanged. The call protocol doesn't need to
 know about raw bytes — it just hands out channel tokens and dispatches
-control operations.
+control operations. The `from_call` operation overlay (where each side
+populates what operations they can call) extends naturally to channels:
+either side can expose resources the other can open channels to.
 
 ### alknet-ssh
 
@@ -373,25 +407,31 @@ already makes for every operation. If zero-round-trip channel open becomes a
 performance requirement, option (c) can be added as an extension (two-way
 door).
 
-### DP-2: Channel 0 framing — EventEnvelope on stream_type 0 vs raw call protocol
+### DP-2: Channel 0 — pre-negotiated `alknet/call`, not a special control plane
 
-*(Recommended: EventEnvelope frames on stream_type 0)*
+*(Recommended: channel 0 is just `alknet/call` pre-negotiated — no special framing)*
 
-Channel 0 carries the call protocol. Two framing options:
-- **(a) EventEnvelope on stream_type 0**: each call protocol frame is a
-  chunk with `channel_id=0, stream_type=0`. The payload is a
-  length-prefixed JSON `EventEnvelope` (the existing call protocol wire
-  format). This is a thin wrapper — the call protocol's `FrameFramedReader`
-  / `FrameFramedWriter` work unchanged, just over a chunk-demuxed stream.
-- **(b) Raw call protocol**: channel 0 is not chunked; the call protocol
-  runs directly on the transport stream. This requires the channels layer to
-  peek at the first byte to disambiguate call protocol frames from data
-  channel chunks. More complex framing disambiguation.
+Channel 0 is not a "control plane" with its own wire format. It is simply
+the `alknet/call` ALPN, pre-negotiated: both sides know that channel 0 is
+routed to the `CallAdapter` without an explicit `channel/open` exchange. The
+call protocol runs on channel 0 exactly as it runs on a top-level
+`alknet/call` QUIC connection — `EventEnvelope` frames on a bidirectional
+stream backed by chunk reassembly.
 
-**Recommendation**: **(a) EventEnvelope on stream_type 0**. It's a thin
-wrapper that keeps the call protocol unchanged and the framing unambiguous.
-The overhead is 9 bytes per call frame — negligible for JSON control
-messages.
+This means:
+- Channel 0 uses the same chunk format as every other channel
+  (`channel_id=0` in the header)
+- The `CallAdapter` receives a `Connection` and dispatches operations —
+  unchanged from today
+- Channel lifecycle operations (`channel/open`, `channel/close`) are just
+  call operations on channel 0, dispatched through the `OperationRegistry`
+- No special framing disambiguation is needed — `channel_id` already
+  distinguishes channel 0 from data channels
+
+**Recommendation**: channel 0 is `alknet/call` pre-negotiated. No special
+framing, no separate control-plane wire format. The channels layer is a
+transparent proxy: every channel (including channel 0) is just an ALPN
+routed through the `HandlerRegistry`.
 
 ### DP-3: TTY chunk format — absorb into channels vs keep separate
 
