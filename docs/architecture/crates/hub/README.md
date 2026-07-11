@@ -6,10 +6,9 @@ last_updated: 2026-07-09
 # alknet-hub
 
 The hub pattern as a reusable crate: peer lifecycle management, connection
-supervision, and service discovery across connected peers. The call-protocol
-strategy (operation import via `from_call`, routing via `PeerCompositeEnv`)
-is the first and primary strategy; the core peer lifecycle is
-protocol-agnostic.
+supervision, operation aggregation, and channel proxying across connected
+peers. One QUIC connection per peer; channel 0 carries the call protocol as
+the universal control plane; channels 1..N carry any ALPN as data planes.
 
 ## What
 
@@ -19,26 +18,53 @@ not introduce new types — it wires the existing `PeerCompositeEnv`,
 `CallClient`, `CallAdapter`, `from_call`, and `Dispatcher` types into a
 coherent hub runtime.
 
-The hub has two layers:
+### The channel model
 
-1. **Core peer lifecycle** — protocol-agnostic. The hub knows which peers are
-   connected, manages their connection lifecycle (dial, accept, disconnect,
-   reconnect with backoff), and resolves their identities. This layer does not
-   know what a peer *does* — it only knows that a peer is connected and has an
-   identity.
+A hub-worker connection is a single QUIC connection. QUIC multiplexes
+multiple bidirectional streams over one connection. The hub uses this
+multiplexing to carry multiple protocols over one connection:
 
-2. **Call-protocol strategy** — the first strategy. When a call-protocol peer
-   connects, the hub discovers its operations via `from_call`, registers them
-   in the aggregated `PeerCompositeEnv`, and routes operation calls to the
-   right peer via `PeerRef`. This is the strategy that handles the majority of
-   real-world hub use cases (docker workers, agent tool dispatch, service
-   composition).
+- **Channel 0 — call protocol (control plane).** Always `alknet/call`. This is
+  the bootstrap channel. It handles operation discovery (`from_call`),
+  operation routing (`invoke_peer`), service discovery (`services/list`,
+  `services/list-peers`), and channel negotiation (`channel/open`,
+  `channel/close`). Every hub-worker connection has channel 0.
 
-Future strategies (tty, blobs, custom protocols) plug into the same core peer
-lifecycle. A QUIC connection can multiplex multiple protocols over separate
-streams — a single peer connection could carry both call-protocol operations
-and tty sessions. The hub's core lifecycle manages the connection; each
-strategy manages its own protocol-specific state on top.
+- **Channels 1..N — any ALPN (data planes).** Opened via `channel/open` on
+  the call protocol. Each channel is a bidirectional QUIC stream, wrapped as
+  a `Connection` via `Connection::from_bidi` (ADR-065), and handed to the
+  same `ProtocolHandler::handle(connection, auth)` that handles dedicated
+  connections. The handler does not know it's on a multiplexed channel — it
+  sees a `Connection` and dispatches normally.
+
+Channel negotiation is symmetric — either side can open a channel. A hub can
+open a tty channel to a worker (hub wants a terminal on the worker), or a
+worker can open a tty channel to the hub (worker exposes a terminal to the
+hub). Same pattern as `from_call`: bidirectional, symmetric, negotiated over
+the call protocol.
+
+The hub's role for channels 1..N is **transparent stream proxying**. The hub
+does not interpret the protocol running on the channel. It opens the channel,
+gets a stream, and proxies it between the requesting client and the worker.
+The client and worker speak the ALPN protocol directly; the hub is a
+transparent proxy.
+
+### What the hub provides
+
+1. **Peer lifecycle** — dial, accept, disconnect, reconnect with backoff.
+   Identity resolution via `IdentityProvider`. One connection per peer.
+
+2. **Aggregated operation env** — a shared `PeerCompositeEnv` across all
+   calls (ADR-067). Operations discovered via `from_call` on channel 0 are
+   registered in each peer's connection overlay and aggregated into the
+   shared env. `invoke_peer` routes operation calls to the right peer.
+
+3. **Channel management** — tracking which channels are open on which peer.
+   `channel/open` and `channel/close` operations on the call protocol.
+   Stream proxying for channels 1..N.
+
+4. **Service discovery** — `services/list-peers` returns each connected
+   worker's operation list via `PeerCompositeEnv::peer_operations` (ADR-068).
 
 ## Why
 
@@ -63,11 +89,10 @@ independently, `alknet-hub` provides it once, as a reusable crate.
 
 ## Architecture
 
-### Core: Hub struct and peer lifecycle
+### Hub struct
 
-The `Hub` is the central type. It owns the aggregated `PeerCompositeEnv`
-(used by the call-protocol strategy), the `OperationRegistry`, and the
-`Dispatcher`:
+The `Hub` is the central type. It owns the aggregated `PeerCompositeEnv`, the
+`OperationRegistry`, the `Dispatcher`, and channel tracking:
 
 ```rust
 pub struct Hub {
@@ -75,6 +100,17 @@ pub struct Hub {
     aggregated_env: Arc<RwLock<PeerCompositeEnv>>,
     dispatcher: Dispatcher,
     identity_provider: Arc<dyn IdentityProvider>,
+    /// Open channels per peer: PeerId → (ChannelId → ChannelInfo).
+    /// Channel 0 (call protocol) is tracked implicitly via the
+    /// CallConnection; channels 1..N are tracked here.
+    channels: Arc<RwLock<HashMap<PeerId, HashMap<u32, ChannelInfo>>>>,
+}
+
+struct ChannelInfo {
+    alpn: Vec<u8>,
+    /// The Connection wrapping this channel's bidirectional stream.
+    /// Handed to ProtocolHandler::handle() on open; dropped on close.
+    connection: Connection,
 }
 ```
 
@@ -97,6 +133,7 @@ impl Hub {
             aggregated_env,
             dispatcher,
             identity_provider,
+            channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -112,10 +149,12 @@ impl Hub {
 The `Hub` exposes builder methods for optional hooks (`with_session_source`,
 `with_ownership_provider`, `with_timeout`) that delegate to the `Dispatcher`.
 
-### Call-protocol strategy
+### Peer lifecycle (channel 0 bootstrap)
 
-The call-protocol strategy is what the hub *does* when a call-protocol peer
-connects: discover its operations, register them, and make them routable.
+Every hub-worker connection starts with channel 0 — the call protocol. The
+hub establishes channel 0, runs `from_call` to discover the peer's operations,
+and attaches the peer to the aggregated env. After channel 0 is established,
+either side can open additional channels via `channel/open`.
 
 #### Inbound workers (workers dial the hub)
 
@@ -124,8 +163,8 @@ The hub's `CallAdapter` accepts inbound connections. The hub provides an
 
 ```rust
 impl Hub {
-    /// Called by the assembly layer when a call-protocol worker connects
-    /// inbound (via CallAdapter::handle). Runs from_call, registers the
+    /// Called by the assembly layer when a worker connects inbound (via
+    /// CallAdapter::handle). Runs from_call on channel 0, registers the
     /// bundles in the connection's overlay, and attaches the peer to the
     /// aggregated env.
     pub async fn on_worker_connected(
@@ -152,22 +191,26 @@ impl Hub {
     }
 
     /// Called by the assembly layer when a worker disconnects (run_loop exits).
+    /// Detaches the peer from the aggregated env and drops all open channels.
     pub fn on_worker_disconnected(&self, peer_id: &PeerId) {
         self.aggregated_env
             .write()
             .expect("aggregated env lock poisoned")
             .detach_peer(peer_id);
+        self.channels
+            .write()
+            .expect("channels lock poisoned")
+            .remove(peer_id);
     }
 }
 ```
 
-> **Note on `expect`**: The `RwLock` is held only for the duration of the
+> **Note on `expect`**: The locks are held only for the duration of the
 > `HashMap` insert/remove. A poisoned lock indicates a panic in another thread
-> while holding the write lock — an unrecoverable state. The `expect` message
+> while holding the lock — an unrecoverable state. The `expect` message
 > documents this invariant. The implementation may use a different concurrency
 > primitive (e.g. `ArcSwap`) that avoids poisoning entirely; the spec
-> describes the intent (acquire exclusive access, insert/remove, release),
-> not the mechanism.
+> describes the intent, not the mechanism.
 
 #### Outbound workers (hub dials workers)
 
@@ -178,9 +221,9 @@ configurable backoff:
 
 ```rust
 impl Hub {
-    /// Dial a call-protocol worker, discover its operations, and attach it
-    /// to the aggregated env. Returns the worker's PeerId and the live
-    /// CallConnection.
+    /// Dial a worker, establish channel 0 (call protocol), discover its
+    /// operations, and attach it to the aggregated env. Returns the
+    /// worker's PeerId and the live CallConnection (channel 0).
     pub async fn dial_worker(
         &self,
         addr: SocketAddr,
@@ -208,9 +251,9 @@ impl Hub {
         Ok((peer_id, connection))
     }
 
-    /// Supervise an outbound call-protocol worker: dial, discover, attach.
-    /// On disconnect, detach and retry with backoff. Runs until the
-    /// Hub is dropped (the returned JoinHandle can be aborted).
+    /// Supervise an outbound worker: dial, discover, attach. On disconnect,
+    /// detach and retry with backoff. Runs until the Hub is dropped (the
+    /// returned JoinHandle can be aborted).
     pub fn supervise_worker(
         self: &Arc<Self>,
         addr: SocketAddr,
@@ -258,6 +301,70 @@ impl Hub {
 }
 ```
 
+### Channel negotiation (channels 1..N)
+
+After channel 0 is established, either side can open additional channels via
+the call protocol. The hub registers `channel/open`, `channel/close`, and
+`channel/list` as built-in operations on its curated registry.
+
+#### channel/open
+
+Opens a new bidirectional stream on the QUIC connection, wraps it as a
+`Connection` via `Connection::from_bidi`, and hands it to the
+`HandlerRegistry` for the requested ALPN. The handler runs on a spawned task;
+the channel is tracked until closed.
+
+```
+Request:  { "alpn": "alknet/tty", "channel": 1 }
+Response: { "channel": 1, "status": "open" }
+```
+
+The `channel` field is a hint — the caller suggests a channel number. The
+receiver may accept it or assign a different number. Channel 0 is reserved
+for the call protocol.
+
+The operation is symmetric: either side can call it. When the hub calls
+`channel/open` on a worker, the worker opens the stream and dispatches to its
+handler. When a worker calls `channel/open` on the hub, the hub opens the
+stream and dispatches to its handler.
+
+#### channel/close
+
+Closes a previously opened channel. Drops the `Connection`, which cancels the
+handler task and releases resources.
+
+```
+Request:  { "channel": 1 }
+Response: { "channel": 1, "status": "closed" }
+```
+
+#### channel/list
+
+Lists open channels on this connection. Channel 0 (call protocol) is always
+present and always listed.
+
+```
+Response: { "channels": [{ "channel": 0, "alpn": "alknet/call" }, { "channel": 1, "alpn": "alknet/tty" }] }
+```
+
+#### Channel proxying
+
+When a client requests a resource that lives on a worker (e.g. "I want a tty
+session on dev1"), the hub:
+
+1. Calls `channel/open { alpn: "alknet/tty", channel: N }` on dev1's
+   call-protocol connection (channel 0).
+2. Dev1 opens stream N, wraps it as `Connection::from_bidi(stream, "alknet/tty", ...)`,
+   and hands it to `TtyAdapter::handle()`.
+3. The hub receives `{ channel: N, status: "open" }`.
+4. The hub proxies the raw stream between the requesting client and dev1.
+   The client and dev1 speak `alknet/tty` directly; the hub is a transparent
+   proxy.
+
+The hub does not interpret the tty protocol. It does not need a "tty
+strategy." It opens a channel, gets a stream, and proxies it. The same
+pattern works for any ALPN — blobs, custom protocols, future handlers.
+
 ### Backoff configuration
 
 ```rust
@@ -294,34 +401,6 @@ The hub registers the built-in service discovery operations (`services/list`,
 `services/list-peers` handler returns each connected worker's operation list
 via `PeerCompositeEnv::peer_operations` (ADR-068).
 
-### Extension points for future strategies
-
-The call-protocol strategy is the first strategy. The hub's core peer
-lifecycle is protocol-agnostic — it manages connections and identities
-regardless of what protocol runs over them. Future strategies plug into the
-same lifecycle:
-
-- **TTY strategy**: When a peer connects that supports `alknet/tty`, the hub
-  registers the peer as a terminal session provider. A tty request routes to
-  the right peer based on identity, not operation name. The strategy manages
-  its own routing table (peer → tty backend), separate from
-  `PeerCompositeEnv`.
-
-- **Blobs strategy**: When a peer connects that supports `alknet/blobs`, the
-  hub registers the peer as a blob store provider. Blob requests route by
-  content hash or peer identity.
-
-Each strategy is additive — it registers its own connection-establish and
-connection-drop hooks on the hub's core lifecycle. The strategies are
-independent; a single QUIC connection can carry multiple protocols over
-separate streams (QUIC multiplexing). The hub's core manages the connection;
-each strategy manages its own protocol-specific state.
-
-These strategies are not specced here. The architecture keeps the door open
-by separating core lifecycle from protocol-specific strategy. The
-call-protocol strategy is the first and primary strategy because it handles
-the majority of real-world hub use cases.
-
 ### HubError
 
 ```rust
@@ -334,6 +413,12 @@ pub enum HubError {
     Discovery(#[from] AdapterError),
     #[error("call client error: {0}")]
     Client(#[from] ClientError),
+    #[error("channel {channel} already open on peer {peer}")]
+    ChannelAlreadyOpen { peer: PeerId, channel: u32 },
+    #[error("channel {channel} not found on peer {peer}")]
+    ChannelNotFound { peer: PeerId, channel: u32 },
+    #[error("channel {channel} open failed: {reason}")]
+    ChannelOpenFailed { channel: u32, reason: String },
 }
 ```
 
@@ -354,10 +439,10 @@ pub enum HubError {
 - **Worker provisioning.** The hub does not spawn workers, configure them, or
   manage their lifecycle beyond connection supervision. Worker provisioning
   is an assembly-layer concern.
-- **Non-call-protocol strategies.** The tty, blobs, and other protocol
-  strategies are not specced or implemented. The architecture keeps the door
-  open by separating core peer lifecycle from protocol-specific strategy;
-  each strategy is additive.
+- **Protocol interpretation for channels 1..N.** The hub proxies streams
+  transparently. It does not parse tty frames, blob hashes, or any other
+  protocol-specific data. The client and worker speak the ALPN protocol
+  directly; the hub is a transparent proxy.
 
 ## Crate dependencies
 
@@ -383,6 +468,9 @@ A downstream hub (alkapi) uses `alknet-hub` like this:
 let registry = OperationRegistryBuilder::new()
     .with_local(agent_chat_spec(), agent_chat_handler, ...)
     .with_local(services_list_spec(), services_list_handler, ...)
+    .with_local(channel_open_spec(), channel_open_handler, ...)
+    .with_local(channel_close_spec(), channel_close_handler, ...)
+    .with_local(channel_list_spec(), channel_list_handler, ...)
     // ... other curated ops
     .build();
 let registry = Arc::new(registry);
@@ -422,28 +510,28 @@ so the assembly layer can wire it into `CallAdapter::with_aggregated_env`.
 | from_call is manual | [ADR-069](../../decisions/069-from-call-manual-free-function.md) | `from_call` is a free function; the hub calls it after connect |
 | Peer-graph routing model | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays, `PeerRef` routing, `AccessControl`-based peer auth |
 | PeerEntry and Identity.id | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `PeerId` = `Identity.id` = `PeerEntry.peer_id` (stable) |
+| Connection::from_stream / from_bidi | [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | Channel streams wrap as `Connection`; any `ProtocolHandler` consumes them unchanged |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-52** (open): `CallConnection::wait_for_close()` — the supervision loop
-  needs a way to await connection close. Today `CallConnection` exposes
-  `connection()` (the underlying `Connection`) but not a "wait for run_loop
-  exit" future. The committed interim is polling `connection().accept_bi()`
-  in a loop until it returns `ConnectionClosed`. A `closed()` method on
-  `CallConnection` (signaled by the dispatcher on `run_loop` exit) is the
-  target resolution. See OQ-52.
+  needs a way to await connection close. The committed interim is polling
+  `connection().accept_bi()` until `ConnectionClosed`. A `closed()` method on
+  `CallConnection` is the target resolution.
 - **OQ-53** (open): `BackoffConfig` defaults — the committed policy is 1s
   initial, 60s max, 2x multiplier. OQ-53 tracks whether operational
-  experience from the alkapi deployment warrants a change before the first
-  release. The `BackoffConfig` struct shape is committed; the defaults are
-  the starting point.
+  experience warrants a change before the first release.
 - **OQ-54** (open): Inbound worker `on_worker_connected` hook placement —
-  the committed design is the explicit approach: the assembly layer calls
-  `hub.on_worker_connected()` after `CallAdapter::handle` accepts the
-  connection. A `HubCallAdapter` wrapper that calls the hook automatically
-  is additive if needed. See OQ-54.
+  the committed design is the explicit approach. A `HubCallAdapter` wrapper
+  is additive if needed.
+- **OQ-55** (open): `channel/open` operation — this is a new call-protocol
+  operation. It needs a spec in `alknet-call` (the operation shape, the
+  stream-opening mechanism, the handler dispatch). The hub registers it as a
+  built-in operation; the implementation lives in `alknet-call`. The channel
+  model is committed; the operation spec is deferred to the call-protocol
+  implementation phase.
 
 ## References
 
@@ -454,6 +542,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - [operation-registry.md](../call/operation-registry.md) — `OperationRegistry`,
   `OperationRegistryBuilder`, `OperationEnv`
 - ADR-029: Peer-Graph Routing Model
+- ADR-065: `Connection::from_stream` — Generic Single-Stream Connections
 - ADR-067: Aggregated Peer-Environment Wiring
 - ADR-068: PeerCompositeEnv::peer_operations Override
 - ADR-069: from_call Is a Manual Free Function
