@@ -165,7 +165,6 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-52](questions/052-callconnection-wait-for-close.md) | CallConnection::wait_for_close() for supervision loop | open | two | med |
 | [OQ-53](questions/053-backoff-config-defaults.md) | BackoffConfig default policy | open | two | low |
 | [OQ-54](questions/054-inbound-worker-hook-placement.md) | Inbound worker on_worker_connected hook placement | resolved | two | low |
-| [OQ-55](questions/055-channel-open-operation.md) | channel/open call-protocol operation | open | two | med |
 
 ## Deferred / Blocked
 
