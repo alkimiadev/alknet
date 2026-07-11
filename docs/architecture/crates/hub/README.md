@@ -6,7 +6,7 @@ last_updated: 2026-07-09
 # alknet-hub
 
 The hub pattern as a reusable crate: peer lifecycle management, connection
-supervision, operation aggregation, and channel proxying across connected
+supervision, operation aggregation, and channel management across connected
 peers. One QUIC connection per peer; channel 0 carries the call protocol as
 the universal control plane; channels 1..N carry any ALPN as data planes.
 
@@ -43,11 +43,11 @@ worker can open a tty channel to the hub (worker exposes a terminal to the
 hub). Same pattern as `from_call`: bidirectional, symmetric, negotiated over
 the call protocol.
 
-The hub's role for channels 1..N is **transparent stream proxying**. The hub
-does not interpret the protocol running on the channel. It opens the channel,
-gets a stream, and proxies it between the requesting client and the worker.
-The client and worker speak the ALPN protocol directly; the hub is a
-transparent proxy.
+The hub's role for channels 1..N is **channel management** — tracking which
+channels are open on which peer, answering `channel/list`, and rejecting
+duplicate `channel/open` requests. The hub does not interpret the protocol
+running on the channel and does not proxy streams. What the caller does with
+the resulting channel is the assembly layer's business.
 
 ### What the hub provides
 
@@ -61,7 +61,7 @@ transparent proxy.
 
 3. **Channel management** — tracking which channels are open on which peer.
    `channel/open` and `channel/close` operations on the call protocol.
-   Stream proxying for channels 1..N.
+   Channel tracking for channels 1..N.
 
 4. **Service discovery** — `services/list-peers` returns each connected
    worker's operation list via `PeerCompositeEnv::peer_operations` (ADR-068).
@@ -100,17 +100,13 @@ pub struct Hub {
     aggregated_env: Arc<RwLock<PeerCompositeEnv>>,
     dispatcher: Dispatcher,
     identity_provider: Arc<dyn IdentityProvider>,
-    /// Open channels per peer: PeerId → (ChannelId → ChannelInfo).
+    /// Open channels per peer: PeerId → set of channel numbers.
     /// Channel 0 (call protocol) is tracked implicitly via the
-    /// CallConnection; channels 1..N are tracked here.
-    channels: Arc<RwLock<HashMap<PeerId, HashMap<u32, ChannelInfo>>>>,
-}
-
-struct ChannelInfo {
-    alpn: Vec<u8>,
-    /// The Connection wrapping this channel's bidirectional stream.
-    /// Handed to ProtocolHandler::handle() on open; dropped on close.
-    connection: Connection,
+    /// CallConnection; channels 1..N are tracked here. The hub tracks
+    /// which channels exist so it can answer channel/list and reject
+    /// duplicate channel/open requests. The hub does not hold the
+    /// channel's Connection — the ProtocolHandler owns it.
+    channels: Arc<RwLock<HashMap<PeerId, HashSet<u32>>>>,
 }
 ```
 
@@ -158,31 +154,39 @@ either side can open additional channels via `channel/open`.
 
 #### Inbound workers (workers dial the hub)
 
-The hub's `CallAdapter` accepts inbound connections. The hub provides an
-`on_worker_connected` hook that the assembly layer wires into the accept path:
+The hub's `CallAdapter` accepts inbound connections. The hub provides a
+`WorkerConnectedCallback` that fires inside the accept path, between
+connection-establish and dispatch-start. The callback runs `from_call`,
+registers the bundles, and attaches the peer to the aggregated env:
 
 ```rust
-impl Hub {
-    /// Called by the assembly layer when a worker connects inbound (via
-    /// CallAdapter::handle). Runs from_call on channel 0, registers the
-    /// bundles in the connection's overlay, and attaches the peer to the
-    /// aggregated env.
-    pub async fn on_worker_connected(
+/// Callback invoked by CallAdapter::handle when a worker connects inbound.
+/// Fires after identity resolution and before the dispatch loop starts.
+/// Carries both on_connected (runs from_call, registers discovered ops,
+/// attaches peer to aggregated env) and on_disconnected (detaches peer,
+/// drops channel tracking on run_loop exit).
+pub struct WorkerConnectedCallback {
+    hub: Arc<Hub>,
+    config: FromCallConfig,
+}
+
+impl WorkerConnectedCallback {
+    pub fn new(hub: Arc<Hub>, config: FromCallConfig) -> Self {
+        Self { hub, config }
+    }
+
+    pub(crate) async fn on_connected(
         &self,
         connection: &CallConnection,
-        config: FromCallConfig,
     ) -> Result<PeerId, HubError> {
         let peer_id = connection.identity()
             .map(|id| id.id.clone())
             .ok_or(HubError::NoPeerIdentity)?;
 
-        let bundles = from_call(connection, config).await?;
+        let bundles = from_call(connection, self.config.clone()).await?;
         connection.register_imported_all(bundles);
 
-        // Acquire write lock on the aggregated env and attach this peer's
-        // connection overlay. The lock is held only for the HashMap insert
-        // (connection-rate, not call-rate).
-        self.aggregated_env
+        self.hub.aggregated_env
             .write()
             .expect("aggregated env lock poisoned")
             .attach_peer(peer_id.clone(), connection.overlay_env());
@@ -190,27 +194,54 @@ impl Hub {
         Ok(peer_id)
     }
 
-    /// Called by the assembly layer when a worker disconnects (run_loop exits).
-    /// Detaches the peer from the aggregated env and drops all open channels.
-    pub fn on_worker_disconnected(&self, peer_id: &PeerId) {
-        self.aggregated_env
-            .write()
-            .expect("aggregated env lock poisoned")
-            .detach_peer(peer_id);
-        self.channels
-            .write()
-            .expect("channels lock poisoned")
-            .remove(peer_id);
+    pub(crate) fn on_disconnected(&self, peer_id: &PeerId) {
+        self.hub.on_worker_disconnected(peer_id);
     }
 }
 ```
 
-> **Note on `expect`**: The locks are held only for the duration of the
-> `HashMap` insert/remove. A poisoned lock indicates a panic in another thread
-> while holding the lock — an unrecoverable state. The `expect` message
-> documents this invariant. The implementation may use a different concurrency
-> primitive (e.g. `ArcSwap`) that avoids poisoning entirely; the spec
-> describes the intent, not the mechanism.
+The callback is wired into `CallAdapter` via a new builder method:
+
+```rust
+impl CallAdapter {
+    /// Register a callback invoked when a worker connects inbound.
+    /// Fires after identity resolution and before the dispatch loop.
+    /// The callback runs from_call, registers discovered operations,
+    /// and attaches the peer to the aggregated env.
+    pub fn with_worker_connected_callback(
+        mut self,
+        callback: WorkerConnectedCallback,
+    ) -> Self {
+        self.worker_connected_callback = Some(callback);
+        self
+    }
+}
+```
+
+The `CallAdapter::handle` flow becomes:
+
+1. Resolve identity from the connection.
+2. Create `CallConnection`, set identity.
+3. Invoke `on_connected` callback (if set) — runs `from_call`, registers
+   bundles, attaches peer to aggregated env.
+4. Run the dispatch loop (`run_loop`).
+5. On `run_loop` exit, invoke `on_disconnected` on the callback — detaches
+   peer from aggregated env, drops channel tracking.
+
+The assembly layer constructs the callback and passes it to `CallAdapter`:
+
+```rust
+let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::new());
+let adapter = CallAdapter::new(registry, identity_provider)
+    .with_aggregated_env(hub.aggregated_env().clone())
+    .with_worker_connected_callback(callback);
+```
+
+> **Note on OQ-54**: The callback approach replaces the earlier "explicit
+> post-hoc call" design. The callback fires inside `handle()` because
+> `handle()` blocks until disconnect — there is no "after handle accepts"
+> point for the assembly layer to hook into. The callback is the committed
+> design; OQ-54 is resolved.
 
 #### Outbound workers (hub dials workers)
 
@@ -249,6 +280,19 @@ impl Hub {
             .attach_peer(peer_id.clone(), connection.overlay_env());
 
         Ok((peer_id, connection))
+    }
+
+    /// Detach a peer from the aggregated env and drop all channel tracking.
+    /// Called on disconnect (both inbound and outbound).
+    fn on_worker_disconnected(&self, peer_id: &PeerId) {
+        self.aggregated_env
+            .write()
+            .expect("aggregated env lock poisoned")
+            .detach_peer(peer_id);
+        self.channels
+            .write()
+            .expect("channels lock poisoned")
+            .remove(peer_id);
     }
 
     /// Supervise an outbound worker: dial, discover, attach. On disconnect,
@@ -347,23 +391,26 @@ present and always listed.
 Response: { "channels": [{ "channel": 0, "alpn": "alknet/call" }, { "channel": 1, "alpn": "alknet/tty" }] }
 ```
 
-#### Channel proxying
+#### Channel usage
 
-When a client requests a resource that lives on a worker (e.g. "I want a tty
-session on dev1"), the hub:
+`channel/open` is a call-protocol operation. The hub provides it. What the
+caller does with the resulting channel is the caller's business — the hub
+crate does not prescribe a specific proxying pattern.
 
-1. Calls `channel/open { alpn: "alknet/tty", channel: N }` on dev1's
-   call-protocol connection (channel 0).
-2. Dev1 opens stream N, wraps it as `Connection::from_bidi(stream, "alknet/tty", ...)`,
-   and hands it to `TtyAdapter::handle()`.
-3. The hub receives `{ channel: N, status: "open" }`.
-4. The hub proxies the raw stream between the requesting client and dev1.
-   The client and dev1 speak `alknet/tty` directly; the hub is a transparent
-   proxy.
+The general mechanism: when `channel/open` is invoked, the receiver opens a
+new QUIC stream on the connection, wraps it as `Connection::from_bidi(stream,
+alpn, ...)`, and hands it to the `HandlerRegistry` for the requested ALPN.
+The handler runs on the receiver side. The caller gets back a channel number
+and can interact with the handler through the call protocol (e.g. by invoking
+operations that the handler registered, or by opening a reciprocal channel).
 
-The hub does not interpret the tty protocol. It does not need a "tty
-strategy." It opens a channel, gets a stream, and proxies it. The same
-pattern works for any ALPN — blobs, custom protocols, future handlers.
+A common pattern (but not the only one): a hub client wants a tty session on
+a worker. The hub calls `channel/open { alpn: "alknet/tty" }` on the worker.
+The worker opens the stream, wraps it, and hands it to `TtyAdapter::handle()`.
+The hub now has a tty session running on the worker. The hub can proxy the
+raw stream to the client, or expose tty operations through the call protocol,
+or both. The hub crate provides the `channel/open` mechanism; the assembly
+layer decides the proxying pattern.
 
 ### Backoff configuration
 
@@ -439,10 +486,10 @@ pub enum HubError {
 - **Worker provisioning.** The hub does not spawn workers, configure them, or
   manage their lifecycle beyond connection supervision. Worker provisioning
   is an assembly-layer concern.
-- **Protocol interpretation for channels 1..N.** The hub proxies streams
-  transparently. It does not parse tty frames, blob hashes, or any other
-  protocol-specific data. The client and worker speak the ALPN protocol
-  directly; the hub is a transparent proxy.
+- **Protocol interpretation for channels 1..N.** The hub manages channels
+  (tracking, listing, open/close). It does not interpret the protocol
+  running on the channel and does not proxy streams. What the caller does
+  with the resulting channel is the assembly layer's business.
 
 ## Crate dependencies
 
@@ -482,8 +529,10 @@ let hub = Arc::new(Hub::new(
 ).with_ownership_provider(ownership_provider));
 
 // 3. Start the inbound call-protocol listener (workers dial the hub)
+let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::new());
 let adapter = CallAdapter::new(Arc::clone(&registry), Arc::clone(&identity_provider))
-    .with_aggregated_env(hub.aggregated_env().clone());
+    .with_aggregated_env(hub.aggregated_env().clone())
+    .with_worker_connected_callback(callback);
 // ... register adapter on the QUIC endpoint
 
 // 4. Dial outbound workers (hub dials workers)
@@ -523,9 +572,11 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-53** (open): `BackoffConfig` defaults — the committed policy is 1s
   initial, 60s max, 2x multiplier. OQ-53 tracks whether operational
   experience warrants a change before the first release.
-- **OQ-54** (open): Inbound worker `on_worker_connected` hook placement —
-  the committed design is the explicit approach. A `HubCallAdapter` wrapper
-  is additive if needed.
+- **OQ-54** (resolved): Inbound worker hook placement — the callback fires
+  inside `CallAdapter::handle()` between identity resolution and dispatch
+  start. `handle()` blocks until disconnect, so there is no "after handle
+  accepts" point for the assembly layer to hook into. The
+  `WorkerConnectedCallback` is the committed design.
 - **OQ-55** (open): `channel/open` operation — this is a new call-protocol
   operation. It needs a spec in `alknet-call` (the operation shape, the
   stream-opening mechanism, the handler dispatch). The hub registers it as a
