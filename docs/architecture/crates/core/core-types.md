@@ -94,6 +94,11 @@ impl Connection {
         remote_addr: Option<SocketAddr>,
     ) -> Self;
 
+    /// Construct from a caller-supplied `BidiStreamSource` impl. The
+    /// extension point for downstream crates — implement the trait and
+    /// construct a `Connection` from it without editing core. See ADR-070.
+    pub fn from_source(source: impl BidiStreamSource, alpn: Vec<u8>) -> Self;
+
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
     pub fn remote_alpn(&self) -> &[u8];
@@ -186,11 +191,15 @@ indirection and are not the transport's concern.
 | `QuinnBidiStreamSource` | `Connection::from_quinn` / `from_quinn_with_alpn` (feature `quinn`) | many streams |
 | `IrohBidiStreamSource` | `Connection::from_iroh` (feature `iroh`) | many streams |
 | `StreamBidiStreamSource` | `Connection::from_stream` / `from_bidi` (no feature gate) | yield-once, then `ConnectionClosed`; `open_bi` returns `StreamClosed` |
+| *(caller-supplied)* | `Connection::from_source` (no feature gate) | per the caller's `BidiStreamSource` impl |
 
 Downstream crates do not wrap `from_stream` to implement
-`BidiStreamSource` — they implement the trait directly. `from_stream` is
-the compatibility path for callers that want a `Connection` over a single
-pre-split stream (the ADR-065 use case).
+`BidiStreamSource` — they implement the trait directly and construct the
+`Connection` via `from_source`. `from_stream` is the compatibility path for
+callers that want a `Connection` over a single pre-split stream (the
+ADR-065 use case); `from_source` is the extension path for callers that
+implement `BidiStreamSource` themselves (the channels crate's
+`ChannelBidiStreamSource`, a future transport, a test double).
 
 ## BiStream
 
@@ -366,7 +375,7 @@ registration bundle.
 | ProtocolHandler receives Connection, not BiStream | [ADR-007](../../decisions/007-bistream-type-definition.md) | Handlers that need multiple streams (SSH, call) have direct access to the Connection |
 | BiStream is a trait | [ADR-007](../../decisions/007-bistream-type-definition.md) | WASM door preserved, test mocks possible |
 | `Connection::from_stream` — generic single-stream connections | [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `from_stream`/`from_bidi` accept any `AsyncRead + AsyncWrite`; yield-once `accept_bi` contract; unblocks TCP+TLS, SSH channels, WebTransport, wasm; QUIC variants feature-gated, `Stream` variant always available; `MockConnection`/`ConnectionKind::Mock` removed (tests use `from_stream` with `sink`/`empty`) |
-| `BidiStreamSource` — open `Connection` for extension | [ADR-070](../../decisions/070-bidistreamsource-trait.md) | `Connection` holds `Box<dyn BidiStreamSource>`; QUIC/iroh/stream wrap crate-private impls; downstream crates implement the trait to add connection shapes (channels, future transports) without editing core; public `Connection` API preserved; `close(code, reason)` kept on the trait (non-QUIC impls ignore the args — fixes the ADR-065 leftover clippy warning under `--no-default-features`) |
+| `BidiStreamSource` — open `Connection` for extension | [ADR-070](../../decisions/070-bidistreamsource-trait.md) | `Connection` holds `Box<dyn BidiStreamSource>`; QUIC/iroh/stream wrap crate-private impls; `from_source` is the public constructor for downstream crates that implement the trait (channels, future transports); `from_quinn`/`from_iroh`/`from_stream`/`from_bidi` preserved; `close(code, reason)` kept on the trait (non-QUIC impls ignore the args — fixes the ADR-065 leftover clippy warning under `--no-default-features`) |
 | HandlerError is non-fatal | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Handler errors close the connection, not the endpoint |
 | SendStream/RecvStream wrap quinn + iroh + generic streams | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md), [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | Internal enum dispatch for QUIC sources and the generic `Stream` variant |
 | Connection stores handler-resolved identity | OQ-11 (resolved) | `set_identity` via `OnceLock` — write-once-read-many; read by handler-side logging, not by the endpoint (C13 resolved) |

@@ -34,7 +34,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | [031](../../decisions/031-credentialstore-repo-trait.md) | CredentialStore Repo Trait | Second repo trait in core; `InMemoryCredentialStore` default adapter |
 | [033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Core defines traits + in-memory defaults; persistence adapters are separate crates |
 | [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` — Generic Single-Stream Connections | `from_stream`/`from_bidi` accept any `AsyncRead + AsyncWrite`; yield-once `accept_bi` contract; unblocks TCP+TLS, SSH channels, WebTransport, wasm |
-| [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait — Open Connection for Extension | `Connection` holds `Box<dyn BidiStreamSource>`; QUIC/iroh/stream wrap crate-private impls; downstream crates implement the trait to add connection shapes (channels, future transports) without editing core |
+| [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait — Open Connection for Extension | `Connection` holds `Box<dyn BidiStreamSource>`; QUIC/iroh/stream wrap crate-private impls; `from_source` is the public constructor for downstream crates that implement the trait (channels, future transports) |
 
 ## Relevant Open Questions
 

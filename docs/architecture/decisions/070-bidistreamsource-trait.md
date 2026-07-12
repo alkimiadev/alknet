@@ -140,11 +140,22 @@ delegates to `self.source`. `remote_alpn` reads `self.alpn` (unchanged).
 | `from_quinn` / `from_quinn_with_alpn` (feature `quinn`) | `QuinnBidiStreamSource` (crate-private) |
 | `from_iroh` (feature `iroh`) | `IrohBidiStreamSource` (crate-private) |
 | `from_stream` / `from_bidi` (no feature gate) | `StreamBidiStreamSource` (crate-private, yield-once) |
+| `from_source` (no feature gate) | caller-supplied `impl BidiStreamSource` — the extension point for downstream crates |
+
+`from_source(source: impl BidiStreamSource, alpn: Vec<u8>) -> Self` is the
+constructor that makes the trait the extension point. A downstream crate
+implements `BidiStreamSource` (e.g. the channels crate's
+`ChannelBidiStreamSource`) and constructs a `Connection` from it via
+`from_source` — no core edit. The built-in impls (`QuinnBidiStreamSource`,
+`IrohBidiStreamSource`, `StreamBidiStreamSource`) are crate-private;
+`from_source` is the only path a downstream crate uses to wrap its own
+impl. The `from_quinn` / `from_iroh` / `from_stream` / `from_bidi`
+constructors are convenience wrappers for the three built-in impls.
 
 The `Stream`-backend implementations are crate-private; downstream crates
 do not implement `BidiStreamSource` by wrapping `from_stream`. They
-implement the trait directly (channels: `ChannelBidiStreamSource`), or they
-use a public constructor that already wraps an impl.
+implement the trait directly (channels: `ChannelBidiStreamSource`) and
+construct the `Connection` via `from_source`.
 
 ### `from_stream`-backed default impl is the compatibility path
 
@@ -233,10 +244,10 @@ the args are optional for their transport.
 
 - `Connection` is open for extension. The channels crate implements
   `ChannelBidiStreamSource` in its own crate and constructs `Connection`
-  from it — no core edit. A future transport, test double, or relay
-  connection follows the same path. This is the structural payoff: the
-  connection type is no longer a closed enum that every new connection
-  shape must edit.
+  from it via `from_source` — no core edit. A future transport, test
+  double, or relay connection follows the same path. This is the
+  structural payoff: the connection type is no longer a closed enum that
+  every new connection shape must edit.
 - A channels connection is a first-class peer of QUIC: one
   `ChannelConnection` that yields N streams, rather than a bag of yield-
   once `Connection`s. The channels layer's API matches its actual shape.
