@@ -28,6 +28,18 @@ complexity is what channels specifically collapses, and that the call
 protocol's auth/operation-overlay model carries over to channel lifecycle
 with no new machinery.
 
+The 2026-07-12 revision incorporates the **completed de-risk POC**
+(`docs/research/alknet-channels/poc-summary.md`, 28 tests passing). The POC
+validated the three core mechanics (chunk format + demux/mux, per-channel
+`Connection` presentation, tunnel handler) and surfaced invariants that
+are now captured as REQ-CH-01 through REQ-CH-07 and REQ-CORE-01 through
+REQ-CORE-04 (§POC-Validated Requirements). It also confirmed OQ-CH-12
+(resolved: lenient drop), OQ-CH-13 (confirmed +EV: do the
+`BidiStreamSource` refactor), and clarified OQ-CH-14 (the broader
+`AlknetClient` in core + the channels crate's `ChannelClient`, with
+server/client bidirectionality preserved). The POC pushed this beyond
+speculation into validated territory.
+
 ## Vision Recap
 
 `alknet-channels` is a **multiplexing proxy** — a `ProtocolHandler` on
@@ -1427,20 +1439,22 @@ same as any multiplexer.
   side. Phase 1 must specify whether the hub translates or transparently
   forwards, and how the `channel_id` mapping is maintained.
 
-- **OQ-CH-12 (unknown channel_id on demux)**: when the demux receives a
-  chunk with a `channel_id` it has not allocated, what does it do? Options:
-  (a) drop with a debug log (lenient — survives transient mis-ordering
-  during channel teardown), (b) return a protocol error and close the
-  transport (strict — catches bugs but is fragile during teardown). SSH
-  is lenient. Recommendation: lenient for v1, with an error counter for
-  observability. See `poc-plan.md` §Step 1.
+- **OQ-CH-12 (unknown channel_id on demux)** — **RESOLVED by POC (lenient
+  drop).** The POC validated the recommended v1 behavior: a chunk with an
+  unallocated `channel_id` (or an unallocated `stream_type` on an allocated
+  channel) is dropped with a debug log and an error counter, and the demux
+  continues (`demux_unknown_channel_drops_lenient`). This matches SSH's
+  behavior and survives transient mis-ordering during teardown. The error
+  counter is exposed via `Demux::stats()` for observability. See
+  `poc-summary.md` §"POC Target 1".
 
-- **OQ-CH-13 (core trait for bidi-stream sources)**: the POC
-  (`poc-plan.md`) uses `Connection::from_stream` per channel, which is
-  yield-once. A Phase 1 refactor may add a `BidiStreamSource` trait to
-  `alknet-core` so `ChannelConnection` (many channels, each a bidi stream)
-  is a first-class peer of QUIC (many bidi streams) rather than a bag of
-  yield-once Connections:
+- **OQ-CH-13 (core trait for bidi-stream sources)** — **CONFIRMED +EV by
+  POC; do the refactor.** The POC validated the yield-once
+  `Connection::from_stream` path is sufficient (as the plan predicted), but
+  wiring `ChannelEndpoint::open_echo_channel` made the awkwardness concrete:
+  each channel constructs a fresh yield-once `Connection`, and the endpoint
+  holds a bag of these rather than a single `ChannelConnection` that yields
+  N streams. The `BidiStreamSource` trait is the fix:
 
   ```rust
   trait BidiStreamSource: Send + Sync {
@@ -1450,31 +1464,164 @@ same as any multiplexer.
   ```
 
   with `Connection` holding `Box<dyn BidiStreamSource>`, and QUIC/Iroh/
-  Stream/Channels all implementing it. This is **additive** (existing
-  callers keep working via a blanket impl or a `from_stream`-backed
-  default) and not a major/pita break — it mostly adds a new variant and
-  trait-ifies the existing `accept_bi`/`open_bi` methods behind a trait
-  object. The POC does NOT need this — it validates the yield-once path is
-  sufficient — but Phase 1 should evaluate whether the trait makes the
-  channels layer and the client-side endpoint (OQ-CH-14) cleaner. The
-  expectation is that this route is +EV: it's not a massive change and
-  will make things a lot easier downstream.
+  Stream/Channels all implementing it. The POC confirms this is **additive**
+  (existing callers keep working via a `from_stream`-backed default impl)
+  and cleans up both the channels layer and the client-side endpoint
+  (OQ-CH-14). **Recommendation: do this refactor alongside the channels
+  crate.** It is not a major/pita break and makes downstream substantially
+  cleaner. See `poc-summary.md` §"Issues Surfaced" #1.
 
-- **OQ-CH-14 (client-side channels endpoint)**: both sides of a channels
-  connection do the demux/mux work. The server side is a `ProtocolHandler`
-  (`ChannelsAdapter::handle`). The client side needs a symmetric type —
-  something like `ChannelClient` that opens a transport, runs the demux/
-  mux, and exposes `open_channel(alpn, params) -> Channel` to the
-  application. This is the channels analogue of `AlknetEndpoint` (server)
-  vs `CallClient` (client) in the call protocol. The POC uses a POC-local
-  client type; Phase 1 must decide whether this lives in `alknet-channels`
-  or is a thin wrapper over `alknet-core`'s endpoint types. The
-  `BidiStreamSource` trait (OQ-CH-13) may factor into this — if
-  `AlknetEndpoint` and `ChannelClient` both produce `BidiStreamSource`s,
-  the client/server symmetry is cleaner. After the POC we're probably
-  going to need some light refactoring to the core to make these easier;
-  the good news is it should mostly be additive and not breaking in
-  major/pita ways.
+- **OQ-CH-14 (client-side channels endpoint + core `AlknetClient`)**:
+  both sides of a channels connection do the demux/mux work. The server
+  side is a `ProtocolHandler` (`ChannelsAdapter::handle`). The client side
+  needs a symmetric type — `ChannelClient` — that opens a transport, runs
+  the demux/mux, and exposes `open_channel(alpn, params) -> Channel` to the
+  application.
+
+  **Clarification on the broader core concern:** the original mention of a
+  "client in the core similar to `AlknetEndpoint`" was referring to a
+  general **`AlknetClient`** in `alknet-core` — the downstream-facing client
+  that crates use to connect to an alknet endpoint, paired with whichever
+  ALPN handler the downstream crate provides. Today there is only one
+  client (`CallClient` in `alknet-call`), so adding `AlknetClient` and
+  refactoring the one client onto it is not a massive undertaking. The
+  point is to make the overall interface **uniform**: downstream crates use
+  `AlknetClient` + their ALPN handler, and the server/client symmetry is
+  visible at the core level. This is broader than the channels crate and
+  may be partly out of scope here, but it's the context for OQ-CH-14.
+
+  The channels crate will **also** need that server/client concept. The
+  terminology gets muddy ("server" isn't quite right since a hub/worker can
+  act as both depending on the use case) but it's a clear mental model and
+  helps decide which side determines the channel id (the server does, per
+  DP-1). Crucially — like the call crate — **nothing at the core level
+  prevents a hub/worker from acting as both server and client**. Each side
+  populates its registry with the resources available to it from the other
+  side. The only current friction is that each client is built manually
+  today (which is why the basic `AlknetClient` was proposed). Phase 1 must
+  keep that bidirectional capability — each side fills its registry with
+  the resources available to it from the other side, same as the call
+  protocol's operation overlay.
+
+  The POC's `ChannelEndpoint` (POC-local client/server wiring, `poc-summary.md`
+  §"POC Target 2") is the shape Phase 1 will generalize into
+  `ChannelsAdapter::handle` (server) and `ChannelClient` (client). The
+  `BidiStreamSource` trait (OQ-CH-13) factors into this: if `AlknetEndpoint`
+  and `AlknetClient` (and `ChannelClient`) all produce `BidiStreamSource`s,
+  the client/server symmetry is cleaner. See `poc-summary.md` §"Issues
+  Surfaced" #1 and #5.
+
+## POC-Validated Requirements (Carry into Phase 1)
+
+The POC (`docs/research/alknet-channels/poc-summary.md`, 28 tests passing)
+validated the core mechanics and surfaced invariants that Phase 1 must
+specify. These are **requirements**, not open questions — the POC proved they
+are necessary.
+
+### Wire-level invariants (the channels crate spec)
+
+**REQ-CH-01: `AsyncWrite::shutdown` emits a zero-length sentinel.**
+`MpscSendStream::poll_shutdown` must send an empty `Bytes` before dropping
+the sender. Without this, the demux never sees EOF on the channel's
+`stream_type`, and `tokio::io::copy` in the handler never completes — the
+session hangs. The TTY crate's `pump_session` emits the zero-length stdout
+sentinel explicitly via `Chunk::stdout(Bytes::new())`; the channels layer's
+per-channel write pump does NOT forward a sentinel on sender-drop, so the
+send adapter must. This is a **wire-level invariant** — both sides must
+agree, or channels hang on clean shutdown. (poc-summary §"Issues Surfaced"
+#4)
+
+**REQ-CH-02: transport close → all channel senders drop → all handlers see
+EOF.** `Demux::run` must clear its `channels` map on exit (transport closed)
+so every handler's `MpscRecvStream` sees EOF even without an explicit
+zero-length sentinel on the wire. Without this, `read_to_end` /
+`tokio::io::copy` in handlers hangs forever waiting for a sender that never
+drops because the demux task is holding the map. This is a teardown
+invariant of the `ChannelsAdapter::handle` contract. (poc-summary §"Issues
+Surfaced" #6)
+
+**REQ-CH-03: mux needs dynamic registration (handle/runner split).** The
+mux must support registering channels *after* the run loop has started
+(not pre-registering all channels before run). The POC split `Mux` into
+`MuxHandle` (clone-able, `register(channel_id, stream_type) -> Sender<Bytes>`
+at any time) and `MuxRunner` (owns the transport, `select!`s on new-pump
+registrations). The runner's `select!` loop exits when all `MuxHandle`
+clones drop (the `new_pumps` sender closes), which is the natural shutdown
+signal. This matches the dynamic `channel/open` model. (poc-summary §"Issues
+Surfaced" #5)
+
+**REQ-CH-04: lenient unknown-`channel_id` handling with error counter.**
+A chunk with an unallocated `channel_id` (or `stream_type`) is dropped
+with a debug log and an error counter (exposed via `Demux::stats()`), and
+the demux continues. This resolves OQ-CH-12. (poc-summary §"POC Target 1")
+
+**REQ-CH-05: bounded-buffer backpressure (DP-5 option c) works and does
+not deadlock.** Each `(channel_id, stream_type)` has an independent bounded
+`mpsc` buffer. A slow reader on one channel does not block another. The
+1 MiB tunnel test exercises this end-to-end with no deadlock. (poc-summary
+§"POC Target 1", §"POC Target 3")
+
+### Handler-level pattern (carry into the channels spec or a core helper)
+
+**REQ-CH-06: two-pump handlers need explicit shutdown-on-completion.**
+`tokio::try_join!(c2t, t2c)` deadlocks for a tunnel (each pump waits for
+the other's EOF, which only comes once the *opposite* pump completes and
+shuts down its sink). The fix: shut down the peer's sink when one pump
+completes. The TTY adapter avoids this because its three pumps coordinate
+via the `exit_code` future; a two-pump handler has no such third signal.
+This pattern will recur (e.g. SSH `direct-tcpip` is the same two-pump
+shape). Phase 1 should document it in the channels spec, or — if
+`BidiStreamSource` lands — provide a helper in `alknet-core` that
+encapsulates "two-pump with shutdown-on-completion" so handlers don't
+reimplement it. (poc-summary §"Issues Surfaced" #7)
+
+### Core refactor requirements (land alongside the channels crate)
+
+**REQ-CORE-01: add `BidiStreamSource` trait to `alknet-core` (OQ-CH-13,
+confirmed +EV).** `Connection` holds `Box<dyn BidiStreamSource>`;
+QUIC/Iroh/Stream/Channels implement it. Existing callers keep working
+via a `from_stream`-backed default impl. This is additive and not a
+major/pita break. Makes `ChannelConnection` a first-class peer of QUIC
+instead of a bag of yield-once Connections, and cleans up the client-side
+endpoint (OQ-CH-14). (poc-summary §"Issues Surfaced" #1)
+
+**REQ-CORE-02: fix `Connection::close` unused `code`/`reason` for the
+stream backend.** `crates/alknet-core/src/types.rs:500` — the `Stream`
+backend takes `code: u32, reason: &str` and does nothing with them (clippy
+flags both). The `BidiStreamSource` refactor is the natural place to give
+the stream backend a `close()` that doesn't take QUIC-shaped args. Low
+priority but worth fixing while the trait is open. (poc-summary §"Issues
+Surfaced" #2)
+
+**REQ-CORE-03: add `AuthContext` test/POC helper.** Every POC handler test
+constructs an `AuthContext` literal with four `None` fields and a hardcoded
+ALPN. An `AuthContext::test(alpn)` or `AuthContext::anonymous(alpn)` helper
+(behind a `test-utils` feature or a `pub fn`) would remove this recurring
+boilerplate. Small, but it recurs in every handler POC. (poc-summary
+§"Issues Surfaced" #3)
+
+**REQ-CORE-04 (broader, may be partly out of scope): add `AlknetClient` to
+`alknet-core`.** A general downstream-facing client that crates use to
+connect to an alknet endpoint, paired with whichever ALPN handler the
+downstream crate provides. Today there is only one client (`CallClient` in
+`alknet-call`), so adding `AlknetClient` and refactoring the one client
+onto it is not a massive undertaking. The point is to make the overall
+interface **uniform**: downstream crates use `AlknetClient` + their ALPN
+handler, and the server/client symmetry is visible at the core level. The
+channels crate's `ChannelClient` (OQ-CH-14) would be a specialization of
+this. Nothing at the core level should prevent a hub/worker from acting as
+both server and client — each side fills its registry with the resources
+available to it from the other side. (See OQ-CH-14 clarification.)
+
+### Clippy / cosmetic (low priority)
+
+**REQ-CH-07: `PollSender`-style adapter for mpsc-backed `AsyncWrite`.**
+`MpscSendStream`'s in-flight `reserve_owned()` future is boxed as a complex
+anonymous type that clippy flags. A `tokio_util::io::PollSender`-style
+helper (or a small ~50-line adapter) would clean this up and will recur in
+any mpsc-backed stream. Phase 1 should consider whether to extract this
+to `alknet-core` or keep it crate-local. (poc-summary §"Issues Surfaced"
+#8)
 
 ## Recommended Approach
 
@@ -1532,45 +1679,52 @@ on `alknet-channels` except the assembly layer that registers it on the
 - **Result**: SSH-over-channels works. The full stack (call + TTY + SSH +
   tunnel on one connection) is validated.
 
-### De-risk POC
+### De-risk POC — COMPLETE
 
-A detailed POC plan lives in `docs/research/alknet-channels/poc-plan.md`.
-Summary: a standalone POC at `/workspace/@alkdev/alknet-channels-poc/` that
-validates the three highest-leverage unknowns in three independently-runnable
-steps:
+**Status: complete.** The POC (`docs/research/alknet-channels/poc-summary.md`,
+28 tests passing) validated the three highest-leverage unknowns. The plan
+lives in `docs/research/alknet-channels/poc-plan.md`; the summary lives in
+`docs/research/alknet-channels/poc-summary.md`.
 
-1. **Chunk format + N-channel demux/mux** — generalize TTY's 5-byte
-   `ChunkReader`/`ChunkWriter` to the 9-byte format, build a demux that
-   routes chunks to per-channel `mpsc` channels and a mux that frames
-   per-channel bytes back onto the transport. Validates the
-   decompose→stream→recompose round-trip for 3+ concurrent channels.
-2. **Per-channel `Connection` presentation** — wrap each reassembled
-   channel as `Connection::from_stream` and run a minimal `ProtocolHandler`
-   (echo) through the full demux→Connection→handler→mux path. Validates
-   that the existing `Connection` abstraction (from transport-generalization)
-   is sufficient; no core changes needed for the POC.
-3. **Tunnel handler** — a `channel/open` with a target address opens a
-   `TcpStream` and pumps bidirectionally. Validates that the same concepts
-   behind the TTY crate work as a generic port proxy.
+What the POC proved:
 
-Stretch goals: WASM build of the sync core; two different channel types
-(TTY-shaped 4-stream + tunnel 2-stream) on one connection; hub relay sketch
-with `channel_id` remapping (OQ-CH-11).
+1. **Chunk format + N-channel demux/mux** — the 9-byte format is a clean
+   generalization of TTY's 5-byte format. The sync core is pure and
+   WASM-compatible by construction (compiles under `wasm32-unknown-unknown`).
+   The mpsc-bridged async shell scales to N concurrent channels with
+   per-channel order preservation and cross-channel isolation. Bounded-
+   buffer backpressure works.
+2. **Per-channel `Connection` presentation** — `Connection::from_stream` is
+   sufficient. An echo `ProtocolHandler` runs through the full
+   demux→Connection→handler→mux path with zero channels-layer awareness.
+   The yield-once `accept_bi` contract composes for looping handlers.
+3. **Tunnel handler** — the bidirectional pump pattern (TTY's
+   `pump_session` shape, two pumps) works as a generic port proxy. A ~15-
+   line `TunnelHandler` proxies a channel to a local TCP echo server with
+   no chunk-format awareness, and coexists with an echo channel on one
+   connection without interference.
 
-The POC deliberately does NOT do: the call protocol (channel/open etc. are
-Phase 1's concern, already in production), real transport (uses
-`tokio::io::duplex`), ACL, real adapters, or recursive composition.
+What the POC surfaced (now requirements, §POC-Validated Requirements):
+- REQ-CH-01 through REQ-CH-07 — wire-level invariants and handler patterns
+  for the channels crate spec.
+- REQ-CORE-01 through REQ-CORE-04 — the light `alknet-core` refactor
+  (chiefly the `BidiStreamSource` trait, OQ-CH-13 confirmed +EV).
+- OQ-CH-12 resolved (lenient drop); OQ-CH-13 confirmed (do the refactor);
+  OQ-CH-14 clarified (`AlknetClient` in core + channels `ChannelClient`,
+  server/client bidirectionality preserved).
 
-The POC surfaces three open questions carried into Phase 1: OQ-CH-12
-(unknown channel_id on demux), OQ-CH-13 (core `BidiStreamSource` trait —
-likely +EV additive refactor after the POC), and OQ-CH-14 (client-side
-channels endpoint — the symmetric `ChannelClient` type).
+What the POC did NOT validate (out of scope, carried to Phase 1): the call
+protocol, real transport, ACL, real adapters, recursive composition, hub
+relay. The POC pushed the core mechanics beyond speculation into validated
+territory; the remaining unknowns are spec-scope, not feasibility.
 
 The POC lives at `/workspace/@alkdev/alknet-channels-poc/` (mirroring the
 `alknet-tty-poc` convention), depends on `alknet-core` only.
 
 ## References
 
+- `docs/research/alknet-channels/poc-summary.md` — the completed POC summary
+  (28 tests passing, the three validated targets, issues surfaced).
 - `docs/research/alknet-channels/poc-plan.md` — the detailed de-risk POC
   plan (Step 1: chunk format + demux/mux, Step 2: per-channel Connection,
   Step 3: tunnel handler).
