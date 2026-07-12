@@ -98,8 +98,8 @@ stream_types are grouped in threes:
 | Data | 0 | write (client→server) | data in (stdin equivalent) |
 | | 1 | read (server→client) | data out (stdout equivalent) |
 | | 2 | read (server→client) | data err (stderr equivalent, optional) |
-| Control | 3 | write (client→server) | control in (resize, signal, eof) |
-| | 4 | read (server→client) | control out (exit, keepalive response) |
+| Control | 3 | write (client→server) | control in (ALPN-specific format) |
+| | 4 | read (server→client) | control out (ALPN-specific format) |
 | | 5 | read (server→client) | control err (optional) |
 | Future | 6/7/8 | write/read/read | next group, same pattern |
 | | 9/10/11 | write/read/read | next group |
@@ -119,6 +119,15 @@ not one stream both sides write to. This resolves the "control channel
 isn't actually bidirectional" problem the TTY crate has today. The same
 principle applies to any future channel type — control is two halves, not
 one shared stream.
+
+**Control payload format is ALPN-specific, not channels-enforced.** The
+channels layer is blind to what stream_types 3/4/5 carry — it reassembles
+bytes and delivers them to the handler. The TTY crate happens to use JSON
+for its control channel (resize, signal, eof, exit) because its control
+messages map cleanly to JSON; another ALPN might use a binary control
+format. The channels layer does not mandate JSON on control stream_types.
+This is the same ALPN-blindness principle that applies to the data
+stream_types: the channels layer routes bytes, the handler interprets them.
 
 ### Per-ALPN stream_type sets
 

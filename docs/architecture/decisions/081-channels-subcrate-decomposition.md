@@ -41,22 +41,26 @@ separable from the call-protocol orchestration (`channels-call`).
 
 ## Decision
 
-### Three crates
+### Two crates, not four
 
 ```
 alknet-channels-core  — the pure multiplexer (wire format, demux/mux,
 │                       ChannelBidiStreamSource, ChannelManager). Depends
 │                       on alknet-core only. ALPN-blind, call-protocol-blind,
 │                       transport-blind.
-├── alknet-channels-call — channel 0 pre-negotiation + lifecycle op
-│        │                registrations on the call protocol's
-│        │                OperationRegistry. Depends on channels-core +
-│        │                alknet-call.
-│        ├── alknet-channels-hub — the relay (ADR-079). Depends on
-│        │                   channels-call. The hub-side role.
-│        └── alknet-channels-worker — ChannelClient (ADR-080). Depends on
-│                            channels-call. The client/worker-side role.
+└── alknet-channels-call — channel 0 pre-negotiation + lifecycle op
+                         registrations on the call protocol's
+                         OperationRegistry. Depends on channels-core +
+                         alknet-call.
 ```
+
+There are no `channels-hub` or `channels-worker` sub-crates. The hub and
+worker are **consumers** of channels, not sub-crates of it. The existing
+`alknet-hub` crate (`docs/architecture/crates/hub/README.md`) IS the hub —
+it depends on `channels-call` and uses the channels protocol as its
+substrate. A worker is just a worker — it depends on `channels-call` and
+uses `ChannelClient` (ADR-080) to dial. The hub relay logic (ADR-079) lives
+in `alknet-hub`, not in a channels sub-crate.
 
 ### `alknet-channels-core`
 
@@ -95,31 +99,38 @@ The call-protocol coupling. Contains:
   registered on the call protocol's `OperationRegistry` at assembly time.
 - `ChannelOperations` (the registration helper that closes over a
   `ChannelManager` clone).
+- `ChannelClient` (ADR-080) — the client-side type that dials a transport,
+  establishes the channels connection, and exposes `open_channel(alpn,
+  params) -> Channel`. This is the worker/client entry point; it lives here
+  because it needs channel 0 pre-negotiation (which is in `channels-call`).
 
 Depends on `channels-core` + `alknet-call`. This is where the
 call-protocol coupling lives, isolated from the pure multiplexer.
 
-### `alknet-channels-hub` and `alknet-channels-worker`
+### Hub and worker are consumers, not sub-crates
 
-The two roles. These may be sub-crates or feature-gated modules within
-`channels-call`; the exact packaging is a two-way-door implementation
-detail. The contract is:
+The hub and worker are architectural roles, not channels sub-crates:
 
-- **`channels-hub`** (or the hub role): the relay (ADR-079). Translates
-  `channel/open` on channel 0, byte-forwards data channels with
-  `channel_id` rewrite. Depends on `channels-call` (for the call-protocol
-  translation) + the hub's own `CallAdapter` / `from_call` machinery.
-- **`channels-worker`** (or the worker/client role): `ChannelClient`
-  (ADR-080). Dials a transport, establishes the channels connection, runs
-  the demux/mux, exposes `open_channel(alpn, params) -> Channel`. Depends
-  on `channels-call` (for channel 0 pre-negotiation) + `alknet-call`'s
-  `CallClient`-equivalent.
+- **The hub** is the existing `alknet-hub` crate. It depends on
+  `channels-call` and uses the channels protocol as its substrate. The hub
+  relay logic (ADR-079 — translate `channel/open` on channel 0,
+  byte-forward data channels with `channel_id` rewrite) lives in
+  `alknet-hub`, alongside its existing peer lifecycle, aggregated env, and
+  service discovery responsibilities. There is no `channels-hub` sub-crate;
+  `alknet-hub` IS the channels hub.
 
-The naming (hub/worker vs server/client) is a two-way-door detail. The
-user noted "server/client" is muddy because a hub/worker can act as both
-depending on the use case (bidirectionality — ADR-073 §direction
-semantics). The roles are "the side that relays" (hub) and "the side that
-dials" (worker/client), but both can open channels in either direction.
+- **A worker** is any crate that uses `ChannelClient` (ADR-080, in
+  `channels-call`) to dial a hub. There is no `channels-worker` sub-crate;
+  a worker depends on `channels-call` and uses `ChannelClient` directly.
+  The worker may be a CLI binary, a docker-side connector, an SSH-side
+  connector, or any other role that dials into a hub's channels connection.
+
+This means the channels crate provides the substrate (`channels-core` +
+`channels-call`); the hub and worker crates are consumers that build on it.
+The dependency direction is: `alknet-hub` → `channels-call` →
+`channels-core` → `alknet-core`; a worker → `channels-call` →
+`channels-core` → `alknet-core`. The channels crate has no dependency on
+`alknet-hub` or any worker crate.
 
 ### What moves where
 
@@ -134,22 +145,24 @@ dials" (worker/client), but both can open channels in either direction.
 | Channel 0 pre-negotiation | `alknet-channels` (ADR-072) | `channels-call` |
 | `channel/open`/`close`/`control`/`resources/subscribe` ops | `alknet-channels` (ADR-073) | `channels-call` |
 | `ChannelOperations` registration helper | `alknet-channels` | `channels-call` |
-| Hub relay (ADR-079) | `alknet-channels` (spec) / `alknet-hub` (impl) | `channels-hub` (or `alknet-hub` — see below) |
-| `ChannelClient` (ADR-080) | `alknet-channels` | `channels-worker` |
+| `ChannelClient` (ADR-080) | `alknet-channels` | `channels-call` |
+| Hub relay (ADR-079) | `alknet-channels` (spec) | `alknet-hub` (the existing hub crate, consuming `channels-call`) |
 
 ### Relationship to `alknet-hub`
 
 The existing `alknet-hub` crate (`docs/architecture/crates/hub/README.md`)
-is the hub pattern: peer lifecycle, aggregated env, service discovery. The
-channels hub relay (ADR-079) is a channels-specific concern that the hub
-crate consumes. The split: `channels-hub` (or the hub role within
-`channels-call`) provides the relay logic; `alknet-hub` wires it into the
-hub runtime alongside the call-protocol peer management. Whether the relay
-lives in a `channels-hub` sub-crate or directly in `alknet-hub` is a
-packaging decision — the contract (ADR-079) is the same either way. The
-user's preference for decomposing channels into core/hub/worker suggests a
-`channels-hub` sub-crate that `alknet-hub` depends on, but this is not
-one-way and can be revisited during implementation.
+is the hub pattern: peer lifecycle, aggregated env, service discovery. With
+channels as the substrate, `alknet-hub` gains a dependency on
+`channels-call` and incorporates the relay logic (ADR-079). The hub spec
+(`crates/hub/README.md`) will be updated to reflect that the hub uses
+channels as its transport substrate — one channels connection per leg
+(browser↔hub, hub↔spoke), with the relay translating `channel/open` and
+byte-forwarding data channels. The hub's existing responsibilities (peer
+lifecycle, aggregated env, service discovery, worker supervision) are
+unchanged; channels is the substrate they run on.
+
+This makes "channels hub" and "hub" the same thing — the hub IS built on
+channels. There is no separate channels-hub concept.
 
 ## Consequences
 
@@ -162,20 +175,22 @@ one-way and can be revisited during implementation.
   `channels-core` doesn't know about `alknet-call`, `alknet-tty`, or any
   handler crate. The call-protocol coupling is a channels-crate concern,
   not a downstream-crate concern.
-- The sub-crate split matches the existing pattern (`alknet-tty` +
-  `alknet-tty-local`, `alknet-docker` + its `tty` feature) — core in one
-  crate, consumer-specific wiring in another.
-- The hub and worker roles are separated, matching the user's
-  decomposition preference and the bidirectionality of the channels
-  protocol (both sides can open channels; the roles are about who relays
-  vs who dials, not about request/response direction).
+- Hub and worker are consumers, not sub-crates. The existing `alknet-hub`
+  crate IS the channels hub — it depends on `channels-call` and uses
+  channels as its substrate. A worker depends on `channels-call` and uses
+  `ChannelClient`. The channels crate has no dependency on `alknet-hub` or
+  any worker crate. This is the cleanest dependency direction: channels
+  provides the substrate; hub and worker consume it.
+- The WASM and cross-platform story gets easier: `channels-core` is
+  WASM-compatible by construction (pure byte manipulation, no platform
+  deps); `channels-call` inherits the call protocol's WASM constraints; the
+  hub and worker crates are platform-specific as needed.
 
 **Negative:**
-- Three crates instead of one. The assembly layer must depend on
-  `channels-core` + `channels-call` (and optionally `channels-hub` or
-  `channels-worker`) instead of one `alknet-channels`. This is the cost of
-  the clean separation; the assembly layer already wires multiple crates,
-  so this is consistent with the existing pattern.
+- Two channels crates instead of one. The assembly layer must depend on
+  `channels-core` + `channels-call` instead of one `alknet-channels`. This
+  is the cost of the clean separation; the assembly layer already wires
+  multiple crates, so this is consistent with the existing pattern.
 - The `ChannelsAdapter` in `channels-core` doesn't preinstall channel 0 —
   the consumer does. This means `channels-core`'s `ChannelsAdapter::handle`
   exposes a hook (callback or trait method) for the consumer to install
@@ -186,12 +201,11 @@ one-way and can be revisited during implementation.
 
 ## Door type
 
-**One-way (crate structure) + two-way (role packaging).** The three-crate
-split (`channels-core` / `channels-call` / roles) is one-way — once
-consumers depend on `channels-core` without `channels-call`, re-merging
-them is a breaking change. The hub/worker packaging (separate sub-crates
-vs feature-gated modules within `channels-call`) is two-way — an
-implementation detail that can change without breaking the contract.
+**One-way (crate structure).** The two-crate split (`channels-core` /
+`channels-call`) is one-way — once consumers depend on `channels-core`
+without `channels-call`, re-merging them is a breaking change. The hub and
+worker being consumers (not sub-crates) is also one-way — it establishes
+the dependency direction (hub/worker → channels, not channels → hub/worker).
 
 ## References
 

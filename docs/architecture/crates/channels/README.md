@@ -40,7 +40,7 @@ protocol work itself.
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | The two-pump deadlock contract; handler-level, not channels-layer |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | The hub translates channel 0, byte-forwards data channels with ID rewrite |
 | [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient`, QUIC-only; `AlknetClient` deferred (OQ-55) |
-| [081](../../decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling) / hub / worker |
+| [081](../../decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers, not sub-crates |
 | [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | The `Connection` extension point `ChannelBidiStreamSource` implements |
 | [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | The transport-agnostic `Connection` the channels layer rides on |
 | [052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | alknet-tty Wire Format | The 5-byte format the 9-byte format generalizes (amended by ADR-077 — scoped to direct TTY) |

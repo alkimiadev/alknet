@@ -48,8 +48,8 @@ stream_types are grouped in threes:
 | Data | 0 | write (client→server) | data in (stdin equivalent) |
 | | 1 | read (server→client) | data out (stdout equivalent) |
 | | 2 | read (server→client) | data err (stderr equivalent, optional) |
-| Control | 3 | write (client→server) | control in (resize, signal, eof) |
-| | 4 | read (server→client) | control out (exit, keepalive response) |
+| Control | 3 | write (client→server) | control in (ALPN-specific format) |
+| | 4 | read (server→client) | control out (ALPN-specific format) |
 | | 5 | read (server→client) | control err (optional) |
 | Future | 6/7/8 | write/read/read | next group, same pattern |
 | | ... | | |
@@ -64,6 +64,13 @@ stream_type groups is effectively unlimited for the intended use cases.
 own flow control, its own EOF. Control is bidirectional via two halves
 (3 in, 4 out), not one shared stream both sides write to. This resolves the
 TTY control channel's "not actually bidirectional" flaw (ADR-077).
+
+**Control payload format is ALPN-specific.** The channels layer is blind to
+what stream_types 3/4/5 carry — it reassembles bytes and delivers them to
+the handler. TTY happens to use JSON for its control channel; another ALPN
+might use a binary format. The channels layer does not mandate JSON on
+control stream_types, the same way it doesn't mandate a format for data
+stream_types.
 
 Not all channels use all sub-streams. The active set is declared at
 `channel/open` time (ADR-073 `stream_types` field) and fixed for the

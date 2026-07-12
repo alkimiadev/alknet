@@ -105,18 +105,17 @@ alknet-channels-core
 
 alknet-channels-call
 ├── alknet-channels-core (ChannelManager, ChannelsAdapter,
-│                         ChannelBidiStreamSource)
+│                         ChannelBidiStreamSource, ChannelClient)
 ├── alknet-call (OperationRegistry, HandlerKind, make_handler,
 │                make_streaming_handler, CallError, ResponseEnvelope)
 └── tokio
 
-alknet-channels-hub (or the hub role within alknet-hub)
+alknet-hub (the existing hub crate — consumes channels)
 ├── alknet-channels-call
 └── alknet-call (from_call, CallAdapter, forwarded_for — ADR-079)
 
-alknet-channels-worker (or the worker/client role)
-├── alknet-channels-call
-└── alknet-call (CallClient-equivalent)
+worker crates (any crate that dials a hub — consumes channels)
+└── alknet-channels-call (ChannelClient — ADR-080)
 ```
 
 `alknet-channels-core` is the pure multiplexer — wire format, demux/mux,
@@ -125,15 +124,17 @@ only. No `alknet-call` dependency. ALPN-blind, call-protocol-blind,
 transport-blind. This is where the "streams are streams" insight lives.
 
 `alknet-channels-call` is the call-protocol coupling — channel 0
-pre-negotiation as `alknet/call` (ADR-072) and the four lifecycle operations
-(ADR-073) registered on the call protocol's `OperationRegistry`. This is
-where the call-protocol coupling lives, isolated from the pure multiplexer.
+pre-negotiation as `alknet/call` (ADR-072), the four lifecycle operations
+(ADR-073) registered on the call protocol's `OperationRegistry`, and
+`ChannelClient` (ADR-080). This is where the call-protocol coupling lives,
+isolated from the pure multiplexer.
 
-`alknet-channels-hub` and `alknet-channels-worker` (or the hub/worker roles
-within `channels-call`) are the two roles: the relay (ADR-079) and the
-`ChannelClient` (ADR-080). Whether these are separate sub-crates or
-feature-gated modules within `channels-call` is a two-way-door packaging
-decision (ADR-081).
+The hub and worker are **consumers**, not sub-crates. The existing
+`alknet-hub` crate IS the channels hub — it depends on `channels-call` and
+uses channels as its substrate, with the relay logic (ADR-079) living in
+`alknet-hub` alongside its existing peer lifecycle and service discovery
+responsibilities. A worker is any crate that uses `ChannelClient` to dial.
+There are no `channels-hub` or `channels-worker` sub-crates.
 
 See ADR-081 for the full decomposition rationale.
 
@@ -249,7 +250,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract; handler-level |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels with ID rewrite |
 | [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; QUIC-only; `AlknetClient` deferred (OQ-55) |
-| [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling) / hub / worker |
+| [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers |
 
 ## Open Questions
 
