@@ -1,7 +1,7 @@
 ---
 id: core/bidistreamsource-trait
 name: "Implement BidiStreamSource trait + AuthContext::anonymous (ADR-070, REQ-CORE-01/02/03)"
-status: pending
+status: completed
 depends_on: []
 scope: broad
 risk: medium

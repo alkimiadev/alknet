@@ -80,6 +80,23 @@ pub struct AuthContext {
     pub tls_client_fingerprint: Option<String>,
 }
 
+impl AuthContext {
+    /// Construct an `AuthContext` with no identity, no fingerprint, and no
+    /// remote address — only the ALPN is set. For POCs, tests, and handlers
+    /// that don't require auth. Not gated behind a `test-utils` feature:
+    /// it's a plain `pub fn` useful for any caller that constructs an
+    /// `AuthContext` outside the endpoint's resolution path. The name is
+    /// honest about the semantics: no identity, no fingerprint.
+    pub fn anonymous(alpn: impl Into<Vec<u8>>) -> Self {
+        Self {
+            identity: None,
+            alpn: alpn.into(),
+            remote_addr: None,
+            tls_client_fingerprint: None,
+        }
+    }
+}
+
 pub trait IdentityProvider: Send + Sync + 'static {
     fn resolve_from_fingerprint(&self, fingerprint: &str) -> Option<Identity>;
     fn resolve_from_token(&self, token: &AuthToken) -> Option<Identity>;
@@ -218,6 +235,15 @@ mod tests {
         let cloned = ctx.clone();
         assert_eq!(cloned.alpn, b"alknet/test");
         assert!(cloned.identity.is_none());
+    }
+
+    #[test]
+    fn auth_context_anonymous_sets_alpn_only() {
+        let ctx = AuthContext::anonymous(b"alknet/test");
+        assert_eq!(ctx.alpn, b"alknet/test");
+        assert!(ctx.identity.is_none());
+        assert!(ctx.remote_addr.is_none());
+        assert!(ctx.tls_client_fingerprint.is_none());
     }
 
     #[test]

@@ -355,21 +355,157 @@ impl AsyncRead for RecvStream {
     }
 }
 
-enum ConnectionKind {
-    #[cfg(feature = "quinn")]
-    Quinn(quinn::Connection),
-    #[cfg(feature = "iroh")]
-    Iroh(iroh::endpoint::Connection),
-    Stream(StreamConn),
+/// Yield bidirectional streams to a `Connection`. Downstream crates implement
+/// this trait to add connection shapes (channels, a future transport, a test
+/// double beyond the `from_stream` case) without editing `alknet-core`. See
+/// ADR-070 for the full rationale and ADR-065 for the yield-once contract the
+/// `StreamBidiStreamSource` impl preserves.
+#[async_trait]
+pub trait BidiStreamSource: Send + Sync + 'static {
+    /// Yield the next bidirectional stream this connection provides.
+    ///
+    /// Transport semantics (carried from ADR-065):
+    /// - QUIC (quinn/iroh): returns a new bidi stream on each call,
+    ///   `ConnectionClosed` when the underlying connection closes.
+    /// - Single-stream (TCP+TLS, SSH channel, WebTransport stream, wasm):
+    ///   yields the underlying stream on the first call, then
+    ///   `ConnectionClosed` on all subsequent calls.
+    /// - Channels: yields one bidi stream per channel, `ConnectionClosed`
+    ///   when the channels connection closes.
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+
+    /// Open a bidirectional stream to the peer.
+    ///
+    /// Single-stream sources return `StreamClosed` (a single stream cannot
+    /// open new application streams — ADR-065). QUIC and channels sources
+    /// open new streams.
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+
+    /// The peer's address, if available. Informational (NAT/proxy).
+    fn remote_addr(&self) -> Option<SocketAddr>;
+
+    /// Close the connection. The `code`/`reason` args are QUIC application-
+    /// level close codes; non-QUIC sources ignore them (the drop is the
+    /// close — ADR-065 §"Negative"). See ADR-070 §"REQ-CORE-02" for the
+    /// rationale for keeping the QUIC-shaped signature on the trait.
+    fn close(&self, code: u32, reason: &str);
 }
 
-struct StreamConn {
+/// QUIC-backed `BidiStreamSource` (quinn). Crate-private; constructed via
+/// `Connection::from_quinn` / `from_quinn_with_alpn` (feature `quinn`).
+#[cfg(feature = "quinn")]
+struct QuinnBidiStreamSource {
+    conn: quinn::Connection,
+}
+
+#[cfg(feature = "quinn")]
+#[async_trait]
+impl BidiStreamSource for QuinnBidiStreamSource {
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        let (send, recv) = self
+            .conn
+            .accept_bi()
+            .await
+            .map_err(map_quinn_connection_error)?;
+        Ok((SendStream::from_quinn(send), RecvStream::from_quinn(recv)))
+    }
+
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        let (send, recv) = self
+            .conn
+            .open_bi()
+            .await
+            .map_err(map_quinn_connection_error)?;
+        Ok((SendStream::from_quinn(send), RecvStream::from_quinn(recv)))
+    }
+
+    fn remote_addr(&self) -> Option<SocketAddr> {
+        Some(self.conn.remote_address())
+    }
+
+    fn close(&self, code: u32, reason: &str) {
+        let code = quinn::VarInt::from(code);
+        self.conn.close(code, reason.as_bytes());
+    }
+}
+
+/// QUIC-backed `BidiStreamSource` (iroh). Crate-private; constructed via
+/// `Connection::from_iroh` (feature `iroh`).
+#[cfg(feature = "iroh")]
+struct IrohBidiStreamSource {
+    conn: iroh::endpoint::Connection,
+}
+
+#[cfg(feature = "iroh")]
+#[async_trait]
+impl BidiStreamSource for IrohBidiStreamSource {
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        let (send, recv) = self
+            .conn
+            .accept_bi()
+            .await
+            .map_err(map_iroh_connection_error)?;
+        Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
+    }
+
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        let (send, recv) = self
+            .conn
+            .open_bi()
+            .await
+            .map_err(map_iroh_connection_error)?;
+        Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
+    }
+
+    fn remote_addr(&self) -> Option<SocketAddr> {
+        None
+    }
+
+    fn close(&self, code: u32, reason: &str) {
+        let code = iroh::endpoint::VarInt::from(code);
+        self.conn.close(code, reason.as_bytes());
+    }
+}
+
+/// Single-stream `BidiStreamSource` (TCP+TLS, SSH channel, WebTransport
+/// stream, wasm stream — ADR-065). Crate-private; constructed via
+/// `Connection::from_stream` / `from_bidi` (no feature gate). `accept_bi`
+/// yields the underlying stream once, then `ConnectionClosed`; `open_bi`
+/// returns `StreamClosed`.
+struct StreamBidiStreamSource {
     stream: Mutex<Option<(SendStream, RecvStream)>>,
     remote_addr: Option<SocketAddr>,
 }
 
+#[async_trait]
+impl BidiStreamSource for StreamBidiStreamSource {
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        let mut guard = self.stream.lock().expect("stream mutex poisoned");
+        match guard.take() {
+            Some(pair) => Ok(pair),
+            None => Err(StreamError::ConnectionClosed),
+        }
+    }
+
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        Err(StreamError::StreamClosed)
+    }
+
+    fn remote_addr(&self) -> Option<SocketAddr> {
+        self.remote_addr
+    }
+
+    /// `code`/`reason` are ignored: a single stream has no QUIC-shaped
+    /// application-level close codes. The drop is the close (ADR-065
+    /// §"Negative"). The `_` prefix is intentional — the signature matches
+    /// the public `Connection::close` API (ADR-070 §"REQ-CORE-02").
+    fn close(&self, _code: u32, _reason: &str) {
+        let _ = self.stream.lock().expect("stream mutex poisoned").take();
+    }
+}
+
 pub struct Connection {
-    kind: ConnectionKind,
+    source: Box<dyn BidiStreamSource>,
     alpn: Vec<u8>,
     identity: OnceLock<Identity>,
 }
@@ -383,7 +519,7 @@ impl Connection {
     #[cfg(feature = "quinn")]
     pub fn from_quinn_with_alpn(conn: quinn::Connection, alpn: Vec<u8>) -> Self {
         Self {
-            kind: ConnectionKind::Quinn(conn),
+            source: Box::new(QuinnBidiStreamSource { conn }),
             alpn,
             identity: OnceLock::new(),
         }
@@ -393,7 +529,7 @@ impl Connection {
     pub fn from_iroh(conn: iroh::endpoint::Connection) -> Self {
         let alpn = conn.alpn().to_vec();
         Self {
-            kind: ConnectionKind::Iroh(conn),
+            source: Box::new(IrohBidiStreamSource { conn }),
             alpn,
             identity: OnceLock::new(),
         }
@@ -409,7 +545,7 @@ impl Connection {
         remote_addr: Option<SocketAddr>,
     ) -> Self {
         Self {
-            kind: ConnectionKind::Stream(StreamConn {
+            source: Box::new(StreamBidiStreamSource {
                 stream: Mutex::new(Some((
                     SendStream::from_stream(send),
                     RecvStream::from_stream(recv),
@@ -446,41 +582,11 @@ impl Connection {
     /// per single-stream connection; handlers that call once (e.g.
     /// `HttpAdapter`) get the stream directly. Both are correct.
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
-        match &self.kind {
-            #[cfg(feature = "quinn")]
-            ConnectionKind::Quinn(c) => {
-                let (send, recv) = c.accept_bi().await.map_err(map_quinn_connection_error)?;
-                Ok((SendStream::from_quinn(send), RecvStream::from_quinn(recv)))
-            }
-            #[cfg(feature = "iroh")]
-            ConnectionKind::Iroh(c) => {
-                let (send, recv) = c.accept_bi().await.map_err(map_iroh_connection_error)?;
-                Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
-            }
-            ConnectionKind::Stream(sc) => {
-                let mut guard = sc.stream.lock().expect("stream mutex poisoned");
-                match guard.take() {
-                    Some(pair) => Ok(pair),
-                    None => Err(StreamError::ConnectionClosed),
-                }
-            }
-        }
+        self.source.accept_bi().await
     }
 
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
-        match &self.kind {
-            #[cfg(feature = "quinn")]
-            ConnectionKind::Quinn(c) => {
-                let (send, recv) = c.open_bi().await.map_err(map_quinn_connection_error)?;
-                Ok((SendStream::from_quinn(send), RecvStream::from_quinn(recv)))
-            }
-            #[cfg(feature = "iroh")]
-            ConnectionKind::Iroh(c) => {
-                let (send, recv) = c.open_bi().await.map_err(map_iroh_connection_error)?;
-                Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
-            }
-            ConnectionKind::Stream(_) => Err(StreamError::StreamClosed),
-        }
+        self.source.open_bi().await
     }
 
     pub fn remote_alpn(&self) -> &[u8] {
@@ -488,31 +594,11 @@ impl Connection {
     }
 
     pub fn remote_addr(&self) -> Option<SocketAddr> {
-        match &self.kind {
-            #[cfg(feature = "quinn")]
-            ConnectionKind::Quinn(c) => Some(c.remote_address()),
-            #[cfg(feature = "iroh")]
-            ConnectionKind::Iroh(_) => None,
-            ConnectionKind::Stream(sc) => sc.remote_addr,
-        }
+        self.source.remote_addr()
     }
 
     pub fn close(&self, code: u32, reason: &str) {
-        match &self.kind {
-            #[cfg(feature = "quinn")]
-            ConnectionKind::Quinn(c) => {
-                let code = quinn::VarInt::from(code);
-                c.close(code, reason.as_bytes());
-            }
-            #[cfg(feature = "iroh")]
-            ConnectionKind::Iroh(c) => {
-                let code = iroh::endpoint::VarInt::from(code);
-                c.close(code, reason.as_bytes());
-            }
-            ConnectionKind::Stream(sc) => {
-                let _ = sc.stream.lock().expect("stream mutex poisoned").take();
-            }
-        }
+        self.source.close(code, reason)
     }
 
     pub fn set_identity(&self, identity: Identity) -> Result<(), IdentityAlreadySet> {
