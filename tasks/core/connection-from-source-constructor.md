@@ -1,7 +1,7 @@
 ---
 id: core/connection-from-source-constructor
 name: "Add Connection::from_source constructor (ADR-070 gap — the public extension point)"
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low

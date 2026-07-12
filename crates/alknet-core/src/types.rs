@@ -568,6 +568,17 @@ impl Connection {
         Self::from_stream(send, recv, alpn, remote_addr)
     }
 
+    /// Construct from a caller-supplied `BidiStreamSource` impl. The
+    /// extension point for downstream crates — implement the trait and
+    /// construct a `Connection` from it without editing core. See ADR-070.
+    pub fn from_source(source: impl BidiStreamSource, alpn: Vec<u8>) -> Self {
+        Self {
+            source: Box::new(source),
+            alpn,
+            identity: OnceLock::new(),
+        }
+    }
+
     /// Yield the next bidirectional stream this connection provides.
     ///
     /// # Transport semantics
@@ -633,6 +644,118 @@ fn map_iroh_connection_error(e: iroh::endpoint::ConnectionError) -> StreamError 
             StreamError::ConnectionClosed
         }
         other => StreamError::Internal(io::Error::other(other)),
+    }
+}
+
+#[cfg(test)]
+mod from_source_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
+
+    /// A minimal custom `BidiStreamSource` impl to prove `from_source`
+    /// delegates to a caller-supplied impl. Not a built-in — the whole
+    /// point of `from_source` is that a non-core type can drive `Connection`.
+    struct RecordingSource {
+        stream: Mutex<Option<(SendStream, RecvStream)>>,
+        addr: Option<SocketAddr>,
+        closed: Arc<Mutex<Option<(u32, String)>>>,
+    }
+
+    #[async_trait]
+    impl BidiStreamSource for RecordingSource {
+        async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+            match self.stream.lock().expect("mock mutex poisoned").take() {
+                Some(pair) => Ok(pair),
+                None => Err(StreamError::ConnectionClosed),
+            }
+        }
+
+        async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+            Err(StreamError::StreamClosed)
+        }
+
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            self.addr
+        }
+
+        fn close(&self, code: u32, reason: &str) {
+            let _ = self
+                .closed
+                .lock()
+                .expect("mock closed mutex poisoned")
+                .replace((code, reason.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn from_source_delegates_to_custom_impl() {
+        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
+
+        // One duplex: the mock holds end `a` (split into send_a/recv_a); the
+        // test driver holds end `b` (split into send_b/recv_b) to echo back.
+        let (a, b) = tokio::io::duplex(64);
+        let (recv_a, send_a) = tokio::io::split(a);
+        let (mut recv_b, mut send_b) = tokio::io::split(b);
+        let addr = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777));
+        let recorded = Arc::new(Mutex::new(None));
+        let conn = Connection::from_source(
+            RecordingSource {
+                stream: Mutex::new(Some((
+                    SendStream::from_stream(send_a),
+                    RecvStream::from_stream(recv_a),
+                ))),
+                addr,
+                closed: Arc::clone(&recorded),
+            },
+            b"alknet/test".to_vec(),
+        );
+
+        // remote_alpn reads self.alpn (Connection-level, unchanged).
+        assert_eq!(conn.remote_alpn(), b"alknet/test");
+
+        // remote_addr delegates to RecordingSource::remote_addr.
+        assert_eq!(conn.remote_addr(), addr);
+
+        // accept_bi delegates to RecordingSource::accept_bi and yields the pair.
+        let (mut send, mut recv) = conn.accept_bi().await.expect("first accept_bi yields");
+
+        // Write via the mock's SendStream -> arrives at the driver's recv_b.
+        send.write_all(b"hello").await.expect("write round-trips");
+        let mut buf = [0u8; 5];
+        recv_b.read_exact(&mut buf).await.expect("driver reads");
+        assert_eq!(&buf, b"hello");
+
+        // Driver writes back -> arrives at the mock's RecvStream.
+        send_b
+            .write_all(b"world")
+            .await
+            .expect("driver writes back");
+        let mut buf = [0u8; 5];
+        recv.read_exact(&mut buf).await.expect("read round-trips");
+        assert_eq!(&buf, b"world");
+
+        // Second accept_bi delegates to RecordingSource::accept_bi -> ConnectionClosed.
+        match conn.accept_bi().await {
+            Err(StreamError::ConnectionClosed) => {}
+            Err(e) => panic!("expected ConnectionClosed on second accept_bi, got {e}"),
+            Ok(_) => panic!("expected ConnectionClosed on second accept_bi, got a stream"),
+        }
+
+        // open_bi delegates to RecordingSource::open_bi -> StreamClosed.
+        match conn.open_bi().await {
+            Err(StreamError::StreamClosed) => {}
+            Err(e) => panic!("expected StreamClosed from open_bi, got {e}"),
+            Ok(_) => panic!("expected StreamClosed from open_bi, got a stream"),
+        }
+
+        // close delegates to RecordingSource::close and the args thread through.
+        conn.close(42, "shutting down");
+        assert_eq!(
+            recorded.lock().expect("recorded mutex poisoned").take(),
+            Some((42, "shutting down".to_string()))
+        );
     }
 }
 
