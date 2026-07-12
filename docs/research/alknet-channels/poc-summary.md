@@ -240,16 +240,22 @@ existing callers and this POC keep working via `Connection::from_stream`,
 which now wraps a `StreamBidiStreamSource`.
 
 > **POC scope note:** the POC keeps `Connection::from_stream` (the yield-once
-> path) rather than implementing `BidiStreamSource` directly. This is the
+> path) rather than implementing `BidiStreamSource` directly. This was the
 > correct POC scope — the POC's job was to validate the yield-once path is
 > *sufficient* (it is) and surface the +EV refactor (ADR-070 confirms it).
 > Building a `ChannelConnection` that yields N streams is Phase 1's job, now
-> unblocked. ADR-070 notes that a public `Connection::from_source(impl
-> BidiStreamSource)` constructor for downstream crates isn't yet exposed —
-> the channels crate will need that (or a crate-public constructor) to wire
-> its `ChannelBidiStreamSource` into a `Connection`. That's a small additive
-> follow-up, tracked by the ADR's "constructors stay; each wraps a
-> `BidiStreamSource` impl" table.
+> unblocked. ADR-070's constructor table originally implied a public
+> `Connection::from_source(impl BidiStreamSource)` constructor for downstream
+> crates that wasn't yet exposed; that gap was surfaced by this POC and has
+> since been closed by commit `e8bbc74` (`pub fn from_source(source: impl
+> BidiStreamSource, alpn: Vec<u8>)` at `types.rs:574`). The POC was
+> deliberately **not retrofitted** to use `from_source` + a
+> `ChannelBidiStreamSource`: the POC's objective (de-risk the three
+> high-leverage unknowns, surface the +EV changes) was reached, the issues it
+> surfaced are resolved, and rewiring the POC to the N-stream shape now would
+> be rework that the Phase 1 crate will do authoritatively anyway. The POC
+> stands as the de-risk artifact; Phase 1 builds on the now-unblocked trait
+> and constructor.
 
 #### 2. `Connection::close` has unused params (`code`, `reason`) for the stream backend — ✅ RESOLVED by ADR-070 (REQ-CORE-02)
 
@@ -489,11 +495,13 @@ separate `tests/integration.rs`, which matched bollard's style).
   `drive_session`/`pump_session` (the per-stream dispatch and three-pump
   bidirectional pattern the tunnel handler reuses with two pumps).
 - Core types: `crates/alknet-core/src/types.rs` — `Connection::from_stream`
-  (`:541`), `SendStream::from_stream` (`:267`), `RecvStream::from_stream`
-  (`:289`), `ProtocolHandler` (`:220`), `BidiStreamSource` trait (`:364`,
-  ADR-070) — the integration points the POC validates. The POC uses
-  `Connection::from_stream` (yield-once); the channels crate (Phase 1) will
-  implement `BidiStreamSource` directly for `ChannelBidiStreamSource`.
+  (`:541`), `Connection::from_source` (`:574`, ADR-070's downstream extension
+  point — `impl BidiStreamSource` → `Connection`, no core edit), `SendStream::
+  from_stream` (`:267`), `RecvStream::from_stream` (`:289`), `ProtocolHandler`
+  (`:220`), `BidiStreamSource` trait (`:364`, ADR-070) — the integration
+  points the POC validates. The POC uses `Connection::from_stream`
+  (yield-once); the channels crate (Phase 1) will use `from_source` with its
+  own `ChannelBidiStreamSource` impl.
 - Core auth: `crates/alknet-core/src/auth.rs` — `AuthContext::anonymous`
   (`:90`, REQ-CORE-03), used by the POC's echo and tunnel handler tests.
 - ADR-070: `docs/architecture/decisions/070-bidistreamsource-trait.md` — the
