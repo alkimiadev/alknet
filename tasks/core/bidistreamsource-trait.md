@@ -169,43 +169,43 @@ in different files but logically related (all from the same POC findings).
 
 ### Part 1: BidiStreamSource
 
-- [ ] `BidiStreamSource` trait defined with `accept_bi`, `open_bi`, `remote_addr`, `close` (all async or sync per ADR-070)
-- [ ] `BidiStreamSource: Send + Sync + 'static` (object-safe)
-- [ ] `Connection` struct holds `Box<dyn BidiStreamSource>` + `alpn: Vec<u8>` + `identity: OnceLock<Identity>`
-- [ ] `QuinnBidiStreamSource` implements `BidiStreamSource` (feature-gated `quinn`)
-- [ ] `IrohBidiStreamSource` implements `BidiStreamSource` (feature-gated `iroh`)
-- [ ] `StreamBidiStreamSource` implements `BidiStreamSource` (no feature gate)
-- [ ] `StreamBidiStreamSource::accept_bi` yields once, then `ConnectionClosed` (ADR-065 contract preserved)
-- [ ] `StreamBidiStreamSource::open_bi` returns `StreamClosed`
-- [ ] `Connection::from_quinn` / `from_quinn_with_alpn` / `from_iroh` / `from_stream` / `from_bidi` all preserved (same signatures, same behavior)
-- [ ] `Connection::accept_bi` / `open_bi` / `remote_addr` / `close` delegate to `self.source`
-- [ ] `Connection::remote_alpn` / `set_identity` / `identity` unchanged (read `self.alpn` / `self.identity`)
-- [ ] `ConnectionKind` enum removed (replaced by the trait object)
-- [ ] `map_quinn_connection_error` / `map_iroh_connection_error` preserved (used by the QUIC impls)
-- [ ] Existing `types.rs` tests pass unchanged (the `test_connection()` helper, `set_identity` tests, `remote_alpn`/`remote_addr` tests, `StreamError` mapping tests)
+- [x] `BidiStreamSource` trait defined with `accept_bi`, `open_bi`, `remote_addr`, `close` (all async or sync per ADR-070)
+- [x] `BidiStreamSource: Send + Sync + 'static` (object-safe)
+- [x] `Connection` struct holds `Box<dyn BidiStreamSource>` + `alpn: Vec<u8>` + `identity: OnceLock<Identity>`
+- [x] `QuinnBidiStreamSource` implements `BidiStreamSource` (feature-gated `quinn`)
+- [x] `IrohBidiStreamSource` implements `BidiStreamSource` (feature-gated `iroh`)
+- [x] `StreamBidiStreamSource` implements `BidiStreamSource` (no feature gate)
+- [x] `StreamBidiStreamSource::accept_bi` yields once, then `ConnectionClosed` (ADR-065 contract preserved)
+- [x] `StreamBidiStreamSource::open_bi` returns `StreamClosed`
+- [x] `Connection::from_quinn` / `from_quinn_with_alpn` / `from_iroh` / `from_stream` / `from_bidi` all preserved (same signatures, same behavior)
+- [x] `Connection::accept_bi` / `open_bi` / `remote_addr` / `close` delegate to `self.source`
+- [x] `Connection::remote_alpn` / `set_identity` / `identity` unchanged (read `self.alpn` / `self.identity`)
+- [x] `ConnectionKind` enum removed (replaced by the trait object)
+- [x] `map_quinn_connection_error` / `map_iroh_connection_error` preserved (used by the QUIC impls)
+- [x] Existing `types.rs` tests pass unchanged (the `test_connection()` helper, `set_identity` tests, `remote_alpn`/`remote_addr` tests, `StreamError` mapping tests)
 
 ### Part 2: close() fix
 
-- [ ] `StreamBidiStreamSource::close` prefixes `code`/`reason` with `_` and documents why they're ignored
-- [ ] `cargo clippy -p alknet-core --no-default-features` passes with **no warnings** (the ADR-065 leftover is fixed)
-- [ ] `cargo clippy -p alknet-core` (default features) passes with no warnings
-- [ ] `cargo clippy -p alknet-core --all-features` passes with no warnings (if applicable)
+- [x] `StreamBidiStreamSource::close` prefixes `code`/`reason` with `_` and documents why they're ignored
+- [x] `cargo clippy -p alknet-core --no-default-features` passes with **no warnings** (the ADR-065 leftover is fixed)
+- [x] `cargo clippy -p alknet-core` (default features) passes with no warnings
+- [x] `cargo clippy -p alknet-core --all-features` passes with no warnings (if applicable)
 
 ### Part 3: AuthContext::anonymous
 
-- [ ] `AuthContext::anonymous(alpn: impl Into<Vec<u8>>)` constructor added to `auth.rs`
-- [ ] Sets `identity: None`, `alpn: alpn.into()`, `remote_addr: None`, `tls_client_fingerprint: None`
-- [ ] Unit test: `AuthContext::anonymous(b"alknet/test")` produces the expected fields
-- [ ] Existing `auth.rs` tests pass unchanged
+- [x] `AuthContext::anonymous(alpn: impl Into<Vec<u8>>)` constructor added to `auth.rs`
+- [x] Sets `identity: None`, `alpn: alpn.into()`, `remote_addr: None`, `tls_client_fingerprint: None`
+- [x] Unit test: `AuthContext::anonymous(b"alknet/test")` produces the expected fields
+- [x] Existing `auth.rs` tests pass unchanged
 
 ### All parts
 
-- [ ] `cargo test -p alknet-core` succeeds (all feature combos)
-- [ ] `cargo test -p alknet-core --no-default-features` succeeds
-- [ ] `cargo clippy -p alknet-core` succeeds with no warnings
-- [ ] `cargo clippy -p alknet-core --no-default-features` succeeds with no warnings
-- [ ] `cargo fmt --check -p alknet-core` passes
-- [ ] Downstream crates compile unchanged: `cargo check -p alknet-call` succeeds (no handler code change needed)
+- [x] `cargo test -p alknet-core` succeeds (all feature combos)
+- [x] `cargo test -p alknet-core --no-default-features` succeeds
+- [x] `cargo clippy -p alknet-core` succeeds with no warnings
+- [x] `cargo clippy -p alknet-core --no-default-features` succeeds with no warnings
+- [x] `cargo fmt --check -p alknet-core` passes
+- [x] Downstream crates compile unchanged: `cargo check -p alknet-call` succeeds (no handler code change needed)
 
 ## References
 
@@ -232,3 +232,25 @@ in different files but logically related (all from the same POC findings).
 > Verify all four feature combinations pass clippy (default, quinn-only,
 > iroh-only, no-default-features) — the warning only surfaces under
 > `--no-default-features` today.
+
+## Summary
+
+Implemented all three parts in `crates/alknet-core/src/types.rs` and
+`auth.rs`. Extracted `BidiStreamSource` trait (`accept_bi`, `open_bi`,
+`remote_addr`, `close`); replaced `ConnectionKind` enum + `StreamConn`
+with `Box<dyn BidiStreamSource>` on `Connection`. Three crate-private
+impls: `QuinnBidiStreamSource` (feature `quinn`), `IrohBidiStreamSource`
+(feature `iroh`), `StreamBidiStreamSource` (no gate, yield-once per
+ADR-065). All `Connection` constructors and the public API preserved
+verbatim — handlers dispatch through the trait object transparently.
+`StreamBidiStreamSource::close(_code, _reason)` prefixes the args and
+documents why they're ignored, resolving the ADR-065 leftover clippy
+warning under `--no-default-features` (REQ-CORE-02). Added
+`AuthContext::anonymous(alpn)` to `auth.rs` with a unit test
+(REQ-CORE-03).
+
+Verified: 146 tests pass (default features), 114 (`--no-default-features`),
+128 (`--features iroh`); clippy clean across default,
+`--no-default-features`, `--features iroh`, `--all-features` (zero
+warnings); `cargo check -p alknet-call` compiles unchanged;
+`cargo fmt --check` passes. Merged to develop as `60cce22`.
