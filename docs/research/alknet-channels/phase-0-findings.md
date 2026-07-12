@@ -1427,6 +1427,55 @@ same as any multiplexer.
   side. Phase 1 must specify whether the hub translates or transparently
   forwards, and how the `channel_id` mapping is maintained.
 
+- **OQ-CH-12 (unknown channel_id on demux)**: when the demux receives a
+  chunk with a `channel_id` it has not allocated, what does it do? Options:
+  (a) drop with a debug log (lenient — survives transient mis-ordering
+  during channel teardown), (b) return a protocol error and close the
+  transport (strict — catches bugs but is fragile during teardown). SSH
+  is lenient. Recommendation: lenient for v1, with an error counter for
+  observability. See `poc-plan.md` §Step 1.
+
+- **OQ-CH-13 (core trait for bidi-stream sources)**: the POC
+  (`poc-plan.md`) uses `Connection::from_stream` per channel, which is
+  yield-once. A Phase 1 refactor may add a `BidiStreamSource` trait to
+  `alknet-core` so `ChannelConnection` (many channels, each a bidi stream)
+  is a first-class peer of QUIC (many bidi streams) rather than a bag of
+  yield-once Connections:
+
+  ```rust
+  trait BidiStreamSource: Send + Sync {
+      async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+      async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+  }
+  ```
+
+  with `Connection` holding `Box<dyn BidiStreamSource>`, and QUIC/Iroh/
+  Stream/Channels all implementing it. This is **additive** (existing
+  callers keep working via a blanket impl or a `from_stream`-backed
+  default) and not a major/pita break — it mostly adds a new variant and
+  trait-ifies the existing `accept_bi`/`open_bi` methods behind a trait
+  object. The POC does NOT need this — it validates the yield-once path is
+  sufficient — but Phase 1 should evaluate whether the trait makes the
+  channels layer and the client-side endpoint (OQ-CH-14) cleaner. The
+  expectation is that this route is +EV: it's not a massive change and
+  will make things a lot easier downstream.
+
+- **OQ-CH-14 (client-side channels endpoint)**: both sides of a channels
+  connection do the demux/mux work. The server side is a `ProtocolHandler`
+  (`ChannelsAdapter::handle`). The client side needs a symmetric type —
+  something like `ChannelClient` that opens a transport, runs the demux/
+  mux, and exposes `open_channel(alpn, params) -> Channel` to the
+  application. This is the channels analogue of `AlknetEndpoint` (server)
+  vs `CallClient` (client) in the call protocol. The POC uses a POC-local
+  client type; Phase 1 must decide whether this lives in `alknet-channels`
+  or is a thin wrapper over `alknet-core`'s endpoint types. The
+  `BidiStreamSource` trait (OQ-CH-13) may factor into this — if
+  `AlknetEndpoint` and `ChannelClient` both produce `BidiStreamSource`s,
+  the client/server symmetry is cleaner. After the POC we're probably
+  going to need some light refactoring to the core to make these easier;
+  the good news is it should mostly be additive and not breaking in
+  major/pita ways.
+
 ## Recommended Approach
 
 ### Crate
@@ -1485,29 +1534,46 @@ on `alknet-channels` except the assembly layer that registers it on the
 
 ### De-risk POC
 
-A Phase 0 POC should validate the core claim: **one connection, multiple
-channel types, orchestrated by the call protocol.** Minimum scope:
+A detailed POC plan lives in `docs/research/alknet-channels/poc-plan.md`.
+Summary: a standalone POC at `/workspace/@alkdev/alknet-channels-poc/` that
+validates the three highest-leverage unknowns in three independently-runnable
+steps:
 
-1. Chunk format round-trip with 3+ concurrent channels
-2. Channel open/close via call protocol operations
-3. TTY session inside a channel (reuse the existing `alknet-tty-poc`
-   test infrastructure)
-4. Bidirectional byte pumping on a data channel
+1. **Chunk format + N-channel demux/mux** — generalize TTY's 5-byte
+   `ChunkReader`/`ChunkWriter` to the 9-byte format, build a demux that
+   routes chunks to per-channel `mpsc` channels and a mux that frames
+   per-channel bytes back onto the transport. Validates the
+   decompose→stream→recompose round-trip for 3+ concurrent channels.
+2. **Per-channel `Connection` presentation** — wrap each reassembled
+   channel as `Connection::from_stream` and run a minimal `ProtocolHandler`
+   (echo) through the full demux→Connection→handler→mux path. Validates
+   that the existing `Connection` abstraction (from transport-generalization)
+   is sufficient; no core changes needed for the POC.
+3. **Tunnel handler** — a `channel/open` with a target address opens a
+   `TcpStream` and pumps bidirectionally. Validates that the same concepts
+   behind the TTY crate work as a generic port proxy.
 
-Stretch goals:
-5. Two different channel types (TTY + tunnel) on the same connection
-6. WASM build of the chunk splitting/recombining logic
-7. Hub relay: two `ChannelManager` instances bridged by a byte pump,
-   validating that `channel/open` on leg A translates to `channel/open` on
-   leg B and the `channel_id` remapping works end-to-end (OQ-CH-11)
-8. `channel/resources` discovery — one side lists its exposed ALPNs and the
-   other opens a channel based on the response
+Stretch goals: WASM build of the sync core; two different channel types
+(TTY-shaped 4-stream + tunnel 2-stream) on one connection; hub relay sketch
+with `channel_id` remapping (OQ-CH-11).
 
-The POC can be built as an extension to the existing `alknet-tty-poc` or as
-a standalone POC in `/workspace/alknet-channels-poc/`.
+The POC deliberately does NOT do: the call protocol (channel/open etc. are
+Phase 1's concern, already in production), real transport (uses
+`tokio::io::duplex`), ACL, real adapters, or recursive composition.
+
+The POC surfaces three open questions carried into Phase 1: OQ-CH-12
+(unknown channel_id on demux), OQ-CH-13 (core `BidiStreamSource` trait —
+likely +EV additive refactor after the POC), and OQ-CH-14 (client-side
+channels endpoint — the symmetric `ChannelClient` type).
+
+The POC lives at `/workspace/@alkdev/alknet-channels-poc/` (mirroring the
+`alknet-tty-poc` convention), depends on `alknet-core` only.
 
 ## References
 
+- `docs/research/alknet-channels/poc-plan.md` — the detailed de-risk POC
+  plan (Step 1: chunk format + demux/mux, Step 2: per-channel Connection,
+  Step 3: tunnel handler).
 - `docs/research/alknet-tty/phase-0-findings.md` — the TTY crate's chunk
   format, control channel, and backend trait. The seed of the channels
   generalization.
