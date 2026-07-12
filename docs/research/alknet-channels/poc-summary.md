@@ -7,6 +7,12 @@ last_updated: 2026-07-12
 
 **Status:** Research complete — all three high-leverage unknowns validated. The
 approach is viable; the remaining unknowns are spec-scope, not feasibility.
+**Re-verified 2026-07-12** against the post-refactor `alknet-core`
+(`BidiStreamSource` trait, ADR-070): all 28 tests still pass, clippy fully
+clean, and the POC now uses `AuthContext::anonymous`. The three `alknet-core`
+issues the POC surfaced (#1, #2, #3 below) are resolved by ADR-070 /
+commit `60cce22`; the four `alknet-channels`-side issues (#4–#7) remain for
+Phase 1.
 **Date:** 2026-07-12
 **Scope:** Captures what the POC proved about the 9-byte chunk format, N-channel
 demux/mux, per-channel `Connection` presentation, and the tunnel handler — and
@@ -42,10 +48,10 @@ three highest-leverage unknowns of the channels layer over a
    without interference.
 
 **28 tests pass** (5 wire codec + 7 mpsc stream adapters + 5 demux + 3 mux + 5
-echo handler + 3 tunnel handler). Clippy is clean for the POC's own code; the
-only remaining warnings are upstream in `alknet-core` (`types.rs:500`
-`Connection::close` has unused `code`/`reason` params — pre-existing, not
-introduced by this POC).
+echo handler + 3 tunnel handler). Clippy is fully clean for the POC's own code
+and for the updated `alknet-core` dependency (the ADR-065 `Connection::close`
+unused-arg warnings the POC originally surfaced are resolved by ADR-070 — see
+§"Issues Surfaced" #2).
 
 **Stretch goal validated:** the sync core (`wire.rs`) compiles cleanly under
 `wasm32-unknown-unknown`. The "WASM compatibility by construction" claim holds
@@ -142,9 +148,10 @@ a channels connection (server demux/mux + client demux/mux, connected by two
 `tokio::io::duplex` pipes). `open_echo_channel(channel_id)` allocates a
 channel on both sides: the server side wraps `MpscSendStream`/`MpscRecvStream`
 as `Connection::from_stream(..., b"alknet/echo", None)` and spawns
-`EchoHandler::handle`; the client side returns a `ClientChannel { send, recv }`
-the test drives. This is the POC-local shape Phase 1 will generalize into
-`ChannelsAdapter::handle` (server) and `ChannelClient` (client).
+`EchoHandler::handle` with an `AuthContext::anonymous(b"alknet/echo")`;
+the client side returns a `ClientChannel { send, recv }` the test drives. This
+is the POC-local shape Phase 1 will generalize into `ChannelsAdapter::handle`
+(server) and `ChannelClient` (client).
 
 **ALPN threading:** `handler_sees_alpn` validates that `Connection::from_stream`'s
 `alpn` parameter threads through correctly — the handler's
@@ -199,9 +206,20 @@ These are the things the POC ran into that should be addressed in Phase 1 or
 in the light `alknet-core` refactor landing alongside it. They are grouped by
 where the fix likely lives.
 
+> **Update 2026-07-12 (post-refactor):** issues #1, #2, and #3 below are
+> **resolved** by ADR-070 (`BidiStreamSource` trait) and commit `60cce22`
+> (`refactor(core): implement BidiStreamSource trait + AuthContext::anonymous`).
+> The POC was re-verified against the updated core: all 28 tests still pass,
+> clippy is now fully clean (the upstream `Connection::close` unused-arg
+> warnings are gone), and the POC's handler tests were updated to use the new
+> `AuthContext::anonymous(alpn)` constructor (removing the four-`None`-field
+> literal that recurred across `echo_handler.rs` and `tunnel_handler.rs`).
+> The POC still uses `Connection::from_stream` (the yield-once path) — see
+> the note on #1 below for why that remains the correct POC scope.
+
 ### In `alknet-core` (the refactor)
 
-#### 1. `Connection::from_stream` is yield-once — `BidiStreamSource` would be cleaner (OQ-CH-13, confirmed +EV)
+#### 1. `Connection::from_stream` is yield-once — `BidiStreamSource` would be cleaner (OQ-CH-13, confirmed +EV) — ✅ RESOLVED by ADR-070
 
 The POC validates the yield-once path is sufficient, as the plan predicted.
 But wiring `ChannelEndpoint::open_echo_channel` made the awkwardness concrete:
@@ -210,42 +228,59 @@ stream, and the endpoint holds a bag of these connections (one per channel)
 rather than a single `ChannelConnection` that yields N streams. The
 `BidiStreamSource` trait proposed in OQ-CH-13 would make `ChannelConnection`
 a first-class peer of QUIC (many bidi streams) instead of a bag of yield-once
-connections:
+connections.
 
-```rust
-trait BidiStreamSource: Send + Sync {
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
-}
-```
+**Resolved.** ADR-070 landed the `BidiStreamSource` trait
+(`crates/alknet-core/src/types.rs:364`) with `accept_bi`/`open_bi`/
+`remote_addr`/`close`, and `Connection` now holds `Box<dyn BidiStreamSource>`.
+`Connection` is open for extension: the channels crate (Phase 1) will
+implement `ChannelBidiStreamSource` in its own crate, without a core edit.
+The `StreamBidiStreamSource` (yield-once) impl is the compatibility path —
+existing callers and this POC keep working via `Connection::from_stream`,
+which now wraps a `StreamBidiStreamSource`.
 
-with `Connection` holding `Box<dyn BidiStreamSource>`, and QUIC/Iroh/Stream/
-Channels all implementing it. The POC confirms this is **additive** (existing
-callers keep working via a `from_stream`-backed default impl) and would
-clean up both the channels layer and the client-side endpoint (OQ-CH-14).
-**Recommendation: do this refactor.** It is not a major/pita break and it
-makes downstream substantially cleaner.
+> **POC scope note:** the POC keeps `Connection::from_stream` (the yield-once
+> path) rather than implementing `BidiStreamSource` directly. This is the
+> correct POC scope — the POC's job was to validate the yield-once path is
+> *sufficient* (it is) and surface the +EV refactor (ADR-070 confirms it).
+> Building a `ChannelConnection` that yields N streams is Phase 1's job, now
+> unblocked. ADR-070 notes that a public `Connection::from_source(impl
+> BidiStreamSource)` constructor for downstream crates isn't yet exposed —
+> the channels crate will need that (or a crate-public constructor) to wire
+> its `ChannelBidiStreamSource` into a `Connection`. That's a small additive
+> follow-up, tracked by the ADR's "constructors stay; each wraps a
+> `BidiStreamSource` impl" table.
 
-#### 2. `Connection::close` has unused params (`code`, `reason`) for the stream backend
+#### 2. `Connection::close` has unused params (`code`, `reason`) for the stream backend — ✅ RESOLVED by ADR-070 (REQ-CORE-02)
 
 `crates/alknet-core/src/types.rs:500` — the `Stream` backend of `Connection::close`
-takes `code: u32, reason: &str` and does nothing with them (clippy flags both
-as unused). The stream backend just drops the inner stream. This is a leak of
+took `code: u32, reason: &str` and used neither (clippy flagged both as
+unused). The stream backend just dropped the inner stream. This was a leak of
 the QUIC-centric `close(code, reason)` shape into a backend that has no such
-concept. The `BidiStreamSource` refactor is the natural place to give the
-stream backend a `close()` that doesn't take QUIC-shaped args, or to make
-the args `Option`-al / ignored-with-a-warning. Low priority but worth fixing
-while the trait is open.
+concept.
 
-#### 3. `AuthContext` construction is verbose for tests and POCs
+**Resolved.** ADR-070 §REQ-CORE-02 chose option (b): keep the QUIC-shaped
+signature on the trait (so `Connection::close(code, reason)` callers are
+unchanged), and the `StreamBidiStreamSource::close` impl prefixes the args
+with `_code`/`_reason` and documents why they're ignored ("the drop is the
+close — ADR-065 §Negative"). The clippy warning under
+`--no-default-features` (the POC's build mode) is gone — verified by
+`cargo clippy -p alknet-core --no-default-features` returning clean.
 
-Every POC handler test constructs an `AuthContext` literal with four `None`
+#### 3. `AuthContext` construction is verbose for tests and POCs — ✅ RESOLVED (REQ-CORE-03)
+
+Every POC handler test constructed an `AuthContext` literal with four `None`
 fields and a hardcoded ALPN. The real assembly layer gets one from the
-endpoint; POCs and tests repeat the boilerplate. A
-`AuthContext::test(alpn: &[u8])` or `AuthContext::anonymous(alpn)` helper in
-`alknet-core` (behind a `test-utils` feature, or just a `pub fn` if we don't
-mind it in the public API) would remove this. Small, but it recurs in every
-handler POC.
+endpoint; POCs and tests repeated the boilerplate. A
+`AuthContext::anonymous(alpn)` helper in `alknet-core` would remove this.
+
+**Resolved.** `crates/alknet-core/src/auth.rs:90` adds
+`pub fn anonymous(alpn: impl Into<Vec<u8>>) -> Self` (no `test-utils` feature
+gate — it's a plain `pub fn` useful for any caller that constructs an
+`AuthContext` outside the endpoint's resolution path). The POC's
+`echo_handler.rs` and `tunnel_handler.rs` were updated to use it, replacing
+three four-`None`-field literals with `AuthContext::anonymous(b"alknet/echo")`
+/ `AuthContext::anonymous(b"alknet/tunnel")`.
 
 ### In `alknet-channels` (the spec / Phase 1)
 
@@ -303,12 +338,12 @@ third signal. The tunnel has no such signal — it's purely pump-driven.
 **Implication for Phase 1:** the tunnel handler (and any future handler
 with a pump-driven two-direction shape) must shut down the opposite sink on
 pump completion, not just `try_join` the two pumps. This is worth a
-documented pattern in the channels spec, or — if `BidiStreamSource` lands —
-a helper in `alknet-core` that encapsulates the "two-pump with
-shutdown-on-completion" shape so handlers don't reimplement it. The TTY
-crate's `pump_session` is the three-pump version; the two-pump version is
-the tunnel's shape and will recur (e.g. an SSH `direct-tcpip` channel is
-the same two-pump shape).
+documented pattern in the channels spec, or — now that `BidiStreamSource`
+has landed (ADR-070) — a helper in `alknet-core` that encapsulates the
+"two-pump with shutdown-on-completion" shape so handlers don't reimplement
+it. The TTY crate's `pump_session` is the three-pump version; the two-pump
+version is the tunnel's shape and will recur (e.g. an SSH `direct-tcpip`
+channel is the same two-pump shape).
 
 ### Cosmetic / clippy
 
@@ -454,9 +489,19 @@ separate `tests/integration.rs`, which matched bollard's style).
   `drive_session`/`pump_session` (the per-stream dispatch and three-pump
   bidirectional pattern the tunnel handler reuses with two pumps).
 - Core types: `crates/alknet-core/src/types.rs` — `Connection::from_stream`
-  (`:405`), `SendStream::from_stream` (`:267`), `RecvStream::from_stream`
-  (`:289`), `ProtocolHandler` (`:220`) — the integration points the POC
-  validates.
+  (`:541`), `SendStream::from_stream` (`:267`), `RecvStream::from_stream`
+  (`:289`), `ProtocolHandler` (`:220`), `BidiStreamSource` trait (`:364`,
+  ADR-070) — the integration points the POC validates. The POC uses
+  `Connection::from_stream` (yield-once); the channels crate (Phase 1) will
+  implement `BidiStreamSource` directly for `ChannelBidiStreamSource`.
+- Core auth: `crates/alknet-core/src/auth.rs` — `AuthContext::anonymous`
+  (`:90`, REQ-CORE-03), used by the POC's echo and tunnel handler tests.
+- ADR-070: `docs/architecture/decisions/070-bidistreamsource-trait.md` — the
+  `BidiStreamSource` trait decision this POC's findings prompted (resolves
+  Issues #1 and #2 below; REQ-CORE-01/02).
+- ADR-065: `docs/architecture/decisions/065-connection-from-stream-generic-single-stream.md`
+  — the `Connection::from_stream` yield-once contract the POC validated and
+  the `StreamBidiStreamSource` impl now preserves.
 - Docker POC summary: `docs/research/alknet-docker/poc-summary.md` — the
   POC summary this doc mirrors in structure and tone.
 - TTY POC: `/workspace/alknet-tty-poc/` — the POC convention this POC follows
