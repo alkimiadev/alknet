@@ -7,6 +7,65 @@ last_updated: 2026-07-12
 
 ## Current State
 
+**alknet-channels specs drafted.** The alknet-channels crate (multiplexing
+proxy — `ProtocolHandler` on `alknet/channels`, 9-byte chunk format, N
+channels over one transport stream, channel 0 pre-negotiated as
+`alknet/call`) now has architecture specs:
+[crates/channels/](crates/channels/) (overview, channels-wire,
+channels-connection, channels-adapter, channel-operations, channel-client)
+and ten ADRs — [ADR-071](decisions/071-channels-wire-format.md) (9-byte
+chunk header), [ADR-072](decisions/072-channel-0-pre-negotiated-call.md)
+(channel 0 = `alknet/call` pre-negotiated, no special control plane),
+[ADR-073](decisions/073-channel-lifecycle-operations.md) (channel
+lifecycle operations on the call protocol — `channel/open`/`close`/
+`control`/`resources/subscribe`; `channel/resources/subscribe` is a
+`Subscription` operation using the already-implemented `StreamingHandler`
+machinery, not a polled `Query`; the `direction` field pins who is the
+ALPN-server; the control-message division is call-ops for orchestration,
+`stream_type 3` for data-ordered control),
+[ADR-074](decisions/074-channelconnection-bidistreamsource.md)
+(`ChannelBidiStreamSource` implements `BidiStreamSource` — ADR-070's
+extension point; `into_sub_streams()` typed accessor for handlers that need
+stderr/control; `accept_bi()` generic path for tunnel/SSH),
+[ADR-075](decisions/075-channelsadapter-and-channelmanager.md)
+(`ChannelsAdapter` read/demux + `ChannelManager` reassemble/allocate split;
+REQ-CH-01..04 wire-level invariants pinned: shutdown emits zero-length
+sentinel, transport close drops all senders, mux dynamic registration,
+lenient unknown-`channel_id`),
+[ADR-076](decisions/076-backpressure-channel-limits-id-reuse.md)
+(bounded-buffer backpressure 1 MiB default, 256-channel cap, monotonic IDs
+with wrap-around),
+[ADR-077](decisions/077-tty-inside-channels.md) (TTY inside channels uses
+sub-streams, not its own 5-byte wire format; ADR-052's scope amended to
+direct-connect TTY only; `channels` feature on alknet-tty),
+[ADR-078](decisions/078-two-pump-shutdown-on-completion.md) (two-pump
+handlers MUST shut down the opposite sink on pump completion — the
+deadlock contract the POC surfaced; handler-level, not channels-layer;
+core helper extraction deferred per OQ-57),
+[ADR-079](decisions/079-hub-relay-translate-not-forward.md) (hub relay
+translates `channel/open` on channel 0 with `forwarded_for` — ADR-032;
+data channels byte-forwarded with `channel_id` rewrite; the hub never runs
+protocol-specific handlers),
+[ADR-080](decisions/080-channelclient.md) (`ChannelClient` in
+alknet-channels, QUIC-only initially, bidirectionality preserved;
+`AlknetClient` core extraction stays deferred per OQ-55 — blocked on a
+second *transport's* client, not a second client). The specs are grounded
+in the completed de-risk POC
+(`docs/research/alknet-channels/poc-summary.md`, 28 tests passing, three
+validated targets: chunk format + demux/mux, per-channel `Connection`
+presentation, tunnel handler). The core prerequisite — ADR-070
+(`BidiStreamSource` trait + `Connection::from_source`) — is landed and
+implemented. The spec work converted three research hedges into decisions:
+`channel/resources` is subscribe from day one (not poll-for-v1), channel
+ID allocation is server-assigned (not "if zero-RTT needed"), and
+backpressure is bounded-buffer (not "if HOL blocking becomes a problem").
+Two genuine deferrals: OQ-56 (full windowing — blocked on a real HOL-
+blocking observation) and OQ-57 (two-pump helper extraction — blocked on a
+second two-pump handler). The TTY integration (ADR-077) amends ADR-052's
+scope — the 5-byte format is unchanged for direct `alknet/tty` connections;
+inside channels, TTY uses `into_sub_streams()` and the channels layer's
+de-chunking.
+
 **Pre-implementation of the storage/repo pattern.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains `alknet-vault` (stable — implementation complete and verified, local-only by construction per ADR-025, HD-derivation key model per ADR-026) and research/reference material. Foundational ADRs (001–035) are in place, with the call crate implemented and reviewed.
 
 The storage and auth strategy research (`docs/research/alknet-storage-strategy/findings.md`) surfaced the repo/adapter pattern as the answer to cross-node state (peer identity, credentials). This has now landed as four ADRs:
@@ -98,6 +157,13 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — aggregated peer env, connection lifecycle, worker supervision, service discovery |
+| [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
+| [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
+| [crates/channels/channels-wire.md](crates/channels/channels-wire.md) | draft | 9-byte chunk format, stream types, sentinels, framing disambiguation, wire-level invariants (REQ-CH-01..05) |
+| [crates/channels/channels-connection.md](crates/channels/channels-connection.md) | draft | `ChannelBidiStreamSource` (implements `BidiStreamSource`), `into_sub_streams()` typed accessor, recursive composition |
+| [crates/channels/channels-adapter.md](crates/channels/channels-adapter.md) | draft | `ChannelsAdapter`, `ChannelManager`, demux/mux contracts (REQ-CH-01..04), two-pump pattern (ADR-078) |
+| [crates/channels/channel-operations.md](crates/channels/channel-operations.md) | draft | `channel/open`/`close`/`control`/`resources/subscribe`, ACL flow, `direction` semantics, hub relay contract (ADR-079) |
+| [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, QUIC-only initially, bidirectionality preserved |
 
 ## ADR Table
 
@@ -173,6 +239,16 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [068](decisions/068-peer-composite-env-peer-operations.md) | PeerCompositeEnv::peer_operations Override | Proposed |
 | [069](decisions/069-from-call-manual-free-function.md) | from_call Is a Manual Free Function, Not Auto-Wired | Proposed |
 | [070](decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait — Open Connection for Extension | Accepted |
+| [071](decisions/071-channels-wire-format.md) | alknet-channels Wire Format — 9-Byte Chunk Header | Accepted |
+| [072](decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Is Pre-Negotiated `alknet/call` | Accepted |
+| [073](decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations on the Call Protocol | Accepted |
+| [074](decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection — BidiStreamSource over Chunk Reassembly | Accepted |
+| [075](decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Accepted |
+| [076](decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Accepted |
+| [077](decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | Accepted (amends ADR-052 scope — 5-byte format scoped to direct TTY) |
+| [078](decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | Accepted |
+| [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | Accepted |
+| [080](decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | Accepted |
 
 ## Open Questions
 

@@ -167,6 +167,13 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-53](questions/053-backoff-config-defaults.md) | BackoffConfig default policy | open | two | low |
 | [OQ-54](questions/054-inbound-worker-hook-placement.md) | Inbound worker on_worker_connected hook placement | resolved | two | low |
 
+### alknet-channels
+
+| OQ | Title | Status | Door | Pri |
+|----|-------|--------|------|-----|
+| [OQ-56](questions/056-full-channel-level-flow-control-windowing.md) | Full Channel-Level Flow-Control Windowing | deferred(scope) | two | low |
+| [OQ-57](questions/057-two-pump-helper-extraction.md) | Two-Pump Helper Extraction to alknet-core | deferred(scope) | two | low |
+
 ## Deferred / Blocked
 
 The safe-exit visibility surface. These questions are parked because the
@@ -236,4 +243,26 @@ filtering the tables above.
 - **Blocked on**: a **second transport's** real client existing (not just a second QUIC client). The dial is transport-specific (QUIC, HTTP, TCP+TLS, WebTransport, raw TCP); we have one shape implemented (QUIC). Extracting a QUIC-shaped connector now would bake QUIC in as *the* establishment shape — the same welding ADR-065 unwound on the server side. The blocking condition is met when a non-QUIC client (SSH raw-TCP, HTTP-wrapped call) exists, so the transport-polymorphic seam is extractable from two *different* transport implementations. `ChannelClient` over QUIC does not unblock this — it's the same transport shape.
 - **Priority**: medium
 - **Full file**: [OQ-55](questions/055-alknetclient-establishment-extraction.md)
+
+### OQ-56: Full Channel-Level Flow-Control Windowing
+
+- **Blocked on**: a real deployment observes head-of-line blocking on a
+  saturated channel where the bounded-buffer's stop-reading mitigation is
+  insufficient (e.g., a high-throughput file transfer over a tunnel that
+  saturates a channel and causes frequent demux stalls affecting other
+  channels). The intended use cases (TTY, SSH, tunnels) are not
+  high-throughput in the HOL-blocking sense; the trigger requires a
+  high-throughput use case.
+- **Priority**: low
+- **Full file**: [OQ-56](questions/056-full-channel-level-flow-control-windowing.md)
+
+### OQ-57: Two-Pump Helper Extraction to alknet-core
+
+- **Blocked on**: a second two-pump handler existing (the tunnel handler is
+  the first; SSH `direct-tcpip` will be the second), so the shape
+  convergence is observable. Extracting the helper from one consumer would
+  bake in a shape that the second might not fit. The shutdown-on-completion
+  *contract* is decided (ADR-078); only the *helper extraction* is deferred.
+- **Priority**: low
+- **Full file**: [OQ-57](questions/057-two-pump-helper-extraction.md)
 
