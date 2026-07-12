@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-27
+last_updated: 2026-07-12
 ---
 
 # alknet-core
@@ -11,9 +11,9 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [core-types.md](core-types.md) | draft | ProtocolHandler trait, HandlerError, Connection, BiStream, StreamError |
+| [core-types.md](core-types.md) | draft | ProtocolHandler trait, HandlerError, Connection (`Box<dyn BidiStreamSource>` — ADR-070), BidiStreamSource trait, BiStream, StreamError |
 | [endpoint.md](endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, graceful shutdown |
-| [auth.md](auth.md) | draft | AuthContext, Identity, IdentityProvider, AuthToken, resolution flow, PeerEntry, CredentialStore |
+| [auth.md](auth.md) | draft | AuthContext (incl. `anonymous` constructor), Identity, IdentityProvider, AuthToken, resolution flow, PeerEntry, CredentialStore |
 | [config.md](config.md) | draft | StaticConfig, DynamicConfig, ArcSwap, ConfigReloadHandle, AuthPolicy.peers |
 
 ## Applicable ADRs
@@ -33,6 +33,8 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | [030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | PeerEntry and Identity.id Decoupling | `authorized_fingerprints` → `peers: Vec<PeerEntry>`; `Identity.id` = `peer_id` (stable) |
 | [031](../../decisions/031-credentialstore-repo-trait.md) | CredentialStore Repo Trait | Second repo trait in core; `InMemoryCredentialStore` default adapter |
 | [033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Core defines traits + in-memory defaults; persistence adapters are separate crates |
+| [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` — Generic Single-Stream Connections | `from_stream`/`from_bidi` accept any `AsyncRead + AsyncWrite`; yield-once `accept_bi` contract; unblocks TCP+TLS, SSH channels, WebTransport, wasm |
+| [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait — Open Connection for Extension | `Connection` holds `Box<dyn BidiStreamSource>`; QUIC/iroh/stream wrap crate-private impls; downstream crates implement the trait to add connection shapes (channels, future transports) without editing core |
 
 ## Relevant Open Questions
 
@@ -46,6 +48,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | OQ-35 | ~~API key asymmetry~~ | dissolved | `PeerEntry` supports multiple credential paths; `ApiKeyEntry` is for tokens that ARE the identity |
 | OQ-36 | Concrete persistence adapter shapes | resolved by ADR-035 | Read-sync / write-async split (`IdentityStore`); SQLite adapter caches in memory, honker NOTIFY for no-restart cache invalidation; `alknet-store-sqlite` crate |
 | OQ-37 | X.509 outgoing-only case | resolved by ADR-034 | Three remote roles (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry correct; client-side verifier by `PeerEntry` presence (CA vs fingerprint pin) |
+| OQ-55 | AlknetClient / Client Establishment Extraction | deferred(scope) | Blocked on a second *transport's* real client (not a second QUIC client); extracting a QUIC-shaped connector now would bake QUIC in as *the* establishment shape — the welding ADR-065 unwound on the server side |
 
 ## Key Design Principles
 

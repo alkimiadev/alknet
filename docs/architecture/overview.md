@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-12
 ---
 
 # Alknet Overview
@@ -159,7 +159,8 @@ The following types live in alknet-core and are used across handler crates:
 | Type | Purpose |
 |------|---------|
 | `ProtocolHandler` | The trait every handler implements |
-| `Connection` | Transport connection (QUIC via quinn/iroh, or a generic single stream via `from_stream` — ADR-065) — handlers open/accept streams on it |
+| `Connection` | Transport connection (QUIC via quinn/iroh, a generic single stream via `from_stream` — ADR-065, or any `BidiStreamSource` impl — ADR-070) — handlers open/accept streams on it |
+| `BidiStreamSource` | The trait `Connection` holds; downstream crates implement it to add connection shapes (channels, future transports) without editing core — ADR-070 |
 | `BiStream` | Trait: `AsyncRead + AsyncWrite + Send + Unpin` — bidirectional byte stream |
 | `AuthContext` | Resolved identity for a connection (may be partial) |
 | `Identity` | Authenticated peer identity (inbound) |

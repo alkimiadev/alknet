@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-12
 ---
 
 # Open Questions
@@ -75,6 +75,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-12](questions/012-tls-identity-provisioning-in-alknetendpoint.md) | TLS Identity Provisioning in AlknetEndpoint | resolved | one | high |
 | [OQ-13](questions/013-operation-path-format-and-routing-scope.md) | Operation Path Format and Routing Scope | resolved | two | med |
 | [OQ-14](questions/014-batch-operation-semantics.md) | Batch Operation Semantics | resolved | two | low |
+| [OQ-55](questions/055-alknetclient-establishment-extraction.md) | AlknetClient / Client Establishment Extraction | deferred(scope) | two | med |
 
 ### alknet-call
 
@@ -229,4 +230,10 @@ filtering the tables above.
 - **Blocked on**: v1 implementation — the `create` input JSON Schema is finalized when `register_docker_ops` is written and tested against bollard's `Config` struct. An architectural decision (ADR-060 §5), not a deferral past implementation.
 - **Priority**: medium
 - **Full file**: [OQ-51](questions/051-container-create-options-surface.md)
+
+### OQ-55: AlknetClient / Client Establishment Extraction
+
+- **Blocked on**: a **second transport's** real client existing (not just a second QUIC client). The dial is transport-specific (QUIC, HTTP, TCP+TLS, WebTransport, raw TCP); we have one shape implemented (QUIC). Extracting a QUIC-shaped connector now would bake QUIC in as *the* establishment shape — the same welding ADR-065 unwound on the server side. The blocking condition is met when a non-QUIC client (SSH raw-TCP, HTTP-wrapped call) exists, so the transport-polymorphic seam is extractable from two *different* transport implementations. `ChannelClient` over QUIC does not unblock this — it's the same transport shape.
+- **Priority**: medium
+- **Full file**: [OQ-55](questions/055-alknetclient-establishment-extraction.md)
 

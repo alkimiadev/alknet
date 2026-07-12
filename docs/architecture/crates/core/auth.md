@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-05
+last_updated: 2026-07-12
 ---
 
 # Authentication
@@ -83,6 +83,25 @@ The connection-level identity is stable — set once when the handler resolves i
 
 - `derive(Clone)` allows handlers to clone `AuthContext` for per-stream or per-channel contexts.
 - `handle()` receives `&AuthContext` — immutable. Handlers that resolve identity create local variables, they don't mutate the shared context. This prevents cross-contamination between streams on the same connection.
+
+### `AuthContext::anonymous` constructor
+
+```rust
+impl AuthContext {
+    /// Construct an `AuthContext` with no identity, no fingerprint, and no
+    /// remote address — only the ALPN is set. For POCs, tests, and handlers
+    /// that don't require auth.
+    pub fn anonymous(alpn: impl Into<Vec<u8>>) -> Self;
+}
+```
+
+A convenience constructor that sets `identity: None`, `remote_addr: None`,
+`tls_client_fingerprint: None`, and `alpn` to the provided value. This
+removes the four-`None`-field literal that recurred in every handler POC
+and test (`poc-summary.md` §"Issues Surfaced" #3). The name is honest about
+the semantics: no identity, no fingerprint. Not gated behind a
+`test-utils` feature — it's a plain `pub fn` useful for any caller that
+constructs an `AuthContext` outside the endpoint's resolution path.
 
 ## Identity
 

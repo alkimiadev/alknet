@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-12
 ---
 
 # Alknet Architecture
@@ -67,9 +67,9 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types, design principles |
 | [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](questions/) |
 | [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index |
-| [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection (QUIC + `from_stream`), BiStream, StreamError |
+| [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection (`Box<dyn BidiStreamSource>` — ADR-070), BidiStreamSource trait, BiStream, StreamError |
 | [crates/core/endpoint.md](crates/core/endpoint.md) | draft | ALPN router, HandlerRegistry, accept loop, shutdown |
-| [crates/core/auth.md](crates/core/auth.md) | draft | AuthContext, Identity, IdentityProvider, AuthToken, resolution flow |
+| [crates/core/auth.md](crates/core/auth.md) | draft | AuthContext (incl. `anonymous` constructor), Identity, IdentityProvider, AuthToken, resolution flow |
 | [crates/core/config.md](crates/core/config.md) | draft | StaticConfig, DynamicConfig, ArcSwap, ConfigReloadHandle |
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, hand-rolled EventEnvelope framing (no irpc — ADR-064), stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
@@ -172,10 +172,11 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [067](decisions/067-aggregated-peer-env-wiring.md) | Aggregated Peer-Environment Wiring for Hub Deployments | Proposed |
 | [068](decisions/068-peer-composite-env-peer-operations.md) | PeerCompositeEnv::peer_operations Override | Proposed |
 | [069](decisions/069-from-call-manual-free-function.md) | from_call Is a Manual Free Function, Not Auto-Wired | Proposed |
+| [070](decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait — Open Connection for Extension | Accepted |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (54 OQs across 17 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (55 OQs across 17 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 

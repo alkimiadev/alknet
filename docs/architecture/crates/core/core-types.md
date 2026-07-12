@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-12
 ---
 
 # Core Types
@@ -48,14 +48,15 @@ Handler panics are caught by tokio's task isolation. The connection is dropped, 
 ## Connection
 
 An opaque type wrapping a transport connection. Handlers receive a
-`Connection` in `handle()`. The connection may be QUIC (quinn or iroh) or a
+`Connection` in `handle()`. The connection may be QUIC (quinn or iroh), a
 generic single stream (TCP+TLS, SSH channel, WebTransport stream, wasm
-stream) — see ADR-065 for the `from_stream` generalization.
+stream — ADR-065), or any other connection shape a downstream crate
+implements via `BidiStreamSource` (ADR-070).
 
 ```rust
 pub struct Connection {
-    // Private: wraps the underlying connection — QUIC (quinn/iroh) or a
-    // generic single-stream pair (ConnectionKind::Stream).
+    source: Box<dyn BidiStreamSource>,
+    alpn: Vec<u8>,
     // Private: handler-resolved identity for observability (OQ-11)
     identity: OnceLock<Identity>,
 }
@@ -64,6 +65,12 @@ impl Connection {
     /// Construct from a quinn connection (feature-gated on quinn).
     #[cfg(feature = "quinn")]
     pub fn from_quinn(conn: quinn::Connection) -> Self;
+
+    /// Construct from a quinn connection with an explicit ALPN (feature-gated
+    /// on quinn). Used by the client path (`CallClient::connect`) and the
+    /// endpoint's quinn accept loop.
+    #[cfg(feature = "quinn")]
+    pub fn from_quinn_with_alpn(conn: quinn::Connection, alpn: Vec<u8>) -> Self;
 
     /// Construct from an iroh connection (feature-gated on iroh).
     #[cfg(feature = "iroh")]
@@ -98,33 +105,92 @@ impl Connection {
 ```
 
 - `accept_bi()`: Yield the next bidirectional stream this connection
-  provides. **Transport semantics (ADR-065):** QUIC (quinn/iroh) returns a
-  new bidi stream on each call, `ConnectionClosed` when the underlying
-  connection closes; a single-stream connection (TCP+TLS, SSH channel,
-  WebTransport stream, wasm stream) yields the underlying stream on the
-  first call, then `ConnectionClosed` on all subsequent calls. Handlers
-  that loop `accept_bi` (TtyAdapter) get one session per single-stream
-  connection; handlers that call once (HttpAdapter) get the stream
-  directly. Both correct, no branching on transport.
+  provides. **Transport semantics (ADR-065, extended by ADR-070):** QUIC
+  (quinn/iroh) returns a new bidi stream on each call, `ConnectionClosed`
+  when the underlying connection closes; a single-stream connection
+  (TCP+TLS, SSH channel, WebTransport stream, wasm stream) yields the
+  underlying stream on the first call, then `ConnectionClosed` on all
+  subsequent calls; a `BidiStreamSource` implementation (e.g. a channels
+  connection — see ADR-070) yields one stream per channel, then
+  `ConnectionClosed` when the source closes. Handlers that loop `accept_bi`
+  (TtyAdapter) get one session per single-stream connection; handlers that
+  call once (HttpAdapter) get the stream directly. Both correct, no
+  branching on transport.
 - `open_bi()`: Open a bidirectional stream to the peer. Returns
   `(SendStream, RecvStream)`. On a single-stream connection, returns
   `StreamClosed` — a single stream cannot open new application streams.
 - `remote_alpn()`: The ALPN negotiated for this connection. Always present.
 - `remote_addr()`: The peer's address, if available. Informational (NAT/proxy).
 - `close()`: Close the connection with an error code and reason. The
-  `code`/`reason` args are QUIC-specific (application-level close codes);
-  for a raw stream they're ignored — the drop is the close.
+  `code`/`reason` args are QUIC application-level close codes; non-QUIC
+  sources ignore them (the drop is the close — ADR-065). The signature is
+  preserved on the trait so the public `Connection::close` API is
+  unchanged across transports; see ADR-070 §"REQ-CORE-02" for why the
+  QUIC-shaped signature stays on the trait rather than being split.
 - `set_identity()`: Store the handler-resolved identity for observability (OQ-11). Write-once-read-many — a second call returns an error. Handlers that resolve identity inside `handle()` call this; the identity is read by handler-side logging (the handler logs which identity it resolved) and is available on the `Connection` for any code that holds a reference to it. The endpoint does **not** read `identity()` after `handle()` returns — the `Connection` is moved into the spawned handler task (endpoint.md), so the endpoint no longer has a reference. Connection-level observability (remote addr, ALPN, connection ID) is logged by the endpoint before the move; identity-level observability is logged by the handler. See OQ-11 for the full resolution.
 
 The `Connection` type does not expose quinn/iroh types in its public API.
-It wraps the underlying connection internally via `ConnectionKind` enum
-dispatch (`Quinn` / `Iroh` / `Stream`), with the QUIC variants feature-gated
-and the `Stream` variant always available (no transport deps). See
+It holds a `Box<dyn BidiStreamSource>` (ADR-070); the QUIC and
+single-stream implementations are crate-private (`QuinnBidiStreamSource`,
+`IrohBidiStreamSource`, `StreamBidiStreamSource`), with the QUIC variants
+feature-gated and the `Stream` variant always available (no transport
+deps). Downstream crates implement `BidiStreamSource` directly to add new
+connection shapes (e.g. the channels crate's `ChannelBidiStreamSource`)
+without editing `alknet-core`. See
+[ADR-070](../../decisions/070-bidistreamsource-trait.md) for the trait and
+the extension model, and
 [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md)
 for the `from_stream` generalization and the yield-once `accept_bi`
-contract.
+contract that the `StreamBidiStreamSource` impl preserves.
 
 See [ADR-007](../../decisions/007-bistream-type-definition.md) for why handlers receive Connection instead of BiStream.
+
+## BidiStreamSource
+
+The trait `Connection` holds. Downstream crates implement it to add new
+connection shapes (channels, a future transport, a test double beyond the
+`from_stream` case) without editing `alknet-core`. See
+[ADR-070](../../decisions/070-bidistreamsource-trait.md) for the full
+rationale.
+
+```rust
+#[async_trait]
+pub trait BidiStreamSource: Send + Sync + 'static {
+    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+    fn remote_addr(&self) -> Option<SocketAddr>;
+    fn close(&self, code: u32, reason: &str);
+}
+```
+
+- `accept_bi()` / `open_bi()`: the stream-yield operations. Each
+  implementation defines its yield semantics (QUIC: many; single-stream:
+  yield-once then `ConnectionClosed`; channels: one per channel). The
+  contract is that handlers don't branch on transport — see
+  `Connection::accept_bi` above and ADR-065's yield-once contract.
+- `remote_addr()`: the peer's address, if available. Same semantic as
+  `Connection::remote_addr` (which delegates here).
+- `close(code, reason)`: QUIC application-level close codes. Non-QUIC
+  sources ignore the args (the drop is the close). The signature matches
+  the public `Connection::close` verbatim — see ADR-070 §"REQ-CORE-02".
+
+`Connection`-level operations (`remote_alpn`, `set_identity`, `identity`)
+do **not** appear on `BidiStreamSource` — they live on `Connection` itself
+(the `alpn` field and the `identity` `OnceLock`), so they carry no new
+indirection and are not the transport's concern.
+
+### Built-in implementations (crate-private)
+
+| Impl | Constructor | Yield semantics |
+|------|-------------|-----------------|
+| `QuinnBidiStreamSource` | `Connection::from_quinn` / `from_quinn_with_alpn` (feature `quinn`) | many streams |
+| `IrohBidiStreamSource` | `Connection::from_iroh` (feature `iroh`) | many streams |
+| `StreamBidiStreamSource` | `Connection::from_stream` / `from_bidi` (no feature gate) | yield-once, then `ConnectionClosed`; `open_bi` returns `StreamClosed` |
+
+Downstream crates do not wrap `from_stream` to implement
+`BidiStreamSource` — they implement the trait directly. `from_stream` is
+the compatibility path for callers that want a `Connection` over a single
+pre-split stream (the ADR-065 use case).
 
 ## BiStream
 
@@ -197,7 +263,7 @@ When a handler encounters a `StreamError` and needs to return from `handle()`, i
 
 Handlers that manage multiple streams (SSH, call) may catch `StreamError::StreamClosed` per-stream and continue serving other streams on the same connection — only `ConnectionClosed` forces `handle()` to return.
 
-**Note on single-stream connections (ADR-065):** `StreamClosed` from `open_bi` on a `ConnectionKind::Stream` (single-stream) connection is terminal for that connection — no other streams exist to continue with. The "connection may still be usable" framing above applies to the QUIC case (a per-stream closure where the connection lives); the single-stream case is a transport property (one stream is all there is), not a mid-operation stream closure. `accept_bi` on a single-stream connection returns `ConnectionClosed` after the first yield (not `StreamClosed`), so handlers that loop `accept_bi` exit cleanly.
+**Note on single-stream connections (ADR-065, ADR-070):** `StreamClosed` from `open_bi` on a single-stream `BidiStreamSource` (the `StreamBidiStreamSource` backed by `from_stream`/`from_bidi`) is terminal for that connection — no other streams exist to continue with. The "connection may still be usable" framing above applies to the QUIC case (a per-stream closure where the connection lives); the single-stream case is a transport property (one stream is all there is), not a mid-operation stream closure. `accept_bi` on a single-stream source returns `ConnectionClosed` after the first yield (not `StreamClosed`), so handlers that loop `accept_bi` exit cleanly.
 
 The mapping is provided as a `From` impl so handlers can use the `?` operator:
 
@@ -300,6 +366,7 @@ registration bundle.
 | ProtocolHandler receives Connection, not BiStream | [ADR-007](../../decisions/007-bistream-type-definition.md) | Handlers that need multiple streams (SSH, call) have direct access to the Connection |
 | BiStream is a trait | [ADR-007](../../decisions/007-bistream-type-definition.md) | WASM door preserved, test mocks possible |
 | `Connection::from_stream` — generic single-stream connections | [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `from_stream`/`from_bidi` accept any `AsyncRead + AsyncWrite`; yield-once `accept_bi` contract; unblocks TCP+TLS, SSH channels, WebTransport, wasm; QUIC variants feature-gated, `Stream` variant always available; `MockConnection`/`ConnectionKind::Mock` removed (tests use `from_stream` with `sink`/`empty`) |
+| `BidiStreamSource` — open `Connection` for extension | [ADR-070](../../decisions/070-bidistreamsource-trait.md) | `Connection` holds `Box<dyn BidiStreamSource>`; QUIC/iroh/stream wrap crate-private impls; downstream crates implement the trait to add connection shapes (channels, future transports) without editing core; public `Connection` API preserved; `close(code, reason)` kept on the trait (non-QUIC impls ignore the args — fixes the ADR-065 leftover clippy warning under `--no-default-features`) |
 | HandlerError is non-fatal | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Handler errors close the connection, not the endpoint |
 | SendStream/RecvStream wrap quinn + iroh + generic streams | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md), [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | Internal enum dispatch for QUIC sources and the generic `Stream` variant |
 | Connection stores handler-resolved identity | OQ-11 (resolved) | `set_identity` via `OnceLock` — write-once-read-many; read by handler-side logging, not by the endpoint (C13 resolved) |
