@@ -36,8 +36,8 @@ The `TtyAdapter` operates in two modes, determined by how it receives its
 
 | Mode | When | Wire format | How the adapter gets sub-streams |
 |------|------|-------------|---------------------------------|
-| **Direct (`alknet/tty` ALPN)** | Top-level QUIC/TCP connection with ALPN `alknet/tty` | TTY's 5-byte format (ADR-052) | `accept_bi()` → parse 5-byte chunks → split into stream_types 0-3 |
-| **Inside channels** | `channel/open` with ALPN `alknet/tty` on a channels connection | Channels' 9-byte format (ADR-071) — the channels layer de-chunks | `into_sub_streams()` (ADR-074) → four named `SendStream`/`RecvStream` pairs for stream_types 0-3 |
+| **Direct (`alknet/tty` ALPN)** | Top-level QUIC/TCP connection with ALPN `alknet/tty` | TTY's 5-byte format (ADR-052, amended — see below) | `accept_bi()` → parse 5-byte chunks → split into stream_types 0-4 |
+| **Inside channels** | `channel/open` with ALPN `alknet/tty` on a channels connection | Channels' 9-byte format (ADR-071) — the channels layer de-chunks | `into_sub_streams()` (ADR-074) → five named handles for stream_types 0-4 |
 
 In both modes, the `TtyBackend` trait and `TtyHandle` are unchanged
 (ADR-053). The backend allocates a PTY and returns a `TtyHandle`; the
@@ -45,16 +45,44 @@ adapter pumps data between the handle and the sub-streams. The difference is
 only in how the adapter gets the sub-streams — 5-byte chunk parsing (direct)
 vs. `into_sub_streams()` (channels).
 
+### The control channel is now properly bidirectional
+
+The phase-0 findings flagged that the TTY control channel "isn't actually
+bidirectional… the adapter ignores Exit from the client." The root cause:
+`stream_type 3` was "bidirectional" — one stream both sides wrote to, which
+is not properly multiplexed.
+
+ADR-071's stream_type decomposition fixes this: **every stream_type is
+unidirectional.** Control is now two halves:
+
+| stream_type | direction | purpose |
+|-------------|-----------|---------|
+| 3 | write (client→server) | control in: resize, signal, eof |
+| 4 | read (server→client) | control out: exit, keepalive response |
+
+The TTY adapter writes resize/signal/eof to `ctrl_in` (stream_type 3) and
+reads exit/keepalive from `ctrl_out` (stream_type 4). Each has its own
+reassembly buffer, its own flow control, its own EOF. The control channel
+is *actually* bidirectional — two unidirectional streams, not one shared
+stream both sides write to.
+
+This amends ADR-052's stream_type assignments for direct mode too: direct
+`alknet/tty` connections now use stream_types [0, 1, 2, 3, 4] (data in/out/
+err + control in/out), not [0, 1, 2, 3]. The 5-byte format's `stream_type`
+field gains value 4; the `ControlMessage` enum is unchanged (the JSON shape
+is the same; the stream_type it rides on splits from 3 into 3+4).
+
 ### What changes in alknet-tty
 
 1. **The adapter's session-driving code splits into two entry points:**
    - `drive_session_direct(send, recv, backends, ...)` — the existing path:
-     parse 5-byte chunks, split into stream_types, pump. Used for direct
+     parse 5-byte chunks, split into stream_types 0-4, pump. Used for direct
      `alknet/tty` connections.
    - `drive_session_channels(sub_streams, backends, ...)` — the new path:
-     receive `ChannelSubStreams` (four named `SendStream`/`RecvStream`
-     pairs), pump directly without chunk parsing. Used when the channel's
-     `Connection` is backed by `ChannelBidiStreamSource`.
+     receive `ChannelSubStreams` (five named handles: stdin=SendStream,
+     stdout=RecvStream, stderr=Option<RecvStream>, ctrl_in=SendStream,
+     ctrl_out=RecvStream), pump directly without chunk parsing. Used when
+     the channel's `Connection` is backed by `ChannelBidiStreamSource`.
 
 2. **The `TtyAdapter::handle()` branches on the `Connection`'s source type.**
    The channels crate's `ChannelBidiStreamSource` is a `BidiStreamSource`
@@ -73,20 +101,24 @@ vs. `into_sub_streams()` (channels).
    connections." The channels path does not use it. This amends ADR-052's
    scope — the format is not replaced, it's scoped.
 
-4. **The control channel (stream_type 3) works the same in both modes.** In
-   direct mode, control JSON rides in 5-byte chunks with `stream_type=3`. In
-   channels mode, control JSON rides in 9-byte chunks with `stream_type=3`
-   — but the channels layer de-chunks it, so the adapter reads raw JSON
-   bytes from its `control` `RecvStream` in both cases. The
-   `ControlMessage` enum (resize, signal, eof, exit) is unchanged.
+4. **The control channel works the same in both modes, now properly
+   bidirectional.** In direct mode, control-in JSON rides in 5-byte chunks
+   with `stream_type=3` and control-out rides with `stream_type=4`. In
+   channels mode, control-in rides in 9-byte chunks with `stream_type=3`
+   (write) and control-out with `stream_type=4` (read) — but the channels
+   layer de-chunks them, so the adapter reads raw JSON bytes from
+   `ctrl_in`/`ctrl_out` in both cases. The `ControlMessage` enum (resize,
+   signal, eof, exit) is unchanged — the JSON shape is the same; only the
+   stream_type assignments change (3 splits into 3+4).
 
 5. **The exit-chunk-is-last invariant (ADR-055) generalizes.** In direct
-   mode, the exit chunk is the last 5-byte chunk before stream close
-   (ADR-055). In channels mode, the exit control message is the last data on
-   `stream_type 3` before `channel/close` is sent on channel 0
-   (ADR-073 §channel/close). The ordering invariant is the same — exit
-   before close — but the mechanism differs: 5-byte chunk ordering (direct)
-   vs. `stream_type 3` ordering + `channel/close` after pump completion
+   mode, the exit chunk is the last 5-byte chunk on `stream_type=4` (read,
+   server→client) before stream close (ADR-055, amended). In channels mode,
+   the exit control message is the last data on `stream_type=4` before
+   `channel/close` is sent on channel 0 (ADR-073 §channel/close). The
+   ordering invariant is the same — exit before close — but the mechanism
+   differs: 5-byte chunk ordering on stream_type 4 (direct) vs.
+   `stream_type 4` ordering + `channel/close` after pump completion
    (channels, REQ-CH-06).
 
 ### What does NOT change

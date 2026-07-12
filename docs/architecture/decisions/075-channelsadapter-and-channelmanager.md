@@ -39,27 +39,37 @@ impl ProtocolHandler for ChannelsAdapter {
     async fn handle(&self, connection: Connection, auth: &AuthContext)
         -> Result<(), HandlerError>
     {
-        // 1. One bidi stream carries all channels.
+        // 1. Channel 0 is pre-negotiated as alknet/call (ADR-072).
+        //    The first bidi stream the transport yields is channel 0.
         let (send, recv) = connection.accept_bi().await?;
-
-        // 2. Channel 0 is pre-negotiated as alknet/call (ADR-072).
-        //    Construct its reassembly buffers, wrap as a Connection via
-        //    from_source(ChannelBidiStreamSource), and hand to the
-        //    CallAdapter (looked up in the registry, same as every ALPN).
         self.manager.preinstall_channel_0(send, recv, auth).await?;
 
-        // 3. Run the demux loop: read 9-byte headers, route payloads to
-        //    per-(channel_id, stream_type) reassembly buffers.
-        self.manager.run_demux_loop(recv).await
+        // 2. Accept remaining bidi streams and read 9-byte headers off each.
+        //    On an in-line transport (TCP+TLS, WebTransport), accept_bi()
+        //    yields once and the header demuxes N channels from that stream.
+        //    On QUIC native, accept_bi() yields repeatedly — each stream
+        //    carries one logical channel, and the header provides
+        //    stream_type + channel_id correlation. Same code path, same
+        //    wire format (ADR-071 §substrate modes).
+        self.manager.run_demux_loop(connection).await
     }
 }
 ```
 
-The `preinstall_channel_0` step is the only special case: it constructs the
-reassembly buffers for `channel_id = 0`, wraps them as a `Connection` (via
-`Connection::from_source` with a `ChannelBidiStreamSource` — ADR-074), and
-hands that `Connection` to the `CallAdapter` — exactly as if `alknet/call`
-had been the top-level ALPN. The `CallAdapter` is none the wiser.
+The `preinstall_channel_0` step constructs the reassembly buffers for
+`channel_id = 0` using stream_types [0, 1] (ADR-072), wraps them as a
+`Connection` (via `Connection::from_source` with a `ChannelBidiStreamSource`
+— ADR-074), and hands that `Connection` to the `CallAdapter` — exactly as if
+`alknet/call` had been the top-level ALPN. The `CallAdapter` is looked up in
+the same `HandlerRegistry` as every other ALPN.
+
+`run_demux_loop` continues accepting bidi streams from the transport. For
+each stream, it reads 9-byte headers and routes payloads to the matching
+`(channel_id, stream_type)` reassembly buffer. On an in-line transport,
+there is only one stream (channel 0 rides inside it via the header); the
+header demuxes all channels. On QUIC, each subsequent stream is a new
+channel; the header's `channel_id` correlates it. The loop is the same;
+only the transport's stream count differs.
 
 ### `ChannelManager` — the shared state
 

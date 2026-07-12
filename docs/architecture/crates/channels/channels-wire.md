@@ -37,26 +37,64 @@ stream — the demux drops the chunk and continues. The header is always
 exactly 9 bytes, so the demux can always resync by reading the next 9-byte
 header.
 
-## Stream types
+## Stream types — unidirectional, grouped in threes
 
-| stream_type | direction | purpose |
-|-------------|-----------|---------|
-| 0 | write half | data flowing in (stdin equivalent) |
-| 1 | read half | data flowing out (stdout equivalent) |
-| 2 | read half (optional) | error/diagnostic output (stderr equivalent) |
-| 3 | bidirectional | control messages (ALPN-specific JSON) |
-| 4-255 | reserved | future sub-stream types |
+**Every stream_type is unidirectional.** Bidirectionality is two
+stream_types (write + read), not one "bidirectional" stream_type. The
+stream_types are grouped in threes:
+
+| Group | stream_type | direction | purpose |
+|-------|-------------|-----------|---------|
+| Data | 0 | write (client→server) | data in (stdin equivalent) |
+| | 1 | read (server→client) | data out (stdout equivalent) |
+| | 2 | read (server→client) | data err (stderr equivalent, optional) |
+| Control | 3 | write (client→server) | control in (resize, signal, eof) |
+| | 4 | read (server→client) | control out (exit, keepalive response) |
+| | 5 | read (server→client) | control err (optional) |
+| Future | 6/7/8 | write/read/read | next group, same pattern |
+| | ... | | |
+
+**Formula:** `stream_type % 3 == 0` → write half (in), `stream_type % 3 ==
+1` → read half (out), `stream_type % 3 == 2` → diagnostic read half (err).
+
+256 values / 3 = 85 groups. The `u32` channel_id space combined with 85
+stream_type groups is effectively unlimited for the intended use cases.
+
+**Why unidirectional:** each stream_type gets its own reassembly buffer, its
+own flow control, its own EOF. Control is bidirectional via two halves
+(3 in, 4 out), not one shared stream both sides write to. This resolves the
+TTY control channel's "not actually bidirectional" flaw (ADR-077).
 
 Not all channels use all sub-streams. The active set is declared at
 `channel/open` time (ADR-073 `stream_types` field) and fixed for the
 channel's lifetime.
 
-| Channel ALPN | Active stream_types |
-|--------------|---------------------|
-| `alknet/call` (channel 0) | 0 (EventEnvelope frames) |
-| `alknet/tty` | 0, 1, 2, 3 (stdin, stdout, stderr, control) |
-| `alknet/tunnel` | 0, 1 (data-in, data-out) |
-| `alknet/ssh` | 0, 1 (data-in, data-out — SSH multiplexes internally) |
+| Channel ALPN | Active stream_types | Why |
+|--------------|---------------------|-----|
+| `alknet/call` (channel 0) | [0, 1] | call frames bidirectional via 0=in, 1=out |
+| `alknet/tty` | [0, 1, 2, 3, 4] | data in/out/err + control in/out |
+| `alknet/tunnel` | [0, 1] | data in/out only (no channels-layer control needed) |
+| `alknet/ssh` | [0, 1] | SSH multiplexes internally, including its own control |
+
+## Substrate modes — same wire format, different stream counts
+
+The 9-byte header is used in all substrates, on every bidi stream. The
+difference between substrates is only **how many bidi streams the transport
+yields**:
+
+| Substrate | Transport | Streams | Header role |
+|-----------|-----------|---------|--------------|
+| In-line | TCP+TLS, WebTransport session, SSH `direct-tcpip` | 1 | Header demuxes N channels from that 1 stream |
+| Native | QUIC (quinn/iroh) | N | Each stream carries 1 logical channel; header provides `stream_type` + `channel_id` correlation |
+| Multi-connection | Any, N connections | N × M | Each connection is self-contained (own channel 0, own demux); header is per-connection |
+
+The `ChannelsAdapter::handle` loop: `accept_bi()` → for each stream, read
+the 9-byte header → route by `(channel_id, stream_type)` → reassemble. On
+an in-line transport, `accept_bi()` yields once then `ConnectionClosed` —
+the header does all the demux. On QUIC, `accept_bi()` yields repeatedly —
+each stream is a channel, and the header provides `stream_type` and
+`channel_id` correlation. Same code path, same wire format, same handler
+experience. See ADR-071 §substrate modes, ADR-075.
 
 ## Channel 0 — pre-negotiated `alknet/call`
 
@@ -64,9 +102,11 @@ Channel 0 is not a special "control plane" with its own framing. It is
 `alknet/call` pre-negotiated (ADR-072): both sides know `channel_id = 0` is
 routed to the `CallAdapter` without an explicit `channel/open` exchange.
 
-Channel 0 uses only `stream_type` 0 for `EventEnvelope` frames (JSON,
-length-prefixed — the call protocol wire format, ADR-064). `stream_type`
-1-255 on channel 0 are reserved for future call-protocol sub-streams.
+Channel 0 uses stream_types [0, 1] — call frames bidirectional via 0=in
+(client→server), 1=out (server→client). The call protocol's `(SendStream,
+RecvStream)` pair maps directly: `SendStream` backed by stream_type 0,
+`RecvStream` backed by stream_type 1. stream_types 2-255 on channel 0 are
+reserved for future call-protocol sub-streams.
 
 Channel 0's chunks have `channel_id = 0` in the header — same format as
 every other channel. Disambiguation between channel 0 and data channels is
@@ -80,9 +120,9 @@ The 9-byte header is always exactly 9 bytes. `length` is bounded by
 `ChunkTooLarge`), the demux resyncs by reading the next 9-byte header —
 the format is self-synchronizing.
 
-Within a channel, `stream_type` 0 (stdin) from the server is invalid, so
-`0x00` as the first byte of a chunk payload from the server is unambiguous
-(carried from ADR-052 §5).
+Within a channel, `stream_type` 0 (write half) from the server is invalid,
+so `0x00` as the first byte of a chunk payload from the server is
+unambiguous (carried from ADR-052 §5).
 
 ## Zero-length sentinel = EOF
 
@@ -182,7 +222,7 @@ tokio-dependent shell. The POC validated the sync core compiles under
 |-------|-----------|-----------|
 | Open | `channel/open` call operation on channel 0; responder allocates `channel_id`, returns it | ADR-073 |
 | Data | chunks with `channel_id` routed to reassembly buffers; handler sees `AsyncRead + AsyncWrite` | this doc, [channels-connection.md](channels-connection.md) |
-| Control (data-ordered) | `stream_type 3` chunks on the data channel (JSON, in-order with data) | ADR-073 §DP-4 |
+| Control (data-ordered) | `stream_type 3` (write) and `stream_type 4` (read) chunks on the data channel (JSON, in-order with data) | ADR-073 §DP-4 |
 | Control (out-of-band) | `channel/control` call operation on channel 0 | ADR-073 |
 | Close | `channel/close` call operation on channel 0; data chunks flushed before close | ADR-073, REQ-CH-06 |
 
@@ -194,10 +234,10 @@ invariant: the side closing must observe the data-channel pump complete
 before issuing the call operation.
 
 For TTY this is the exit-chunk-is-last invariant (ADR-055) carried forward:
-the exit control message on `stream_type 3` is the last data before
-`channel/close`. For tunnels it is the last data byte before close. The
-channels layer's close handler observes the pump completion; the call
-operation is issued after.
+the exit control message on `stream_type 4` (read, server→client) is the
+last data before `channel/close`. For tunnels it is the last data byte
+before close. The channels layer's close handler observes the pump
+completion; the call operation is issued after.
 
 This invariant crosses two channels (the data channel and channel 0), so
 the channels layer owns the ordering guarantee — it is not a handler

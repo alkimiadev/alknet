@@ -94,29 +94,48 @@ design.
 ## Crate dependencies
 
 ```
-alknet-channels
+alknet-channels-core
 ├── alknet-core (ProtocolHandler, Connection, HandlerRegistry,
 │                BidiStreamSource, SendStream, RecvStream, AuthContext)
-├── alknet-call (OperationRegistry, HandlerKind, make_handler,
-│                make_streaming_handler, CallError, ResponseEnvelope)
 ├── tokio (spawn, mpsc, io)
 ├── bytes (Bytes for chunk payloads)
 ├── async-trait
 ├── thiserror
 └── tracing
+
+alknet-channels-call
+├── alknet-channels-core (ChannelManager, ChannelsAdapter,
+│                         ChannelBidiStreamSource)
+├── alknet-call (OperationRegistry, HandlerKind, make_handler,
+│                make_streaming_handler, CallError, ResponseEnvelope)
+└── tokio
+
+alknet-channels-hub (or the hub role within alknet-hub)
+├── alknet-channels-call
+└── alknet-call (from_call, CallAdapter, forwarded_for — ADR-079)
+
+alknet-channels-worker (or the worker/client role)
+├── alknet-channels-call
+└── alknet-call (CallClient-equivalent)
 ```
 
-`alknet-channels` depends on `alknet-call` because channel lifecycle
-operations (`channel/open`, `channel/close`, `channel/control`,
-`channel/resources/subscribe`) are registered on the call protocol's
-`OperationRegistry` (ADR-073). This is the one handler-crate →
-`alknet-call` dependency; it is sound because channels *is* a call-protocol
-extension (channel lifecycle is call operations), not a peer handler.
+`alknet-channels-core` is the pure multiplexer — wire format, demux/mux,
+`ChannelBidiStreamSource`, `ChannelManager`. It depends on `alknet-core`
+only. No `alknet-call` dependency. ALPN-blind, call-protocol-blind,
+transport-blind. This is where the "streams are streams" insight lives.
 
-The dependency direction is: handlers depend on `alknet-core`;
-`alknet-channels` depends on `alknet-core` and `alknet-call`; nothing
-depends on `alknet-channels` except the assembly layer and
-`alknet-tty`/`alknet-docker` behind their `channels`/`tty` feature gates.
+`alknet-channels-call` is the call-protocol coupling — channel 0
+pre-negotiation as `alknet/call` (ADR-072) and the four lifecycle operations
+(ADR-073) registered on the call protocol's `OperationRegistry`. This is
+where the call-protocol coupling lives, isolated from the pure multiplexer.
+
+`alknet-channels-hub` and `alknet-channels-worker` (or the hub/worker roles
+within `channels-call`) are the two roles: the relay (ADR-079) and the
+`ChannelClient` (ADR-080). Whether these are separate sub-crates or
+feature-gated modules within `channels-call` is a two-way-door packaging
+decision (ADR-081).
+
+See ADR-081 for the full decomposition rationale.
 
 ## ALPN
 
@@ -220,16 +239,17 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [071](../../decisions/071-channels-wire-format.md) | channels Wire Format | 9-byte chunk header; one-way door |
-| [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call`, no special control plane |
+| [071](../../decisions/071-channels-wire-format.md) | channels Wire Format | 9-byte chunk header; unidirectional stream_types in groups of 3; one-way door |
+| [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call`, stream_types [0,1] |
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations | `channel/open`/`close`/`control`/`resources/subscribe`; subscribe not poll; `direction` pinned |
-| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; `into_sub_streams()` accessor |
-| [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | The read/demux + reassemble/allocate split; REQ-CH-01..04 |
+| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; `into_sub_streams()` with `SubStreamHandle` enum |
+| [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Substrate-agnostic demux loop; REQ-CH-01..04 |
 | [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Limits, ID Reuse | Bounded-buffer (1 MiB), 256-channel cap, monotonic IDs |
-| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); ADR-052 scoped to direct |
+| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); 5 sub-streams; control bidirectional via 3/4 |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract; handler-level |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels with ID rewrite |
 | [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; QUIC-only; `AlknetClient` deferred (OQ-55) |
+| [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling) / hub / worker |
 
 ## Open Questions
 

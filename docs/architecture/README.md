@@ -9,35 +9,43 @@ last_updated: 2026-07-12
 
 **alknet-channels specs drafted.** The alknet-channels crate (multiplexing
 proxy — `ProtocolHandler` on `alknet/channels`, 9-byte chunk format, N
-channels over one transport stream, channel 0 pre-negotiated as
+channels over transport stream(s), channel 0 pre-negotiated as
 `alknet/call`) now has architecture specs:
 [crates/channels/](crates/channels/) (overview, channels-wire,
 channels-connection, channels-adapter, channel-operations, channel-client)
-and ten ADRs — [ADR-071](decisions/071-channels-wire-format.md) (9-byte
-chunk header), [ADR-072](decisions/072-channel-0-pre-negotiated-call.md)
-(channel 0 = `alknet/call` pre-negotiated, no special control plane),
+and eleven ADRs — [ADR-071](decisions/071-channels-wire-format.md) (9-byte
+chunk header; revised for substrate simplification — the header is used in
+all substrates including QUIC native, not just in-line; and stream_type
+decomposition — every stream_type is unidirectional, grouped in threes:
+0/1/2 = data write/read/err, 3/4/5 = control write/read/err, `% 3` formula;
+resolves the TTY control channel's "not actually bidirectional" flaw),
+[ADR-072](decisions/072-channel-0-pre-negotiated-call.md)
+(channel 0 = `alknet/call` pre-negotiated, stream_types [0,1] — call frames
+bidirectional via 0=in, 1=out),
 [ADR-073](decisions/073-channel-lifecycle-operations.md) (channel
 lifecycle operations on the call protocol — `channel/open`/`close`/
 `control`/`resources/subscribe`; `channel/resources/subscribe` is a
 `Subscription` operation using the already-implemented `StreamingHandler`
 machinery, not a polled `Query`; the `direction` field pins who is the
 ALPN-server; the control-message division is call-ops for orchestration,
-`stream_type 3` for data-ordered control),
+`stream_type 3`/`4` for data-ordered control),
 [ADR-074](decisions/074-channelconnection-bidistreamsource.md)
 (`ChannelBidiStreamSource` implements `BidiStreamSource` — ADR-070's
-extension point; `into_sub_streams()` typed accessor for handlers that need
-stderr/control; `accept_bi()` generic path for tunnel/SSH),
+extension point; `into_sub_streams()` with `SubStreamHandle` enum (Send/Recv
+per unidirectional stream_type); `accept_bi()` generic path for tunnel/SSH),
 [ADR-075](decisions/075-channelsadapter-and-channelmanager.md)
-(`ChannelsAdapter` read/demux + `ChannelManager` reassemble/allocate split;
-REQ-CH-01..04 wire-level invariants pinned: shutdown emits zero-length
-sentinel, transport close drops all senders, mux dynamic registration,
-lenient unknown-`channel_id`),
+(`ChannelsAdapter` substrate-agnostic demux loop (reads 9-byte headers off
+every bidi stream, regardless of substrate) + `ChannelManager`
+reassemble/allocate split; REQ-CH-01..04 wire-level invariants pinned:
+shutdown emits zero-length sentinel, transport close drops all senders, mux
+dynamic registration, lenient unknown-`channel_id`),
 [ADR-076](decisions/076-backpressure-channel-limits-id-reuse.md)
 (bounded-buffer backpressure 1 MiB default, 256-channel cap, monotonic IDs
 with wrap-around),
 [ADR-077](decisions/077-tty-inside-channels.md) (TTY inside channels uses
-sub-streams, not its own 5-byte wire format; ADR-052's scope amended to
-direct-connect TTY only; `channels` feature on alknet-tty),
+sub-streams, not its own 5-byte wire format; 5 sub-streams [0,1,2,3,4]
+with control properly bidirectional via 3 (write) + 4 (read); ADR-052's
+scope amended to direct-connect TTY only; `channels` feature on alknet-tty),
 [ADR-078](decisions/078-two-pump-shutdown-on-completion.md) (two-pump
 handlers MUST shut down the opposite sink on pump completion — the
 deadlock contract the POC surfaced; handler-level, not channels-layer;
@@ -46,10 +54,16 @@ core helper extraction deferred per OQ-57),
 translates `channel/open` on channel 0 with `forwarded_for` — ADR-032;
 data channels byte-forwarded with `channel_id` rewrite; the hub never runs
 protocol-specific handlers),
-[ADR-080](decisions/080-channelclient.md) (`ChannelClient` in
-alknet-channels, QUIC-only initially, bidirectionality preserved;
+[ADR-080](decisions/080-channelclient.md) (`ChannelClient`,
+QUIC-only initially, bidirectionality preserved;
 `AlknetClient` core extraction stays deferred per OQ-55 — blocked on a
-second *transport's* client, not a second client). The specs are grounded
+second *transport's* client, not a second client),
+[ADR-081](decisions/081-channels-subcrate-decomposition.md) (sub-crate
+decomposition — `channels-core` (pure multiplexer, depends on alknet-core
+only, no call dependency) / `channels-call` (channel 0 pre-negotiation +
+lifecycle op registrations, depends on channels-core + alknet-call) /
+`channels-hub` (relay) / `channels-worker` (ChannelClient); isolates the
+call-protocol coupling from the pure multiplexer). The specs are grounded
 in the completed de-risk POC
 (`docs/research/alknet-channels/poc-summary.md`, 28 tests passing, three
 validated targets: chunk format + demux/mux, per-channel `Connection`
@@ -64,7 +78,7 @@ blocking observation) and OQ-57 (two-pump helper extraction — blocked on a
 second two-pump handler). The TTY integration (ADR-077) amends ADR-052's
 scope — the 5-byte format is unchanged for direct `alknet/tty` connections;
 inside channels, TTY uses `into_sub_streams()` and the channels layer's
-de-chunking.
+de-chunking, with control properly bidirectional via stream_types 3/4.
 
 **Pre-implementation of the storage/repo pattern.** The project has completed a pivot from a three-layer model to an ALPN-as-service model. The greenfield workspace contains `alknet-vault` (stable — implementation complete and verified, local-only by construction per ADR-025, HD-derivation key model per ADR-026) and research/reference material. Foundational ADRs (001–035) are in place, with the call crate implemented and reviewed.
 
@@ -249,6 +263,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [078](decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | Accepted |
 | [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | Accepted |
 | [080](decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | Accepted |
+| [081](decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | Accepted |
 
 ## Open Questions
 

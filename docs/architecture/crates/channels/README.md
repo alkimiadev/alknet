@@ -30,16 +30,17 @@ protocol work itself.
 
 | ADR | Title | Relevance |
 |-----|-------|-----------|
-| [071](../../decisions/071-channels-wire-format.md) | channels Wire Format — 9-Byte Chunk Header | The chunk format; one-way door |
-| [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Is Pre-Negotiated `alknet/call` | Channel 0 = call protocol, no special control plane |
+| [071](../../decisions/071-channels-wire-format.md) | channels Wire Format — 9-Byte Chunk Header | The chunk format; unidirectional stream_types in groups of 3; substrate-agnostic; one-way door |
+| [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Is Pre-Negotiated `alknet/call` | Channel 0 = call protocol, stream_types [0,1]; no special control plane |
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations on the Call Protocol | `channel/open`/`close`/`control`/`resources/subscribe`; `direction` semantics; subscribe not poll |
-| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection — BidiStreamSource over Chunk Reassembly | Per-channel `BidiStreamSource` impl; `into_sub_streams()` accessor |
-| [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | The read/demux + reassemble/allocate split; REQ-CH-01..04 contracts |
+| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection — BidiStreamSource over Chunk Reassembly | Per-channel `BidiStreamSource` impl; `into_sub_streams()` with `SubStreamHandle` enum (Send/Recv) |
+| [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Substrate-agnostic demux loop; REQ-CH-01..04 contracts |
 | [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Bounded-buffer (1 MiB default), 256-channel cap, monotonic IDs with wrap |
-| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | TTY's two modes (direct vs channels); amends ADR-052 scope |
+| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | TTY's two modes (direct vs channels); 5 sub-streams; control bidirectional via 3/4; amends ADR-052 scope |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | The two-pump deadlock contract; handler-level, not channels-layer |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | The hub translates channel 0, byte-forwards data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient` in alknet-channels, QUIC-only; `AlknetClient` deferred (OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient`, QUIC-only; `AlknetClient` deferred (OQ-55) |
+| [081](../../decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling) / hub / worker |
 | [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | The `Connection` extension point `ChannelBidiStreamSource` implements |
 | [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | The transport-agnostic `Connection` the channels layer rides on |
 | [052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | alknet-tty Wire Format | The 5-byte format the 9-byte format generalizes (amended by ADR-077 — scoped to direct TTY) |

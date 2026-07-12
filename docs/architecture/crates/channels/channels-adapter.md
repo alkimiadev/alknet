@@ -14,14 +14,14 @@ invariants.
 
 | Component | Role | What it knows |
 |-----------|------|---------------|
-| `ChannelsAdapter` | `ProtocolHandler` on `alknet/channels`; reads 9-byte chunk headers off the transport and routes to `ChannelManager` | The transport stream; the `ChannelManager` handle. ALPN-blind. |
-| `ChannelManager` | Shared state; holds `channel_id → ChannelState`, `HandlerRegistry`, `OperationRegistry`. Constructs `ChannelBidiStreamSource` per channel. What `channel/open` closes over. | The channel map; the handler registry for ALPN lookup. ALPN-blind (looks up ALPNs, doesn't parse their protocols). |
+| `ChannelsAdapter` | `ProtocolHandler` on `alknet/channels`; reads 9-byte chunk headers off every bidi stream the transport yields and routes to `ChannelManager`. Substrate-agnostic (ADR-071 §substrate modes). | The transport stream(s); the `ChannelManager` handle. ALPN-blind. |
+| `ChannelManager` | Shared state; holds `channel_id → ChannelState`, `HandlerRegistry`. Constructs `ChannelBidiStreamSource` per channel. What `channel/open` closes over (in `channels-call`). | The channel map; the handler registry for ALPN lookup. ALPN-blind (looks up ALPNs, doesn't parse their protocols). |
 
 The split mirrors the TTY crate's `ChunkReader`/`ChunkWriter` + adapter
 pattern, generalized to N channels: the adapter drives N channels, and
-channel 0 is special only in that it's pre-allocated.
+channel 0 is special only in that it's pre-allocated (by `channels-call`).
 
-## `ChannelsAdapter::handle`
+## `ChannelsAdapter::handle` (substrate-agnostic)
 
 ```rust
 #[async_trait]
@@ -31,46 +31,47 @@ impl ProtocolHandler for ChannelsAdapter {
     async fn handle(&self, connection: Connection, auth: &AuthContext)
         -> Result<(), HandlerError>
     {
-        // 1. One bidi stream carries all channels.
+        // 1. Channel 0 is pre-negotiated (ADR-072). The first bidi stream
+        //    the transport yields is channel 0. The consumer (channels-call)
+        //    installs the CallAdapter on it.
         let (send, recv) = connection.accept_bi().await?;
-
-        // 2. Channel 0 is pre-negotiated as alknet/call (ADR-072).
-        //    Construct reassembly buffers, wrap as a Connection via
-        //    from_source(ChannelBidiStreamSource), hand to the CallAdapter.
         self.manager.preinstall_channel_0(send, recv, auth).await?;
 
-        // 3. Run the demux loop.
-        self.manager.run_demux_loop(recv).await
+        // 2. Accept remaining bidi streams and read 9-byte headers off each.
+        //    On an in-line transport, accept_bi() yields once and the header
+        //    demuxes N channels from that stream. On QUIC native, accept_bi()
+        //    yields repeatedly — each stream carries one logical channel.
+        //    Same code path, same wire format (ADR-071 §substrate modes).
+        self.manager.run_demux_loop(connection).await
     }
 }
 ```
 
-### `preinstall_channel_0`
+The `preinstall_channel_0` step (provided by `channels-call`, ADR-081)
+constructs the reassembly buffers for `channel_id = 0` using stream_types
+[0, 1] (ADR-072), wraps them as a `Connection` via `Connection::from_source`
+with a `ChannelBidiStreamSource` (ADR-074), and hands that `Connection` to
+the `CallAdapter`. The `ChannelsAdapter` in `channels-core` exposes the
+hook; `channels-call` provides the implementation.
 
-The only special case: constructs the reassembly buffers for `channel_id =
-0`, wraps them as a `Connection` (via `Connection::from_source` with a
-`ChannelBidiStreamSource` — ADR-070/074), and hands that `Connection` to
-the `CallAdapter` — exactly as if `alknet/call` had been the top-level
-ALPN. The `CallAdapter` is looked up in the same `HandlerRegistry` as every
-other ALPN. The `CallAdapter` is none the wiser: it calls `accept_bi()`,
-gets one bidi stream (the channel-0 reassembled stream), and runs its
-dispatch loop. `EventEnvelope` frames ride on `stream_type = 0` of channel 0.
-
-### `run_demux_loop`
-
-Reads 9-byte headers off the transport, looks up `channel_id` in the
-`ChannelManager`'s `channels` map, and pushes the payload into the right
-`ReassemblyBuffer` for `(channel_id, stream_type)`. If the buffer is full
-(bounded-buffer backpressure, ADR-076), the loop stops reading that
-channel's chunks until the consumer drains — other channels keep flowing.
+`run_demux_loop` continues accepting bidi streams from the transport. For
+each stream, it reads 9-byte headers and routes payloads to the matching
+`(channel_id, stream_type)` reassembly buffer. On an in-line transport,
+there is only one stream (channel 0 rides inside it via the header); the
+header demuxes all channels. On QUIC, each subsequent stream is a new
+channel; the header's `channel_id` correlates it. The loop is the same;
+only the transport's stream count differs.
 
 ## `ChannelManager`
 
 ```rust
+// In alknet-channels-core:
 pub struct ChannelManager {
     channels: Mutex<HashMap<u32, ChannelState>>,
     handlers: Arc<HandlerRegistry>,
-    call_ops: Arc<OperationRegistry>,
+    // Note: no call_ops field — the call-protocol coupling lives in
+    // channels-call (ADR-081). The ChannelManager is ALPN-blind and
+    // call-protocol-blind.
     next_id: AtomicU32,       // monotonic; wraps at u32::MAX
     buffer_cap: usize,        // default 1 MiB (ADR-076)
     max_channels: usize,      // default 256 (ADR-076)

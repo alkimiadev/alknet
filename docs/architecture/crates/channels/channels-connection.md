@@ -11,8 +11,13 @@ access paths.
 
 ## What
 
-Each channel is reassembled into a set of `AsyncRead + AsyncWrite` handles
-—one per active `stream_type` (declared at `channel/open` time, ADR-073).
+Each channel is reassembled into a set of **unidirectional** handles — one
+per active `stream_type` (declared at `channel/open` time, ADR-073). Every
+stream_type is unidirectional (ADR-071 §stream_type decomposition);
+bidirectionality is two stream_types (write + read), not one shared
+"bidirectional" stream. Write stream_types (`% 3 == 0`) carry a
+`SendStream`; read stream_types (`% 3 == 1 or 2`) carry a `RecvStream`.
+
 These handles are wrapped as a `ChannelBidiStreamSource` that implements
 `alknet-core`'s `BidiStreamSource` trait (ADR-070), and a `Connection` is
 constructed from it via `Connection::from_source(source, alpn)`.
@@ -21,9 +26,9 @@ The handler receives a `Connection` and can either:
 1. Call `accept_bi()` once to get the main data pair (`stream_type` 0/1) —
    the generic handler path (tunnel, SSH).
 2. Call `into_sub_streams()` on the `ChannelBidiStreamSource` to get all
-   active sub-streams as typed `(stream_type, SendStream, RecvStream)`
-   tuples — the typed handler path (TTY, which needs stdin/stdout/stderr/
-   control).
+   active sub-streams as typed `(stream_type, SubStreamHandle)` tuples —
+   the typed handler path (TTY, which needs stdin/stdout/stderr/control-in/
+   control-out).
 
 Both paths operate on the same reassembly buffers; the difference is how the
 handler accesses them.
@@ -115,20 +120,24 @@ For handlers that need `stream_type` 2 (stderr) or 3 (control) in addition
 to 0/1:
 
 ```rust
-// In alknet-channels:
+// In alknet-channels-core:
 pub struct ChannelSubStreams {
-    /// (stream_type, send_half, recv_half) for each active stream_type.
-    pub streams: Vec<(u8, SendStream, RecvStream)>,
+    /// (stream_type, handle) for each active stream_type. Each handle is
+    /// unidirectional: write stream_types (0, 3, 6, ...) carry a SendStream;
+    /// read stream_types (1, 2, 4, 5, 7, ...) carry a RecvStream.
+    /// See ADR-071 §stream_type decomposition.
+    pub streams: Vec<(u8, SubStreamHandle)>,
 }
 
-impl ChannelSubStreams {
-    pub fn get(&self, stream_type: u8) -> Option<(&SendStream, &RecvStream)> { ... }
+pub enum SubStreamHandle {
+    Send(SendStream),  // write half (stream_type % 3 == 0)
+    Recv(RecvStream),  // read half (stream_type % 3 == 1 or 2)
 }
 
 impl ChannelBidiStreamSource {
     /// Returns all active sub-streams, keyed by stream_type. Consumes the
     /// source — call this instead of accept_bi() if the handler needs
-    /// direct access to stream_types 2/3.
+    /// direct access to stream_types 2/3/4.
     pub fn into_sub_streams(self) -> ChannelSubStreams { ... }
 }
 ```
@@ -138,15 +147,16 @@ The handler crate destructures `ChannelSubStreams` into its typed names:
 ```rust
 // In alknet-tty (inside-channels mode, ADR-077):
 let sub = channel_source.into_sub_streams();
-let stdin = sub.get(0).unwrap();    // SendStream
-let stdout = sub.get(1).unwrap();   // RecvStream
-let stderr = sub.get(2);            // Option<&RecvStream>
-let control = sub.get(3).unwrap();  // RecvStream (JSON control)
+let stdin = sub.get_send(0).unwrap();    // SendStream (write, client→server)
+let stdout = sub.get_recv(1).unwrap();   // RecvStream (read, server→client)
+let stderr = sub.get_recv(2);           // Option<RecvStream> (read, optional)
+let ctrl_in = sub.get_send(3).unwrap(); // SendStream (write, client→server)
+let ctrl_out = sub.get_recv(4).unwrap();// RecvStream (read, server→client)
 ```
 
-**The channels crate does not know about TTY's `stream_type` semantics.**
-It exposes `(stream_type, SendStream, RecvStream)` tuples. The handler crate
-maps stream_types to its typed names. This preserves ADR-003's
+**Every stream_type is unidirectional** (ADR-071). The channels crate
+exposes `(stream_type, SubStreamHandle)` tuples. The handler crate maps
+stream_types to its typed names. This preserves ADR-003's
 no-handler-depends-on-another-handler rule and keeps the channels crate
 ALPN-blind.
 
@@ -159,7 +169,7 @@ include the 0/1 pair, so `into_sub_streams()` is the superset.
 | Handler shape | Path | Examples |
 |---------------|------|---------|
 | Main data pair only (0/1) | `accept_bi()` | tunnel, SSH (SSH multiplexes internally) |
-| Needs stderr/control (2/3) | `into_sub_streams()` | TTY (stdin/stdout/stderr/control) |
+| Needs stderr/control (2/3/4) | `into_sub_streams()` | TTY (stdin/stdout/stderr/ctrl-in/ctrl-out) |
 
 The handler chooses based on its ALPN's `stream_type` set (declared at
 `channel/open` time). The `ChannelsAdapter` (ADR-075) passes the handler a

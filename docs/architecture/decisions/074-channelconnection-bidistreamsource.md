@@ -74,21 +74,30 @@ session — exactly as the POC's `EchoHandler` and `TtyAdapter` do today.
 
 ### Sub-stream accessor for typed destructure (OQ-CH-10)
 
-Some handlers need access to `stream_type` 2 (stderr) and 3 (control) in
-addition to the main 0/1 pair. The `Connection` interface alone (accept_bi)
-only exposes the 0/1 pair. The channels crate provides a typed-accessor
-extension:
+Some handlers need access to `stream_type` 2 (stderr), 3 (control in), and
+4 (control out) in addition to the main 0/1 pair. The `Connection`
+interface alone (accept_bi) only exposes the 0/1 pair. The channels crate
+provides a typed-accessor extension:
 
 ```rust
 // In alknet-channels:
 pub struct ChannelSubStreams {
-    pub streams: Vec<(u8, SendStream, RecvStream)>,
+    /// (stream_type, handle) for each active stream_type. Each handle is
+    /// unidirectional: write stream_types (0, 3, 6, ...) carry a SendStream;
+    /// read stream_types (1, 2, 4, 5, 7, ...) carry a RecvStream.
+    /// See ADR-071 §stream_type decomposition.
+    pub streams: Vec<(u8, SubStreamHandle)>,
+}
+
+pub enum SubStreamHandle {
+    Send(SendStream),  // write half (stream_type % 3 == 0)
+    Recv(RecvStream),  // read half (stream_type % 3 == 1 or 2)
 }
 
 impl ChannelBidiStreamSource {
     /// Returns the typed sub-streams for this channel, keyed by stream_type.
     /// Consumes the source — call this instead of accept_bi() if the handler
-    /// needs direct access to stream_types 2/3. For handlers that only need
+    /// needs direct access to stream_types 2/3/4. For handlers that only need
     /// the main 0/1 pair, accept_bi() is the path (and sub_streams() is not
     /// called).
     pub fn into_sub_streams(self) -> ChannelSubStreams { ... }
@@ -101,15 +110,24 @@ its typed names:
 ```rust
 // In alknet-tty (inside-channels mode, ADR-077):
 let sub = channel_source.into_sub_streams();
-let mut stdin = sub.get(0);   // SendStream
-let mut stdout = sub.get(1);  // RecvStream
-let mut stderr = sub.get(2);  // RecvStream (optional)
-let mut control = sub.get(3); // RecvStream (JSON control)
+let stdin = sub.get_send(0).unwrap();    // SendStream (write, client→server)
+let stdout = sub.get_recv(1).unwrap();   // RecvStream (read, server→client)
+let stderr = sub.get_recv(2);           // Option<RecvStream> (read, optional)
+let ctrl_in = sub.get_send(3).unwrap(); // SendStream (write, client→server)
+let ctrl_out = sub.get_recv(4).unwrap();// RecvStream (read, server→client)
 ```
 
-**The channels crate does not know about TTY's `stream_type` semantics.** It
-exposes `(stream_type, SendStream, RecvStream)` tuples. The handler crate
-maps stream_types to its typed names. This preserves ADR-003's
+**Every stream_type is unidirectional** (ADR-071). Write stream_types
+(`% 3 == 0`) carry a `SendStream`; read stream_types (`% 3 == 1 or 2`) carry
+a `RecvStream`. There is no "bidirectional" stream_type — bidirectionality
+is two halves (e.g., control is 3 write + 4 read). This resolves the TTY
+control channel's "not actually bidirectional" flaw: the TTY adapter reads
+exit/keepalive from `ctrl_out` (stream_type 4) and writes resize/signal/eof
+to `ctrl_in` (stream_type 3), each with its own flow control and EOF.
+
+**The channels crate does not know about TTY's `stream_type` semantics.**
+It exposes `(stream_type, SubStreamHandle)` tuples. The handler crate maps
+stream_types to its typed names. This preserves ADR-003's
 no-handler-depends-on-another-handler rule and keeps the channels crate
 ALPN-blind.
 

@@ -50,7 +50,7 @@ Request (`call.requested` on channel 0):
   "operation": "channel/open",
   "input": {
     "alpn": "alknet/tty",
-    "stream_types": [0, 1, 2, 3],
+    "stream_types": [0, 1, 2, 3, 4],
     "params": { "backend": "docker", "cmd": ["bash"], "container": "abc123" },
     "direction": "initiator-to-responder"
   }
@@ -60,8 +60,8 @@ Request (`call.requested` on channel 0):
 | field | type | meaning |
 |-------|------|---------|
 | `alpn` | string | The ALPN the channel will carry. The responder looks this up in its `HandlerRegistry`. |
-| `stream_types` | `[u8]` | Which sub-stream types this channel will use. Declared at open time so both sides size reassembly. E.g. `[0,1,2,3]` for TTY, `[0,1]` for a tunnel. |
-| `params` | object | ALPN-specific parameters. For `alknet/tty` this is the `NegotiateRequest`. For `alknet/tunnel` this is the target resource. The channels layer does not interpret `params` — it hands the JSON to the handler. |
+| `stream_types` | `[u8]` | Which sub-stream types this channel will use. E.g. `[0,1,2,3,4]` for TTY (data in/out/err + control in/out), `[0,1]` for a tunnel, `[0,1]` for channel 0 (call frames). See ADR-071 §stream_type decomposition. |
+| `params` | object | ALPN-specific parameters. For `alknet/tty` this is the `NegotiateRequest`. For `alknet/tunnel` this is the target resource. The channels layer does not interpret `params`. |
 | `direction` | string | `initiator-to-responder` or `responder-to-initiator`. See "Direction semantics" below. |
 
 Response (`call.responded`):
@@ -70,7 +70,7 @@ Response (`call.responded`):
 {
   "output": {
     "channel_id": 7,
-    "stream_types": [0, 1, 2, 3]
+    "stream_types": [0, 1, 2, 3, 4]
   }
 }
 ```
@@ -230,14 +230,20 @@ alternative.
 | Control path | When | Examples |
 |--------------|------|----------|
 | Call operations on channel 0 (`channel/control`, `channel/close`) | Control that doesn't need ordering relative to data, or lifecycle events | resize, signal, keepalive, close |
-| `stream_type 3` chunks on the data channel | Control that MUST be ordered relative to data | EOF before exit, flush before close |
+| `stream_type 3` (write, client→server) and `stream_type 4` (read, server→client) chunks on the data channel | Control that MUST be ordered relative to data | EOF before exit, flush before close |
 
 The TTY crate's exit-chunk-is-last invariant (ADR-055) is the canonical
-example of data-ordered control — it rides on `stream_type 3` because it
-must arrive after the last stdin chunk, guaranteed by chunk ordering within
-`(channel_id, stream_type)`, not by a call-protocol round-trip. The
-`channel/close` operation that follows is on channel 0 and is ordered after
-the data pump completes (REQ-CH-06).
+example of data-ordered control — the exit message rides on `stream_type 4`
+(read, server→client) because it must arrive after the last data on
+`stream_type 1`, guaranteed by per-stream_type ordering. The client's EOF
+signal rides on `stream_type 3` (write, client→server), ordered after the
+last data on `stream_type 0`. The `channel/close` operation that follows is
+on channel 0 and is ordered after the data pump completes (REQ-CH-06).
+
+**Every stream_type is unidirectional** (ADR-071 §stream_type decomposition).
+Control is bidirectional via two halves (3 in, 4 out), not one shared
+stream_type both sides write to. This resolves the TTY control channel's
+"not actually bidirectional" flaw.
 
 ## Consequences
 

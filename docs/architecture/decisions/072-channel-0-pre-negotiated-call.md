@@ -64,14 +64,21 @@ exactly as it does on a top-level `alknet/call` connection.
 
 ### Channel 0's stream_type usage
 
-| stream_type | purpose |
-|-------------|---------|
-| 0 | `EventEnvelope` frames (JSON, length-prefixed — the call protocol wire format) |
-| 1-255 | reserved for future call-protocol sub-streams |
+| stream_type | direction | purpose |
+|-------------|-----------|---------|
+| 0 | write (client→server) | `EventEnvelope` frames from the client (call.requested, call.aborted) |
+| 1 | read (server→client) | `EventEnvelope` frames from the server (call.responded, call.completed, call.error) |
 
-Channel 0 uses only `stream_type` 0. The reservation of `stream_type`
-1-255 is a future-proofing detail, not a current commitment — the call
-protocol is JSON-only and single-stream by design (ADR-064).
+Channel 0 uses stream_types [0, 1] — the call protocol is bidirectional via
+two unidirectional halves, the same way every channel type works
+(ADR-071 §stream_type decomposition). The call protocol's `(SendStream,
+RecvStream)` pair maps directly: `SendStream` backed by stream_type 0,
+`RecvStream` backed by stream_type 1. Both sides write to their write half
+and read from their read half — no shared stream_type both sides write to.
+
+The call protocol is JSON-only and single-stream by design (ADR-064).
+stream_types 2-255 on channel 0 are reserved for future call-protocol
+sub-streams.
 
 ## Consequences
 

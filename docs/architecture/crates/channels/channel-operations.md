@@ -32,7 +32,7 @@ Request (on channel 0):
 | field | type | meaning |
 |-------|------|---------|
 | `alpn` | string | The ALPN the channel will carry. Responder looks this up in its `HandlerRegistry`. |
-| `stream_types` | `[u8]` | Which sub-stream types this channel will use. E.g. `[0,1,2,3]` for TTY, `[0,1]` for a tunnel. |
+| `stream_types` | `[u8]` | Which sub-stream types this channel will use. E.g. `[0,1,2,3,4]` for TTY (data in/out/err + control in/out), `[0,1]` for a tunnel, `[0,1]` for channel 0. See ADR-071 §stream_type decomposition. |
 | `params` | object | ALPN-specific parameters. For `alknet/tty` this is `NegotiateRequest`. For `alknet/tunnel` this is the target resource. The channels layer does not interpret `params`. |
 | `direction` | string | `initiator-to-responder` or `responder-to-initiator`. See "Direction semantics" below. |
 
