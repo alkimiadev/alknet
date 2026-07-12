@@ -240,7 +240,19 @@ filtering the tables above.
 
 ### OQ-55: AlknetClient / Client Establishment Extraction
 
-- **Blocked on**: a **second transport's** real client existing (not just a second QUIC client). The dial is transport-specific (QUIC, HTTP, TCP+TLS, WebTransport, raw TCP); we have one shape implemented (QUIC). Extracting a QUIC-shaped connector now would bake QUIC in as *the* establishment shape — the same welding ADR-065 unwound on the server side. The blocking condition is met when a non-QUIC client (SSH raw-TCP, HTTP-wrapped call) exists, so the transport-polymorphic seam is extractable from two *different* transport implementations. `ChannelClient` over QUIC does not unblock this — it's the same transport shape.
+- **Blocked on**: a **second transport's** real dial existing (not just a
+  second QUIC dial). The dial is transport-specific (QUIC, HTTP, TCP+TLS,
+  WebTransport, raw TCP); we have one shape implemented (QUIC —
+  `CallClient::connect` and `ChannelClient::connect_quic`). Extracting a
+  QUIC-shaped connector now would bake QUIC in as *the* establishment
+  shape — the same welding ADR-065 unwound on the server side. The blocking
+  condition is met when a non-QUIC dial (SSH raw-TCP, HTTP-wrapped call,
+  TCP+TLS) exists, so the transport-polymorphic dial+TLS seam is
+  extractable from two *different* transport implementations. Note: the
+  *client APIs* are already transport-agnostic — `CallClient::spawn_dispatch`
+  and `ChannelClient::from_connection` (ADR-080) take a pre-established
+  `Connection`. What is deferred is the shared *dial*, not the client
+  protocol surface.
 - **Priority**: medium
 - **Full file**: [OQ-55](questions/055-alknetclient-establishment-extraction.md)
 

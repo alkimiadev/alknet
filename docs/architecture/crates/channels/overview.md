@@ -249,7 +249,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); 5 sub-streams; control bidirectional via 3/4 |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract; handler-level |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; QUIC-only; `AlknetClient` deferred (OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary, `connect_quic` convenience; `AlknetClient` dial-seam deferred (OQ-55) |
 | [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers |
 
 ## Open Questions
@@ -257,9 +257,10 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 Open questions are tracked in [open-questions.md](../../open-questions.md).
 Key questions affecting this crate:
 
-- **OQ-55** (deferred(scope)): `AlknetClient` core extraction — blocked on
-  a second *transport's* client, not a second client. `ChannelClient` is
-  decided (ADR-080).
+- **OQ-55** (deferred(scope)): `AlknetClient` core **dial+TLS seam**
+  extraction — blocked on a second *transport's* dial. `ChannelClient`'s
+  API is transport-agnostic (`from_connection`); `AlknetClient` is the
+  shared *dial* across transports, not the channels protocol.
 - **OQ-56** (deferred(scope)): Full channel-level flow-control windowing —
   bounded-buffer is decided (ADR-076); full windowing is an extension
   blocked on a real HOL-blocking deployment observation.

@@ -48,7 +48,7 @@ Core library for ALPN-based protocol dispatch. Every handler crate depends on al
 | OQ-35 | ~~API key asymmetry~~ | dissolved | `PeerEntry` supports multiple credential paths; `ApiKeyEntry` is for tokens that ARE the identity |
 | OQ-36 | Concrete persistence adapter shapes | resolved by ADR-035 | Read-sync / write-async split (`IdentityStore`); SQLite adapter caches in memory, honker NOTIFY for no-restart cache invalidation; `alknet-store-sqlite` crate |
 | OQ-37 | X.509 outgoing-only case | resolved by ADR-034 | Three remote roles (public X.509 endpoint, transport relay, hub); `PeerEntry` asymmetry correct; client-side verifier by `PeerEntry` presence (CA vs fingerprint pin) |
-| OQ-55 | AlknetClient / Client Establishment Extraction | deferred(scope) | Blocked on a second *transport's* real client (not a second QUIC client); extracting a QUIC-shaped connector now would bake QUIC in as *the* establishment shape — the welding ADR-065 unwound on the server side |
+| OQ-55 | AlknetClient / Client Establishment Extraction | deferred(scope) | Blocked on a second *transport's* real **dial** (not a second QUIC dial); extracting a QUIC-shaped connector now would bake QUIC in as *the* establishment shape — the welding ADR-065 unwound on the server side. The client take-over APIs (`CallClient::spawn_dispatch`, `ChannelClient::from_connection` — ADR-080) are transport-agnostic and decided; only the shared dial+TLS seam is deferred. |
 
 ## Key Design Principles
 

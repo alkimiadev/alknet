@@ -55,9 +55,10 @@ translates `channel/open` on channel 0 with `forwarded_for` — ADR-032;
 data channels byte-forwarded with `channel_id` rewrite; the hub never runs
 protocol-specific handlers),
 [ADR-080](decisions/080-channelclient.md) (`ChannelClient`,
-QUIC-only initially, bidirectionality preserved;
-`AlknetClient` core extraction stays deferred per OQ-55 — blocked on a
-second *transport's* client, not a second client),
+transport-agnostic `from_connection` primary + `connect_quic` convenience,
+bidirectionality preserved; `AlknetClient` dial-seam extraction stays
+deferred per OQ-55 — blocked on a second *transport's* dial, not a second
+client),
 [ADR-081](decisions/081-channels-subcrate-decomposition.md) (sub-crate
 decomposition — `channels-core` (pure multiplexer, depends on alknet-core
 only, no call dependency) / `channels-call` (channel 0 pre-negotiation +
@@ -177,7 +178,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/channels/channels-connection.md](crates/channels/channels-connection.md) | draft | `ChannelBidiStreamSource` (implements `BidiStreamSource`), `into_sub_streams()` typed accessor, recursive composition |
 | [crates/channels/channels-adapter.md](crates/channels/channels-adapter.md) | draft | `ChannelsAdapter`, `ChannelManager`, demux/mux contracts (REQ-CH-01..04), two-pump pattern (ADR-078) |
 | [crates/channels/channel-operations.md](crates/channels/channel-operations.md) | draft | `channel/open`/`close`/`control`/`resources/subscribe`, ACL flow, `direction` semantics, hub relay contract (ADR-079) |
-| [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, QUIC-only initially, bidirectionality preserved |
+| [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, transport-agnostic `from_connection` primary + `connect_quic` convenience, bidirectionality preserved |
 
 ## ADR Table
 

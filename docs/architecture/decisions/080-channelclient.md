@@ -2,30 +2,81 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-12 — see "Amendment: transport-agnostic API" below)
+
+## Amendment: transport-agnostic API (2026-07-12)
+
+The original Decision named `connect(addr: SocketAddr, credentials)` as the
+primary constructor and framed it as "QUIC-only initially" — to be
+generalized when a second transport's client exists. That framing welded
+the client-side one-way-door API to QUIC, the same welding ADR-065 unwound
+on the server side, and masked it as a two-way-door deferral
+(anti-patterns #8, #9, #11). "Can be generalized later" meant "can be
+rewritten later" — the expensive reversal the one-way-door classification
+exists to prevent.
+
+The channels protocol is transport-agnostic by design (ADR-071 substrate
+modes; `Connection::from_stream`/`from_bidi`/`from_source` accept any
+`AsyncRead + AsyncWrite`). The client side is half of that protocol and
+must not be coupled to a transport. This amendment splits the constructor
+surface:
+
+- **`from_connection(connection: Connection)`** — the transport-agnostic
+  primary constructor and the one-way-door API. Takes a pre-established
+  `Connection` (produced by any transport — TCP+TLS via `from_bidi`,
+  WebTransport `BiStream`, SSH `direct-tcpip`, a quinn connection, a
+  WebSocket carrying `alknet/channels` per ADR-044), installs channel 0,
+  spawns the demux/mux, returns the client. Mirrors the server-side
+  `ChannelsAdapter::handle(Connection)` (substrate-agnostic) and the
+  existing `CallClient::spawn_dispatch(Connection)` pattern.
+- **`connect_quic(addr, credentials)`** — a QUIC convenience constructor:
+  dial QUIC, then `from_connection`. Additive and two-way-door.
+  `connect_tcp_tls`, `connect_webtransport`, etc. join it as transports
+  are added, without touching the one-way-door surface.
+
+The dial+TLS seam (the transport-specific work each dial helper does —
+verifier selection per ADR-034, handshake, produce a `Connection`) is the
+correct scope of OQ-55's deferral. `AlknetClient` is the eventual shared
+*dial*; `from_connection` is the shared *channels-take-over*. Separating
+them now, before the one-way-door API is cast, is the point — not a
+deferral. The "QUIC-only initially" framing is removed; it was the
+anti-pattern this amendment corrects.
+
+The door-type classification is unchanged: `from_connection` is one-way
+(the handler-facing surface), `connect_quic` is two-way (additive
+convenience). The `AlknetClient` extraction remains deferred (OQ-55) — but
+what is deferred is the shared *dial*, not a QUIC-welded client API.
 
 ## Context
 
 Both sides of a channels connection do the demux/mux work. The server side
 is a `ProtocolHandler` (`ChannelsAdapter::handle`, ADR-075). The client side
-needs a symmetric type — `ChannelClient` — that opens a transport, runs the
-demux/mux, and exposes `open_channel(alpn, params) -> Channel` to the
-application. This is the channels analogue of `CallClient` (server:
-`CallAdapter`; client: `CallClient`) in the call protocol.
+needs a symmetric type — `ChannelClient` — that takes over an established
+transport `Connection`, runs the demux/mux, and exposes
+`open_channel(alpn, params) -> Channel` to the application. This is the
+channels analogue of `CallClient` (server: `CallAdapter`; client:
+`CallClient`) in the call protocol.
 
 The phase-0 research (`docs/research/alknet-channels/phase-0-findings.md`
 §OQ-CH-14) clarified that there are two concerns here:
 
 1. **`ChannelClient` (channels-specific):** the client type for channels
    connections. Decision-ready — build it in `alknet-channels`, same shape
-   as `CallClient`.
-2. **`AlknetClient` (core, transport-polymorphic):** a general downstream-
-   facing client that crates use to connect to an alknet endpoint. Genuinely
-   deferred — blocked on a second *transport's* client existing (OQ-55
-   tracks this correctly). `ChannelClient` over QUIC does not unblock
-   `AlknetClient` because it's the same transport shape as `CallClient`.
+   as `CallClient`. The *take-over* half is transport-agnostic
+   (`from_connection`); the *dial* half is transport-specific
+   (`connect_quic` and future transport helpers).
+2. **`AlknetClient` (core, transport-polymorphic):** the shared *dial+TLS*
+   seam — the transport-specific work (open socket, TLS handshake, ADR-034
+   verifier selection, produce a `Connection`) that each transport's dial
+   helper rebuilds. Genuinely deferred — blocked on a second *transport's*
+   dial existing (OQ-55 tracks this correctly). A single QUIC dial
+   (`connect_quic`) does not give enough information to extract the
+   transport-polymorphic dial seam; two different transport dials do.
 
-This ADR decides #1. #2 stays deferred per OQ-55.
+This ADR decides #1 — `ChannelClient`, with `from_connection` as the
+transport-agnostic primary constructor and `connect_quic` as a transport-
+specific dial helper. #2 (the shared `AlknetClient` dial+TLS seam) stays
+deferred per OQ-55.
 
 ## Decision
 
@@ -39,11 +90,26 @@ pub struct ChannelClient {
 }
 
 impl ChannelClient {
-    /// Open a channels connection to a peer. Dials the transport (QUIC
-    /// initially), establishes the channels connection, preinstalls channel
-    /// 0 (alknet/call), and returns the client.
-    pub async fn connect(addr: SocketAddr, credentials: CallCredentials)
+    /// Transport-agnostic primary constructor. Takes a pre-established
+    /// `Connection` (any transport — TCP+TLS via `from_bidi`,
+    /// WebTransport BiStream, SSH direct-tcpip, a quinn connection, a
+    /// WebSocket per ADR-044), installs channel 0 (alknet/call), spawns
+    /// the demux/mux, and returns the client. Mirrors the server-side
+    /// `ChannelsAdapter::handle(Connection)`. This is the one-way-door
+    /// API surface — it must not be coupled to a transport (ADR-071,
+    /// ADR-065).
+    pub async fn from_connection(connection: Connection)
         -> Result<Self, ChannelError>;
+
+    /// QUIC convenience constructor. Dials a QUIC connection to `addr`
+    /// on ALPN `alknet/channels` (credentials → TLS handshake,
+    /// ADR-034 verifier selection), then calls `from_connection`.
+    /// Additive and two-way-door — `connect_tcp_tls`,
+    /// `connect_webtransport`, etc. join it as transports are added.
+    pub async fn connect_quic(
+        addr: SocketAddr,
+        credentials: CallCredentials,
+    ) -> Result<Self, ChannelError>;
 
     /// Open a data channel with the given ALPN and params. Sends
     /// `channel/open` on channel 0, waits for the response, and returns
@@ -55,6 +121,12 @@ impl ChannelClient {
         params: Value,
         direction: ChannelDirection,
     ) -> Result<Channel, ChannelError>;
+
+    /// Subscribe to the peer's resource updates. Returns a stream of
+    /// resource-set events (ADR-073 channel/resources/subscribe). Part of
+    /// the one-way-door handler-facing surface (see Door type below).
+    pub async fn subscribe_resources(&self)
+        -> Result<BoxStream<ResourceEvent>, ChannelError>;
 
     /// The call-protocol connection on channel 0, for invoking channel
     /// lifecycle operations and any other call ops the peer exposes.
@@ -70,14 +142,26 @@ pub struct Channel {
 }
 ```
 
-### QUIC-only initially
+### Transport-agnostic by construction
 
-`ChannelClient::connect` dials a QUIC connection (via the same `quinn`
-endpoint `CallClient` uses) and wraps it as a channels connection. This is
-the same transport shape as `CallClient`. When a second transport's client
-exists (HTTP, TCP+TLS, WebTransport — per OQ-55), the dial can be
-generalized. Until then, `ChannelClient` is QUIC-only — the same posture as
-`CallClient`.
+`ChannelClient` is the client side of the channels protocol, which is
+transport-agnostic (ADR-071 substrate modes; ADR-065 `from_stream`/`from_bidi`). The primary constructor — `from_connection(connection: Connection)` — takes a pre-established `Connection` from any
+transport and takes over channels establishment. This mirrors the
+server-side `ChannelsAdapter::handle(Connection)`, which is
+substrate-agnostic by the same mechanism: the server receives a
+`Connection` (QUIC-native, TCP+TLS via `from_bidi`, WebTransport, SSH
+`direct-tcpip`, …) and runs the demux loop unchanged; the client receives
+a `Connection` the same way and runs the same logic from the dialing side.
+
+`connect_quic(addr, credentials)` is a convenience over `from_connection`:
+dial QUIC, then `from_connection`. It is additive and two-way-door.
+Transport-specific dial helpers (`connect_tcp_tls`, `connect_webtransport`,
+…) join it as transports are added — none of which touch the
+`from_connection` contract. The dial helper set is open-ended by design.
+
+This is the client-side analogue of the server-side generalization ADR-065
+made. Welding the client's one-way-door API to QUIC would repeat the
+welding ADR-065 explicitly unwound.
 
 ### Bidirectionality preserved
 
@@ -97,20 +181,25 @@ not a request/response role.
 
 ### Relationship to `AlknetClient` (OQ-55 — deferred)
 
-`ChannelClient` is a standalone client, not a specialization of a core
-`AlknetClient`. The `AlknetClient` extraction (OQ-55) is genuinely deferred:
-blocked on a second *transport's* client existing, not on a second client
-existing. `ChannelClient` over QUIC is a second client but the same
-transport shape as `CallClient` — it doesn't give enough information to
-extract the transport-polymorphic dial seam. Extracting a QUIC-shaped
-connector to core and naming it `AlknetClient` would bake QUIC in as *the*
+`ChannelClient`'s *API* is transport-agnostic — `from_connection` takes
+a pre-established `Connection`. What is deferred (OQ-55) is the shared
+*dial+TLS* seam (`AlknetClient`): the transport-specific work each dial
+helper does — open a socket, run the TLS handshake, apply ADR-034's
+verifier-selection rule, produce a `Connection`. That dial is genuinely
+transport-specific (QUIC, TCP+TLS, WebTransport, raw TCP, SSH), and we have
+one shape implemented (QUIC, in `connect_quic`). Extracting a QUIC-shaped
+connector now and naming it `AlknetClient` would bake QUIC in as *the*
 establishment shape — the same welding ADR-065 unwound on the server side.
 
-When `AlknetClient` is eventually extracted (after a second transport's
-client exists), `ChannelClient` and `CallClient` both refactor onto it.
-Until then, they are independent clients with duplicated boilerplate (each
-rebuilds verifier selection — ~20 lines). The friction is duplicated
-boilerplate, not a missing capability.
+This is why `from_connection` is the one-way-door surface and
+`connect_quic` is a two-way-door convenience over it. `AlknetClient` (when
+extracted, after a second transport's dial exists) becomes the shared
+*dial*; `from_connection` stays the shared *channels-take-over*. The two
+concerns are separated now, before the one-way-door API is cast.
+
+The friction while `AlknetClient` is deferred is duplicated
+verifier-selection boilerplate across dial helpers (~20 lines each) — not
+duplicated capability and not a QUIC-welded client API.
 
 ## Consequences
 
@@ -124,24 +213,31 @@ boilerplate, not a missing capability.
   core extraction happens later when the blocker clears.
 
 **Negative:**
-- `ChannelClient` duplicates ~20 lines of verifier-selection boilerplate
-  from `CallClient`. This is the known cost of not extracting `AlknetClient`
-  yet (OQ-55). Acceptable until the second transport's client exists.
-- `ChannelClient` is QUIC-only. A non-QUIC channels client (e.g., a browser
-  over WebTransport) builds separately until `AlknetClient` is extracted.
-  This is the same posture as `CallClient` and is not a channels-specific
-  limitation.
+- Each transport-specific dial helper duplicates ~20 lines of
+  verifier-selection boilerplate (from `connect_quic`). This is the known
+  cost of not extracting `AlknetClient` yet (OQ-55). Acceptable until the
+  second transport's dial exists, at which point `AlknetClient` extracts
+  the shared dial+TLS seam. The `from_connection` API — the one-way-door
+  surface — is unaffected; only the dial helpers carry the duplication.
 
 ## Door type
 
-**One-way.** The `ChannelClient::connect` / `open_channel` / `call` /
-`subscribe_resources` API is the handler-facing surface; changing it after
-consumers exist is a rewrite.
+**One-way.** The `ChannelClient::from_connection` / `open_channel` /
+`call` / `subscribe_resources` API is the handler-facing surface;
+changing it after consumers exist is a rewrite. `from_connection` is the
+one-way-door primary constructor (transport-agnostic).
+
+`connect_quic` (and future `connect_tcp_tls` / `connect_webtransport` /
+…) are **two-way** doors — additive convenience constructors over
+`from_connection`. Adding, removing, or changing a dial helper is cheap
+and does not touch the one-way-door surface.
 
 The `AlknetClient` extraction is a **deferred decision** (OQ-55,
 deferred(scope)), not a door-type attribute. Its door type is two-way (the
 extraction is a refactor, not a wire-format change), but it is not decided
-in this ADR — see OQ-55 for the blocking condition.
+in this ADR — see OQ-55 for the blocking condition. What is deferred is the
+shared *dial+TLS* seam; `from_connection`'s transport-agnostic contract is
+decided now.
 
 ## References
 
