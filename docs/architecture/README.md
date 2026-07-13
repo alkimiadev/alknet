@@ -172,6 +172,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — multi-transport endpoint (TCP+TLS + QUIC), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
+| [crates/tls/README.md](crates/tls/README.md) | draft | alknet-tls crate — shared TLS config (`TlsServerConfig`) extractable across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
 | [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
 | [crates/channels/channels-wire.md](crates/channels/channels-wire.md) | draft | 9-byte chunk format, stream types, sentinels, framing disambiguation, wire-level invariants (REQ-CH-01..05) |
@@ -265,6 +266,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | Accepted |
 | [080](decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | Accepted |
 | [081](decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | Accepted |
+| [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Proposed |
 
 ## Open Questions
 
