@@ -82,7 +82,9 @@ that case, the same `Ed25519SecretKey` feeds both `TlsServerConfig::new`
 A new crate `alknet-tls` holds the TLS setup code extracted from
 `alknet-core/endpoint.rs`. The central type is `TlsServerConfig`, built
 once from a `TlsIdentity` + ALPN list, shared across transports via
-cheap clones.
+`Arc<TlsServerConfig>`. `TlsServerConfig` is not `Clone` (it holds a
+`JoinHandle`); each transport accessor clones the inner
+`rustls::ServerConfig`, which is cheap (Arc-shared cert resolver).
 
 ```rust
 pub struct TlsServerConfig {
