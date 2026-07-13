@@ -9,9 +9,9 @@ The wire protocol, stream model, framing, and adapter that alknet-call implement
 
 ## What
 
-The call protocol is a bidirectional, stream-agnostic RPC protocol that runs over QUIC bidirectional streams within a single `alknet/call` connection. It supports request/response calls, streaming subscriptions, batch operations, and service discovery — all using the same EventEnvelope wire format.
+The call protocol is a bidirectional, transport-agnostic RPC protocol that runs over any ordered, reliable bidirectional stream within a single `alknet/call` connection. It supports request/response calls, streaming subscriptions, batch operations, and service discovery — all using the same EventEnvelope wire format.
 
-The `CallAdapter` implements `ProtocolHandler` for ALPN `alknet/call`. It receives a `Connection` from the endpoint, accepts bidirectional streams, and dispatches incoming `EventEnvelope` messages to the operation registry.
+The `CallAdapter` implements `ProtocolHandler` for ALPN `alknet/call`. It receives a `Connection` from the endpoint (QUIC-native, or TCP+TLS/WebTransport/SSH via `Connection::from_stream` — ADR-065), accepts bidirectional streams, and dispatches incoming `EventEnvelope` messages to the operation registry.
 
 ## Why
 
@@ -20,7 +20,7 @@ The call protocol is the primary programmatic interface to an alknet node. While
 The protocol must be:
 - **Cross-language**: JSON wire format consumable from TypeScript, Python, any language
 - **Bidirectional**: Both sides can initiate calls (server-to-client is as natural as client-to-server)
-- **Stream-agnostic**: QUIC provides stream multiplexing; the protocol shouldn't impose additional constraints
+- **Stream-agnostic**: the protocol runs over any `AsyncRead + AsyncWrite` pair (QUIC streams, TCP+TLS, WebTransport, SSH channels, WebSocket — ADR-065); the transport provides the stream, the protocol provides the framing
 - **Discoverable**: Clients can query what operations exist and their schemas
 
 See ADR-064 for the decision that the call protocol uses hand-rolled
@@ -113,7 +113,10 @@ operations discovered when the connection was established.
 /// An established alknet/call connection (either direction — accepted or
 /// opened). Holds the connection's Layer 2 overlay (imported ops).
 pub struct CallConnection {
-    /// The underlying QUIC connection (from endpoint.accept or CallClient.connect).
+    /// The underlying transport Connection (from endpoint.accept,
+    /// CallClient::spawn_dispatch, or CallClient::connect). May be QUIC,
+    /// TCP+TLS, WebTransport, SSH, or any Connection::from_stream source
+    /// (ADR-065).
     connection: Connection,
     /// Layer 2 — this connection's imported-ops overlay. Populated by
     /// `from_call` discovery when the connection is established. Each
@@ -188,7 +191,7 @@ peer-graph routing model.
 
 See ADR-012 for the full rationale.
 
-The call protocol uses bidirectional QUIC streams with EventEnvelope framing. Key properties:
+The call protocol uses bidirectional streams with EventEnvelope framing (transport-agnostic — QUIC streams, TCP+TLS, WebTransport, SSH channels, WebSocket — ADR-065). Key properties:
 
 - **Either side can open streams**: The client opens a stream to call a server operation. The server opens a stream to call a client operation. Both use `open_bi()` and `accept_bi()`.
 - **Correlation by request ID**: The `id` field in `EventEnvelope` correlates requests with responses. A response arriving on stream N can fulfill a request sent on stream M. The `PendingRequestMap` is keyed by ID, not by stream.
@@ -516,9 +519,9 @@ Local dispatch produces `ResponseEnvelope` with no serialization overhead. The `
 
 ### Connection and Stream Lifecycle
 
-**Connection drop**: When the QUIC connection closes, all pending requests in the `PendingRequestMap` are failed with `call.error` code `INTERNAL` and message `"connection closed"`. All subscription channels are closed. The `CallAdapter::handle()` method returns `Ok(())` (clean shutdown) or `Err(HandlerError::ConnectionClosed)` (unexpected).
+**Connection drop**: When the transport connection closes (QUIC close, TCP FIN, WebSocket close — the `Connection` reports `ConnectionClosed`), all pending requests in the `PendingRequestMap` are failed with `call.error` code `INTERNAL` and message `"connection closed"`. All subscription channels are closed. The `CallAdapter::handle()` method returns `Ok(())` (clean shutdown) or `Err(HandlerError::ConnectionClosed)` (unexpected).
 
-**Stream reset**: When a QUIC stream is reset mid-operation, the `FrameFramedReader` returns an error. If the stream was carrying a subscription, the `PendingRequestMap` entry is removed and the mpsc channel is closed. If the stream was carrying a call, the oneshot is resolved with an error. No `call.aborted` is sent — the stream is gone.
+**Stream reset**: When a stream is reset mid-operation (QUIC stream reset, TCP connection drop, or any transport-level error — the `FrameFramedReader` returns an error), the `PendingRequestMap` entry is removed and the mpsc channel is closed. If the stream was carrying a call, the oneshot is resolved with an error. No `call.aborted` is sent — the stream is gone.
 
 **Timeouts**: Default timeout for wire calls is 30 seconds, configurable via
 `CallAdapter::with_timeout()`. The `build_root_context` sets
@@ -551,7 +554,7 @@ Handlers clean up resources when their call is cancelled (in Rust, the future is
 - The call protocol does not depend on any database. `PendingRequestMap` is in-memory. Durable session storage is a consumer concern.
 - Operation specs use JSON Schema. The envelope is always JSON. Binary payloads may be base64-encoded in the `payload` field.
 - Batch is not a protocol primitive — multiple `call.requested` events with correlated IDs provide equivalent semantics. See OQ-14.
-- The call protocol is transport-agnostic at the envelope level. The `EventEnvelope` framing can run over QUIC streams, WebSocket frames, or Worker `postMessage`. The `CallAdapter` is the QUIC-specific implementation. **The `EventEnvelope` shape (`{ type, id, payload }`) was derived from the `@alkdev/pubsub` `EventEnvelope` (`/workspace/@alkdev/pubsub/src/types.ts`), which already has a working WebSocket client/server implementation (`event-target-websocket-client.ts` / `event-target-websocket-server.ts`) and a generalized "event target" abstraction. The call protocol refined the envelope with typed event names (`call.requested`, `call.responded`, etc.) and structured payloads; the delta is small and well-defined, making a browser (and Node) WebSocket client straightforward to derive from the pubsub prior art. See ADR-044, [ADR-048](../../decisions/048-websocket-native-session-not-gateway.md), and [websocket.md](../http/websocket.md).
+- The call protocol is transport-agnostic at the envelope level. The `EventEnvelope` framing can run over QUIC streams, WebSocket frames, or Worker `postMessage`. The `CallAdapter` is the `ProtocolHandler` implementation that receives a `Connection` (any transport — ADR-065) and dispatches `EventEnvelope` frames. **The `EventEnvelope` shape (`{ type, id, payload }`) was derived from the `@alkdev/pubsub` `EventEnvelope` (`/workspace/@alkdev/pubsub/src/types.ts`), which already has a working WebSocket client/server implementation (`event-target-websocket-client.ts` / `event-target-websocket-server.ts`) and a generalized "event target" abstraction. The call protocol refined the envelope with typed event names (`call.requested`, `call.responded`, etc.) and structured payloads; the delta is small and well-defined, making a browser (and Node) WebSocket client straightforward to derive from the pubsub prior art. See ADR-044, [ADR-048](../../decisions/048-websocket-native-session-not-gateway.md), and [websocket.md](../http/websocket.md).
 - `OperationEnv::invoke()` dispatches through the local registry. Remote dispatch (federation, head/worker routing) would be a separate mechanism at a different layer. See ADR-064 and OQ-13.
 - **The call protocol carries no secret material.** Secret material (private keys, API keys, mnemonics, decrypted credentials, raw tokens) must not appear in `call.requested` payloads, `call.responded` payloads, or `OperationContext.metadata`. The wire format carries `serde_json::Value` and cannot enforce this at the type level — the constraint is architectural, enforced by the operation registry and by convention. Operations that need to share public key material use a dedicated operation that returns only the public component. See ADR-014.
 - **Abort cascades to descendants.** `call.aborted` for a parent request cascades to all non-terminal descendants in the call tree. Default policy is `abort-dependents`; `continue-running` is an opt-in. See ADR-016.

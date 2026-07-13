@@ -382,7 +382,7 @@ pub enum OperationProvenance {
     Local,           // Assembly-written, trusted, can compose
     FromOpenAPI,     // HTTP forwarding stub (from_openapi), leaf
     FromMCP,         // MCP forwarding stub (from_mcp), leaf
-    FromCall,        // QUIC forwarding stub (from_call), leaf locally
+    FromCall,        // call-protocol forwarding stub (from_call), leaf locally
     FromJsonSchema,  // HTTP forwarding stub (from_jsonschema, single endpoint), leaf
     Session,         // Agent-written, sandboxed, can compose within sandbox
 }
@@ -893,7 +893,7 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 
 **Adapters take credential sources.** All import adapters (`from_openapi`, `from_mcp`, `from_jsonschema`, `from_call` — see ADR-017, constrained by ADR-014) register HTTP-backed, MCP-backed, or remote-call-backed operations. The credential each service needs (bearer token, API key, TLS identity for the remote connection) is provided by the assembly layer at registration time — the adapter receives a credential source, not a static token string. This is the integration point where the vault feeds credentials into backed operations, including LLM providers that expose OpenAPI-compatible endpoints. Adapter-registered operations are `Internal` by default (ADR-015) — they're composition material, not directly callable from the wire.
 
-**`from_call` imports remote operations.** The `from_call` adapter (ADR-017) discovers operations on a remote call protocol endpoint via `services/list` and `services/schema`, then registers them with handlers that forward calls over the QUIC connection. This makes cross-node composition transparent — a handler calling `env.invoke("worker", "exec", ...)` doesn't know whether the operation is local or remote. Connection direction (who opened the QUIC connection) is independent of call direction (who calls whom) — both sides can call each other once connected.
+**`from_call` imports remote operations.** The `from_call` adapter (ADR-017) discovers operations on a remote call protocol endpoint via `services/list` and `services/schema`, then registers them with handlers that forward calls over the call-protocol connection (transport-agnostic — QUIC, TCP+TLS, or any `Connection::from_stream` source, ADR-065). This makes cross-node composition transparent — a handler calling `env.invoke("worker", "exec", ...)` doesn't know whether the operation is local or remote. Connection direction (who opened the connection) is independent of call direction (who calls whom) — both sides can call each other once connected.
 
 **`from_call` trust is transitive.** A `from_call`-imported operation executes the remote node's code, not yours. The scoped env (ADR-015) bounds *which* operations are reachable, but not *what* they do. A compromised remote node can do anything its operations are declared to do (and anything its handler bugs allow). This is inherent to remote composition — same as trusting any RPC endpoint — but it must be explicit in the threat model. `from_call` means "I trust the remote node as much as my own handlers." The scoping protects the caller from reaching arbitrary ops; it does not protect against what the reached op does.
 

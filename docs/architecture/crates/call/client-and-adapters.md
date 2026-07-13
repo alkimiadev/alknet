@@ -20,8 +20,10 @@ client-side connection-establishment half and the adapter surface.
 
 This document specifies three components, all in `alknet-call`:
 
-1. **`CallClient`** — opens an outbound `alknet/call` QUIC connection and
-   produces a `CallConnection`. The dispatch loop is shared with the
+1. **`CallClient`** — takes over an established transport `Connection`
+   on ALPN `alknet/call`, spawns the shared dispatch loop, and produces
+   a `CallConnection`. Transport-agnostic (`spawn_dispatch` primary,
+   `connect` QUIC convenience); the dispatch loop is shared with the
    server-side `CallAdapter` (ADR-017 §1); `CallClient` is the
    connection-establishment + credential-handling half, not a parallel
    protocol implementation.
@@ -85,13 +87,23 @@ cross-peer dissolved / same-peer stays, DC-4→OQ-26).
 
 ### CallClient
 
-`CallClient` opens a QUIC connection to a remote node on ALPN `alknet/call`,
-performs credential setup, and produces a `CallConnection`. The
-`CallConnection` type is already implemented (`call-protocol.md` §"CallConnection")
-— it wraps an established `Connection` and holds the Layer 2 imported-ops
-overlay. `CallClient` is the producer on the outbound side; `CallAdapter`'s
-accept path is the producer on the inbound side. Both produce the same
+`CallClient` takes over an established transport `Connection` on ALPN
+`alknet/call`, spawns the shared dispatch loop, and produces a
+`CallConnection`. The `CallConnection` type is already implemented
+(`call-protocol.md` §"CallConnection") — it wraps an established
+`Connection` and holds the Layer 2 imported-ops overlay. `CallClient`
+is the producer on the outbound side; `CallAdapter`'s accept path is
+the producer on the inbound side. Both produce the same
 `CallConnection` and hand it to the same shared dispatch loop.
+
+`CallClient` is transport-agnostic. The call protocol runs over any
+ordered, reliable bidirectional stream — QUIC, TCP+TLS, WebTransport,
+SSH `direct-tcpip`, a WebSocket (ADR-065 `Connection::from_stream` /
+`from_bidi`). The primary constructor (`spawn_dispatch`) takes a
+pre-established `Connection` from any transport; the QUIC convenience
+(`connect`) dials QUIC and calls `spawn_dispatch`. This mirrors
+`ChannelClient::from_connection` / `connect_quic` (ADR-080) and is the
+client-side analogue of the server-side generalization ADR-065 made.
 
 ```rust
 pub struct CallClient {
@@ -102,12 +114,24 @@ pub struct CallClient {
 impl CallClient {
     pub fn new(registry: Arc<OperationRegistry>, idp: Arc<dyn IdentityProvider>) -> Self;
 
-    /// Open a QUIC connection to `addr` on ALPN `alknet/call`, perform
-    /// credential handshake, and return a CallConnection running the shared
-    /// dispatch loop. Credentials come from capabilities (ADR-014), not env
-    /// vars — see "No-Env-Vars Invariant" below. The dispatch loop runs on a
-    /// spawned task; the returned `CallConnection` is live until the remote
-    /// closes the connection or the caller drops it.
+    /// Transport-agnostic primary constructor. Takes a pre-established
+    /// `Connection` on ALPN `alknet/call` (any transport — QUIC via
+    /// `from_quinn`, TCP+TLS via `from_bidi`, WebTransport, SSH
+    /// `direct-tcpip`, a WebSocket), spawns the shared dispatch loop,
+    /// and returns a live `CallConnection`. Mirrors the server-side
+    /// `CallAdapter::handle(Connection)`. This is the one-way-door
+    /// API surface (ADR-017 Am. 2026-07-13) — it must not be coupled to
+    /// a transport.
+    pub fn spawn_dispatch(&self, connection: Connection) -> CallConnection;
+
+    /// QUIC convenience constructor. Dials a QUIC connection to `addr`
+    /// on ALPN `alknet/call` (using `credentials` for the TLS handshake
+    /// — ADR-034 verifier selection), then calls `spawn_dispatch`.
+    /// Feature-gated on `quinn` (the dial is QUIC-specific). Additive
+    /// and two-way-door — `connect_tcp_tls`, `connect_webtransport`,
+    /// etc. join it as transports are added, without touching the
+    /// `spawn_dispatch` contract.
+    #[cfg(feature = "quinn")]
     pub async fn connect(
         &self,
         addr: SocketAddr,
@@ -162,11 +186,23 @@ against the op's `AccessControl`, and dispatches if allowed — the same
 authorization machinery that gates every other call. No `RemoteFilter`, no
 `remote_safe` gate (ADR-029 §3 retires these).
 
-`CallClient::spawn_dispatch(connection)` is the lower-level API that takes a
-pre-established `Connection`, constructs a `CallConnection`, builds a
-`Dispatcher`, spawns the dispatch task, and returns the live `CallConnection`.
-`connect()` uses it after the QUIC dial completes; tests use it to wire
-mock/loopback connections directly.
+`CallClient::spawn_dispatch(connection)` is the transport-agnostic
+primary constructor — it takes a pre-established `Connection`,
+constructs a `CallConnection`, builds a `Dispatcher`, spawns the
+dispatch task, and returns the live `CallConnection`. `connect()` is
+the QUIC convenience over it: dial QUIC (feature-gated on `quinn`),
+then `spawn_dispatch`. Tests use `spawn_dispatch` directly to wire
+mock/loopback connections. A future `connect_tcp_tls` /
+`connect_webtransport` would dial their transport and call
+`spawn_dispatch` the same way. The one-way-door surface is
+`spawn_dispatch`; the dial helpers are two-way-door conveniences.
+
+This mirrors `ChannelClient::from_connection` / `connect_quic`
+(ADR-080) and is the client-side analogue of the server-side
+generalization ADR-065 made. The call protocol, like the channels
+protocol, is transport-agnostic — `Connection::from_stream` /
+`from_bidi` (ADR-065) accept any `AsyncRead + AsyncWrite`, and
+`spawn_dispatch` takes the resulting `Connection` unchanged.
 
 #### Peer-keyed composition env (ADR-029)
 
@@ -429,7 +465,8 @@ pub trait OperationAdapter: Send + Sync {
 ```
 
 The trait is **async** because `from_call` requires async discovery
-(`services/list` + `services/schema` over a QUIC connection). Sync adapters
+(`services/list` + `services/schema` over a call-protocol connection,
+which may be QUIC, TCP+TLS, or any other transport). Sync adapters
 (`from_openapi`, `from_mcp` reading a static spec) trivially satisfy an async
 trait — their `import()` bodies contain no `.await` points. This is locked by
 ADR-017 §5.
@@ -446,7 +483,10 @@ type; the spec omitted the error type as an implementation-detail two-way
 door, recorded here.
 
 Implementations:
-- `FromCall` — QUIC-backed (in `alknet-call`).
+- `FromCall` — call-protocol-backed, transport-agnostic (in
+  `alknet-call`). `from_call` discovers ops over a `CallConnection`,
+  which may be QUIC, TCP+TLS, or any transport `Connection::from_stream`
+  supports (ADR-065).
 - `FromOpenAPI` — HTTP-backed (in `alknet-http`).
 - `FromJsonSchema` — HTTP-backed, single-endpoint (in `alknet-http` per
   ADR-066; was a broken schema-only placeholder in `alknet-call`).
@@ -465,8 +505,10 @@ dependencies live.**
 ```
 alknet-call (lean — no HTTP client, no HTTP server)
 ├── OperationAdapter trait          (the contract — async, per ADR-017 §5)
-├── from_call                     (QUIC — discovers remote ops via call protocol)
-└── CallClient                    (outbound connection opener — the #1 gap)
+├── from_call                     (transport-agnostic — discovers remote ops via
+│                                  call protocol over any Connection)
+└── CallClient                    (outbound connection take-over — spawn_dispatch
+                                  transport-agnostic, connect QUIC convenience)
 
 alknet-http (owns HTTP server + HTTP client — separate crate, separate Phase 0)
 ├── ProtocolHandler for h2/http1.1/h3   (axum server — inbound HTTP)
@@ -581,7 +623,8 @@ Bilateral: the container service ALSO runs from_call against the hub,
 
 **Why the container service doesn't need alknet-ssh**: under the call
 protocol, the container service is a `CallClient` that dials the hub's
-`alknet/call` ALPN directly over QUIC — no SSH in the loop. SSH port
+`alknet/call` ALPN (over QUIC, TCP+TLS, or any transport) — no SSH in
+the loop. SSH port
 forwarding becomes the *transitional* mechanism for targets that can't run a
 call-protocol client (the `alknet-ssh` phase-0 findings document this
 transition). Once the container service runs a `CallClient`, SSH is out of
@@ -632,10 +675,11 @@ Based on the gap analysis and the downstream unblock chain:
 
 - **No HTTP in alknet-call.** `from_openapi`/`from_mcp`/`from_jsonschema`/
   `to_openapi`/`to_mcp` live in `alknet-http`. The `OperationAdapter`
-  trait and the QUIC-backed adapter (`from_call`) live in `alknet-call`.
-  `from_jsonschema` was originally (mis)placed in `alknet-call` as a
-  schema-only placeholder; ADR-066 moved it to `alknet-http` as a real
-  HTTP-backed adapter. See Adapter Location Map.
+  trait and the call-protocol-backed adapter (`from_call`, transport-
+  agnostic) live in `alknet-call`. `from_jsonschema` was originally
+  (mis)placed in `alknet-call` as a schema-only placeholder; ADR-066
+  moved it to `alknet-http` as a real HTTP-backed adapter. See Adapter
+  Location Map.
 - **No secret material on the wire.** `CallCredentials` carries vault-derived
   material for the *outbound* connection (TLS identity, auth token); the
   call protocol's wire format carries no private keys, API keys, or decrypted

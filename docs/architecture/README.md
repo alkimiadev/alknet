@@ -148,7 +148,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, hand-rolled EventEnvelope framing (no irpc — ADR-064), stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
 | [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery (hand-rolled, no irpc) |
-| [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (outbound connection opener), from_call, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern (from_jsonschema moved to alknet-http per ADR-066) |
+| [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (transport-agnostic `spawn_dispatch` primary, `connect` QUIC convenience — ADR-017 Am. 2026-07-13), from_call, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern (from_jsonschema moved to alknet-http per ADR-066) |
 | [crates/http/README.md](crates/http/README.md) | draft | alknet-http crate index |
 | [crates/http/overview.md](crates/http/overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
 | [crates/http/http-server.md](crates/http/http-server.md) | draft | HttpAdapter for h2/http1.1 + WebSocket upgrade route, axum over QUIC, Bearer auth, stealth, /healthz |

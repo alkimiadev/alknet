@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (amended 2026-06-26 — see "Amendments" below)
+Accepted (amended 2026-06-26 and 2026-07-13 — see "Amendments" below)
 
 ## Context
 
@@ -440,3 +440,45 @@ alknet-call" one-way-door statement is corrected above to "the adapter
 trait lives in `alknet-call`; implementations live with their transport."
 See [ADR-066](066-from-jsonschema-as-http-adapter.md) and
 [client-and-adapters.md](../crates/call/client-and-adapters.md) §"from_jsonschema".
+
+## Amendments (2026-07-13)
+
+### `CallClient` transport-agnostic API (mirrors ADR-080's amendment)
+
+The §1 Decision framed `CallClient::connect(addr: SocketAddr,
+credentials)` as the primary constructor and described it as "opens a
+QUIC connection." The operational spec
+([client-and-adapters.md](../crates/call/client-and-adapters.md))
+framed `spawn_dispatch(connection)` as the "lower-level API" that
+`connect()` uses after the QUIC dial. That framing welded the
+client-side one-way-door API to QUIC — the same welding ADR-065
+unwound on the server side and ADR-080 corrected for `ChannelClient`.
+
+The call protocol is transport-agnostic (ADR-012 EventEnvelope framing;
+ADR-065 `Connection::from_stream`/`from_bidi` accept any
+`AsyncRead + AsyncWrite`). The client side is half of that protocol
+and must not be coupled to a transport. This amendment reframes the
+existing code (which already has the right structure —
+`spawn_dispatch` is not feature-gated, `connect` is
+`#[cfg(feature = "quinn")]`):
+
+- **`CallClient::spawn_dispatch(connection: Connection)`** — the
+  transport-agnostic primary constructor and the one-way-door API.
+  Takes a pre-established `Connection` (any transport), spawns the
+  shared dispatch loop, returns a live `CallConnection`. Mirrors the
+  server-side `CallAdapter::handle(Connection)` and
+  `ChannelClient::from_connection` (ADR-080).
+- **`CallClient::connect(addr, credentials)`** — a QUIC convenience
+  constructor: dial QUIC (feature-gated on `quinn`), then
+  `spawn_dispatch`. Additive and two-way-door. `connect_tcp_tls`,
+  `connect_webtransport`, etc. join it as transports are added,
+  without touching the `spawn_dispatch` contract.
+
+The door-type classification is unchanged: `spawn_dispatch` is one-way
+(the handler-facing surface), `connect` is two-way (additive
+convenience). The `AlknetClient` extraction (OQ-55 — the shared
+dial+TLS seam) remains deferred; what is deferred is the shared *dial*,
+not a QUIC-welded client API. `spawn_dispatch` is decided now.
+
+See [client-and-adapters.md](../crates/call/client-and-adapters.md)
+§"CallClient" for the reframed operational spec.
