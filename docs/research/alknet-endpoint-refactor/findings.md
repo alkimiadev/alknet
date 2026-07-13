@@ -17,21 +17,30 @@ write the first real consumers (hub, workers, HTTP).
 
 1. **`AlknetEndpoint` conflates two concerns:** transport construction
    (building `quinn::Endpoint`, `iroh::Endpoint`, wiring TLS) and
-   accept-loop orchestration (running accept loops, dispatching by
-   ALPN, managing shutdown). The TLS extraction forces a separation
+   dispatch (take a connection, extract ALPN, look up handler, build
+   `AuthContext`, spawn). The TLS extraction forces a separation
    because the TLS config has to be built once and shared across
    transports — the endpoint can't build it internally anymore.
 
-2. **The endpoint becomes a pure accept-loop runner.** It receives
-   pre-built transport endpoints (`quinn::Endpoint`, `iroh::Endpoint`)
-   and runs their accept loops, dispatching by ALPN through the shared
-   `HandlerRegistry`. No `StaticConfig` parameter, no `tls_identity`
-   reading, no transport construction. The assembly layer builds the
-   transports, wires them to share a `HandlerRegistry`, and hands the
-   quinn/iroh endpoints to `AlknetEndpoint`. TCP+TLS accept loops run as
-   siblings (already the case per ADR-010 Amendment 1 / ADR-065).
+2. **The endpoint becomes a pure accept-loop runner with a public
+   dispatch method.** It owns the transport endpoints it runs accept
+   loops for (quinn, iroh), and it exposes `dispatch()` for transport
+   accept loops it doesn't own (TCP+TLS, future SSH, future
+   WebTransport). Every transport calls the same dispatch path — no
+   duplicated `build_auth_context` or handler-lookup logic at the
+   assembly layer. The `StaticConfig` parameter, `tls_identity`
+   reading, and transport construction all move to the assembly layer.
 
-3. **A hub holds one or two `TlsServerConfig`s, not one.** A hub
+3. **TCP+TLS is a first-class transport, not a sibling afterthought.**
+   ADR-010 Amendment 1 made TCP+TLS a "sibling" because the endpoint's
+   dispatch logic was crate-private and couldn't be shared. With a
+   public `dispatch()` method, the TCP+TLS accept loop calls into the
+   endpoint — same path as quinn and iroh. The hub needs TCP+TLS as a
+   day-1 requirement (HTTPS for browsers, raw-key fallback for native
+   clients when UDP is blocked); it is the most common transport after
+   raw-key QUIC, not an edge case.
+
+4. **A hub holds one or two `TlsServerConfig`s, not one.** A hub
    serving both browsers and native workers holds a raw-key config
    (QUIC + TCP+TLS fallback for native clients) and an X.509/ACME
    config (TCP+TLS for HTTPS, QUIC for WebTransport when it revives).
@@ -39,19 +48,19 @@ write the first real consumers (hub, workers, HTTP).
    identity, shared across that identity's transports. Iroh and SSH
    share the *key* with the raw-key TLS path, not the `TlsServerConfig`.
 
-4. **The TCP fallback for native clients doesn't need X.509.** The
+5. **The TCP fallback for native clients doesn't need X.509.** The
    raw-key `TlsServerConfig` serves both QUIC and TCP+TLS. X.509 is
    only for the browser/HTTPS path. Raw-key and X.509 clients can
    connect to either server type — the server cert type and client cert
    type are independent in TLS. `AcceptAnyCertVerifier` already accepts
    both.
 
-5. **This is a one-way door (endpoint struct shape) done during the
+6. **This is a one-way door (endpoint struct shape) done during the
    pre-implementation window.** The cost of doing it now is the same
    refactor that has to happen anyway. The cost of not doing it is a
    hybrid model (quinn TLS injected, iroh key read internally, TCP+TLS
-   outside) that will confuse every future reader and block the hub
-   crate (the first multi-transport consumer).
+   outside with duplicated dispatch) that will confuse every future
+   reader and block the hub crate (the first multi-transport consumer).
 
 ---
 
@@ -160,32 +169,55 @@ fall back to TCP if not.
 3. **Runs accept loops** for whichever of those it built, dispatching
    by ALPN through the `HandlerRegistry`.
 
-The TLS extraction pulls step 1's TLS construction out to the assembly
-layer. But step 2 (iroh) still reads `static_config.tls_identity`
-internally. And TCP+TLS (step 3's sibling) is already outside the
-endpoint entirely (ADR-010 Amendment 1). The result is a hybrid: quinn
-TLS is *injected*, iroh's key is *read from config internally*, TCP+TLS
-is *outside*. That asymmetry is a structural inconsistency.
+TCP+TLS is not in this picture at all. ADR-010 Amendment 1 made it a
+"sibling accept loop" that runs outside the endpoint — the assembly
+layer builds it and dispatches through the same `HandlerRegistry`. But
+the dispatch logic (`build_auth_context`, fingerprint extraction, the
+`acme-tls/1` guard, handler lookup + spawn) is crate-private
+(`dispatch_quinn` / `dispatch_iroh` in `endpoint.rs`), so the
+assembly layer can't call it. A TCP+TLS accept loop has to duplicate it
+or call `HandlerRegistry::get` and `build_auth_context` directly (the
+latter is also crate-private). The "sibling" framing was a workaround
+for the endpoint being welded to quinn — not a deliberate design.
 
-### 2.2 The trajectory: transport construction moves to the assembly layer
+The result is a three-tier asymmetry: quinn is built and dispatched
+internally, iroh is built internally and dispatched internally, TCP+TLS
+is built outside and dispatched outside (with duplicated logic). The
+TLS extraction surfaces this because it pulls quinn's TLS construction
+out, leaving iroh's key reading and TCP+TLS's second-class status as
+visible inconsistencies.
 
-The pattern is already emerging:
+### 2.2 The dispatch logic is the endpoint's real value
 
-| Concern | Current | Direction |
-|---------|---------|-----------|
-| Quinn TLS config | Built internally | → Assembly layer builds `TlsServerConfig` |
-| Quinn endpoint binding | Built internally | → Assembly layer builds `quinn::Endpoint` |
-| Iroh endpoint binding | Built internally | → Assembly layer builds `iroh::Endpoint` |
-| TCP+TLS accept loop | Outside the endpoint | ✓ Already assembly layer (ADR-010 Am. 1) |
-| HandlerRegistry | Passed in | ✓ Already assembly layer |
-| IdentityProvider | Passed in | ✓ Already assembly layer |
-| Shutdown | Internal watch channel | Stays internal (endpoint owns the loop) |
+Stripped of transport construction, what the endpoint provides is
+**dispatch**: take a connection, extract its ALPN, look up the handler,
+build the `AuthContext`, spawn the handler. This is the same for every
+transport. The transport-specific parts are:
 
-The endpoint's role unambiguously becomes: **take established
-connections, dispatch by ALPN.** It doesn't build transports, doesn't
-read `tls_identity`, doesn't know what cert type is in use.
+- **ALPN extraction** — quinn: `handshake_data().protocol`; iroh:
+  `connecting.alpn().await`; TCP+TLS: `tls_stream.alpn()` (from the
+  `tokio-rustls` handshake result).
+- **Fingerprint extraction** — quinn: `peer_identity()` →
+  `CertificateDer`; iroh: `remote_id()` → `ed25519:<hex>`; TCP+TLS:
+  `tls_stream.peer_certificates()` → `CertificateDer`.
+- **Connection construction** — quinn: `from_quinn_with_alpn`; iroh:
+  `from_iroh`; TCP+TLS: `from_bidi(tls_stream, alpn, remote_addr)`.
+- **No-handler close** — quinn: `connection.close()`; iroh:
+  `connection.close()`; TCP+TLS: drop the stream.
+
+Everything between those transport-specific bookends — the ACME ALPN
+guard, the handler lookup, the `build_auth_context` call, the
+`tokio::spawn` — is identical. If the endpoint exposes a public
+`dispatch` method that takes the already-extracted ALPN, fingerprint,
+and `Connection`, every transport's accept loop calls the same dispatch
+path. No duplication.
 
 ### 2.3 The new endpoint shape
+
+The endpoint is a pure accept-loop runner + a public dispatch method.
+It owns the transport endpoints it runs accept loops for (quinn, iroh),
+and it exposes `dispatch` for transport accept loops that it doesn't
+own (TCP+TLS, future SSH, future WebTransport).
 
 ```rust
 pub struct AlknetEndpoint {
@@ -209,6 +241,24 @@ impl AlknetEndpoint {
 
     pub fn with_quinn(mut self, endpoint: quinn::Endpoint) -> Self;
     pub fn with_iroh(mut self, endpoint: iroh::Endpoint) -> Self;
+
+    /// Dispatch a pre-established connection by ALPN. Called by the
+    /// endpoint's own accept loops (quinn, iroh) after transport-
+    /// specific extraction, and by external accept loops (TCP+TLS,
+    /// future SSH, future WebTransport) after their own extraction.
+    /// The caller supplies the ALPN, the fingerprint (if available),
+    /// the remote address (if available), and the `Connection`.
+    pub fn dispatch(
+        &self,
+        connection: Connection,
+        alpn: Vec<u8>,
+        fingerprint: Option<String>,
+        remote_addr: Option<SocketAddr>,
+    );
+
+    /// Run the endpoint's accept loops. Returns when shutdown is
+    /// signaled. The caller drives shutdown via `shutdown_sender()`.
+    pub async fn run(self: Arc<Self>);
 }
 ```
 
@@ -219,10 +269,18 @@ quinn/iroh endpoints to `AlknetEndpoint` via builder methods.
 out of core — the assembly layer (or `alknet-tls` as a convenience)
 builds the transport endpoints.
 
-TCP+TLS accept loops continue to run as siblings (ADR-010 Amendment 1),
-sharing the `HandlerRegistry` but not owned by `AlknetEndpoint`. The
-hub's assembly layer constructs all transport sources and wires them
-to share one registry.
+TCP+TLS accept loops call `endpoint.dispatch(connection, alpn,
+fingerprint, remote_addr)` — the same dispatch path quinn and iroh
+use. No duplicated `build_auth_context` or handler-lookup logic at the
+assembly layer. The hub's TCP+TLS accept loop is still a sibling (it
+owns its `TcpListener` and `TlsAcceptor`), but its dispatch is
+first-class — it calls into the endpoint, not around it.
+
+This resolves the ADR-010 Amendment 1 workaround. Amendment 1 made
+TCP+TLS a sibling because the endpoint couldn't share its dispatch
+logic. Now it can — `dispatch` is public. The sibling framing (the
+accept loop lives outside the endpoint struct) survives; the
+second-class dispatch (duplicated logic) doesn't.
 
 ### 2.4 What the assembly layer does
 
@@ -234,27 +292,32 @@ For a hub serving native clients (raw key) and browsers (X.509):
    (or `X509`).
 4. Build the quinn endpoint for native clients:
    `raw_key_tls.for_quinn()` → `quinn::Endpoint::server()`.
-5. Build the TCP+TLS accept loop for native fallback:
-   `raw_key_tls.for_tcp_tls()` → `TcpListener` + `TlsAcceptor`.
-6. Build the TCP+TLS accept loop for HTTPS:
-   `x509_tls.for_tcp_tls()` → `TcpListener` + `TlsAcceptor`.
-7. (Future) Build the quinn endpoint for WebTransport:
+5. Build the iroh endpoint: `iroh::Endpoint::builder().secret_key(...)`.
+6. Construct `AlknetEndpoint::new(registry, ...)` with `.with_quinn()`
+   and `.with_iroh()`.
+7. Build the TCP+TLS accept loop for native fallback:
+   `raw_key_tls.for_tcp_tls()` → `TcpListener` + `TlsAcceptor` →
+   `endpoint.dispatch(from_bidi(tls_stream, alpn, addr), alpn, fp, addr)`.
+8. Build the TCP+TLS accept loop for HTTPS:
+   `x509_tls.for_tcp_tls()` → `TcpListener` + `TlsAcceptor` →
+   `endpoint.dispatch(...)`.
+9. (Future) Build the quinn endpoint for WebTransport:
    `x509_tls.for_quinn()` → `quinn::Endpoint::server()`.
-8. Build the iroh endpoint: `iroh::Endpoint::builder().secret_key(...)`.
-9. Build the `HandlerRegistry`, register all handlers.
-10. Construct `AlknetEndpoint::new(registry, ...)` with `.with_quinn()`
-    (and `.with_iroh()` if iroh is used).
-11. Run the TCP+TLS accept loops as siblings that share the registry.
-12. Run `AlknetEndpoint::run()` — runs the quinn/iroh accept loops.
+10. Spawn the TCP+TLS accept loops (they call `endpoint.dispatch`).
+11. Spawn `endpoint.run()` — runs the quinn/iroh accept loops.
 
 For a bare-bones P2P node (no public IP, no ACME, no browsers): just
-step 1, step 8, step 9, step 10 (with only `.with_iroh()`). No
+step 1, step 5, step 6 (with only `.with_iroh()`), step 11. No
 `TlsServerConfig` needed at all.
 
 ### 2.5 What this resolves
 
 - **C5 (iroh path ownership):** the endpoint doesn't build iroh; the
   assembly layer does. No ambiguity.
+- **TCP+TLS second-class dispatch:** `dispatch` is public; TCP+TLS
+  accept loops call the same path as quinn/iroh. No duplicated
+  `build_auth_context` or handler-lookup logic. ADR-010 Amendment 1's
+  workaround is retired.
 - **The single-`Arc<TlsServerConfig>` problem:** ADR-082 currently
   specifies `AlknetEndpoint::new` taking `Arc<TlsServerConfig>`, but a
   hub has two configs (raw key + X.509). With the endpoint taking no
@@ -310,13 +373,25 @@ signature, and focus on what `alknet-tls` provides:
 | `build_iroh_endpoint()` | Assembly layer (or a helper; construction decision is assembly-layer) |
 
 What stays in `alknet-core/endpoint.rs`:
-- `AlknetEndpoint` struct (accept-loop runner only)
+- `AlknetEndpoint` struct (accept-loop runner + public `dispatch`)
 - `HandlerRegistry`
-- `dispatch_quinn` / `dispatch_iroh` / `build_auth_context`
+- `dispatch` (public — takes ALPN, fingerprint, `Connection`; calls
+  `build_auth_context`, looks up handler, spawns)
+- `dispatch_quinn` / `dispatch_iroh` (private — do transport-specific
+  extraction, then call `dispatch`)
 - `run_quinn_accept_loop` / `run_iroh_accept_loop`
 - `extract_quinn_alpn` / `extract_quinn_client_fingerprint` /
   `extract_iroh_client_fingerprint`
-- The `acme-tls/1` early-return guard in `dispatch_quinn`
+- The `acme-tls/1` early-return guard (inside `dispatch_quinn`; the
+  guard is quinn-specific — ACME challenges arrive over QUIC. TCP+TLS
+  has no ACME ALPN guard because `acme-tls/1` is only negotiated over
+  QUIC for the TLS-ALPN-01 challenge. A TCP+TLS listener serving HTTPS
+  does not advertise `acme-tls/1`.)
+
+`build_auth_context` becomes a private helper called by `dispatch`,
+not a standalone function — it's the shared core of the dispatch path
+and should not be called directly by the assembly layer. The assembly
+layer calls `dispatch`, which calls `build_auth_context` internally.
 
 What stays in `alknet-core/config.rs`:
 - `TlsIdentity` enum (config type)
