@@ -171,7 +171,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/encryption.md](crates/vault/encryption.md) | stable | AES-256-GCM, EncryptedData, key versioning, salt (Phase B reserved) |
 | [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
-| [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — aggregated peer env, connection lifecycle, worker supervision, service discovery |
+| [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — multi-transport endpoint (TCP+TLS + QUIC), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
 | [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
 | [crates/channels/channels-wire.md](crates/channels/channels-wire.md) | draft | 9-byte chunk format, stream types, sentinels, framing disambiguation, wire-level invariants (REQ-CH-01..05) |

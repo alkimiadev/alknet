@@ -166,6 +166,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-52](questions/052-callconnection-wait-for-close.md) | CallConnection::wait_for_close() for supervision loop | open | two | med |
 | [OQ-53](questions/053-backoff-config-defaults.md) | BackoffConfig default policy | open | two | low |
 | [OQ-54](questions/054-inbound-worker-hook-placement.md) | Inbound worker on_worker_connected hook placement | resolved | two | low |
+| [OQ-58](questions/058-worker-registration-flow.md) | Worker Registration Flow | open | one | high |
 
 ### alknet-channels
 

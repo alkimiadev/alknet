@@ -1,61 +1,134 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-13
 ---
 
 # alknet-hub
 
-The hub pattern as a reusable crate: peer lifecycle management, connection
-supervision, operation aggregation, and service discovery across connected
-peers. One QUIC connection per peer carrying the call protocol.
+The hub pattern as a reusable crate: multi-transport endpoint that
+accepts workers and browsers over TCP+TLS and QUIC, relays channels
+between legs (ADR-079), manages peer lifecycle, aggregates operations,
+and exposes service discovery. One channels connection per peer;
+multiple endpoint types coexisting.
 
 ## What
 
-`alknet-hub` is a thin crate that provides the head/worker (hub-spoke) pattern
-as a reusable library. It depends on `alknet-call` and `alknet-core`. It does
-not introduce new types — it wires the existing `PeerCompositeEnv`,
-`CallClient`, `CallAdapter`, `from_call`, and `Dispatcher` types into a
-coherent hub runtime.
+`alknet-hub` is the crate that wires the hub role (ADR-029, ADR-034,
+ADR-079) into a reusable library. A hub is the central node in a
+hub-and-spoke (head/worker) topology: it accepts inbound connections from
+workers and browsers, relays channels between legs, aggregates the
+workers' operations into a shared environment, and serves the discovery
+API. It depends on `alknet-channels` (the substrate), `alknet-call`
+(the protocol), and `alknet-core`. It does not introduce new protocol
+types — it wires the existing `ChannelsAdapter`, `ChannelClient`,
+`CallAdapter`, `PeerCompositeEnv`, `from_call`, and `Dispatcher` types
+into a coherent hub runtime.
+
+### The hub is multi-transport
+
+A hub **must** support TCP+TLS and QUIC endpoints simultaneously. This is
+not a convenience — it is the structure of the primary use case. A hub
+that provisions a worker (in a container, on vast.ai, on runpod) uses
+TCP+TLS for registration and QUIC (or another transport) for the ongoing
+channels session. The hub's HTTP endpoint (registration, browser access)
+runs over TCP+TLS; the hub's channels endpoint runs over QUIC or
+TCP+TLS depending on the worker's transport. These coexist on one hub.
+
+The channels protocol is transport-agnostic (ADR-071; ADR-065
+`Connection::from_stream`/`from_bidi`). The hub's accept and dial paths
+inherit that property — they take a `Connection`, not a `SocketAddr`
+welded to a dial. See "Transport" below.
 
 ### What the hub provides
 
-1. **Peer lifecycle** — dial, accept, disconnect, reconnect with backoff.
-   Identity resolution via `IdentityProvider`. One connection per peer.
+1. **Multi-transport endpoint** — accepts channels connections over
+   QUIC (via the quinn `AlknetEndpoint`) and over TCP+TLS (via an
+   accept loop that wraps each `TlsStream<TcpStream>` as a `Connection`
+   with `from_bidi`, per ADR-065/010). Both feed the same
+   `HandlerRegistry`. Also serves HTTP (`h2`/`http/1.1`) over TCP+TLS
+   for registration and browser access. All three coexist.
 
-2. **Aggregated operation env** — a shared `PeerCompositeEnv` across all
-   calls (ADR-067). Operations discovered via `from_call` are registered in
-   each peer's connection overlay and aggregated into the shared env.
-   `invoke_peer` routes operation calls to the right peer.
+2. **Peer lifecycle** — accept, dial, disconnect, reconnect with
+   backoff. Identity resolution via `IdentityProvider` (fingerprint or
+   bearer token, depending on transport — see "Identity over
+   transports"). One channels connection per peer.
 
-3. **Service discovery** — `services/list-peers` returns each connected
-   worker's operation list via `PeerCompositeEnv::peer_operations` (ADR-068).
+3. **Aggregated operation env** — a shared `PeerCompositeEnv` across
+   all connected workers (ADR-067). Operations discovered via
+   `from_call` are registered in each peer's connection overlay and
+   aggregated into the shared env. `invoke_peer` routes operation calls
+   to the right peer.
+
+4. **Service discovery** — `services/list-peers` returns each
+   connected worker's operation list via
+   `PeerCompositeEnv::peer_operations` (ADR-068).
+
+5. **Channel relay** — translates `channel/open` on channel 0 and
+   byte-forwards data channels with `channel_id` rewrite (ADR-079).
+   Lets a browser reach a spoke's channels through the hub without the
+   hub parsing any protocol-specific framing.
+
+6. **Worker registration** (in scope of the hub) — the HTTP endpoint
+   that lets a freshly-provisioned worker enroll its key with a
+   one-time registration token. The registration flow is what makes
+   worker provisioning over TCP+TLS a hard requirement, not an
+   option. See "Worker registration" below and OQ-58.
 
 ## Why
 
-The alkapi project identified that the hub pattern requires wiring that
-alknet-call does not provide out of the box:
+The hub pattern requires wiring that `alknet-channels` and
+`alknet-call` do not provide out of the box:
 
-- `Dispatcher::compose_root_env` builds a fresh `PeerCompositeEnv` per call
-  with only the current connection — multi-worker aggregation is not wired
-  (ADR-067).
-- `PeerCompositeEnv::peer_operations` is not overridden — `services/list-peers`
-  returns empty operation lists for non-local peers (ADR-068).
-- `from_call` is a free function, not wired into `CallClient::connect` — the
-  assembly layer must call it manually after every connect (ADR-069).
+- The hub accepts channels connections over **multiple transports**
+  simultaneously. The channels crate is transport-agnostic (ADR-071,
+  ADR-065); the hub is where the multi-transport accept loop lives.
+- The hub relays channels between legs (ADR-079) — terminating
+  channel 0 on each leg, translating `channel/open`, byte-forwarding
+  data channels. The channels crate is ALPN-blind and does not know it
+  is being relayed; the relay is a hub-crate concern.
+- `Dispatcher::compose_root_env` builds a fresh `PeerCompositeEnv` per
+  call with only the current connection — multi-worker aggregation is
+  not wired (ADR-067).
+- `PeerCompositeEnv::peer_operations` is not overridden —
+  `services/list-peers` returns empty operation lists for non-local
+  peers (ADR-068).
+- `from_call` is a free function, not wired into `ChannelClient` —
+  the assembly layer must call it manually after every connect
+  (ADR-069).
 - There is no worker supervision loop — reconnection, backoff, and
   re-discovery are assembly-layer concerns.
+- There is no registration endpoint — a freshly-provisioned worker
+  has no way to enroll its key with the hub before establishing a
+  channels connection.
 
-These are not design flaws; they are the correct separation of concerns.
-`alknet-call` provides the types and the routing logic; the hub wiring is a
-consumer concern. But it is a concern *every* hub consumer shares. Rather than
-each downstream project (alkapi, future hubs) building the same wiring
-independently, `alknet-hub` provides it once, as a reusable crate.
+These are not design flaws; they are the correct separation of
+concerns. The channels and call crates provide the types and the
+routing logic; the hub wiring is a consumer concern. But it is a
+concern *every* hub consumer shares. Rather than each downstream
+project (alkapi, future hubs) building the same wiring independently,
+`alknet-hub` provides it once, as a reusable crate.
 
 ## Architecture
 
+### The hub is built on channels, not call-directly
+
+The hub's substrate is `alknet/channels`, not `alknet/call` directly.
+Each peer (worker or browser) holds one channels connection to the
+hub. Channel 0 on each connection is `alknet/call` (ADR-072); the
+hub's `CallAdapter` runs on channel 0 for the hub's own operations,
+for `channel/open` translation (ADR-079), and for `from_call`
+discovery. Data channels carry the actual protocol work (TTY, SSH,
+tunnels) and are relayed byte-for-byte across legs.
+
+This is the post-channels hub model. The pre-channels model (one QUIC
+connection per peer carrying `alknet/call` directly) is replaced: the
+connection is `alknet/channels`, and `alknet/call` rides channel 0.
+The hub's `CallClient`-direct dial path is replaced by
+`ChannelClient::from_connection` (ADR-080).
+
 ### Hub struct
 
-The `Hub` is the central type. It owns the aggregated `PeerCompositeEnv`, the
+The `Hub` owns the aggregated `PeerCompositeEnv`, the
 `OperationRegistry`, and the `Dispatcher`:
 
 ```rust
@@ -98,28 +171,98 @@ impl Hub {
 }
 ```
 
-The `Hub` exposes builder methods for optional hooks (`with_session_source`,
-`with_ownership_provider`, `with_timeout`) that delegate to the `Dispatcher`.
+The `Hub` exposes builder methods for optional hooks
+(`with_session_source`, `with_ownership_provider`,
+`with_timeout`) that delegate to the `Dispatcher`.
 
-### Peer lifecycle
+### Transport
 
-Every hub-worker connection carries the call protocol. The hub establishes the
-connection, runs `from_call` to discover the peer's operations, and attaches
-the peer to the aggregated env.
+The hub accepts and dials channels connections over any transport
+the channels protocol supports (ADR-071). In practice, a hub runs
+multiple accept loops simultaneously:
 
-#### Inbound workers (workers dial the hub)
+| Endpoint | Transport | What it carries |
+|----------|-----------|-----------------|
+| Quinn `AlknetEndpoint` | QUIC (quinn/iroh) | Channels connections from workers with QUIC reachability |
+| TCP+TLS accept loop | TCP + TLS (`h2`/`http/1.1`/`alknet/channels`) | HTTP registration endpoint, browser access, channels-over-TCP from workers |
+| (Future) WebTransport | WebTransport | Browser bidirectional path (deferred per ADR-044; WebSocket is the v1 browser path) |
 
-The hub's `CallAdapter` accepts inbound connections. The hub provides a
-`WorkerConnectedCallback` that fires inside the accept path, between
-connection-establish and dispatch-start. The callback runs `from_call`,
-registers the bundles, and attaches the peer to the aggregated env:
+All accept loops feed into the same `HandlerRegistry`. The hub's
+`HttpAdapter` serves `h2`/`http/1.1` over the TCP+TLS path for
+registration and browser access; the `ChannelsAdapter` (registered on
+the hub's `HandlerRegistry`) serves
+`alknet/channels` over the QUIC path (and over TCP+TLS when a worker
+dials channels-over-TCP). Both ALPNs are registered on the same
+registry; the TLS handshake on each connection negotiates the ALPN
+and dispatches to the right adapter.
+
+The TCP+TLS accept loop constructs a `Connection` per accepted
+`TlsStream<TcpStream>` via `Connection::from_bidi` (ADR-065) and
+hands it to the same `HandlerRegistry::dispatch` the quinn endpoint
+uses. This is the accept-loop-outside-the-endpoint pattern from
+ADR-010's Amendment 1: the `AlknetEndpoint` struct stays QUIC-only
+(no `tcp` field), and the TCP+TLS loop is a sibling accept source
+that shares the registry. The hub is where that sibling loop lives.
+
+#### Dial (outbound workers) — transport-agnostic
+
+The hub dials outbound workers via `ChannelClient`, not `CallClient`.
+The dial path mirrors the `from_connection` / `connect_quic` split
+(ADR-080):
 
 ```rust
-/// Callback invoked by CallAdapter::handle when a worker connects inbound.
-/// Fires after identity resolution and before the dispatch loop starts.
-/// Carries both on_connected (runs from_call, registers discovered ops,
-/// attaches peer to aggregated env) and on_disconnected (detaches peer
-/// on run_loop exit).
+impl Hub {
+    /// Take over a pre-established channels `Connection` as a worker
+    /// connection. Transport-agnostic — the caller (or a transport
+    /// helper) produces the `Connection`. This is the primary path;
+    /// `connect_quic_worker` and future `connect_tcp_tls_worker` are
+    /// conveniences over it.
+    pub async fn dial_worker_connection(
+        &self,
+        connection: Connection,
+        config: FromCallConfig,
+    ) -> Result<(PeerId, ChannelClient), HubError>;
+
+    /// QUIC convenience: dial a worker over QUIC, then
+    /// `dial_worker_connection`. Two-way door — additive over
+    /// `dial_worker_connection`.
+    pub async fn connect_quic_worker(
+        &self,
+        addr: SocketAddr,
+        credentials: CallCredentials,
+        config: FromCallConfig,
+    ) -> Result<(PeerId, ChannelClient), HubError>;
+}
+```
+
+`dial_worker_connection` is the transport-agnostic primary. After
+taking over the `Connection`, it runs `from_call` on channel 0 to
+discover the worker's operations, registers the discovered bundles in
+the connection's Layer 2 overlay, and attaches the peer to the
+aggregated env. `connect_quic_worker` is the "I just want QUIC"
+convenience — it calls `ChannelClient::connect_quic`, then
+`dial_worker_connection`. A future `connect_tcp_tls_worker` dials
+TCP+TLS and calls `dial_worker_connection` the same way. The
+one-way-door surface is `dial_worker_connection`; the dial helpers
+are two-way-door conveniences.
+
+#### Accept (inbound workers and browsers) — transport-agnostic
+
+Inbound connections arrive over whatever transport the accept loop
+yielded them from. The `ChannelsAdapter` (registered on
+`alknet/channels` in the `HandlerRegistry`) receives a `Connection` and runs the demux loop
+(ADR-075); the `CallAdapter` (running on channel 0) handles
+hub-level operations and `channel/open` translation (ADR-079).
+
+The `WorkerConnectedCallback` fires inside `ChannelsAdapter::handle`
+between channel-0 establishment and dispatch start:
+
+```rust
+/// Callback invoked by ChannelsAdapter::handle when a peer connects
+/// inbound. Fires after identity resolution and before the dispatch
+/// loop starts. Carries both on_connected (runs from_call, registers
+/// discovered ops, attaches peer to aggregated env) and on_disconnected
+/// (detaches peer on run_loop exit).
 pub struct WorkerConnectedCallback {
     hub: Arc<Hub>,
     config: FromCallConfig,
@@ -155,141 +298,163 @@ impl WorkerConnectedCallback {
 }
 ```
 
-The callback is wired into `CallAdapter` via a new builder method:
+The callback is wired into `ChannelsAdapter` (the channels substrate)
+via a builder method. The `ChannelsAdapter::handle` flow becomes:
 
-```rust
-impl CallAdapter {
-    pub fn with_worker_connected_callback(
-        mut self,
-        callback: WorkerConnectedCallback,
-    ) -> Self {
-        self.worker_connected_callback = Some(callback);
-        self
-    }
-}
-```
+1. Channel 0 (`alknet/call`) is preinstalled (ADR-072). The channel-0
+   `Connection` is handed to the `CallAdapter`.
+2. Identity resolution — two paths depending on transport (see
+   "Identity over transports"):
+   - **Fingerprint path** (QUIC + raw key, or a transport with a
+     client cert): the `AuthContext` carried into
+     `ChannelsAdapter::handle` carries the peer's TLS fingerprint. The
+     `CallAdapter` resolves it via `resolve_from_fingerprint`.
+   - **Bearer-token path** (TCP+TLS with no client cert, WebTransport,
+     WebSocket): the `CallAdapter` on channel 0 extracts `auth_token`
+     from the first call frame (auth.md) and resolves it via
+     `resolve_from_token`. The transport carries no identity of its
+     own — the call protocol's first frame does.
+3. The `CallConnection` is constructed with the resolved identity.
+4. Invoke `on_connected` — runs `from_call`, registers bundles,
+   attaches peer to aggregated env.
+5. Run the call-protocol dispatch loop on channel 0; the demux loop
+   continues on the other channels.
+6. On disconnect, invoke `on_disconnected` — detaches peer from
+   aggregated env.
 
-The `CallAdapter::handle` flow becomes:
-
-1. Resolve identity from the connection.
-2. Create `CallConnection`, set identity.
-3. Invoke `on_connected` callback (if set) — runs `from_call`, registers
-   bundles, attaches peer to aggregated env.
-4. Run the dispatch loop (`run_loop`).
-5. On `run_loop` exit, invoke `on_disconnected` on the callback — detaches
-   peer from aggregated env.
-
-The assembly layer constructs the callback and passes it to `CallAdapter`:
+The assembly layer constructs the callback and passes it to
+`ChannelsAdapter`:
 
 ```rust
 let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::new());
-let adapter = CallAdapter::new(registry, identity_provider)
-    .with_aggregated_env(hub.aggregated_env().clone())
+let channels_adapter = ChannelsAdapter::new(Arc::clone(&registry), /* ... */)
     .with_worker_connected_callback(callback);
+// Register channels_adapter on alknet/channels in the HandlerRegistry.
+// Both the quinn endpoint and the TCP+TLS accept loop dispatch
+// alknet/channels connections to it.
 ```
 
-> **Note on OQ-54**: The callback fires inside `handle()` because `handle()`
-> blocks until disconnect — there is no "after handle accepts" point for the
-> assembly layer to hook into. The callback is the committed design; OQ-54 is
-> resolved.
+### Identity over transports
 
-#### Outbound workers (hub dials workers)
+A peer's identity is resolved differently depending on the transport
+the connection arrived over. This is not a hub invention — it is the
+existing identity model (ADR-030, ADR-034, auth.md) applied to the
+channels substrate.
 
-The hub provides a `dial_worker` method that combines `CallClient::connect`,
-`from_call`, and `attach_peer` into a single operation. It also provides a
-`supervise_worker` method that wraps `dial_worker` in a reconnect loop with
-configurable backoff:
+| Transport | Identity source | Resolution path |
+|-----------|----------------|-----------------|
+| QUIC + RFC 7250 raw key | TLS fingerprint (automatic from handshake) | `resolve_from_fingerprint` — both sides present raw keys |
+| QUIC + X.509 (client cert) | TLS fingerprint (from client cert) | `resolve_from_fingerprint` — worker presents a client cert |
+| TCP+TLS (client cert) | TLS fingerprint (from client cert) | `resolve_from_fingerprint` — worker presents a client cert |
+| TCP+TLS (no client cert) | Bearer token (call-protocol `auth_token` in first frame on channel 0) | `resolve_from_token` |
+| WebTransport / WebSocket | Bearer token | `resolve_from_token` — browsers have no fingerprint (ADR-034 §4) |
+
+The fingerprint path is the QUIC+raw-key optimization — identity is
+"free" because the TLS handshake carries it. The X.509-client-cert
+rows (QUIC and TCP+TLS) are the same path with a different cert
+format — the hub matches the client cert's fingerprint via
+`resolve_from_fingerprint` against the `SHA256:<hex>` entry in the
+peer's `PeerEntry` (the mixed-fingerprint case from ADR-034 §3). A
+worker may present an X.509 client cert over QUIC or TCP+TLS when the
+hub's deployment uses X.509 rather than raw keys; the identity model
+handles both identically.
+
+The token path is the transport-agnostic fallback — it works over any
+transport that can carry a call-protocol first frame, which is all of
+them (channel 0 is `alknet/call`). `resolve_from_token` matches the
+token against `PeerEntry.auth_token_hash` and returns the same
+`PeerId` the fingerprint path would (ADR-030).
+
+This is why channels-over-TCP is not a special case. The channels
+protocol runs `alknet/call` on channel 0 (ADR-072); the call
+protocol's `auth_token` path resolves identity from the first frame;
+the transport carries no identity burden of its own. A worker that
+registered its key over HTTP (TCP+TLS, no client cert) and then
+connects via channels-over-TCP authenticates with the bearer token it
+received at registration. A worker that connects via channels-over-QUIC
+authenticates with its TLS fingerprint. Both resolve to the same
+`PeerEntry` and the same `PeerId`.
+
+### Worker registration
+
+The registration flow is what makes TCP+TLS a hard requirement for
+the hub. A freshly-provisioned worker (container, vast.ai, runpod)
+does not yet have an established peer relationship with the hub — it
+has a one-time registration token supplied via the provisioning
+config. The flow:
+
+1. The hub provisions a worker instance (docker, vast.ai, runpod —
+   platform-specific) and supplies a registration token via
+   `onStartCMD` (or equivalent).
+2. The instance downloads the worker binary.
+3. The instance generates an Ed25519 key pair (its future identity).
+4. The instance POSTs to the hub's HTTP registration endpoint over
+   TCP+TLS, sending its public key and the registration token.
+5. The hub validates the token, creates a `PeerEntry` for the worker
+   recording *both* the fingerprint (from the public key) and an
+   `auth_token_hash` (from a session token the hub issues), and returns
+   the session credential. The `PeerEntry` is the mixed-fingerprint
+   shape from ADR-034 §3 — fingerprint for the QUIC path,
+   `auth_token_hash` for the TCP+TLS path.
+6. The instance connects to the hub via channels — over QUIC
+   (fingerprint identity) or over TCP+TLS (bearer-token identity) —
+   and both resolve to the same `PeerEntry` and the same `PeerId`.
+   The ongoing session begins.
+
+Step 4 is HTTP over TCP+TLS. Step 6 is channels over QUIC or TCP+TLS.
+Both happen; they are not alternatives. The registration endpoint is
+an HTTP route on the `HttpAdapter` (registered on the hub's
+`HandlerRegistry`, served on `h2`/`http/1.1`
+over TCP+TLS), not a call-protocol operation — the worker has no
+`CallConnection` yet at step 4.
+
+The registration endpoint and the enrollment-token model are a
+one-way-door API (the endpoint shape, the token semantics). That
+decision is tracked as OQ-58 — it is decision-ready in shape (HTTP
+POST, token in, `PeerEntry` out, session credential returned) but
+the exact token model (one-time vs. refresh, single-use vs.
+multi-use, rotation) and the endpoint path need a dedicated ADR
+before the hub crate stabilizes.
+
+### Supervision
+
+The hub provides a `supervise_worker` method that wraps
+`dial_worker_connection` (or a transport-specific helper) in a
+reconnect loop with configurable backoff:
 
 ```rust
 impl Hub {
-    /// Dial a worker, establish the call-protocol connection, discover its
-    /// operations, and attach it to the aggregated env. Returns the
-    /// worker's PeerId and the live CallConnection.
-    pub async fn dial_worker(
-        &self,
-        addr: SocketAddr,
-        credentials: CallCredentials,
-        config: FromCallConfig,
-    ) -> Result<(PeerId, CallConnection), HubError> {
-        let client = CallClient::new(
-            Arc::clone(&self.registry),
-            Arc::clone(&self.identity_provider),
-        );
-        let connection = client.connect(addr, credentials).await?;
-
-        let peer_id = connection.identity()
-            .map(|id| id.id.clone())
-            .ok_or(HubError::NoPeerIdentity)?;
-
-        let bundles = from_call(&connection, config).await?;
-        connection.register_imported_all(bundles);
-
-        self.aggregated_env
-            .write()
-            .expect("aggregated env lock poisoned")
-            .attach_peer(peer_id.clone(), connection.overlay_env());
-
-        Ok((peer_id, connection))
-    }
-
-    /// Detach a peer from the aggregated env. Called on disconnect
-    /// (both inbound and outbound).
-    fn on_worker_disconnected(&self, peer_id: &PeerId) {
-        self.aggregated_env
-            .write()
-            .expect("aggregated env lock poisoned")
-            .detach_peer(peer_id);
-    }
-
-    /// Supervise an outbound worker: dial, discover, attach. On disconnect,
-    /// detach and retry with backoff. Runs until the Hub is dropped (the
-    /// returned JoinHandle can be aborted).
-    pub fn supervise_worker(
+    /// Supervise an outbound worker: dial, discover, attach. On
+    /// disconnect, detach and retry with backoff. Runs until the Hub
+    /// is dropped (the returned JoinHandle can be aborted).
+    ///
+    /// `dial` is a closure that produces a channels `Connection` —
+    /// the hub does not bake a transport into the supervision loop.
+    /// The caller provides e.g. `|| async { Ok(Connection::from_quinn(quinn_endpoint.connect(addr, "alknet/channels")?.await?)) }`
+    /// for QUIC, or `|| async { Ok(Connection::from_bidi(tls_connector.connect(host, TcpStream::connect(addr).await?).await?, b"alknet/channels".to_vec(), Some(addr))) }`
+    /// for TCP+TLS. The supervision loop is transport-agnostic.
+    pub fn supervise_worker<F, Fut>(
         self: &Arc<Self>,
-        addr: SocketAddr,
-        credentials: CallCredentials,
+        dial: F,
         config: FromCallConfig,
         backoff: BackoffConfig,
-    ) -> tokio::task::JoinHandle<()> {
-        let hub = Arc::clone(self);
-        tokio::spawn(async move {
-            let mut retries = 0;
-            loop {
-                match hub.dial_worker(addr, credentials.clone(), config.clone()).await {
-                    Ok((peer_id, connection)) => {
-                        retries = 0;
-                        // Wait for the connection to drop (run_loop exits).
-                        // Committed interim (OQ-52): poll the underlying
-                        // Connection's accept_bi() until it returns
-                        // ConnectionClosed. A CallConnection::closed()
-                        // method is the target resolution.
-                        loop {
-                            match connection.connection() {
-                                Some(conn) => {
-                                    match conn.accept_bi().await {
-                                        Err(StreamError::ConnectionClosed)
-                                        | Err(StreamError::StreamClosed)
-                                        | Err(StreamError::Timeout) => break,
-                                        _ => continue,
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                        hub.on_worker_disconnected(&peer_id);
-                    }
-                    Err(e) => {
-                        tracing::warn!(?e, retries, "worker dial failed; retrying");
-                    }
-                }
-                let delay = backoff.delay_for(retries);
-                tokio::time::sleep(delay).await;
-                retries += 1;
-            }
-        })
-    }
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Connection, HubError>> + Send + 'static;
 }
 ```
+
+The supervision loop takes a `dial` closure rather than a `SocketAddr`
++ `CallCredentials` pair. This keeps the loop transport-agnostic —
+the caller decides the transport by what the closure does. The
+backoff and re-discovery logic is the same regardless of transport.
+
+Disconnect is detected via the OQ-52 interim — the loop polls
+`connection().accept_bi()` until `ConnectionClosed` — pending a
+`CallConnection::closed()` method (OQ-52 target resolution). On
+disconnect, the peer is detached from the aggregated env and the
+loop retries with backoff.
 
 ### Backoff configuration
 
@@ -320,12 +485,27 @@ impl Default for BackoffConfig {
 }
 ```
 
+### Channel relay (ADR-079)
+
+When a browser (or any non-peer client) connects to the hub and opens
+a channel to a spoke, the hub translates `channel/open` on channel 0
+(terminate on both legs, re-issue with `forwarded_for` — ADR-032) and
+byte-forwards data channels with `channel_id` rewrite. `channel/control`
+operations on channel 0 carry `channel_id` in their JSON payload; the
+hub's `CallAdapter` translates these too, rewriting `channel_id` to
+the other leg's id (ADR-079). The hub does not run protocol-specific
+handlers (`alknet/tty`, `alknet/ssh`, `alknet/tunnel`) — it runs
+`alknet/channels` (the relay) and `alknet/call` (for its own ops +
+translation). The full relay contract is in ADR-079; the relay
+implementation lives in `alknet-hub`.
+
 ### Service discovery
 
-The hub registers the built-in service discovery operations (`services/list`,
-`services/schema`, `services/list-peers`) automatically. The
-`services/list-peers` handler returns each connected worker's operation list
-via `PeerCompositeEnv::peer_operations` (ADR-068).
+The hub registers the built-in service discovery operations
+(`services/list`, `services/schema`, `services/list-peers`)
+automatically. The `services/list-peers` handler returns each
+connected worker's operation list via
+`PeerCompositeEnv::peer_operations` (ADR-068).
 
 ### HubError
 
@@ -339,41 +519,63 @@ pub enum HubError {
     Discovery(#[from] AdapterError),
     #[error("call client error: {0}")]
     Client(#[from] ClientError),
+    #[error("channel error (client or adapter path): {0}")]
+    Channel(#[from] ChannelError),
+    #[error("registration failed: {0}")]
+    Registration(#[from] RegistrationError),
 }
 ```
 
+`RegistrationError` lives in `alknet-hub` (the registration endpoint is
+a hub-crate surface). Its variants are defined alongside the OQ-58
+resolution — the likely shape is `InvalidToken`, `ExpiredToken`,
+`AlreadyEnrolled`, `Store(StoreError)`, but the exact set is not
+fixed until the enrollment-token model is decided.
+
 ## What the hub does NOT do
 
-- **Worker authentication policy.** The hub resolves the worker's identity
-  via `IdentityProvider` (the existing mechanism). Whether a given identity is
-  *allowed* to connect as a worker is an `AccessControl` decision on the
-  assembly layer's curated ops — the hub does not add a separate worker-auth
-  layer.
-- **Worker-specific routing policy.** `PeerRef::Any` uses insertion-order
-  first-match (ADR-029 §2). A richer `RoutingPolicy` (round-robin,
-  least-loaded) is a future extension behind the same `PeerRef` enum.
-- **Multi-hop federation.** The hub is one-hop: workers connect to the hub,
-  the hub composes their ops. Worker A does not transitively see worker B's
-  ops through the hub unless the hub explicitly re-exports them (ADR-029
-  Assumption 5).
-- **Worker provisioning.** The hub does not spawn workers, configure them, or
-  manage their lifecycle beyond connection supervision. Worker provisioning
-  is an assembly-layer concern.
+- **Worker authentication policy.** The hub resolves the worker's
+  identity via `IdentityProvider` (the existing mechanism). Whether a
+  given identity is *allowed* to connect as a worker is an
+  `AccessControl` decision on the assembly layer's curated ops — the
+  hub does not add a separate worker-auth layer.
+- **Worker-specific routing policy.** `PeerRef::Any` uses
+  insertion-order first-match (ADR-029 §2). A richer
+  `RoutingPolicy` (round-robin, least-loaded) is a future extension
+  behind the same `PeerRef` enum.
+- **Multi-hop federation.** The hub is one-hop: workers connect to
+  the hub, the hub composes their ops. Worker A does not transitively
+  see worker B's ops through the hub unless the hub explicitly
+  re-exports them (ADR-029 Assumption 5).
+- **Worker provisioning.** The hub does not spawn workers, configure
+  them, or manage their lifecycle beyond connection supervision. The
+  registration endpoint enrolls a key; it does not provision the
+  instance. Worker provisioning (docker, vast.ai, runpod) is an
+  assembly-layer concern that calls the hub's registration endpoint
+  after provisioning.
 
 ## Crate dependencies
 
 ```
 alknet-hub
-├── alknet-call (CallClient, CallAdapter, Dispatcher, PeerCompositeEnv,
+├── alknet-channels-call (ChannelClient, ChannelsAdapter, ChannelManager,
+│                         ChannelBidiStreamSource)
+├── alknet-call (CallAdapter, Dispatcher, PeerCompositeEnv,
 │                from_call, FromCallConfig, AdapterError, ClientError)
-├── alknet-core (IdentityProvider, Connection, OperationRegistry)
+├── alknet-http (HttpAdapter — for the registration endpoint and browser access)
+├── alknet-core (IdentityProvider, Connection, OperationRegistry,
+│                HandlerRegistry, AuthContext)
 ├── tokio (spawn, time::sleep)
 └── tracing (logging)
 ```
 
-`alknet-hub` depends on `alknet-call`, which depends on `alknet-core`. No new
-dependency edges. The crate is a consumer of the call protocol types, not a
-new protocol handler.
+`alknet-hub` depends on `alknet-channels-call`, `alknet-call`, and
+`alknet-http`, all of which depend on `alknet-core`. The hub is a
+consumer of the channels substrate and the call protocol, not a new
+protocol handler. The `alknet-http` dependency is for the
+registration endpoint and browser HTTP access — the hub wires
+`HttpAdapter` into the same `HandlerRegistry` as
+`ChannelsAdapter`.
 
 ## Assembly layer integration
 
@@ -394,68 +596,143 @@ let hub = Arc::new(Hub::new(
     Arc::clone(&identity_provider),
 ).with_ownership_provider(ownership_provider));
 
-// 3. Start the inbound call-protocol listener (workers dial the hub)
+// 3. Register the ChannelsAdapter on alknet/channels. Both the quinn
+//    endpoint and the TCP+TLS accept loop dispatch alknet/channels
+//    connections to this adapter.
 let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::new());
-let adapter = CallAdapter::new(Arc::clone(&registry), Arc::clone(&identity_provider))
-    .with_aggregated_env(hub.aggregated_env().clone())
+let channels_adapter = ChannelsAdapter::new(/* ... */)
     .with_worker_connected_callback(callback);
-// ... register adapter on the QUIC endpoint
+registry.register(b"alknet/channels", Arc::new(channels_adapter));
 
-// 4. Dial outbound workers (hub dials workers)
+// 4. Register the HttpAdapter on h2/http1.1. The TCP+TLS accept loop
+//    dispatches h2/http1.1 connections to this adapter (registration
+//    endpoint, browser access, stealth decoy).
+let http_adapter = HttpAdapter::new(/* ... */);
+registry.register(b"h2", Arc::new(http_adapter.clone()));
+registry.register(b"http/1.1", Arc::new(http_adapter));
+
+// 5. Start the QUIC accept loop (workers with QUIC reachability)
+let quinn_endpoint = AlknetEndpoint::new(/* ... */, Arc::clone(&registry));
+quinn_endpoint.run().await;
+
+// 6. Start the TCP+TLS accept loop (registration, browser access,
+//    channels-over-TCP from workers)
+let tcp_listener = TcpListener::bind(registration_addr).await?;
+tokio::spawn(async move {
+    loop {
+        let (stream, _) = tcp_listener.accept().await?;
+        let tls_stream = tls_acceptor.accept(stream).await?;
+        let alpn = tls_stream.alpn()?;
+        let conn = Connection::from_bidi(tls_stream, alpn, /* remote_addr */);
+        registry.dispatch(conn).await;  // routes by ALPN to HttpAdapter or ChannelsAdapter
+    }
+});
+
+// 7. Dial outbound workers (hub dials workers). The closure produces a
+//    channels Connection — the hub's supervise_worker calls
+//    dial_worker_connection internally. Both transports are shown; a
+//    real deployment picks one per worker.
+
+// QUIC dial:
 hub.supervise_worker(
-    dev1_addr,
-    dev1_credentials,
+    || async move {
+        // Dial QUIC, wrap the quinn connection as a channels Connection.
+        let quinn_conn = quinn_endpoint
+            .connect(worker_addr, "alknet/channels")?
+            .await?;
+        Ok(Connection::from_quinn(quinn_conn))
+    },
     FromCallConfig::new(),
     BackoffConfig::default(),
 );
 
-// 5. Start the HTTP listener (clients dial the hub)
-// ... HttpAdapter with the same registry and identity_provider
+// TCP+TLS dial (e.g., for a worker that can't reach the hub over QUIC):
+hub.supervise_worker(
+    || async move {
+        let tcp = TcpStream::connect(worker_addr).await?;
+        let tls = tls_connector.connect("worker.example.com", tcp).await?;
+        // from_bidi wraps the TlsStream as a channels Connection
+        // (ADR-065). The ALPN must be alknet/channels.
+        Ok(Connection::from_bidi(tls, b"alknet/channels".to_vec(), Some(worker_addr)))
+    },
+    FromCallConfig::new(),
+    BackoffConfig::default(),
+);
 ```
 
-The hub's `aggregated_env()` accessor returns the shared `Arc<RwLock<PeerCompositeEnv>>`
-so the assembly layer can wire it into `CallAdapter::with_aggregated_env`.
+The hub's `aggregated_env()` accessor returns the shared
+`Arc<RwLock<PeerCompositeEnv>>` so the assembly layer can wire it
+into `CallAdapter::with_aggregated_env`.
 
 ## Design Decisions
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
+| Hub relay — translate, not transparently forward | [ADR-079](../../decisions/079-hub-relay-translate-not-forward.md) | Translate `channel/open` on channel 0 with `forwarded_for`; byte-forward data channels with `channel_id` rewrite |
 | Aggregated peer-env wiring | [ADR-067](../../decisions/067-aggregated-peer-env-wiring.md) | `Dispatcher::with_aggregated_env` hook; `compose_root_env` reads shared env |
 | PeerCompositeEnv::peer_operations | [ADR-068](../../decisions/068-peer-composite-env-peer-operations.md) | `list_operation_names` trait method; `PeerCompositeEnv` override |
 | from_call is manual | [ADR-069](../../decisions/069-from-call-manual-free-function.md) | `from_call` is a free function; the hub calls it after connect |
 | Peer-graph routing model | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays, `PeerRef` routing, `AccessControl`-based peer auth |
 | PeerEntry and Identity.id | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `PeerId` = `Identity.id` = `PeerEntry.peer_id` (stable) |
+| Three peer roles | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Hub = role-3 `PeerEntry` (mixed fingerprints); browsers not peers; bearer-token identity over TCP/WebTransport |
+| ChannelClient — transport-agnostic | [ADR-080](../../decisions/080-channelclient.md) | `from_connection` primary, `connect_quic` convenience; the dial path the hub uses |
+| Channels transport-agnostic | [ADR-071](../../decisions/071-channels-wire-format.md) | Substrate modes; `Connection::from_stream`/`from_bidi` (ADR-065) — the substrate the hub relays |
+| TCP+TLS dispatch via from_stream | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) Am. 1 | `AlknetEndpoint` stays QUIC-only; TCP+TLS accept loop shares the registry |
+| Channel 0 pre-negotiated | [ADR-072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 = `alknet/call`; the `CallAdapter` runs here |
+| Channel lifecycle operations | [ADR-073](../../decisions/073-channel-lifecycle-operations.md) | `channel/open`/`close`/`control`/`resources/subscribe` — what the hub translates |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-52** (open): `CallConnection::wait_for_close()` — the supervision loop
-  needs a way to await connection close. The committed interim is polling
-  `connection().accept_bi()` until `ConnectionClosed`. A `closed()` method on
-  `CallConnection` is the target resolution.
-- **OQ-53** (open): `BackoffConfig` defaults — the committed policy is 1s
-  initial, 60s max, 2x multiplier. OQ-53 tracks whether operational
-  experience warrants a change before the first release.
-- **OQ-54** (resolved): Inbound worker hook placement — the callback fires
-  inside `CallAdapter::handle()` between identity resolution and dispatch
-  start. `handle()` blocks until disconnect, so there is no "after handle
-  accepts" point for the assembly layer to hook into. The
-  `WorkerConnectedCallback` is the committed design.
+- **OQ-58** (open): Worker registration flow — the enrollment-token
+  model, the HTTP registration endpoint shape, and the
+  `register_worker` API. Decision-ready in shape (HTTP POST, token in,
+  `PeerEntry` created, session credential returned); the exact token
+  model (one-time vs. refresh, rotation) and endpoint path need a
+  dedicated ADR before the hub crate stabilizes.
+- **OQ-52** (open): `CallConnection::wait_for_close()` — the
+  supervision loop needs a way to await connection close. The
+  committed interim is polling `connection().accept_bi()` until
+  `ConnectionClosed`. A `closed()` method on `CallConnection` is the
+  target resolution.
+- **OQ-53** (open): `BackoffConfig` defaults — the committed policy
+  is 1s initial, 60s max, 2x multiplier. OQ-53 tracks whether
+  operational experience warrants a change before the first release.
+- **OQ-54** (resolved): Inbound worker hook placement — the callback
+  fires inside `ChannelsAdapter::handle()` between identity resolution
+  and dispatch start. `handle()` blocks until disconnect, so there is
+  no "after handle accepts" point for the assembly layer to hook into.
+  The `WorkerConnectedCallback` is the committed design.
 
 ## References
 
+- [channel-client.md](../channels/channel-client.md) — `ChannelClient`
+  (`from_connection` / `connect_quic` — the dial path)
+- [channels-adapter.md](../channels/channels-adapter.md) —
+  `ChannelsAdapter`, `ChannelManager`, the accept path
+- [channel-operations.md](../channels/channel-operations.md) —
+  `channel/open`/`close`/`control`, the hub relay contract
 - [client-and-adapters.md](../call/client-and-adapters.md) — `CallClient`,
   `from_call`, `OperationAdapter`
-- [call-protocol.md](../call/call-protocol.md) — `CallAdapter`, `Dispatcher`,
-  `CallConnection`
-- [operation-registry.md](../call/operation-registry.md) — `OperationRegistry`,
-  `OperationRegistryBuilder`, `OperationEnv`
+- [call-protocol.md](../call/call-protocol.md) — `CallAdapter`,
+  `Dispatcher`, `CallConnection`
+- [operation-registry.md](../call/operation-registry.md) —
+  `OperationRegistry`, `OperationRegistryBuilder`, `OperationEnv`
+- [http-server.md](../http/http-server.md) — `HttpAdapter` (the
+  registration endpoint and browser HTTP access)
+- [auth.md](../core/auth.md) — `resolve_from_token`,
+  `resolve_from_fingerprint` (the identity paths over transports)
 - ADR-029: Peer-Graph Routing Model
+- ADR-034: Three Peer Roles (hub = role-3, bearer-token identity)
+- ADR-065: `Connection::from_stream`/`from_bidi` (TCP+TLS path)
 - ADR-067: Aggregated Peer-Environment Wiring
 - ADR-068: PeerCompositeEnv::peer_operations Override
 - ADR-069: from_call Is a Manual Free Function
-- alkapi [hub.md](/workspace/@alkdev/alkapi/docs/architecture/hub.md) — the
-  first hub consumer, the concrete use case that informed this crate
+- ADR-079: Hub Relay — Translate, Not Transparently Forward
+- ADR-080: ChannelClient (transport-agnostic `from_connection`)
+- alkapi [hub.md](/workspace/@alkdev/alkapi/docs/architecture/hub.md) —
+  the first hub consumer, the concrete use case that informed this
+  crate
 - alkapi [ADR-011](/workspace/@alkdev/alkapi/docs/architecture/decisions/011-aggregated-peer-env.md) —
   the downstream aggregation decision

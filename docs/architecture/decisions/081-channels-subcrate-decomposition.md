@@ -218,7 +218,11 @@ the dependency direction (hub/worker → channels, not channels → hub/worker).
 - ADR-074: ChannelBidiStreamSource (in `channels-core`)
 - ADR-075: ChannelsAdapter and ChannelManager (split: core demux in
   `channels-core`, call coupling in `channels-call`)
-- ADR-079: hub relay (in `channels-hub` or `alknet-hub`)
-- ADR-080: ChannelClient (in `channels-worker`)
+- ADR-079: hub relay (in `alknet-hub` — the hub crate consumes
+  `channels-call`; there is no `channels-hub` sub-crate, per this ADR's
+  Decision §"No hub/worker sub-crates")
+- ADR-080: ChannelClient (in `channels-call`; there is no
+  `channels-worker` sub-crate — a worker is any crate that uses
+  `ChannelClient` to dial)
 - `docs/architecture/crates/hub/README.md` — the existing hub crate (the
   relay's consumer)
