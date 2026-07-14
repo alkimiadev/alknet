@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted (§5 amended by ADR-083 — the `acme-tls/1` guard moves from
+`dispatch_quinn` to the shared `dispatch` method, since ACME challenges
+arrive over TCP+TLS, not QUIC; the rationale holds, only the location
+changes)
 
 ## Context
 
@@ -171,11 +174,13 @@ if let Some(TlsIdentity::RawKey(key)) = static_config.tls_identity.as_ref() {
 `iroh::SecretKey::from_bytes(&[u8; 32])` accepts raw Ed25519 key bytes —
 no information loss. This conversion is `#[cfg(feature = "iroh")]` only.
 
-### 5. ACME ALPN challenge handling in `dispatch_quinn`
+### 5. ACME ALPN challenge handling in `dispatch` (moved from `dispatch_quinn` by ADR-083)
 
-Add an early-return guard in `dispatch_quinn` before the handler lookup:
+Add an early-return guard in `dispatch` (the shared dispatch path,
+moved from `dispatch_quinn` by ADR-083) before the handler lookup:
 
 ```rust
+// In the shared `dispatch` method (moved from `dispatch_quinn` by ADR-083):
 if alpn == b"acme-tls/1" {
     debug!("acme-tls/1 challenge connection completed at TLS layer; closing");
     connection.close(0u32.into(), b"acme done");
@@ -185,7 +190,13 @@ if alpn == b"acme-tls/1" {
 
 This avoids the misleading "no handler for ALPN" warning. The challenge
 is already answered at the TLS layer; the application just closes
-gracefully. No `ProtocolHandler` registration for `acme-tls/1`.
+gracefully. No `ProtocolHandler` registration for `acme-tls/1`. The
+guard is transport-agnostic — it fires for any connection whose TLS
+handshake negotiated `acme-tls/1`, regardless of which transport
+delivered it. In practice ACME TLS-ALPN-01 challenges arrive over
+TCP+TLS (CAs validate via TCP to port 443, not QUIC); advertising
+`acme-tls/1` on a QUIC listener that shares the ACME config is
+harmless. See ADR-083 for the full rationale.
 
 ### 6. Feature-gate ACME behind a new `acme` feature
 

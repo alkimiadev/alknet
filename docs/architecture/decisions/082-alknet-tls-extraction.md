@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed
+Proposed (amended 2026-07-14: the `AlknetEndpoint::new` signature
+referenced here was superseded by ADR-083 — the endpoint takes no TLS
+config; the assembly layer builds transports from `TlsServerConfig`s)
 
 ## Context
 
@@ -127,7 +129,7 @@ impl TlsServerConfig {
 | `Ed25519SecretKey` | `alknet-core/config.rs` | Config type — iroh reads it directly |
 | `AcmeDirectory` | `alknet-core/config.rs` | Config type |
 | `fingerprint.rs` | `alknet-core` | Shared by server (endpoint) and client (`alknet-call`'s `FingerprintPinVerifier`) — moving it would create a dep edge from `alknet-call` to `alknet-tls`. Production code uses `sha2` + manual DER only; `rustls` is test-only. See OQ-59. |
-| `AlknetEndpoint` | `alknet-core` | The endpoint struct stays; it takes `Arc<TlsServerConfig>` instead of building it internally |
+| `AlknetEndpoint` | `alknet-core` | The endpoint struct stays; it takes no TLS config (see ADR-083) |
 
 ### Feature gates
 
@@ -148,25 +150,25 @@ when `acme` is enabled. `rustls-pki-types` is available via `rustls`'s
 re-export (core lists it directly; the new crate can rely on the
 re-export or list it directly — implementation detail).
 
-### `AlknetEndpoint` takes `Arc<TlsServerConfig>`
+### `AlknetEndpoint` takes no TLS config (see ADR-083)
 
-```rust
-impl AlknetEndpoint {
-    pub async fn new(
-        static_config: &StaticConfig,
-        tls_config: Arc<TlsServerConfig>,  // ← new param
-        handlers: HandlerRegistry,
-        dynamic: Arc<ArcSwap<DynamicConfig>>,
-        identity_provider: Arc<dyn IdentityProvider>,
-    ) -> Result<Self, EndpointError>;
-}
-```
+ADR-082's original proposal was that `AlknetEndpoint::new` would take
+`Arc<TlsServerConfig>`. That does not hold: a hub serving both native
+clients (raw key) and browsers (X.509/ACME) holds **two**
+`TlsServerConfig`s, and the endpoint has no single "the TLS config" to
+take. The endpoint takes no TLS config at all — it is a pure
+accept-loop runner with a public `dispatch` method. The assembly layer
+builds the `TlsServerConfig`s and the transports, and hands the
+pre-built quinn/iroh endpoints to `AlknetEndpoint` via builder methods.
+See [ADR-083](083-endpoint-as-accept-loop-runner.md) for the endpoint's
+new shape and signature.
 
-The endpoint calls `tls_config.for_quinn()` to get its quinn server
-config. The ACME handle lives on the `TlsServerConfig`, not the
-endpoint — the endpoint doesn't own the ACME task. The assembly layer
-builds the `TlsServerConfig` once, passes `Arc::clone()` to the
-endpoint, and passes another `Arc::clone()` to the TCP+TLS accept loop.
+`alknet-tls`'s job is to make the cert available to whichever transports
+the deployment runs. The endpoint's job is to dispatch. The two are
+decoupled — `alknet-tls` provides `TlsServerConfig` and its accessors
+(`for_quinn`, `for_tcp_tls`, `rustls_config`); the assembly layer wires
+them to transports; the endpoint dispatches connections from those
+transports.
 
 ### The TCP+TLS accept loop lives outside `alknet-tls`
 
@@ -228,11 +230,12 @@ that compiles and passes type-checks but silently changes TLS behavior:
   (requires X.509) is the exception, not the constraint.
 
 **Negative:**
-- `AlknetEndpoint::new` gains a new parameter (`Arc<TlsServerConfig>`),
-  which is a breaking change for existing callers. The assembly layer
-  (CLI binary, hub construction) must build the `TlsServerConfig` before
-  constructing the endpoint. This is expected — it's the point of the
-  extraction.
+- `AlknetEndpoint::new` no longer takes a `tls_config` parameter, which
+  is a breaking change for existing callers. The assembly layer builds
+  the `TlsServerConfig`s and the transports and hands pre-built
+  endpoints to `AlknetEndpoint` via builder methods (see
+  [ADR-083](083-endpoint-as-accept-loop-runner.md)). This is expected —
+  it is the point of the extraction.
 - `alknet-core` may keep a narrow `rustls` dep if `fingerprint.rs` stays
   (OQ-59). If `fingerprint.rs` moves to `alknet-tls`, `alknet-call`'s
   client-side `FingerprintPinVerifier` gains a dep on `alknet-tls`. The
@@ -243,11 +246,12 @@ that compiles and passes type-checks but silently changes TLS behavior:
 ## Door type
 
 **One-way.** Extracting TLS setup into a shareable config is a
-structural change: `AlknetEndpoint::new` signature changes, the assembly
-layer must build `TlsServerConfig` separately, and the cert-sharing
-contract (one config, N transports) becomes the architecture. Reversing
-would mean re-welding TLS to the endpoint and losing the multi-transport
-cert-reuse capability — the exact capability the hub needs.
+structural change: the assembly layer must build `TlsServerConfig`
+separately and the cert-sharing contract (one config, N transports)
+becomes the architecture. Reversing would mean re-welding TLS to the
+endpoint and losing the multi-transport cert-reuse capability — the
+exact capability the hub needs. The `AlknetEndpoint::new` signature
+change is documented in ADR-083, not here.
 
 The `TlsServerConfig` API surface (`new`, `for_quinn`, `for_tcp_tls`,
 `rustls_config`) is one-way — changing it after consumers exist is a
@@ -259,6 +263,9 @@ details that can change without breaking the contract.
 
 - ADR-010 Amendment 1 — TCP+TLS dispatch via `from_stream` (the accept
   loop that consumes `TlsServerConfig::for_tcp_tls()`)
+- ADR-083 — endpoint as pure accept-loop runner with public dispatch
+  (the endpoint takes no TLS config; the assembly layer builds
+  transports from `TlsServerConfig`s)
 - ADR-027 — `TlsIdentity` (RawKey / X509 / Acme), RFC 7250, browser
   limitation
 - ADR-030 §6 — fingerprint normalization (`ed25519:<hex>` across

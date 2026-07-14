@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-12
+last_updated: 2026-07-14
 ---
 
 # Alknet Architecture
@@ -194,7 +194,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | Accepted |
 | [008](decisions/008-secret-service-integration.md) | Vault Integration Point | Accepted |
 | [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Accepted |
-| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Accepted |
+| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Accepted (Amendment 1 superseded by ADR-083 — TCP+TLS dispatch is first-class via public `dispatch`) |
 | [011](decisions/011-authcontext-structure.md) | AuthContext Structure and Resolution Flow | Accepted |
 | [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Accepted |
 | [013](decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Accepted |
@@ -211,7 +211,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [024](decisions/024-operation-registry-layering.md) | Operation Registry Layering | Accepted |
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Accepted |
 | [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | Accepted |
-| [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | Accepted |
+| [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | Accepted (§5 amended by ADR-083 — guard moves to shared `dispatch`) |
 | [028](decisions/028-callclient-peer-scoped-registry-filtering.md) | Peer-Scoped Registry Filtering for CallClient Inbound Dispatch | ~~Accepted~~ → **Superseded** by ADR-029 |
 | [029](decisions/029-peer-graph-routing-model.md) | Peer-Graph Routing Model for alknet-call Composition | Accepted (Assumption 1's `PeerId` source superseded by ADR-030) |
 | [030](decisions/030-peerentry-and-identity-id-decoupling.md) | PeerEntry and Identity.id Decoupling | Accepted (supersedes ADR-029 Assumption 1's UUID source) |
@@ -266,7 +266,8 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | Accepted |
 | [080](decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | Accepted |
 | [081](decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | Accepted |
-| [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Proposed |
+| [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Proposed (amended — endpoint signature superseded by ADR-083) |
+| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Pure Accept-Loop Runner with Public Dispatch | Proposed |
 
 ## Open Questions
 

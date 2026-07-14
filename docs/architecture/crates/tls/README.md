@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-13
+last_updated: 2026-07-14
 ---
 
 # alknet-tls
@@ -267,26 +267,47 @@ production and `rustls::sign` in the test helper `build_ed25519_spki_der`
 ### What `AlknetEndpoint` does after the refactor
 
 `AlknetEndpoint::new()` currently builds `TlsSetup` internally. After
-the refactor, it takes an `Arc<TlsServerConfig>`:
+the refactor (see [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)),
+the endpoint takes **no TLS config at all** — it is a pure accept-loop
+runner with a public `dispatch` method:
 
 ```rust
 impl AlknetEndpoint {
-    pub async fn new(
-        static_config: &StaticConfig,
-        tls_config: Arc<TlsServerConfig>,  // ← new param
+    pub fn new(
         handlers: HandlerRegistry,
         dynamic: Arc<ArcSwap<DynamicConfig>>,
         identity_provider: Arc<dyn IdentityProvider>,
-    ) -> Result<Self, EndpointError>;
+        drain_timeout: Duration,
+    ) -> Self;
+
+    pub fn with_quinn(mut self, endpoint: quinn::Endpoint) -> Self;
+    pub fn with_iroh(mut self, endpoint: iroh::Endpoint) -> Self;
+
+    pub fn dispatch(
+        &self,
+        connection: Connection,
+        alpn: Vec<u8>,
+        fingerprint: Option<String>,
+        remote_addr: Option<SocketAddr>,
+    );
+
+    pub async fn run(self: Arc<Self>);
 }
 ```
 
-The endpoint calls `tls_config.for_quinn()` to get its quinn server
-config. The ACME handle is on the `TlsServerConfig`, not the endpoint —
-the endpoint doesn't own the ACME task. The assembly layer builds the
-`TlsServerConfig` once, passes `Arc::clone()` to the endpoint, and
-passes another `Arc::clone()` to the TCP+TLS accept loop (which lives in
-the hub or a future `TcpTlsAcceptor`).
+The assembly layer builds the `TlsServerConfig`(s), builds the
+transports (`for_quinn()` → `quinn::Endpoint::server()`,
+`for_tcp_tls()` → `TlsAcceptor`, the `Ed25519SecretKey` → iroh), and
+hands the pre-built quinn/iroh endpoints to `AlknetEndpoint` via
+builder methods. A hub serving native clients and browsers holds two
+`TlsServerConfig`s (raw key + X.509/ACME); the endpoint takes neither —
+it takes the already-built transport endpoints. The TCP+TLS accept
+loops (one per config) call `endpoint.dispatch(...)` — the same
+dispatch path quinn and iroh use. The ACME handle lives on the
+`TlsServerConfig`, not the endpoint.
+
+This resolves the single-`Arc<TlsServerConfig>` problem: the endpoint
+has no "the TLS config" to take because a hub has two.
 
 ### The TCP+TLS accept loop (out of scope for this crate)
 
@@ -336,6 +357,7 @@ All design decisions are documented as ADRs in
 | ADR | Decision | Summary |
 |-----|----------|---------|
 | [082](../../decisions/082-alknet-tls-extraction.md) | alknet-tls crate extraction | Extract TLS setup from alknet-core/endpoint.rs; `TlsServerConfig` shareable across quinn + TCP+TLS + iroh; one ACME state machine |
+| [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as accept-loop runner | `AlknetEndpoint` takes no TLS config; assembly layer builds transports from `TlsServerConfig`s; public `dispatch` method; `acme-tls/1` guard moves to shared `dispatch` |
 
 ## Open Questions
 
@@ -348,6 +370,17 @@ See [open-questions.md](../../open-questions.md) for full details.
   on `alknet-tls` — a new dep edge. If it stays, core keeps a narrow
   `rustls` dep. Decision-ready — the answer depends on whether we want
   core to be `rustls`-free.
+- **OQ-60** (open): Where does transport construction live? The
+  endpoint-as-accept-loop-runner boundary (ADR-083) commits to
+  construction being outside the endpoint, but the destination —
+  assembly layer, `alknet-tls` convenience helpers, or a transport
+  module/crate — is open. `alknet-tls`'s stated job is "TLS setup, not
+  transport accept logic," which is an argument against the helper
+  option.
+- **OQ-61** (open): Multi-owner shutdown coordination. The endpoint owns
+  dispatched handlers (spawned in `dispatch`); the assembly layer owns
+  spawned accept loops (TCP+TLS). The coordination mechanism (shared
+  `shutdown_sender`, drain semantics) is unspecified.
 
 ## References
 
