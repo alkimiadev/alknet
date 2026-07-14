@@ -268,6 +268,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [081](decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | Accepted |
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Proposed (amended — endpoint signature superseded by ADR-083) |
 | [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner with Public Dispatch | Proposed (revised — TCP+TLS is an owned transport, not external) |
+| [084](decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs as the TLS Crypto Provider | Accepted |
 
 ## Open Questions
 

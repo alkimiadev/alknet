@@ -2,55 +2,48 @@
 
 - **Origin**: `docs/architecture/crates/tls/README.md` (the crate spec),
   `docs/architecture/decisions/082-alknet-tls-extraction.md` (the ADR).
-- **Status**: open
+- **Status**: resolved
 - **Door type**: two-way (moving a module between crates is a refactor,
   not a wire-format change; the function signatures and types are
   unchanged)
 - **Priority**: medium
-- **Blocked on**: nothing structural — the question is a dependency-edge
-  trade-off, not a missing capability. The existing code works in either
-  location. The decision is about which dep edge is cleaner.
-- **Resolution**: Not yet decided. The trade-off:
+- **Resolution**: **Option A — `fingerprint.rs` stays in `alknet-core`.**
 
-  **Option A: `fingerprint.rs` stays in `alknet-core`.**
-  - `alknet-core` keeps a narrow `rustls` dep (uses
-    `rustls::pki_types::CertificateDer` and `rustls::sign::public_key_to_spki`
-    in tests; the production code uses only `sha2` and manual DER parsing,
-    but the test helper `build_ed25519_spki_der` uses `rustls::sign`).
-  - `alknet-call`'s client-side `FingerprintPinVerifier` depends on
-    `alknet-core` (existing edge, no new dep).
-  - `alknet-tls` depends on `alknet-core` and re-exports the fingerprint
-    functions for convenience.
-  - Core is not `rustls`-free, but the dep is narrow (pki-types + sign
-    types, not the full TLS stack).
-  - This is the lower-friction option — no dep edges change.
+  The fingerprint functions are used by two paths with different dep
+  profiles:
 
-  **Option B: `fingerprint.rs` moves to `alknet-tls`.**
-  - `alknet-core` becomes `rustls`-free (loses the `rustls`,
-    `rustls-pki-types` deps for fingerprint).
-  - `alknet-call`'s `FingerprintPinVerifier` gains a dep on `alknet-tls`
-    — a new dep edge from a handler crate to a transport-infra crate.
-    This may or may not violate ADR-003's "no handler-depends-on-handler"
-    rule (alknet-tls is not a handler, but it is transport infra that
-    handler crates didn't previously depend on).
-  - The dep edge is the main concern: `alknet-call` depending on
-    `alknet-tls` means every call-protocol consumer transitively pulls
-    `rustls` + `tokio` + (optionally) `quinn`/`tokio-rustls`/`rustls-acme`.
-    That's heavy for a client-only deployment that just needs
-    fingerprint matching, not TLS setup.
+  - **Server path** (`alknet-core::endpoint` → `alknet-tls`): extracts the
+    fingerprint from the presented client cert for `PeerEntry` resolution.
+    This path already depends on `alknet-tls` — no new dep edge.
+  - **Client path** (`alknet-call::FingerprintPinVerifier`): matches the
+    server's presented cert against a pinned fingerprint. This path does
+    NOT want to depend on `alknet-tls` — it's a client-only deployment
+    that needs fingerprint matching, not TLS setup. Moving
+    `fingerprint.rs` to `alknet-tls` would force `alknet-call` to depend
+    on `alknet-tls`, pulling `rustls` + `tokio` + (optionally)
+    `quinn`/`tokio-rustls`/`rustls-acme` into every client-only deployment.
+    That's heavy and doesn't serve the use case.
 
-  **Likely resolution**: Option A (stay in core). The `rustls` dep in
-  core is narrow (type usage, not the TLS stack), and moving
-  `fingerprint.rs` to `alknet-tls` creates a heavy dep edge from
-  `alknet-call` to `alknet-tls` that doesn't serve the client-only case.
-  The fingerprint functions are used by both the server path (endpoint,
-  which does depend on `alknet-tls`) and the client path (call-client,
-  which does not want to depend on `alknet-tls`). Keeping them in core
-  serves both paths without forcing the client path to pull TLS infra.
-- **What does NOT block on this**: the `alknet-tls` extraction itself
-  (ADR-082). The crate can be created with `fingerprint.rs` staying in
-  core, and the question can be resolved later without blocking the
-  extraction.
+  The `rustls` dep in core is narrow: the production code in
+  `fingerprint.rs` uses only `sha2` + `hex` + manual DER parsing. The
+  `rustls::sign::public_key_to_spki` and `rustls::pki_types::alg_id::ED25519`
+  usage is in the **test helper only** (`build_ed25519_spki_der`), not
+  production. Core's production dep tree doesn't need `rustls` for
+  fingerprint — only the test does. The `rustls` and `rustls-pki-types`
+  deps are listed directly on `alknet-core` for this test helper (and for
+  `Connection`'s quinn/iroh integration types), but the fingerprint
+  production path is `rustls`-free.
+
+  Keeping `fingerprint.rs` in core serves both the server path (which
+  depends on `alknet-tls` anyway) and the client path (which must not
+  depend on `alknet-tls`) without forcing a heavy dep edge on the client.
+  `alknet-tls` re-exports the fingerprint functions for convenience.
+
+  This is a two-way door — moving the module later is a refactor, not a
+  wire-format change. But the rationale is clear: the client path's
+  fingerprint-matching need doesn't justify pulling TLS setup infra.
 - **Cross-references**: ADR-082 (alknet-tls extraction), ADR-003 (crate
   decomposition — handler dep rules), ADR-030 §6 (fingerprint
-  normalization), `crates/alknet-core/src/fingerprint.rs` (the code).
+  normalization), `crates/alknet-core/src/fingerprint.rs` (the code),
+  `crates/alknet-call/src/client/call_client.rs` (`FingerprintPinVerifier`
+  — the client-side consumer)

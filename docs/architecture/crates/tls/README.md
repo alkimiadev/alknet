@@ -371,18 +371,19 @@ All design decisions are documented as ADRs in
 |-----|----------|---------|
 | [082](../../decisions/082-alknet-tls-extraction.md) | alknet-tls crate extraction | Extract TLS setup from alknet-core/endpoint.rs; `TlsServerConfig` shareable across quinn + TCP+TLS + iroh; one ACME state machine |
 | [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as multi-transport accept-loop runner | `AlknetEndpoint` takes no TLS config; TCP+TLS is an owned transport (`with_tcp_tls`); `dispatch` public for SSH/WT; `acme-tls/1` guard moves to shared `dispatch` |
+| [084](../../decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs crypto provider | `rustls::crypto::aws_lc_rs::default_provider()` on all server + client config paths; matches iroh; FIPS-capable; do not switch to `ring` or process-default without a new ADR |
 
 ## Open Questions
 
 See [open-questions.md](../../open-questions.md) for full details.
 
-- **OQ-59** (open): Should `fingerprint.rs` stay in `alknet-core` or move
-  to `alknet-tls`? It uses `rustls::pki_types` and `rustls::sign` types,
-  which creates a `rustls` dep in core. If it moves to `alknet-tls`, the
-  client-side `FingerprintPinVerifier` (in `alknet-call`) would depend
-  on `alknet-tls` — a new dep edge. If it stays, core keeps a narrow
-  `rustls` dep. Decision-ready — the answer depends on whether we want
-  core to be `rustls`-free.
+- **OQ-59** (resolved): `fingerprint.rs` stays in `alknet-core`. The
+  client-side `FingerprintPinVerifier` (in `alknet-call`) uses fingerprint
+  functions and must not depend on `alknet-tls` (which would pull TLS
+  setup infra into client-only deployments). The `rustls` dep in core is
+  narrow — production fingerprint code uses only `sha2` + manual DER; the
+  `rustls::sign` usage is a test helper. `alknet-tls` re-exports the
+  fingerprint functions for convenience.
 - **OQ-60** (resolved): Where does transport construction live? The
   TCP+TLS accept loop lives in `alknet-core` behind a `tcp` feature as
   an owned endpoint transport (`with_tcp_tls`). Builder functions are

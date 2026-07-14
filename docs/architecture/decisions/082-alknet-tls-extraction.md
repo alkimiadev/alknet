@@ -203,7 +203,8 @@ that compiles and passes type-checks but silently changes TLS behavior:
   Enables 0-RTT / early data. Omitting it silently breaks 0-RTT clients.
 - **`rustls::crypto::aws_lc_rs::default_provider()`** as the crypto
   provider on all paths. Matches iroh's `tls-aws-lc-rs` feature. Do not
-  switch to `ring` or the process-default provider without an ADR.
+  switch to `ring` or the process-default provider without an ADR —
+  this decision is now recorded as [ADR-084](084-aws-lc-rs-crypto-provider.md).
 - **`AcceptAnyCertVerifier`'s `supported_verify_schemes()`** returns
   ED25519 + ECDSA P-256/P-384 + RSA PSS/PKCS1 (SHA256/384/512). This
   list determines which client cert signature algorithms the server
@@ -274,7 +275,9 @@ details that can change without breaking the contract.
 - ADR-065 — `Connection::from_stream`/`from_bidi` (TCP+TLS path)
 - ADR-080 — `ChannelClient::from_connection` (transport-agnostic
   client; the pattern this ADR mirrors on the TLS side)
-- OQ-59 — should `fingerprint.rs` stay in core or move to `alknet-tls`?
+- OQ-59 — resolved: `fingerprint.rs` stays in `alknet-core` (the
+  client-side `FingerprintPinVerifier` in `alknet-call` must not depend
+  on `alknet-tls`; the `rustls` dep in core is test-only).
 - `crates/alknet-core/src/endpoint.rs` — the code being extracted
 - `crates/alknet-core/src/config.rs` — `TlsIdentity`, `Ed25519SecretKey`
   (staying in core)
