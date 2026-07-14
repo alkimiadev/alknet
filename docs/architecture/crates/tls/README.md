@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-14
+last_updated: 2026-07-15
 ---
 
 # alknet-tls
@@ -150,6 +150,28 @@ The ALPN list is the set of ALPNs the deployment wants to advertise
 `acme-tls/1` ALPN is appended automatically (for the TLS-ALPN-01
 challenge, ADR-027 §7).
 
+### `async fn new` — lifecycle semantics
+
+`new` is `async` because the ACME path spawns a state-machine task
+(`tokio::spawn`) before returning — the spawn itself is await-free, but
+the function is async so the non-ACME paths share one signature.
+
+**ACME path**: `new` spawns the `AcmeState` task, wires its `resolver()`
+into the `rustls::ServerConfig`, and returns **immediately** — it does
+**not** await the first certificate. The returned `TlsServerConfig` is
+usable for `for_quinn()` / `for_tcp_tls()` right away; the resolver may
+return no cert until the first ACME order completes, causing TLS
+handshakes to fail transiently during that window. This matches the
+current code's behavior (`TlsSetup::new_acme` spawns and returns).
+
+**Non-ACME paths** (X509 / RawKey / SelfSigned): cert loading is
+synchronous file I/O (`std::fs::read`) + in-memory construction; there
+is no await point in the implementation. The `async` signature is for
+API uniformity with the ACME path, not because the work is async. An
+implementer who finds this objectionable may split a non-async
+constructor — that is a two-way-door implementation detail, not an
+architecture decision.
+
 ### Behavior-preservation invariants
 
 The extraction must preserve these load-bearing TLS behaviors. They
@@ -163,9 +185,10 @@ changes TLS behavior:
   RawKey, SelfSigned, ACME). Enables 0-RTT / early data. Omitting it
   disables 0-RTT, silently breaking clients that use it.
 - **`rustls::crypto::aws_lc_rs::default_provider()`** as the crypto
-  provider on all paths. Matches iroh's `tls-aws-lc-rs` feature. Do not
-  switch to `ring` or the process-default provider without an ADR —
-  different FIPS status, different platform support.
+  provider on all paths. Do not switch to `ring` or the process-default
+  provider without a new ADR — see
+  [ADR-084](../../decisions/084-aws-lc-rs-crypto-provider.md) for the
+  rationale (FIPS, platform matrix, iroh consistency).
 - **`AcceptAnyCertVerifier`'s `supported_verify_schemes()`** returns
   ED25519 + ECDSA P-256/P-384 + RSA PSS/PKCS1 (SHA256/384/512). This
   list determines which client cert signature algorithms the server
@@ -264,6 +287,16 @@ endpoint struct and accept loops remain in core), `ed25519-dalek`
 production and `rustls::sign` in the test helper `build_ed25519_spki_der`
 — see OQ-59).
 
+> **Terminology — hub, worker, hub-worker.** A *hub* is a node that
+> accepts inbound connections from workers and browsers (the central
+> node in a hub-and-spoke topology — see
+> [`crates/hub/README.md`](../hub/README.md)). A *worker* is a node
+> that dials out to a hub. A *hub-worker* is a node that does both
+> (accepts inbound and dials out). A *pure worker* has no inbound
+> endpoints. These terms come from the hub topology (ADR-029, ADR-034);
+> "assembly layer" (ADR-014) is the deployment binary that wires crates
+> — in practice, today, usually a hub or hub-worker.
+
 ### What `AlknetEndpoint` does after the refactor
 
 `AlknetEndpoint::new()` currently builds `TlsSetup` internally. After
@@ -334,6 +367,34 @@ behind a `tcp` feature, as an owned transport on `AlknetEndpoint` (via
 cert provider, not the accept loop. This keeps `alknet-tls` focused on
 TLS setup and cert sharing, not transport accept logic.
 
+### Server-only (for now) — client-side config is a separate question
+
+`alknet-tls` as specified here is **server-side only**:
+`TlsServerConfig` and its accessors (`for_quinn`, `for_tcp_tls`,
+`rustls_config`) produce `rustls::ServerConfig`-shaped outputs for
+inbound listeners. There is no `TlsClientConfig`, no `for_client()`,
+no client-side cert/verifier helper in this crate.
+
+The client side — the `rustls::ClientConfig` construction used by
+`CallClient` / `ChannelClient` for outbound dials, including
+[ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md)'s
+verifier-selection rule (fingerprint pin for known peers, CA-verify for
+unknown X.509, fail-closed for unknown raw-key) — currently lives in
+`alknet-call`'s `FingerprintPinVerifier`. ADR-084 requires the client
+side to use the same `aws_lc_rs` provider; today that is enforced by
+**convention** (two crates independently constructing
+`aws_lc_rs::default_provider()`), not by shared code.
+
+Whether `alknet-tls` should grow a client-side helper (a
+`TlsClientConfig` that centralizes verifier selection + provider
+consistency, so `alknet-call` / a future `AlknetClient` don't each
+rebuild it) is **deferred** — see OQ-64. The deferral blocks on the
+`AlknetClient` dial-seam extraction (OQ-55): the client-side TLS helper
+and the shared dial are the same seam, and extracting either without a
+second transport's real client dial would bake QUIC in as the client
+shape — the same welding ADR-065 unwound on the server side. The
+provider-consistency convention (ADR-084) holds until then.
+
 ## Crate dependencies (in the dep graph)
 
 ```
@@ -391,6 +452,18 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-61** (dissolved): Multi-owner shutdown coordination. The
   problem does not arise — the endpoint owns all its accept loops
   (quinn, iroh, TCP+TLS); `shutdown()` stops them all. See ADR-083.
+- **OQ-62** (open): Does a hub pass the same ALPN list to both
+  `TlsServerConfig`s, or different (transport-appropriate) lists?
+  Decision-needed before the hub's assembly code is written.
+- **OQ-63** (open): `TlsError` shape — the error type is referenced in
+  public signatures but not sketched. Needs a variant-granularity
+  decision (single enum vs thin wrapper) before implementation.
+- **OQ-64** (deferred): Client-side TLS config helper. `alknet-tls` is
+  server-side only as specified; the client-side `ClientConfig` +
+  verifier selection lives in `alknet-call`. Blocked on the
+  `AlknetClient` dial-seam extraction (OQ-55) — extracting the client
+  helper without a second transport's dial would bake QUIC in as the
+  client shape.
 
 ## References
 

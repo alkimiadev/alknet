@@ -1,11 +1,26 @@
 ---
 status: draft
-last_updated: 2026-07-14
+last_updated: 2026-07-15
 ---
 
 # Alknet Architecture
 
 ## Current State
+
+**Workspace scope corrected (ADR-085, 2026-07-15).** The overview's
+crate graph had been describing the wrong scope since ADR-003 — a flat
+~12-crate workspace including DNS, messaging, and NAPI, while omitting
+channels, hub, worker, and tls. [ADR-085](decisions/085-workspace-scope-core-vs-consumer-repos.md)
+records the actual scope: the mono-repo is the **core networking
+toolkit** (substrate: core, tls, call, channels; deployment shapes: hub,
+worker; foundational handlers: tty, http, ssh, tunnel, socks5, fs, sftp;
+vault). Crates that build on top of a hub or worker (docker, agent) are
+**consumer repos** — separate repos depending on the published core
+crates. This corrects the root cause of the "assembly layer" hedging
+pattern: the overview now reflects the real boundary, so the
+"assembly layer" has a bounded home (hub/worker), not an escape hatch.
+The [overview.md](overview.md) crate graph and ALPN registry are
+rewritten to match.
 
 **alknet-channels specs drafted.** The alknet-channels crate (multiplexing
 proxy — `ProtocolHandler` on `alknet/channels`, 9-byte chunk format, N
@@ -138,7 +153,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [overview.md](overview.md) | draft | Workspace-level overview, crate graph, shared types, design principles |
+| [overview.md](overview.md) | draft | Workspace-level overview, crate graph (core mono-repo scope per ADR-085), hub/worker model, shared types, design principles |
 | [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](questions/) |
 | [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index |
 | [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection (`Box<dyn BidiStreamSource>` — ADR-070), BidiStreamSource trait, BiStream, StreamError |
@@ -269,10 +284,11 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Proposed (amended — endpoint signature superseded by ADR-083) |
 | [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner with Public Dispatch | Proposed (revised — TCP+TLS is an owned transport, not external) |
 | [084](decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs as the TLS Crypto Provider | Accepted |
+| [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Accepted |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (55 OQs across 17 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (64 OQs across 18 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 

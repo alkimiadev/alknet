@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-14
+last_updated: 2026-07-15
 ---
 
 # Open Questions
@@ -178,6 +178,14 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-56](questions/056-full-channel-level-flow-control-windowing.md) | Full Channel-Level Flow-Control Windowing | deferred(scope) | two | low |
 | [OQ-57](questions/057-two-pump-helper-extraction.md) | Two-Pump Helper Extraction to alknet-core | deferred(scope) | two | low |
 
+### alknet-tls
+
+| OQ | Title | Status | Door | Pri |
+|----|-------|--------|------|-----|
+| [OQ-62](questions/062-alpn-list-sharing-two-config-hub.md) | Does a Hub Pass the Same ALPN List to Both `TlsServerConfig`s? | open | one | high |
+| [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | open | one | high |
+| [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | deferred(scope) | two | med |
+
 ## Deferred / Blocked
 
 The safe-exit visibility surface. These questions are parked because the
@@ -281,4 +289,20 @@ filtering the tables above.
   *contract* is decided (ADR-078); only the *helper extraction* is deferred.
 - **Priority**: low
 - **Full file**: [OQ-57](questions/057-two-pump-helper-extraction.md)
+
+### OQ-64: Should `alknet-tls` Provide a Client-Side TLS Config Helper?
+
+- **Blocked on**: the `AlknetClient` dial-seam extraction (OQ-55). The
+  client-side TLS helper and the shared dial are the same seam — both
+  answer "how does an outbound connection build its
+  `rustls::ClientConfig` + select a verifier (ADR-034) + dial." The
+  blocking condition is the same as OQ-55: a second transport's real
+  client dial existing (TCP+TLS, SSH raw-TCP, HTTP-wrapped call), so the
+  transport-polymorphic client+TLS seam is extractable from two
+  *different* transport implementations, not one QUIC shape. Until then,
+  `alknet-tls` is server-side only; the client side lives in
+  `alknet-call`'s `FingerprintPinVerifier`, with provider consistency
+  (ADR-084) enforced by convention.
+- **Priority**: medium
+- **Full file**: [OQ-64](questions/064-client-side-tls-helper.md)
 

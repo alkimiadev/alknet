@@ -1,15 +1,35 @@
 ---
 status: draft
-last_updated: 2026-07-12
+last_updated: 2026-07-15
 ---
 
 # Alknet Overview
 
 ## What Alknet Is
 
-Alknet is a self-hostable networking toolkit built on QUIC+TLS with ALPN-based protocol dispatch. A single endpoint accepts connections on one port, and the ALPN string negotiated during the TLS handshake routes each connection to the correct protocol handler. Every service — SSH, SFTP, Git, HTTP, DNS, messaging, RPC — is an ALPN on a shared endpoint.
+Alknet is a **core networking toolkit** for building self-hostable,
+p2p-capable, "vpn-like without being a vpn" systems. It is built on
+QUIC+TLS with ALPN-based protocol dispatch, plus TCP+TLS for the
+hub/HTTP path. A single endpoint accepts connections on one port, and
+the ALPN string negotiated during the TLS handshake routes each
+connection to the correct protocol handler. Every service — call,
+channels, HTTP, TTY, tunnels, SFTP — is an ALPN on a shared endpoint
+or a data-channel ALPN inside channels.
 
-This is the core insight: **a service IS an ALPN.** One endpoint, one port, many protocols — dispatched by the TLS handshake, not by application-level peeking or separate listeners.
+This is the core insight: **a service IS an ALPN.** One endpoint, one
+port, many protocols — dispatched by the TLS handshake, not by
+application-level peeking or separate listeners.
+
+### Scope: core mono-repo vs. consumer repos
+
+The mono-repo is the **core networking toolkit** — the substrate
+(core, tls, call, channels), the deployment shapes (hub, worker), the
+foundational protocol handlers (tty, http, ssh, tunnel, socks5, fs,
+sftp), and vault (foundational to ACL). Crates that build *on top of*
+a hub or worker (docker operations, agent, future applications) are
+**consumer repos** — they depend on the published core crates, not on
+`alknet-core` directly. See [ADR-085](decisions/085-workspace-scope-core-vs-consumer-repos.md)
+for the full scope decision.
 
 ## Why ALPN Dispatch
 
@@ -22,52 +42,80 @@ The previous architecture used a three-layer model (StreamInterface/MessageInter
 
 See [ADR-001](decisions/001-alpn-protocol-dispatch.md) for the full rationale.
 
+## The Hub/Worker Model
+
+Alknet's deployment shape is hub-and-spoke. A **hub** is a channels
+hub — it accepts inbound connections (over quinn, iroh, TCP+TLS),
+runs `ChannelsAdapter` on `alknet/channels`, relays data channels
+between legs (ADR-079), aggregates workers' operations, and serves
+discovery. A **worker** is a channels worker — it dials out to a hub
+via `ChannelClient`, discovers operations via `from_call`, and exposes
+its own operations on channel 0. A **hub-worker** does both.
+
+The bidirectionality of call and channels means both sides can be both
+hub and worker within a connection. A hub (A) that dials another hub
+(B) is, from B's perspective, a worker. This does not require a
+separate "hub-as-client" abstraction — `ChannelClient` /
+`CallClient` take-over APIs (`from_connection`, `spawn_dispatch`) are
+transport-agnostic and work regardless of whether the dialer is a hub,
+a worker, or a hub-worker.
+
+See [ADR-029](decisions/029-peer-graph-routing-model.md),
+[ADR-034](decisions/034-outgoing-only-x509-and-three-peer-roles.md),
+[ADR-079](decisions/079-hub-relay-translate-not-forward.md), and
+[crates/hub/README.md](crates/hub/README.md) for the full topology.
+
 ## Crate Graph
 
+The mono-repo contains the substrate, the deployment shapes, and the
+foundational handlers. Consumer repos (docker, agent) are not in this
+graph — they depend on the published core crates from their own repos
+(ADR-085).
+
 ```
-alknet-vault (standalone, no alknet-core dependency)
+alknet-vault (standalone — foundational to ACL: key derivation, identity)
 │
-alknet-core
-│   ├── ProtocolHandler trait
-│   ├── ALPN router / endpoint
-│   ├── BiStream trait, Connection type
-│   ├── AuthContext, IdentityProvider
-│   └── StaticConfig, DynamicConfig (ArcSwap)
+├── Substrate
+│   alknet-core        ProtocolHandler, endpoint (multi-transport accept loop),
+│   │                  Connection, BidiStreamSource, AuthContext, IdentityProvider,
+│   │                  StaticConfig, DynamicConfig
+│   ├── alknet-tls     TlsServerConfig — shared TLS config across quinn + TCP+TLS + iroh (ADR-082)
+│   ├── alknet-call    CallAdapter on alknet/call, CallClient, OperationRegistry, adapters
+│   └── alknet-channels
+│       ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081
+│       └── alknet-channels-call  channel 0 pre-negotiation + lifecycle ops — ADR-081
 │
-├── alknet-ssh        (depends on alknet-core, russh)
-├── alknet-call       (depends on alknet-core)
-│   ├── CallAdapter (server: ProtocolHandler for alknet/call)
-│   ├── Call client (send/receive over QUIC)
-│   ├── OperationSpec, OperationRegistry, AccessControl
-│   └── Adapter traits (from_*, to_*)
+├── Deployment shapes
+│   ├── alknet-hub     channels hub — accepts workers, relays, aggregates (ADR-079)
+│   └── alknet-worker  channels worker — dials out to a hub [not yet specced]
 │
-├── alknet-agent      (depends on alknet-call)
-│   ├── LLM execution loop (forked aisdk, simplified)
-│   ├── Tool dispatch via call protocol
-│   └── Provider credentials via capabilities (no env vars, no vault on the wire)
+├── Foundational handlers (inside channels as data-channel ALPNs, or on the endpoint)
+│   ├── alknet-tty          alknet/tty — specced (ADR-052–057), implemented
+│   ├── alknet-tty-local    PTY/pipe backend — sibling crate (ADR-054)
+│   ├── alknet-http         h2/http1.1 + WebSocket — the HTTP edge case (registration, browser, MCP)
+│   ├── alknet-ssh          russh server channels wrapper — for git/sftp compat [not yet specced]
+│   ├── alknet-tunnel       alknet/tunnel — POC-validated, minimal spec needed [not yet specced]
+│   ├── alknet-socks5       SOCKS5 proxy over channels [not yet specced]
+│   ├── alknet-fs           filesystem access over channels [not yet specced]
+│   └── alknet-sftp         SFTP over channels [not yet specced]
 │
-├── alknet-git        (depends on alknet-core, gix)
-├── alknet-sftp       (depends on alknet-core, russh-sftp)
-├── alknet-msg        (depends on alknet-core)
-├── alknet-http       (depends on alknet-core, alknet-call, axum, reqwest, wtransport, rmcp)
-├── alknet-dns        (depends on alknet-core, hickory-proto)
-│
-├── alknet-napi       (depends on alknet-call, napi-rs)
-│   └── Thin NAPI projection of call protocol client to Node.js
-│
-└── alknet            (CLI binary, depends on all handler crates + alknet-vault)
+└── Consumer repos (separate repos, depend on the published core crates)
+    alknet-docker      docker operations — a docker host is a worker
+    alknet-agent       LLM agent — builds on alknet-call for tool dispatch
 ```
 
 Dependency rules:
-- No handler crate depends on another handler crate
-- All handler crates depend on alknet-core
-- alknet-vault has zero alknet crate dependencies
-- alknet-agent depends on alknet-call (not alknet-core) — it uses the call protocol client for tool dispatch
-- alknet-napi depends only on alknet-call — thin NAPI projection, no business logic
-- alknet (CLI) is the only crate that depends on all handler crates and alknet-vault
-- Rust is the canonical implementation language — TypeScript is a reference/browser adaptation, not a parallel implementation (see ADR-013)
+- The substrate crates form a clean DAG: `channels` → `call` → `core`; `tls` → `core`. No cycles.
+- `alknet-hub` and `alknet-worker` depend on the substrate (channels, call, core) and on the handlers they wire. They are consumers of the substrate, not part of it.
+- No handler crate depends on another handler crate — cross-handler communication goes through `alknet/call` on channel 0.
+- `alknet-call` is a protocol-foundation crate (ADR-003 Am. 1): `alknet-http` depends on it for `OperationSpec`/`Handler`/`OperationAdapter` types, not as a peer-handler dep.
+- `alknet-vault` has zero alknet crate dependencies (ADR-018). It is foundational to ACL: the hub/worker identity model derives from vault-managed keys. Vault is accessed only at the assembly layer (ADR-019); handlers receive derived credentials via capabilities (ADR-014).
+- Consumer repos (docker, agent) depend on the published core crates, not on `alknet-core` directly.
+- Rust is the canonical implementation language (ADR-013).
 
-See [ADR-003](decisions/003-crate-decomposition.md) for the full decomposition rationale.
+See [ADR-003](decisions/003-crate-decomposition.md) (as amended by
+[ADR-085](decisions/085-workspace-scope-core-vs-consumer-repos.md)) for
+the decomposition rationale.
 
 ## ProtocolHandler Trait
 
@@ -92,21 +140,56 @@ See [ADR-002](decisions/002-protocol-handler-trait.md) and [ADR-007](decisions/0
 
 ## ALPN Registry
 
+ALPNs are split into two layers: **endpoint ALPNs** (negotiated in the
+TLS handshake, dispatched by the endpoint) and **channels data-channel
+ALPNs** (negotiated via `channel/open` inside a channels connection,
+dispatched by the channels substrate). See ADR-071 and ADR-073.
+
+### Endpoint ALPNs
+
 | ALPN | Handler | Description |
 |------|---------|-------------|
-| `alknet/ssh` | SshAdapter | SSH-2 handshake, channel multiplexing, SOCKS5, port forwarding |
-| `alknet/call` | CallAdapter | JSON-RPC via hand-rolled EventEnvelope framing: operations, streaming, pub/sub |
-| `alknet/git` | GitAdapter | Git smart protocol over QUIC (gix, pkt-line) |
-| `alknet/sftp` | SftpAdapter | SFTP protocol (russh-sftp core) |
-| `alknet/msg` | MessageAdapter | E2E encrypted messaging, mixnet |
-| `alknet/http` | HttpAdapter | axum REST API, dashboard, MCP endpoint |
-| `alknet/dns` | DnsAdapter | DNS over QUIC/TLS, pkrr service discovery |
-| `h3` | HttpAdapter (HTTP/3 + WebTransport) | Browser-compatible WebTransport + HTTP/3 (first-class, ADR-038) |
-| `h2` / `http/1.1` | HttpAdapter | Standard HTTP for browsers, curl |
+| `alknet/call` | `CallAdapter` | Call protocol: operations, streaming, pub/sub (hand-rolled EventEnvelope — ADR-064) |
+| `alknet/channels` | `ChannelsAdapter` | Multiplexing substrate: N channels over one transport stream (ADR-071); channel 0 = `alknet/call` (ADR-072) |
+| `h2` / `http/1.1` | `HttpAdapter` | Standard HTTP for browsers, curl, registration endpoint (WebSocket for bidirectional — ADR-048) |
 
-> **Note**: `alknet/agent` is not in the ALPN registry. The agent service is a future consumer that builds on top of `alknet-call` (it depends on `alknet-call`, not `alknet-core` directly — see ADR-003). It uses the call protocol for tool dispatch and exposes agent operations (e.g., `/agent/chat`) as call-protocol operations in the `OperationRegistry`, not as a separate ALPN. The agent is a mental model that informed the core architecture (capabilities, scoped env, abort cascade) but is not specced yet — its design will change as it's built out against the implemented core crates.
+### Channels data-channel ALPNs
 
-> **Note**: `alknet/vault` is not in the ALPN registry. alknet-vault is a standalone local key vault with no alknet-core dependency and no remote dispatch capability (ADR-025). The CLI binary embeds it and accesses it at the assembly layer — unlocking the vault at startup, deriving and decrypting credentials, and injecting them into handler capabilities. The vault is not exposed over the call protocol. No vault operations are registered in the operation registry. See ADR-008, ADR-014, and ADR-025.
+These ride inside a `alknet/channels` connection as data channels,
+opened via `channel/open` (ADR-073). They get the ACL and
+bidirectionality of channels + call for free.
+
+| ALPN | Handler | Status |
+|------|---------|--------|
+| `alknet/tty` | `TtyAdapter` | specced (ADR-052–057), implemented |
+| `alknet/tunnel` | (tunnel handler) | POC-validated, minimal spec needed [not yet specced] |
+| `alknet/socks5` | (SOCKS5 handler) | not yet specced |
+| `alknet/fs` | (fs handler) | not yet specced |
+| `alknet/sftp` | (sftp handler) | not yet specced |
+| (future) | any ALPN a consumer registers | channels supports any ALPN — ADR-071 |
+
+### Notes
+
+> **`alknet/vault`** is not in the ALPN registry. alknet-vault is a
+> standalone local key vault with no alknet-core dependency and no
+> remote dispatch capability (ADR-025). The assembly layer (hub or
+> worker binary) embeds it, unlocks it at startup, derives/decrypts
+> credentials, and injects them into handler capabilities (ADR-014).
+> The vault is foundational to ACL — the hub/worker identity model
+> (`IdentityProvider`, `PeerEntry`, fingerprint resolution) derives
+> from vault-managed keys. See ADR-008, ADR-014, ADR-018, ADR-019.
+
+> **`alknet/http`** is the HTTP edge case. It is an endpoint ALPN
+> (`h2`/`http/1.1`), not a channels data-channel ALPN — it wraps the
+> call protocol for browser/curl access (registration, MCP/OpenAPI
+> adapters, WebSocket bidirectional path). See
+> [crates/http/README.md](crates/http/README.md).
+
+> **Consumer-repo ALPNs** (e.g., docker operations) are not listed
+> here. A consumer that builds on top of a hub or worker registers its
+> operations on the call protocol (channel 0), not as a separate ALPN.
+> Docker, for example, registers its operations as call-protocol ops
+> (ADR-058), not as `alknet/docker`.
 
 ## Authentication
 
@@ -178,13 +261,21 @@ The following types live in alknet-core and are used across handler crates:
 
 Not all decisions carry the same reversal cost. One-way door decisions (BiStream type, crate independence, secret material flow) require ADRs and possibly POCs before commitment. Two-way door decisions (single vs multi-transport) can be decided during implementation — start simple, add complexity when needed. The static-vs-dynamic registration question is now resolved: the `HandlerRegistry` (ALPN-level) is static at startup (ADR-010, OQ-04), while the `OperationRegistry` (call-protocol-level) is layered — curated ops static, session/imported ops dynamic at their trust-boundary scopes (ADR-024). WASM compatibility is a design constraint within this framework, not a separate principle: decisions that would permanently close the WASM door require explicit justification. See [ADR-009](decisions/009-one-way-door-decision-framework.md).
 
-### One ALPN, One Connection, One Handler
+### One ALPN, One Connection, One Handler (endpoint layer)
 
-Each ALPN gets its own QUIC connection. The handler owns the entire connection lifecycle. Handlers that need multiple streams (SSH, call) call `connection.accept_bi()` or `connection.open_bi()` as needed. There is no multiplexing layer between connections.
+Each endpoint ALPN gets its own connection. The handler owns the
+entire connection lifecycle. Handlers that need multiple streams (call,
+channels) open/accept streams as needed. At the channels layer, the
+model extends: one `alknet/channels` connection carries many
+data-channel ALPNs, each dispatched via `channel/open` (ADR-073) — a
+multiplexing power QUIC's per-connection ALPN doesn't provide natively.
 
 ### Handler Independence
 
-No handler crate depends on another handler crate. Cross-handler communication goes through the call protocol (`alknet/call`) or through alknet-core's endpoint. The only crate that depends on all handlers is the CLI binary.
+No handler crate depends on another handler crate. Cross-handler
+communication goes through the call protocol (`alknet/call` on channel
+0) or through the channels substrate. The assembly layer (hub or
+worker binary) is the only place that depends on all handlers.
 
 ## Design Decisions
 
@@ -194,7 +285,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 |-----|----------|---------|
 | [001](decisions/001-alpn-protocol-dispatch.md) | ALPN-Based Protocol Dispatch | Single endpoint, ALPN negotiation routes to handlers |
 | [002](decisions/002-protocol-handler-trait.md) | ProtocolHandler Trait | One trait replaces StreamInterface/MessageInterface |
-| [003](decisions/003-crate-decomposition.md) | Crate Decomposition | One crate per protocol handler, core provides shared infra |
+| [003](decisions/003-crate-decomposition.md) | Crate Decomposition | One crate per protocol handler, core provides shared infra (crate list superseded by [ADR-085](decisions/085-workspace-scope-core-vs-consumer-repos.md) — core mono-repo vs. consumer repos) |
 | [004](decisions/004-auth-as-shared-core.md) | Auth as Shared Core | IdentityProvider in core, handlers extract credentials |
 | [005](decisions/005-irpc-as-call-protocol-foundation.md) | irpc as Call Protocol Foundation | ~~Accepted~~ → **Superseded** by [ADR-064](decisions/064-irpc-never-integrated-hand-rolled-framing.md) (irpc was never integrated) |
 | [006](decisions/006-alpn-convention-and-connection-model.md) | ALPN String Convention and Connection Model | `alknet/` prefix, one ALPN per connection |
@@ -219,6 +310,13 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [025](decisions/025-vault-local-only-dispatch.md) | Vault Local-Only Dispatch | Dropped irpc from vault; direct method calls; local-only by construction |
 | [026](decisions/026-vault-key-model-hd-derivation.md) | Vault Key Model — HD Derivation | HD derivation from BIP39 seed; `74'` coin type; SLIP-0010/Ed25519 default; AES-256-GCM for credentials |
 | [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | `TlsIdentity::Acme` variant + two-phase server config; `RawKey` uses `ed25519-dalek` (not `iroh::SecretKey`); `acme` feature gate |
+| [065](decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | Generic single-stream connections — unblocks TCP+TLS, SSH channels, WebTransport, wasm |
+| [070](decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | Open `Connection` for extension — downstream crates add connection shapes without editing core |
+| [071](decisions/071-channels-wire-format.md) | alknet-channels Wire Format | 9-byte chunk header; N channels over one transport stream |
+| [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate `channel/open`, byte-forward data channels; the hub never runs protocol-specific handlers |
+| [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Shared `TlsServerConfig` across quinn + TCP+TLS + iroh; one ACME state machine |
+| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner | Endpoint takes no TLS config; TCP+TLS is an owned transport; public `dispatch` for SSH/WT |
+| [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Core mono-repo (substrate + deployment shapes + foundational handlers + vault) vs. consumer repos (docker, agent) |
 
 ## Open Questions
 
@@ -245,21 +343,19 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key questi
 | Config reload fails | `ArcSwap<DynamicConfig>` keeps the previous valid config. Error is logged. No service interruption |
 | BiStream read/write error | QUIC stream-level error. The handler detects this as an I/O error and returns from `handle()`. The connection itself may remain open for other streams — but since each handler owns a full `Connection` (one ALPN per connection, ADR-006), a stream error typically causes the handler to return, closing the connection |
 
-## What Stays from the Previous Implementation
+## Reference Implementation
 
-The reference implementation at `/workspace/@alkdev/alknet-main/` contains working code that carries forward, adapted to the new model:
+The reference implementation at `/workspace/@alkdev/alknet-main/` contains
+working code that informed the new architecture. It is reference, not
+constraint — understand what it did and why, then implement against
+the new `ProtocolHandler` trait, ALPN router, and channels substrate.
 
-| Module | Lines | Destination | Notes |
-|--------|-------|-------------|-------|
-| `src/auth/*` | ~1450 | alknet-core | Identity, IdentityProvider, keys — simplified per ADR-004 |
-| `src/config/*` | ~950 | alknet-core | StaticConfig, DynamicConfig, ArcSwap — adapted for ALPN handler config |
-| `src/transport/*` | ~1500 | alknet-core | Transport trait, TCP/TLS/iroh — becomes endpoint connection acceptors |
-| `src/call/*` | ~1200 | alknet-call | EventEnvelope, registry, framing — becomes ProtocolHandler on alknet/call |
-| `src/interface/ssh.rs` | 982 | alknet-ssh | SSH channel handling |
-| `src/server/handler.rs` | 974 | alknet-ssh | SSH server handler |
-| `src/server/channel_proxy.rs` | 555 | alknet-ssh | Channel proxy |
-| `src/server/serve.rs` | 1526 | alknet-core (reference) | Accept loop pattern informs ALPN router, but gets rewritten |
-| `src/client/*` | ~1900 | alknet-ssh | SOCKS5 client, connect logic |
-| `src/socks5/*` | ~800 | alknet-ssh | SOCKS5 protocol |
-
-The old code is reference, not constraint. Understand what it did and why, then implement against the new ProtocolHandler trait and ALPN router.
+| Module | Destination | Notes |
+|--------|-------------|-------|
+| `src/auth/*` | alknet-core | Identity, IdentityProvider, keys — simplified per ADR-004 |
+| `src/config/*` | alknet-core | StaticConfig, DynamicConfig, ArcSwap |
+| `src/transport/*` | alknet-core + alknet-tls | Transport construction → alknet-tls (ADR-082); accept loops → alknet-core (ADR-083) |
+| `src/call/*` | alknet-call | EventEnvelope, registry, framing — becomes `ProtocolHandler` on `alknet/call` |
+| `src/server/serve.rs` | alknet-core (reference) | Accept loop pattern informs the ALPN router; rewritten as multi-transport accept-loop runner (ADR-083) |
+| `src/interface/ssh.rs`, `src/server/*` | alknet-ssh [not yet specced] | SSH channel handling — future russh server channels wrapper for git/sftp compat |
+| `src/socks5/*`, `src/client/*` | alknet-socks5 [not yet specced] | SOCKS5 protocol — future channels data-channel ALPN |

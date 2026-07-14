@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Accepted (depends on ADR-082/083, which are still Proposed — this ADR
+records a decision those ADRs list as an invariant. If ADR-082/083 are
+revised in a way that changes the config-construction paths, the
+provider decision here still stands; only the "where it is applied"
+referent would update.)
 
 ## Context
 

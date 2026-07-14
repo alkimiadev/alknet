@@ -564,7 +564,7 @@ fixed until the enrollment-token model is decided.
 ## Crate dependencies
 
 ```
-alknet-hub
+alknet-hub (Hub struct deps)
 ├── alknet-channels-call (ChannelClient, ChannelsAdapter, ChannelManager,
 │                         ChannelBidiStreamSource)
 ├── alknet-call (CallAdapter, Dispatcher, PeerCompositeEnv,
@@ -574,6 +574,12 @@ alknet-hub
 │                HandlerRegistry, AuthContext)
 ├── tokio (spawn, time::sleep)
 └── tracing (logging)
+
+  (assembly-layer deps — used by the hub's composition code, not by
+   the Hub struct itself)
+  ├── alknet-tls (TlsServerConfig — builds the raw-key + X.509/ACME
+  │               configs handed to the endpoint's transports)
+  └── alknet-core [tcp feature] (with_tcp_tls — the TCP+TLS accept loop)
 ```
 
 `alknet-hub` depends on `alknet-channels-call`, `alknet-call`, and
@@ -583,6 +589,15 @@ protocol handler. The `alknet-http` dependency is for the
 registration endpoint and browser HTTP access — the hub wires
 `HttpAdapter` into the same `HandlerRegistry` as
 `ChannelsAdapter`.
+
+`alknet-tls` is an **assembly-layer** dependency, not a `Hub` struct
+dependency: the `Hub` struct holds no `TlsServerConfig`, but the hub's
+composition code (the assembly-layer wiring shown in "Assembly layer
+integration" below) builds the `TlsServerConfig`s and hands them to the
+endpoint's transports via `for_quinn()` / `for_tcp_tls()`. This
+distinction matters: a consumer that uses `Hub` with externally-built
+transports does not pull `alknet-tls` through the `Hub` type, only
+through the assembly wiring.
 
 ## Assembly layer integration
 

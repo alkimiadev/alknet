@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-14
+last_updated: 2026-07-15
 ---
 
 # Endpoint
@@ -45,6 +45,14 @@ A node can be reachable through different paths depending on its network context
 | `iroh::Endpoint` | Relay access | NodeId (Ed25519) | Home servers, NAT, IoT |
 
 These are not interchangeable transports — they are **complementary connectivity modes**. A node behind NAT that also has a public IP can use both simultaneously. Both produce QUIC connections that dispatch through the same `HandlerRegistry` by ALPN string.
+
+> **Terminology — hub, worker, hub-worker.** A *hub* accepts inbound
+> connections from workers and browsers (see
+> [`crates/hub/README.md`](../hub/README.md) for the hub-and-spoke
+> topology). A *worker* dials out to a hub. A *hub-worker* does both. A
+> *pure worker* has no inbound endpoints. These terms come from ADR-029
+> / ADR-034; "assembly layer" (ADR-014) is the deployment binary that
+> wires crates — in practice, today, usually a hub or hub-worker.
 
 ### TCP+TLS is a first-class owned transport
 
@@ -94,7 +102,19 @@ Registration is static at startup (see [OQ-04](../../open-questions.md)). The CL
 
 ### ALPN strings in TLS ServerConfig and iroh endpoint
 
-The quinn endpoint's `rustls::ServerConfig` ALPN list is set from `registry.alpn_strings()` at construction time. The iroh endpoint's ALPN list is similarly derived. Both connection sources advertise the same set of ALPNs.
+ALPN-list construction is the **assembly layer's** responsibility, not
+the endpoint's. After ADR-083, the endpoint takes no TLS config and
+builds no transports — the assembly layer reads `registry.alpn_strings()`
+and passes the appropriate ALPN list to each `TlsServerConfig::new()`
+(see [`crates/tls/README.md`](../tls/README.md)). For a single-config
+deployment (one identity, one set of ALPNs), all transports advertise
+the same set. For a two-config hub (raw key + X.509/ACME — see OQ-62),
+the assembly layer may pass different lists to each config; that split
+is a hub-assembly-layer concern, not an endpoint concern.
+
+The iroh endpoint's ALPN list is set via `iroh::Endpoint::builder().alpns()`
+by the assembly layer at construction time, from the same
+`registry.alpn_strings()` source.
 
 ## Accept Loops
 
@@ -301,10 +321,17 @@ Fatal errors that prevent the endpoint from starting or continuing.
 ```rust
 pub enum EndpointError {
     BindFailed(io::Error),
-    TlsConfig(io::Error),
     HandlerNotFound(Vec<u8>),  // ALPN string with no registered handler
 }
 ```
+
+After ADR-083, the endpoint takes no TLS config and constructs no
+transports — TLS config errors now surface as `TlsError` in
+`alknet-tls` / the assembly layer (see
+[`crates/tls/README.md`](../tls/README.md) and OQ-62), not as
+`EndpointError`. The `TlsConfig(io::Error)` variant that existed when
+the endpoint built TLS internally is removed. `BindFailed` covers
+listener bind failures (quinn, iroh, TCP+TLS `TcpListener::bind`).
 
 ### HandlerError
 
