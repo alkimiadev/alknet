@@ -77,8 +77,8 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-14](questions/014-batch-operation-semantics.md) | Batch Operation Semantics | resolved | two | low |
 | [OQ-55](questions/055-alknetclient-establishment-extraction.md) | AlknetClient / Client Establishment Extraction | deferred(scope) | two | med |
 | [OQ-59](questions/059-fingerprint-module-location.md) | Should `fingerprint.rs` Stay in Core or Move to `alknet-tls`? | open | two | med |
-| [OQ-60](questions/060-transport-construction-location.md) | Where Does Transport Construction Live? | open | one | high |
-| [OQ-61](questions/061-multi-owner-shutdown-coordination.md) | Multi-Owner Shutdown Coordination | open | two | med |
+| [OQ-60](questions/060-transport-construction-location.md) | Where Does Transport Construction Live? | resolved | one | high |
+| [OQ-61](questions/061-multi-owner-shutdown-coordination.md) | Multi-Owner Shutdown Coordination | dissolved | two | med |
 
 ### alknet-call
 

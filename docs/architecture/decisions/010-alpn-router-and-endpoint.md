@@ -255,3 +255,32 @@ related cleanup: it bumps the iroh dep to 1.0, unblocking `alknet-blobs`
 preset, `SecretKey::from_bytes`/`generate` signatures,
 `Connection::remote_id`/`alpn` return types). No ADR needed; the endpoint
 design is unchanged.
+
+### Amendment 2 (2026-07-14): TCP+TLS is a first-class owned transport (supersedes Amendment 1's struct-level exclusion)
+
+Amendment 1 preserved the "not an endpoint struct concern" framing at
+the struct level — no `tcp: Option<TcpListener>` field on
+`AlknetEndpoint`. The rationale was that the endpoint built transports
+internally (quinn, iroh), and TCP+TLS couldn't fit that construction
+shape, so it was a sibling loop outside the struct.
+
+[ADR-083](083-endpoint-as-accept-loop-runner.md) removes that rationale:
+the endpoint no longer builds transports at all — it runs accept loops on
+whatever it's given via builder methods. TCP+TLS is a listener transport,
+same shape as quinn and iroh (accept → extract ALPN + fingerprint →
+`Connection::from_bidi` → `dispatch`). The endpoint now owns it via
+`with_tcp_tls(listener, acceptor)` (behind a `tcp` feature), runs its
+accept loop inside `run()`, and stops it on `shutdown()`. The struct gains
+a `tcp_tls: Option<TcpTlsListener>` field.
+
+Amendment 1's *dispatch* contribution survives — the public `dispatch`
+method and `Connection::from_bidi` are what make TCP+TLS dispatch work.
+Amendment 1's *struct-level exclusion* (no `tcp` field, sibling loop
+outside) is **superseded**: TCP+TLS is now a first-class owned transport.
+The `dispatch` method stays public, but for genuinely external shapes
+(SSH channels, future WebTransport streams) — connection-internal
+multiplexing, not listener transports.
+
+This also means shutdown is single-owner: the endpoint owns all its
+accept loops (quinn, iroh, TCP+TLS); one `shutdown()` stops them all.
+The multi-owner shutdown coordination problem (OQ-61) does not arise.

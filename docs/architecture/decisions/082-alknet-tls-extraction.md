@@ -174,11 +174,11 @@ transports.
 
 `alknet-tls` provides `for_tcp_tls() -> TlsAcceptor`. The actual TCP
 accept loop (`TcpListener::accept` → `TlsAcceptor::accept` →
-`Connection::from_bidi` → `HandlerRegistry::dispatch`) lives elsewhere —
-in `alknet-hub` (the primary multi-transport consumer) or in a future
-`alknet-core` module. `alknet-tls` is the cert provider, not the
-accept loop. This keeps `alknet-tls` focused on TLS setup and cert
-sharing, not transport accept logic.
+`Connection::from_bidi` → `endpoint.dispatch()`) lives in `alknet-core`
+behind a `tcp` feature, as an owned transport on `AlknetEndpoint` (via
+`with_tcp_tls(listener, acceptor)` — see ADR-083). `alknet-tls` is the
+cert provider, not the accept loop. This keeps `alknet-tls` focused on
+TLS setup and cert sharing, not transport accept logic.
 
 ### One ACME state machine, shared
 

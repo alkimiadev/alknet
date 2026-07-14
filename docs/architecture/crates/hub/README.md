@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-13
+last_updated: 2026-07-14
 ---
 
 # alknet-hub
@@ -42,11 +42,11 @@ welded to a dial. See "Transport" below.
 ### What the hub provides
 
 1. **Multi-transport endpoint** — accepts channels connections over
-   QUIC (via the quinn `AlknetEndpoint`) and over TCP+TLS (via an
-   accept loop that wraps each `TlsStream<TcpStream>` as a `Connection`
-   with `from_bidi`, per ADR-065/010). Both feed the same
-   `HandlerRegistry`. Also serves HTTP (`h2`/`http/1.1`) over TCP+TLS
-   for registration and browser access. All three coexist.
+   QUIC and over TCP+TLS (both owned transports on `AlknetEndpoint` via
+   `with_quinn` / `with_tcp_tls`, per ADR-083). Both feed the same
+   dispatch path. Also serves HTTP (`h2`/`http/1.1`) over TCP+TLS for
+   registration and browser access. All three coexist; the endpoint owns
+   all accept loops and `shutdown()` stops them all.
 
 2. **Peer lifecycle** — accept, dial, disconnect, reconnect with
    backoff. Identity resolution via `IdentityProvider` (fingerprint or
@@ -81,7 +81,10 @@ The hub pattern requires wiring that `alknet-channels` and
 
 - The hub accepts channels connections over **multiple transports**
   simultaneously. The channels crate is transport-agnostic (ADR-071,
-  ADR-065); the hub is where the multi-transport accept loop lives.
+  ADR-065); the hub composes the multi-transport endpoint
+  (`AlknetEndpoint` with `with_quinn` / `with_tcp_tls`, ADR-083). The
+  accept loops themselves live in `alknet-core`; the hub provides the
+  handlers and wiring.
 - The hub relays channels between legs (ADR-079) — terminating
   channel 0 on each leg, translating `channel/open`, byte-forwarding
   data channels. The channels crate is ALPN-blind and does not know it
@@ -179,30 +182,34 @@ The `Hub` exposes builder methods for optional hooks
 
 The hub accepts and dials channels connections over any transport
 the channels protocol supports (ADR-071). In practice, a hub runs
-multiple accept loops simultaneously:
+multiple accept loops simultaneously — all owned by `AlknetEndpoint`
+via builder methods (ADR-083):
 
-| Endpoint | Transport | What it carries |
-|----------|-----------|-----------------|
-| Quinn `AlknetEndpoint` | QUIC (quinn/iroh) | Channels connections from workers with QUIC reachability |
-| TCP+TLS accept loop | TCP + TLS (`h2`/`http/1.1`/`alknet/channels`) | HTTP registration endpoint, browser access, channels-over-TCP from workers |
+| Builder method | Transport | What it carries |
+|----------------|-----------|-----------------|
+| `with_quinn` | QUIC (quinn) | Channels connections from workers with QUIC reachability |
+| `with_iroh` | QUIC (iroh, relay-assisted) | Channels connections from workers behind NAT |
+| `with_tcp_tls` | TCP + TLS (`h2`/`http/1.1`/`alknet/channels`) | HTTP registration endpoint, browser access, channels-over-TCP from workers |
 | (Future) WebTransport | WebTransport | Browser bidirectional path (deferred per ADR-044; WebSocket is the v1 browser path) |
 
-All accept loops feed into the same `HandlerRegistry`. The hub's
-`HttpAdapter` serves `h2`/`http/1.1` over the TCP+TLS path for
-registration and browser access; the `ChannelsAdapter` (registered on
-the hub's `HandlerRegistry`) serves
-`alknet/channels` over the QUIC path (and over TCP+TLS when a worker
-dials channels-over-TCP). Both ALPNs are registered on the same
-registry; the TLS handshake on each connection negotiates the ALPN
-and dispatches to the right adapter.
+All accept loops run inside `endpoint.run()` and feed the same dispatch
+path. The hub's `HttpAdapter` serves `h2`/`http/1.1` over the TCP+TLS
+path for registration and browser access; the `ChannelsAdapter`
+(registered on the hub's `HandlerRegistry`) serves `alknet/channels`
+over the QUIC path (and over TCP+TLS when a worker dials
+channels-over-TCP). Both ALPNs are registered on the same registry;
+the TLS handshake on each connection negotiates the ALPN and dispatches
+to the right adapter.
 
 The TCP+TLS accept loop constructs a `Connection` per accepted
-`TlsStream<TcpStream>` via `Connection::from_bidi` (ADR-065) and
-hands it to the same `HandlerRegistry::dispatch` the quinn endpoint
-uses. This is the accept-loop-outside-the-endpoint pattern from
-ADR-010's Amendment 1: the `AlknetEndpoint` struct stays QUIC-only
-(no `tcp` field), and the TCP+TLS loop is a sibling accept source
-that shares the registry. The hub is where that sibling loop lives.
+`TlsStream<TcpStream>` via `Connection::from_bidi` (ADR-065) and hands
+it to the same dispatch path the quinn endpoint uses. After ADR-083,
+TCP+TLS is a first-class owned transport on `AlknetEndpoint` — the hub
+hands a `TcpListener` + `TlsAcceptor` to the endpoint via
+`with_tcp_tls(listener, acceptor)`, and the endpoint runs the accept
+loop inside `run()` alongside the quinn/iroh loops. No external sibling
+loop; the endpoint owns all its accept loops and `shutdown()` stops them
+all.
 
 #### Dial (outbound workers) — transport-agnostic
 
@@ -330,8 +337,8 @@ let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::ne
 let channels_adapter = ChannelsAdapter::new(Arc::clone(&registry), /* ... */)
     .with_worker_connected_callback(callback);
 // Register channels_adapter on alknet/channels in the HandlerRegistry.
-// Both the quinn endpoint and the TCP+TLS accept loop dispatch
-// alknet/channels connections to it.
+// The endpoint dispatches alknet/channels connections to it — whether
+// they arrived over quinn, iroh, or TCP+TLS (all owned by the endpoint).
 ```
 
 ### Identity over transports
@@ -596,37 +603,38 @@ let hub = Arc::new(Hub::new(
     Arc::clone(&identity_provider),
 ).with_ownership_provider(ownership_provider));
 
-// 3. Register the ChannelsAdapter on alknet/channels. Both the quinn
-//    endpoint and the TCP+TLS accept loop dispatch alknet/channels
-//    connections to this adapter.
+// 3. Register the ChannelsAdapter on alknet/channels. The endpoint
+//    dispatches alknet/channels connections to this adapter — whether
+//    they arrived over quinn, iroh, or TCP+TLS.
 let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::new());
 let channels_adapter = ChannelsAdapter::new(/* ... */)
     .with_worker_connected_callback(callback);
 registry.register(b"alknet/channels", Arc::new(channels_adapter));
 
-// 4. Register the HttpAdapter on h2/http1.1. The TCP+TLS accept loop
-//    dispatches h2/http1.1 connections to this adapter (registration
-//    endpoint, browser access, stealth decoy).
+// 4. Register the HttpAdapter on h2/http1.1. The endpoint dispatches
+//    h2/http1.1 connections (arriving over TCP+TLS) to this adapter
+//    (registration endpoint, browser access, stealth decoy).
 let http_adapter = HttpAdapter::new(/* ... */);
 registry.register(b"h2", Arc::new(http_adapter.clone()));
 registry.register(b"http/1.1", Arc::new(http_adapter));
 
-// 5. Start the QUIC accept loop (workers with QUIC reachability)
-let quinn_endpoint = AlknetEndpoint::new(/* ... */, Arc::clone(&registry));
-quinn_endpoint.run().await;
+// 5. Build the quinn endpoint (raw-key config for native clients)
+let quinn_endpoint = raw_key_tls.for_quinn()?.into_endpoint(listen_addr)?;
 
-// 6. Start the TCP+TLS accept loop (registration, browser access,
-//    channels-over-TCP from workers)
+// 6. Build the TCP+TLS listener (X.509/ACME config for HTTPS)
 let tcp_listener = TcpListener::bind(registration_addr).await?;
-tokio::spawn(async move {
-    loop {
-        let (stream, _) = tcp_listener.accept().await?;
-        let tls_stream = tls_acceptor.accept(stream).await?;
-        let alpn = tls_stream.alpn()?;
-        let conn = Connection::from_bidi(tls_stream, alpn, /* remote_addr */);
-        registry.dispatch(conn).await;  // routes by ALPN to HttpAdapter or ChannelsAdapter
-    }
-});
+let tls_acceptor = x509_tls.for_tcp_tls();
+
+// 7. Construct the endpoint with all owned transports, then run.
+//    TCP+TLS is a first-class owned transport (ADR-083) — the endpoint
+//    runs its accept loop inside run() alongside quinn/iroh. No external
+//    sibling loop; shutdown() stops them all.
+let endpoint = Arc::new(
+    AlknetEndpoint::new(registry, dynamic, identity_provider, drain_timeout)
+        .with_quinn(quinn_endpoint)
+        .with_tcp_tls(tcp_listener, tls_acceptor),
+);
+endpoint.clone().run().await;
 
 // 7. Dial outbound workers (hub dials workers). The closure produces a
 //    channels Connection — the hub's supervise_worker calls
@@ -677,7 +685,7 @@ into `CallAdapter::with_aggregated_env`.
 | Three peer roles | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Hub = role-3 `PeerEntry` (mixed fingerprints); browsers not peers; bearer-token identity over TCP/WebTransport |
 | ChannelClient — transport-agnostic | [ADR-080](../../decisions/080-channelclient.md) | `from_connection` primary, `connect_quic` convenience; the dial path the hub uses |
 | Channels transport-agnostic | [ADR-071](../../decisions/071-channels-wire-format.md) | Substrate modes; `Connection::from_stream`/`from_bidi` (ADR-065) — the substrate the hub relays |
-| TCP+TLS dispatch via from_stream | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) Am. 1 | `AlknetEndpoint` stays QUIC-only; TCP+TLS accept loop shares the registry |
+| TCP+TLS as first-class owned transport | [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | `with_tcp_tls(listener, acceptor)` — TCP+TLS is owned by the endpoint, not a sibling loop; supersedes ADR-010 Am. 1 |
 | Channel 0 pre-negotiated | [ADR-072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 = `alknet/call`; the `CallAdapter` runs here |
 | Channel lifecycle operations | [ADR-073](../../decisions/073-channel-lifecycle-operations.md) | `channel/open`/`close`/`control`/`resources/subscribe` — what the hub translates |
 
@@ -731,6 +739,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-069: from_call Is a Manual Free Function
 - ADR-079: Hub Relay — Translate, Not Transparently Forward
 - ADR-080: ChannelClient (transport-agnostic `from_connection`)
+- ADR-082: alknet-tls extraction (`TlsServerConfig` — shared across quinn + TCP+TLS)
+- ADR-083: Endpoint as multi-transport accept-loop runner (`with_tcp_tls` — TCP+TLS owned by the endpoint; the hub composes transports and handlers)
 - alkapi [hub.md](/workspace/@alkdev/alkapi/docs/architecture/hub.md) —
   the first hub consumer, the concrete use case that informed this
   crate

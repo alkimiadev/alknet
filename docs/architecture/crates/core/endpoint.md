@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-14
 ---
 
 # Endpoint
@@ -15,16 +15,25 @@ The central runtime type. Manages one or more QUIC connection sources, each feed
 
 ```rust
 pub struct AlknetEndpoint {
-    // QUIC connection sources — both optional, both can be active simultaneously
+    // One or more connection sources — all optional, all can be active simultaneously
     quinn: Option<quinn::Endpoint>,       // Public QUIC+TLS
     iroh: Option<iroh::Endpoint>,         // P2P relay-assisted
+    #[cfg(feature = "tcp")]
+    tcp_tls: Option<TcpTlsListener>,       // TCP+TLS (TcpListener + TlsAcceptor)
 
     handlers: Arc<HandlerRegistry>,
     dynamic: Arc<ArcSwap<DynamicConfig>>,
     identity_provider: Arc<dyn IdentityProvider>,
-    shutdown: watch::Receiver<bool>,
+    shutdown_tx: watch::Sender<bool>,
+    shutdown_rx: watch::Receiver<bool>,
+    drain_timeout: Duration,
 }
 ```
+
+See [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) for
+the full design (the endpoint takes no `StaticConfig` or TLS config;
+transports are built by the assembly layer and handed via
+`with_quinn` / `with_iroh` / `with_tcp_tls`).
 
 ### Why multiple connection sources?
 
@@ -37,29 +46,28 @@ A node can be reachable through different paths depending on its network context
 
 These are not interchangeable transports — they are **complementary connectivity modes**. A node behind NAT that also has a public IP can use both simultaneously. Both produce QUIC connections that dispatch through the same `HandlerRegistry` by ALPN string.
 
-### TCP is NOT an endpoint struct concern (but CAN dispatch through the registry)
+### TCP+TLS is a first-class owned transport
 
-Bare TCP (SSH over port 22) does not use QUIC or ALPN. TCP access is not
-owned by the `AlknetEndpoint` struct — there is no `tcp:
-Option<TcpListener>` field. The endpoint manages QUIC connection sources
-(quinn + iroh) only.
+TCP+TLS is a listener transport, same shape as quinn and iroh. The
+endpoint owns it via `with_tcp_tls(listener, acceptor)` (behind a `tcp`
+feature) and runs its accept loop inside `run()` — `tcp.accept()` →
+`tls.accept()` → extract ALPN + fingerprint → `Connection::from_bidi` →
+`dispatch`. No external sibling loop, no duplicated dispatch logic.
 
-This does **not** mean TCP+TLS can't participate in ALPN dispatch. Since
-[ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md),
-`Connection::from_bidi(tls_stream, alpn, remote_addr)` constructs a
-`Connection` from any `TlsStream<TcpStream>` (or any `AsyncRead +
-AsyncWrite` pair). A TCP+TLS accept loop built *outside* the endpoint (by
-the assembly layer or a handler) can wrap each TLS stream as a
-`Connection` and dispatch through the **same `HandlerRegistry`** the
-endpoint uses, by the ALPN negotiated in the TLS handshake. This is not a
-parallel listener bypassing the core — it's the same ALPN dispatch, over
-a non-QUIC transport. `HttpAdapter`, `TtyAdapter`, and the call handler
-all work over the single stream unchanged (ADR-065's yield-once
-`accept_bi` contract). The TCP+TLS accept loop itself is a follow-up
-commit, not part of `AlknetEndpoint`; the primitive it needs
-(`from_bidi`) is in place.
+This reverses ADR-010's original "TCP is not an endpoint struct concern."
+The reason TCP was excluded — the endpoint built transports internally,
+and TCP+TLS couldn't fit that shape — is gone (ADR-083: the endpoint no
+longer builds transports; it runs accept loops on whatever it's given).
+TCP+TLS fits the same listener shape as quinn and iroh.
 
-The reference implementation's TCP transport (`alknet-main/crates/alknet-core/src/transport/tcp.rs`) is SSH-specific. It doesn't generalize to the ALPN model.
+The `dispatch` method is public for transports the endpoint **can't
+own** — SSH channels (one connection, many channels with different
+ALPNs — a multiplexing shape, not a listener) and future WebTransport
+streams (one QUIC connection, many WT streams). These are
+connection-internal multiplexing, not listener transports.
+
+See [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)
+for the full design.
 
 ## HandlerRegistry
 
@@ -136,23 +144,38 @@ See iroh's `protocol.rs` (`/workspace/iroh/iroh/src/protocol.rs`) for the refere
 
 ### Dispatch function (shared)
 
+The public `dispatch` method is the shared dispatch path for every
+transport — the endpoint's own accept loops (quinn, iroh, TCP+TLS) call
+it after transport-specific extraction, and external dispatch callers
+(SSH channels, future WebTransport streams) call it after their own
+extraction.
+
 ```
-fn dispatch(connection) {
-    let alpn = connection.alpn();
-    match handlers.get(alpn) {
+pub fn dispatch(&self, connection: Connection, alpn: Vec<u8>,
+                fingerprint: Option<String>, remote_addr: Option<SocketAddr>) {
+    // ACME guard (transport-agnostic — ADR-083)
+    if alpn == b"acme-tls/1" {
+        connection.close(0, "acme done");
+        return;
+    }
+    match handlers.get(&alpn) {
         Some(handler) => {
-            let auth = AuthContext::from_connection(&connection);
-            let conn = Connection::from_quinn(connection); // or from_iroh
+            let auth = build_auth_context(&alpn, remote_addr, fingerprint, &identity_provider);
             tokio::spawn(async move {
-                if let Err(e) = handler.handle(conn, &auth).await {
+                if let Err(e) = handler.handle(connection, &auth).await {
                     // log error, connection closes
                 }
             });
         }
-        None => connection.close(0u32, "no handler"),
+        None => { connection.close(0, "no handler"); /* log warning */ }
     }
 }
 ```
+
+Synchronous (non-async): spawns the handler on its own task and returns
+immediately. The caller's accept loop is not blocked. See
+[ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) for the
+full dispatch contract.
 
 ### What the accept loops do NOT do
 
@@ -260,11 +283,14 @@ impl AlknetEndpoint {
 }
 ```
 
-- `shutdown_sender()` returns a clone of the shutdown channel sender. Call `send(true)` to signal shutdown.
-- `shutdown()` signals all accept loops to stop, waits for in-flight connections with a drain timeout (default: 2 seconds), then forcefully closes remaining connections.
+- `shutdown_sender()` returns a clone of the shutdown channel sender. Call `send(true)` to signal shutdown. The assembly layer uses this for any external dispatch callers (SSH, future WT); the endpoint's own loops are signaled internally.
+- `shutdown()` signals all owned accept loops (quinn, iroh, TCP+TLS) to stop, waits for in-flight dispatched handlers with a drain timeout, then forcefully closes remaining connections. One owner, one shutdown — no external loop coordination (ADR-083).
 - SIGTERM/SIGINT are wired to the shutdown channel by the CLI binary.
 
-The drain timeout is configurable via `StaticConfig::drain_timeout`.
+The drain timeout is passed to `AlknetEndpoint::new()` directly (as
+`drain_timeout: Duration`), not via `StaticConfig` — the endpoint no
+longer takes `StaticConfig` (ADR-083). The assembly layer reads
+`StaticConfig::drain_timeout` and passes it in.
 
 ## Error Handling
 
@@ -308,9 +334,11 @@ Non-fatal errors within a handler. See [core-types.md](core-types.md) for detail
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| Multi-connectivity endpoint (quinn + iroh) | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Both optional, both feed same ALPN router |
+| Multi-connectivity endpoint (quinn + iroh + TCP+TLS) | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md), [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | All three optional, all feed same dispatch; endpoint owns all accept loops |
+| Endpoint takes no TLS config; assembly layer builds transports | [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | `new()` takes `drain_timeout` + builder methods, no `StaticConfig` or `Arc<TlsServerConfig>` |
+| TCP+TLS is a first-class owned transport | [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | `with_tcp_tls(listener, acceptor)` — reverses ADR-010's "TCP is not an endpoint struct concern" |
+| Public `dispatch` for SSH/WT (multiplexing shapes) | [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | `dispatch` is public for connection-internal multiplexing, not for listener transports |
 | Static handler registration | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Two-way door, start static, add ArcSwap later |
-| TCP is not an endpoint struct concern (but dispatches via `from_stream`) | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md), [ADR-065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `AlknetEndpoint` is QUIC-only (no `tcp` field); a TCP+TLS loop outside the endpoint wraps streams via `from_bidi` and shares the registry |
 | No byte-peeking, ALPN dispatch only | [ADR-001](../../decisions/001-alpn-protocol-dispatch.md) | TLS layer handles protocol detection |
 | Stealth mode = HTTP handler on standard ALPNs | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Decoy via ALPN routing, not byte-peek |
 | Network identity ≠ auth identity | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | TLS cert/NodeId = network, SSH key/token = auth |
@@ -323,3 +351,5 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-04**: Resolved — HandlerRegistry is static at startup.
 - **OQ-05**: Resolved — multi-connectivity endpoint with quinn + iroh, both feature-gated.
 - **OQ-12**: Resolved — two distinct TLS identity use cases: RFC 7250 raw keys (default, P2P) and X.509 certs (domain-hosted, browsers). ACME auto-provisioning designed in [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md); RawKey decoupled from the `iroh` feature (available in quinn-only builds).
+- **OQ-60**: Resolved — transport construction is inlined by the assembly layer; the TCP+TLS loop lives in `alknet-core` behind a `tcp` feature as an owned transport. See [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md).
+- **OQ-61**: Dissolved — the multi-owner shutdown problem does not arise; the endpoint owns all its accept loops. See [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md).

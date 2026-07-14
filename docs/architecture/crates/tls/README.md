@@ -268,8 +268,9 @@ production and `rustls::sign` in the test helper `build_ed25519_spki_der`
 
 `AlknetEndpoint::new()` currently builds `TlsSetup` internally. After
 the refactor (see [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)),
-the endpoint takes **no TLS config at all** — it is a pure accept-loop
-runner with a public `dispatch` method:
+the endpoint takes **no TLS config at all** — it is a multi-transport
+accept-loop runner. TCP+TLS is an owned transport (via `with_tcp_tls`),
+not an external loop:
 
 ```rust
 impl AlknetEndpoint {
@@ -283,6 +284,17 @@ impl AlknetEndpoint {
     pub fn with_quinn(mut self, endpoint: quinn::Endpoint) -> Self;
     pub fn with_iroh(mut self, endpoint: iroh::Endpoint) -> Self;
 
+    /// TCP+TLS is a first-class owned transport — same `run()` loop,
+    /// same `shutdown()` as quinn/iroh. Feature-gated on `tcp`.
+    #[cfg(feature = "tcp")]
+    pub fn with_tcp_tls(
+        mut self,
+        listener: tokio::net::TcpListener,
+        acceptor: tokio_rustls::TlsAcceptor,
+    ) -> Self;
+
+    /// Public for SSH channels / future WT (connection-internal
+    /// multiplexing, not listener transports).
     pub fn dispatch(
         &self,
         connection: Connection,
@@ -292,32 +304,35 @@ impl AlknetEndpoint {
     );
 
     pub async fn run(self: Arc<Self>);
+    pub async fn shutdown(&self) -> Result<(), EndpointError>;
 }
 ```
 
 The assembly layer builds the `TlsServerConfig`(s), builds the
 transports (`for_quinn()` → `quinn::Endpoint::server()`,
-`for_tcp_tls()` → `TlsAcceptor`, the `Ed25519SecretKey` → iroh), and
-hands the pre-built quinn/iroh endpoints to `AlknetEndpoint` via
+`for_tcp_tls()` → `TlsAcceptor` paired with a `TcpListener`,
+`Ed25519SecretKey` → iroh), and hands them to `AlknetEndpoint` via
 builder methods. A hub serving native clients and browsers holds two
 `TlsServerConfig`s (raw key + X.509/ACME); the endpoint takes neither —
-it takes the already-built transport endpoints. The TCP+TLS accept
-loops (one per config) call `endpoint.dispatch(...)` — the same
-dispatch path quinn and iroh use. The ACME handle lives on the
-`TlsServerConfig`, not the endpoint.
+it takes the already-built transport endpoints. The TCP+TLS listener
+is owned by the endpoint via `with_tcp_tls`; the endpoint runs its
+accept loop inside `run()` and stops it on `shutdown()`. The ACME
+handle lives on the `TlsServerConfig`, not the endpoint.
 
 This resolves the single-`Arc<TlsServerConfig>` problem: the endpoint
-has no "the TLS config" to take because a hub has two.
+has no "the TLS config" to take because a hub has two. It also means
+shutdown is single-owner — the endpoint owns all its accept loops
+(quinn, iroh, TCP+TLS); one `shutdown()` stops them all.
 
 ### The TCP+TLS accept loop (out of scope for this crate)
 
 `alknet-tls` provides `for_tcp_tls() -> TlsAcceptor`. The actual TCP
 accept loop (`TcpListener::accept` → `TlsAcceptor::accept` →
-`Connection::from_bidi` → `HandlerRegistry::dispatch`) lives elsewhere —
-in `alknet-hub` (the hub is the primary multi-transport consumer) or in
-a future `alknet-core` `TcpTlsAcceptor` module. `alknet-tls` is the cert
-provider, not the accept loop. This keeps `alknet-tls` focused on TLS
-setup and cert sharing, not transport accept logic.
+`Connection::from_bidi` → `endpoint.dispatch()`) lives in `alknet-core`
+behind a `tcp` feature, as an owned transport on `AlknetEndpoint` (via
+`with_tcp_tls(listener, acceptor)` — see ADR-083). `alknet-tls` is the
+cert provider, not the accept loop. This keeps `alknet-tls` focused on
+TLS setup and cert sharing, not transport accept logic.
 
 ## Crate dependencies (in the dep graph)
 
@@ -331,23 +346,21 @@ alknet-core (loses TLS setup code)
 alknet-call (client-side verifier — unchanged)
 ├── alknet-core (fingerprint.rs)
 
-alknet-http (future: TCP+TLS accept loop)
-├── alknet-tls (TlsServerConfig::for_tcp_tls())
-├── alknet-core (Connection::from_bidi, HandlerRegistry)
-
 alknet-hub (multi-transport endpoint)
 ├── alknet-tls (TlsServerConfig — shared across quinn + TCP)
 ├── alknet-channels-call (ChannelClient)
 ├── alknet-call (CallAdapter, Dispatcher)
 ├── alknet-http (HttpAdapter)
-├── alknet-core (AlknetEndpoint, HandlerRegistry, Connection)
+├── alknet-core (AlknetEndpoint with quinn + iroh + tcp features, HandlerRegistry, Connection)
 ```
 
 `alknet-tls` depends on `alknet-core` only. No handler crate depends on
 `alknet-tls` — they depend on `alknet-core` for types and on
 `alknet-tls` only indirectly through the assembly layer. The assembly
-layer (the deployment binary) builds the `TlsServerConfig` and passes it
-to the endpoint and the TCP+TLS accept loop.
+layer (the deployment binary) builds the `TlsServerConfig`(s), builds
+the transport endpoints (quinn/iroh/TCP+TLS), and hands them to
+`AlknetEndpoint` via `with_quinn` / `with_iroh` / `with_tcp_tls`
+(ADR-083).
 
 ## Design Decisions
 
@@ -357,7 +370,7 @@ All design decisions are documented as ADRs in
 | ADR | Decision | Summary |
 |-----|----------|---------|
 | [082](../../decisions/082-alknet-tls-extraction.md) | alknet-tls crate extraction | Extract TLS setup from alknet-core/endpoint.rs; `TlsServerConfig` shareable across quinn + TCP+TLS + iroh; one ACME state machine |
-| [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as accept-loop runner | `AlknetEndpoint` takes no TLS config; assembly layer builds transports from `TlsServerConfig`s; public `dispatch` method; `acme-tls/1` guard moves to shared `dispatch` |
+| [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as multi-transport accept-loop runner | `AlknetEndpoint` takes no TLS config; TCP+TLS is an owned transport (`with_tcp_tls`); `dispatch` public for SSH/WT; `acme-tls/1` guard moves to shared `dispatch` |
 
 ## Open Questions
 
@@ -370,17 +383,13 @@ See [open-questions.md](../../open-questions.md) for full details.
   on `alknet-tls` — a new dep edge. If it stays, core keeps a narrow
   `rustls` dep. Decision-ready — the answer depends on whether we want
   core to be `rustls`-free.
-- **OQ-60** (open): Where does transport construction live? The
-  endpoint-as-accept-loop-runner boundary (ADR-083) commits to
-  construction being outside the endpoint, but the destination —
-  assembly layer, `alknet-tls` convenience helpers, or a transport
-  module/crate — is open. `alknet-tls`'s stated job is "TLS setup, not
-  transport accept logic," which is an argument against the helper
-  option.
-- **OQ-61** (open): Multi-owner shutdown coordination. The endpoint owns
-  dispatched handlers (spawned in `dispatch`); the assembly layer owns
-  spawned accept loops (TCP+TLS). The coordination mechanism (shared
-  `shutdown_sender`, drain semantics) is unspecified.
+- **OQ-60** (resolved): Where does transport construction live? The
+  TCP+TLS accept loop lives in `alknet-core` behind a `tcp` feature as
+  an owned endpoint transport (`with_tcp_tls`). Builder functions are
+  inlined by the assembly layer. See ADR-083.
+- **OQ-61** (dissolved): Multi-owner shutdown coordination. The
+  problem does not arise — the endpoint owns all its accept loops
+  (quinn, iroh, TCP+TLS); `shutdown()` stops them all. See ADR-083.
 
 ## References
 
@@ -392,8 +401,9 @@ See [open-questions.md](../../open-questions.md) for full details.
   — client-side verifier selection (CA vs fingerprint pin)
 - `docs/architecture/decisions/065-connection-from-stream-generic-single-stream.md`
   — `Connection::from_stream`/`from_bidi` (TCP+TLS path)
-- `docs/architecture/decisions/010-alpn-router-and-endpoint.md` Amendment 1
-  — TCP+TLS dispatch via `from_stream` (accept loop outside the endpoint struct)
+- `docs/architecture/decisions/010-alpn-router-and-endpoint.md`
+  Amendment 2 — TCP+TLS is a first-class owned transport
+  (`with_tcp_tls`); supersedes Amendment 1's sibling-loop framing
 - `docs/architecture/crates/core/endpoint.md` — current endpoint design
   (TLS section will be amended to point to `alknet-tls`)
 - `docs/architecture/crates/core/config.md` — `TlsIdentity`, `StaticConfig`

@@ -194,7 +194,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [007](decisions/007-bistream-type-definition.md) | BiStream Type Definition | Accepted |
 | [008](decisions/008-secret-service-integration.md) | Vault Integration Point | Accepted |
 | [009](decisions/009-one-way-door-decision-framework.md) | One-Way Door Decision Framework | Accepted |
-| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Accepted (Amendment 1 superseded by ADR-083 — TCP+TLS dispatch is first-class via public `dispatch`) |
+| [010](decisions/010-alpn-router-and-endpoint.md) | ALPN Router and Endpoint | Accepted (Amendment 1 superseded by ADR-083 — TCP+TLS is a first-class owned transport via `with_tcp_tls`) |
 | [011](decisions/011-authcontext-structure.md) | AuthContext Structure and Resolution Flow | Accepted |
 | [012](decisions/012-call-protocol-stream-model.md) | Call Protocol Stream Model | Accepted |
 | [013](decisions/013-rust-canonical-implementation.md) | Rust as Canonical Implementation Language | Accepted |
@@ -267,7 +267,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [080](decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | Accepted |
 | [081](decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | Accepted |
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Proposed (amended — endpoint signature superseded by ADR-083) |
-| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Pure Accept-Loop Runner with Public Dispatch | Proposed |
+| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner with Public Dispatch | Proposed (revised — TCP+TLS is an owned transport, not external) |
 
 ## Open Questions
 
