@@ -170,6 +170,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-53](questions/053-backoff-config-defaults.md) | BackoffConfig default policy | open | two | low |
 | [OQ-54](questions/054-inbound-worker-hook-placement.md) | Inbound worker on_worker_connected hook placement | resolved | two | low |
 | [OQ-58](questions/058-worker-registration-flow.md) | Worker Registration Flow | open | one | high |
+| [OQ-65](questions/065-websocket-carrying-channels.md) | Should WebSocket Carry the Channels Protocol (Not Just the Call Protocol)? | open | one | med |
 
 ### alknet-channels
 
@@ -182,9 +183,10 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 
 | OQ | Title | Status | Door | Pri |
 |----|-------|--------|------|-----|
-| [OQ-62](questions/062-alpn-list-sharing-two-config-hub.md) | Does a Hub Pass the Same ALPN List to Both `TlsServerConfig`s? | open | one | high |
+| [OQ-62](questions/062-alpn-list-sharing-two-config-hub.md) | Does a Hub Pass the Same ALPN List to Both `TlsServerConfig`s? | resolved | one | high |
 | [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | open | one | high |
 | [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | deferred(scope) | two | med |
+| [OQ-65](questions/065-websocket-carrying-channels.md) | Should WebSocket Carry the Channels Protocol (Not Just the Call Protocol)? | open | one | med |
 
 ## Deferred / Blocked
 

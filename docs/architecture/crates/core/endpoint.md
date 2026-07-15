@@ -106,15 +106,25 @@ ALPN-list construction is the **assembly layer's** responsibility, not
 the endpoint's. After ADR-083, the endpoint takes no TLS config and
 builds no transports — the assembly layer reads `registry.alpn_strings()`
 and passes the appropriate ALPN list to each `TlsServerConfig::new()`
-(see [`crates/tls/README.md`](../tls/README.md)). For a single-config
-deployment (one identity, one set of ALPNs), all transports advertise
-the same set. For a two-config hub (raw key + X.509/ACME — see OQ-62),
-the assembly layer may pass different lists to each config; that split
-is a hub-assembly-layer concern, not an endpoint concern.
+(see [`crates/tls/README.md`](../tls/README.md)).
+
+The ALPN list is **split by endpoint type** (ADR-086 §3, resolving
+OQ-62): each `TlsServerConfig` advertises only the ALPNs its endpoint
+type's client class can negotiate. The native config (raw key) gets
+`alknet/channels`, `alknet/call`, `alknet/ssh` (future); the web config
+(X.509/ACME) gets `h2`, `http/1.1`, `alknet/channels` (for
+WebSocket-carrying-channels, OQ-65); the iroh builder gets
+`alknet/channels`, `alknet/call`. The distinction is between
+**entry points** (ALPNs accepted without identity — `h2`/`http/1.1`,
+future `alknet/register`) and **endpoints** (ALPNs requiring identity —
+`alknet/channels`, `alknet/call`, `alknet/ssh`). See
+[ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) for
+the full model and ALPN-list table.
 
 The iroh endpoint's ALPN list is set via `iroh::Endpoint::builder().alpns()`
 by the assembly layer at construction time, from the same
-`registry.alpn_strings()` source.
+`registry.alpn_strings()` source (filtered to the iroh endpoint type's
+ALPNs).
 
 ## Accept Loops
 
@@ -370,6 +380,7 @@ Non-fatal errors within a handler. See [core-types.md](core-types.md) for detail
 | Stealth mode = HTTP handler on standard ALPNs | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | Decoy via ALPN routing, not byte-peek |
 | Network identity ≠ auth identity | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | TLS cert/NodeId = network, SSH key/token = auth |
 | Handler panics isolated | [ADR-010](../../decisions/010-alpn-router-and-endpoint.md) | tokio task isolation, connection closes |
+| Endpoint types and entry points | [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type |
 
 ## Open Questions
 

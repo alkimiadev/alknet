@@ -72,13 +72,30 @@ separate crate is the right shape (dependency isolation, ACME weight,
 quinn/iroh having their own TLS), is in
 [ADR-082](../../decisions/082-alknet-tls-extraction.md).
 
-### The three use cases
+### The three endpoint types (ADR-086)
 
-| Use case | Identity | Transports | Browsers? |
-|----------|----------|-----------|-----------|
-| P2P / native clients | RFC 7250 raw key (Ed25519) | QUIC + TCP (fallback when UDP blocked) | No (browsers can't do raw keys) |
-| Domain-hosted / public service | X.509 (manual or ACME) | QUIC + TCP+TLS (same cert) | Yes (via HTTPS / WebSocket; WebTransport when revived) |
-| Development | Self-signed | Any | No (untrusted) |
+A hub composes a subset of three endpoint types, each with its own
+identity model and transport(s). `alknet-tls` provides the
+`TlsServerConfig`s; the assembly layer builds one per endpoint type
+that uses a `rustls::ServerConfig` (iroh is the exception — it has its
+own TLS).
+
+| Endpoint type | Identity | `TlsServerConfig` | Transport(s) | Browsers? |
+|---------------|----------|-------------------|--------------|-----------|
+| **native** | RFC 7250 raw key (Ed25519) | raw-key config | QUIC (primary), TCP+TLS (fallback when UDP blocked) | No (browsers can't do raw keys) |
+| **web** | X.509 (manual or ACME) | X.509/ACME config | TCP+TLS (HTTP, WebSocket), QUIC (WebTransport — deferred) | Yes (via HTTPS / WebSocket; WebTransport when revived) |
+| **iroh** | RFC 7250 raw key (NodeId) | (no `TlsServerConfig` — iroh has its own TLS) | iroh (relay-assisted QUIC) | No |
+| Development | Self-signed | self-signed config | Any | No (untrusted) |
+
+The ALPN list each `TlsServerConfig` advertises is **split by endpoint
+type** (ADR-086 §3, resolving OQ-62): the native config advertises the
+native ALPNs (`alknet/channels`, `alknet/call`, `alknet/ssh` future);
+the web config advertises the entry-point ALPNs (`h2`, `http/1.1`) +
+`alknet/channels` (for WebSocket-carrying-channels, OQ-65) +
+`acme-tls/1` (appended automatically). The assembly layer filters
+`registry.alpn_strings()` per config. See
+[ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) for
+the full ALPN-list table and the entry-point/endpoint distinction.
 
 In all cases, TLS + ALPNs "just works" — the TLS handshake negotiates the
 ALPN, the `HandlerRegistry` dispatches by ALPN, the transport is a
@@ -145,10 +162,14 @@ impl TlsServerConfig {
 }
 ```
 
-The ALPN list is the set of ALPNs the deployment wants to advertise
-(`alknet/call`, `alknet/channels`, `h2`, `http/1.1`, etc.). For ACME, the
-`acme-tls/1` ALPN is appended automatically (for the TLS-ALPN-01
-challenge, ADR-027 §7).
+The ALPN list is the set of ALPNs the endpoint type advertises. For a
+native config: `alknet/channels`, `alknet/call`, `alknet/ssh` (future).
+For a web config: `h2`, `http/1.1`, `alknet/channels` (for
+WebSocket-carrying-channels, OQ-65). The list is **split by endpoint
+type** (ADR-086 §3) — the assembly layer filters
+`registry.alpn_strings()` per `TlsServerConfig`, not passes the same
+list to both. For ACME, the `acme-tls/1` ALPN is appended
+automatically (for the TLS-ALPN-01 challenge, ADR-027 §7).
 
 ### `async fn new` — lifecycle semantics
 
@@ -433,6 +454,7 @@ All design decisions are documented as ADRs in
 | [082](../../decisions/082-alknet-tls-extraction.md) | alknet-tls crate extraction | Extract TLS setup from alknet-core/endpoint.rs; `TlsServerConfig` shareable across quinn + TCP+TLS + iroh; one ACME state machine |
 | [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as multi-transport accept-loop runner | `AlknetEndpoint` takes no TLS config; TCP+TLS is an owned transport (`with_tcp_tls`); `dispatch` public for SSH/WT; `acme-tls/1` guard moves to shared `dispatch` |
 | [084](../../decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs crypto provider | `rustls::crypto::aws_lc_rs::default_provider()` on all server + client config paths; matches iroh; FIPS-capable; do not switch to `ring` or process-default without a new ADR |
+| [086](../../decisions/086-endpoint-types-and-entry-points.md) | Endpoint types and entry points | Three endpoint types (web/native/iroh); split ALPN lists per endpoint type (resolves OQ-62); entry-point vs. endpoint ALPN distinction |
 
 ## Open Questions
 
@@ -452,9 +474,13 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-61** (dissolved): Multi-owner shutdown coordination. The
   problem does not arise — the endpoint owns all its accept loops
   (quinn, iroh, TCP+TLS); `shutdown()` stops them all. See ADR-083.
-- **OQ-62** (open): Does a hub pass the same ALPN list to both
-  `TlsServerConfig`s, or different (transport-appropriate) lists?
-  Decision-needed before the hub's assembly code is written.
+- **OQ-62** (resolved): Does a hub pass the same ALPN list to both
+  `TlsServerConfig`s? **Split list, by endpoint type** (ADR-086 §3).
+  Each config advertises only the ALPNs its endpoint type's client
+  class can negotiate — native ALPNs on the raw-key config, entry-point
+  ALPNs + `alknet/channels` on the X.509/ACME config, native ALPNs on
+  the iroh builder. The assembly layer filters
+  `registry.alpn_strings()` per config.
 - **OQ-63** (open): `TlsError` shape — the error type is referenced in
   public signatures but not sketched. Needs a variant-granularity
   decision (single enum vs thin wrapper) before implementation.
@@ -478,6 +504,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 - `docs/architecture/decisions/010-alpn-router-and-endpoint.md`
   Amendment 2 — TCP+TLS is a first-class owned transport
   (`with_tcp_tls`); supersedes Amendment 1's sibling-loop framing
+- `docs/architecture/decisions/086-endpoint-types-and-entry-points.md`
+  — three endpoint types (web/native/iroh); split ALPN lists per
+  endpoint type (resolves OQ-62); entry-point vs. endpoint distinction
 - `docs/architecture/crates/core/endpoint.md` — current endpoint design
   (TLS section will be amended to point to `alknet-tls`)
 - `docs/architecture/crates/core/config.md` — `TlsIdentity`, `StaticConfig`

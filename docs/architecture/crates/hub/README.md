@@ -1,15 +1,16 @@
 ---
 status: draft
-last_updated: 2026-07-14
+last_updated: 2026-07-15
 ---
 
 # alknet-hub
 
-The hub pattern as a reusable crate: multi-transport endpoint that
-accepts workers and browsers over TCP+TLS and QUIC, relays channels
-between legs (ADR-079), manages peer lifecycle, aggregates operations,
-and exposes service discovery. One channels connection per peer;
-multiple endpoint types coexisting.
+The hub pattern as a reusable crate: a multi-transport endpoint that
+composes a subset of three endpoint types (web, native, iroh —
+ADR-086), accepts workers and browsers over whichever transports the
+subset implies, relays channels between legs (ADR-079), manages peer
+lifecycle, aggregates operations, and exposes service discovery. One
+channels connection per peer; multiple endpoint types coexisting.
 
 ## What
 
@@ -24,29 +25,77 @@ types — it wires the existing `ChannelsAdapter`, `ChannelClient`,
 `CallAdapter`, `PeerCompositeEnv`, `from_call`, and `Dispatcher` types
 into a coherent hub runtime.
 
+### The hub composes endpoint types (ADR-086)
+
+A hub composes a **subset** of three endpoint types, each an independent
+listener with its own identity model, auth model, and transport(s). The
+subset determines which transports the hub runs and which ALPNs each
+`TlsServerConfig` advertises. See [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md)
+for the full model.
+
+| Endpoint type | Identity | Auth model | Transport(s) | Client class |
+|---------------|----------|------------|--------------|--------------|
+| **web** | X.509 (ACME or manual) | token-based (Bearer) | TCP+TLS (HTTP, WebSocket), QUIC (WebTransport — deferred per ADR-044) | browsers, curl, registration, HTTP API consumers |
+| **native** | RFC 7250 raw key (Ed25519) | key-based (fingerprint) | QUIC (primary), TCP+TLS (fallback when UDP blocked) | alknet-native clients, workers (fingerprint auth) |
+| **iroh** | RFC 7250 raw key (NodeId) | key-based (fingerprint) | iroh (relay-assisted QUIC) | p2p peers, NAT'd nodes, minimal-hub deployments |
+
+The hub shapes that make sense:
+
+| Hub shape | Endpoint types | Public IP required? | Example |
+|-----------|---------------|---------------------|---------|
+| **full hub** | web + native + iroh | yes (web, native) | the general case — browsers, native clients, p2p |
+| **web + native** | web + native | yes | the first real use case — public domain, native clients |
+| **native + iroh** | native + iroh | yes (native only) | a hub without browser-facing services |
+| **minimal hub** | iroh only | no | a p2p-only hub behind NAT, relay-assisted |
+
+The first real use case is **web + native** (public domain with X.509
+for browsers/registration + raw-key QUIC for native clients). Iroh is a
+hard requirement for the project (the p2p, no-public-IP case) but is not
+in the first deployed subset. All three are hard requirements for the
+project as a whole — a full hub runs all three.
+
+### Entry points vs. endpoints (ADR-086 §2)
+
+Within each endpoint type, ALPNs fall into two categories:
+
+- **Entry points** — connections accepted without an established peer
+  identity. Per-request auth may apply (registration token, Bearer
+  header, or `auth_token` on channel 0), but the connection itself is
+  not identity-gated at the TLS layer. Examples: `h2`/`http/1.1`
+  (HTTP registration, browser API, stealth decoy, WebSocket upgrade),
+  the future `alknet/register` ALPN (worker registration over
+  QUIC/TCP without HTTP). Entry points exist to bootstrap a peer
+  relationship or serve non-peer clients (browsers).
+- **Endpoints** (narrow sense) — connections that require identity
+  resolution before the handler runs. No identity → rejected.
+  Examples: `alknet/channels`, `alknet/call` (top-level),
+  `alknet/ssh` (future).
+
+The distinction determines which `TlsServerConfig` advertises which
+ALPNs — see "ALPN lists" below. All ALPNs (entry-point and endpoint)
+are registered on the same `HandlerRegistry`; the difference is which
+listener accepted them and whether identity was required at the TLS
+layer.
+
 ### The hub is multi-transport
 
-A hub **must** support TCP+TLS and QUIC endpoints simultaneously. This is
-not a convenience — it is the structure of the primary use case. A hub
-that provisions a worker (in a container, on vast.ai, on runpod) uses
-TCP+TLS for registration and QUIC (or another transport) for the ongoing
-channels session. The hub's HTTP endpoint (registration, browser access)
-runs over TCP+TLS; the hub's channels endpoint runs over QUIC or
-TCP+TLS depending on the worker's transport. These coexist on one hub.
-
-The channels protocol is transport-agnostic (ADR-071; ADR-065
+A hub runs whichever transports its endpoint-type subset implies. A
+full hub runs TCP+TLS (web), QUIC (native), and iroh (iroh)
+simultaneously; a minimal hub runs iroh alone. The channels protocol is
+transport-agnostic (ADR-071; ADR-065
 `Connection::from_stream`/`from_bidi`). The hub's accept and dial paths
 inherit that property — they take a `Connection`, not a `SocketAddr`
 welded to a dial. See "Transport" below.
 
 ### What the hub provides
 
-1. **Multi-transport endpoint** — accepts channels connections over
-   QUIC and over TCP+TLS (both owned transports on `AlknetEndpoint` via
-   `with_quinn` / `with_tcp_tls`, per ADR-083). Both feed the same
-   dispatch path. Also serves HTTP (`h2`/`http/1.1`) over TCP+TLS for
-   registration and browser access. All three coexist; the endpoint owns
-   all accept loops and `shutdown()` stops them all.
+1. **Multi-transport endpoint** — composes a subset of three endpoint
+   types (web, native, iroh — ADR-086), each wired as an owned transport
+   on `AlknetEndpoint` via `with_quinn` / `with_iroh` / `with_tcp_tls`
+   (ADR-083). All feed the same dispatch path. A web+native hub runs
+   TCP+TLS (web, X.509) + QUIC (native, raw key); a minimal hub runs
+   iroh alone; a full hub runs all three. The endpoint owns all accept
+   loops and `shutdown()` stops them all.
 
 2. **Peer lifecycle** — accept, dial, disconnect, reconnect with
    backoff. Identity resolution via `IdentityProvider` (fingerprint or
@@ -79,12 +128,12 @@ welded to a dial. See "Transport" below.
 The hub pattern requires wiring that `alknet-channels` and
 `alknet-call` do not provide out of the box:
 
-- The hub accepts channels connections over **multiple transports**
-  simultaneously. The channels crate is transport-agnostic (ADR-071,
-  ADR-065); the hub composes the multi-transport endpoint
-  (`AlknetEndpoint` with `with_quinn` / `with_tcp_tls`, ADR-083). The
-  accept loops themselves live in `alknet-core`; the hub provides the
-  handlers and wiring.
+- The hub composes **multiple endpoint types** (ADR-086). The channels
+  crate is transport-agnostic (ADR-071, ADR-065); the hub composes the
+  multi-transport endpoint (`AlknetEndpoint` with `with_quinn` /
+  `with_iroh` / `with_tcp_tls`, ADR-083) and filters ALPN lists per
+  endpoint type. The accept loops themselves live in `alknet-core`; the
+  hub provides the handlers and wiring.
 - The hub relays channels between legs (ADR-079) — terminating
   channel 0 on each leg, translating `channel/open`, byte-forwarding
   data channels. The channels crate is ALPN-blind and does not know it
@@ -181,25 +230,44 @@ The `Hub` exposes builder methods for optional hooks
 ### Transport
 
 The hub accepts and dials channels connections over any transport
-the channels protocol supports (ADR-071). In practice, a hub runs
-multiple accept loops simultaneously — all owned by `AlknetEndpoint`
-via builder methods (ADR-083):
+the channels protocol supports (ADR-071). A hub composes a subset of
+three endpoint types (ADR-086); the subset determines which transports
+run. All are owned by `AlknetEndpoint` via builder methods (ADR-083):
 
-| Builder method | Transport | What it carries |
-|----------------|-----------|-----------------|
-| `with_quinn` | QUIC (quinn) | Channels connections from workers with QUIC reachability |
-| `with_iroh` | QUIC (iroh, relay-assisted) | Channels connections from workers behind NAT |
-| `with_tcp_tls` | TCP + TLS (`h2`/`http/1.1`/`alknet/channels`) | HTTP registration endpoint, browser access, channels-over-TCP from workers |
-| (Future) WebTransport | WebTransport | Browser bidirectional path (deferred per ADR-044; WebSocket is the v1 browser path) |
+| Builder method | Endpoint type | Transport | What it carries |
+|----------------|---------------|-----------|-----------------|
+| `with_quinn` (raw-key config) | native | QUIC (quinn) | `alknet/channels`, `alknet/call`, `alknet/ssh` (future) — native clients with QUIC reachability |
+| `with_quinn` (X.509/ACME config) | web | QUIC (quinn) | `h2`, `http/1.1`, `h3` (WebTransport — deferred per ADR-044) — browsers over QUIC |
+| `with_iroh` | iroh | QUIC (iroh, relay-assisted) | `alknet/channels`, `alknet/call` — p2p peers, NAT'd nodes |
+| `with_tcp_tls` (X.509/ACME config) | web | TCP + TLS | `h2`/`http/1.1` (registration, browser), `alknet/channels` (WebSocket-carrying-channels — OQ-65), `acme-tls/1` (appended automatically) |
+| `with_tcp_tls` (raw-key config) | native | TCP + TLS | `alknet/channels`, `alknet/call` — native clients using TCP+TLS when UDP is blocked |
+| (Future) WebTransport | web | WebTransport | Browser bidirectional path (deferred per ADR-044; WebSocket is the v1 browser path) |
+
+A single `AlknetEndpoint` may hold two quinn listeners (one per
+`TlsServerConfig` — raw-key for native, X.509 for web), one iroh
+endpoint, and one or two TCP+TLS listeners (X.509 for web, raw-key
+for native fallback). The endpoint owns all of them; `shutdown()`
+stops them all.
+
+### ALPN lists (ADR-086 §3)
+
+Each `TlsServerConfig` advertises only the ALPNs its endpoint type's
+client class can negotiate. The assembly layer filters
+`registry.alpn_strings()` by endpoint type — see
+[ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) §3
+for the full table. The split makes the advertisement honest (no `h2`
+on a raw-key listener that browsers cannot reach) and the
+assembly-layer wiring pattern guessable (not a same-list-vs-split
+guess).
 
 All accept loops run inside `endpoint.run()` and feed the same dispatch
-path. The hub's `HttpAdapter` serves `h2`/`http/1.1` over the TCP+TLS
-path for registration and browser access; the `ChannelsAdapter`
-(registered on the hub's `HandlerRegistry`) serves `alknet/channels`
-over the QUIC path (and over TCP+TLS when a worker dials
-channels-over-TCP). Both ALPNs are registered on the same registry;
-the TLS handshake on each connection negotiates the ALPN and dispatches
-to the right adapter.
+path. The hub's `HttpAdapter` serves `h2`/`http/1.1` over the web
+endpoint's TCP+TLS path for registration and browser access; the
+`ChannelsAdapter` (registered on the hub's `HandlerRegistry`) serves
+`alknet/channels` over the native endpoint's QUIC path (and over
+TCP+TLS when a worker dials channels-over-TCP). Both ALPNs are
+registered on the same registry; the TLS handshake on each connection
+negotiates the ALPN and dispatches to the right adapter.
 
 The TCP+TLS accept loop constructs a `Connection` per accepted
 `TlsStream<TcpStream>` via `Connection::from_bidi` (ADR-065) and hands
@@ -384,11 +452,19 @@ authenticates with its TLS fingerprint. Both resolve to the same
 
 ### Worker registration
 
-The registration flow is what makes TCP+TLS a hard requirement for
-the hub. A freshly-provisioned worker (container, vast.ai, runpod)
-does not yet have an established peer relationship with the hub — it
-has a one-time registration token supplied via the provisioning
-config. The flow:
+The registration flow is an **entry point** (ADR-086 §2) — a connection
+accepted without an established peer identity, authenticated per-request
+by the registration token. This is why the registration endpoint is an
+HTTP route on `h2`/`http/1.1` (an entry-point ALPN), not a
+call-protocol operation: the worker has no `CallConnection` yet at
+registration time. A future `alknet/register` ALPN would serve the same
+entry-point role over QUIC/TCP without the HTTP layer (not yet specced).
+
+The registration flow is what makes the web endpoint (TCP+TLS, X.509)
+a hard requirement for a hub that provisions workers. A freshly-provisioned
+worker (container, vast.ai, runpod) does not yet have an established
+peer relationship with the hub — it has a one-time registration token
+supplied via the provisioning config. The flow:
 
 1. The hub provisions a worker instance (docker, vast.ai, runpod —
    platform-specific) and supplies a registration token via
@@ -703,6 +779,7 @@ into `CallAdapter::with_aggregated_env`.
 | TCP+TLS as first-class owned transport | [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | `with_tcp_tls(listener, acceptor)` — TCP+TLS is owned by the endpoint, not a sibling loop; supersedes ADR-010 Am. 1 |
 | Channel 0 pre-negotiated | [ADR-072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 = `alknet/call`; the `CallAdapter` runs here |
 | Channel lifecycle operations | [ADR-073](../../decisions/073-channel-lifecycle-operations.md) | `channel/open`/`close`/`control`/`resources/subscribe` — what the hub translates |
+| Endpoint types and entry points | [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type |
 
 ## Open Questions
 
@@ -713,7 +790,16 @@ See [open-questions.md](../../open-questions.md) for full details.
   `register_worker` API. Decision-ready in shape (HTTP POST, token in,
   `PeerEntry` created, session credential returned); the exact token
   model (one-time vs. refresh, rotation) and endpoint path need a
-  dedicated ADR before the hub crate stabilizes.
+  dedicated ADR before the hub crate stabilizes. The registration
+  endpoint is an entry point (ADR-086 §2) — a future `alknet/register`
+  ALPN would serve the same role over QUIC/TCP without HTTP.
+- **OQ-65** (open): WebSocket carrying channels — whether the browser
+  path extends from call-protocol-only (ADR-048) to full channels
+  (the 9-byte chunk format over WebSocket binary frames). If chosen,
+  the browser is a first-class channels participant and the hub relay
+  works unchanged for browser legs. The web endpoint advertises
+  `alknet/channels` by default (ADR-086 §3 — the advertisement is
+  settled; OQ-65 governs whether the browser path uses it).
 - **OQ-52** (open): `CallConnection::wait_for_close()` — the
   supervision loop needs a way to await connection close. The
   committed interim is polling `connection().accept_bi()` until
@@ -756,6 +842,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-080: ChannelClient (transport-agnostic `from_connection`)
 - ADR-082: alknet-tls extraction (`TlsServerConfig` — shared across quinn + TCP+TLS)
 - ADR-083: Endpoint as multi-transport accept-loop runner (`with_tcp_tls` — TCP+TLS owned by the endpoint; the hub composes transports and handlers)
+- ADR-086: Endpoint types and entry points (web/native/iroh; entry-point vs. endpoint; split ALPN lists per endpoint type)
 - alkapi [hub.md](/workspace/@alkdev/alkapi/docs/architecture/hub.md) —
   the first hub consumer, the concrete use case that informed this
   crate

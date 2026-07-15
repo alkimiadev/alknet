@@ -10,15 +10,15 @@ last_updated: 2026-07-15
 Alknet is a **core networking toolkit** for building self-hostable,
 p2p-capable, "vpn-like without being a vpn" systems. It is built on
 QUIC+TLS with ALPN-based protocol dispatch, plus TCP+TLS for the
-hub/HTTP path. A single endpoint accepts connections on one port, and
-the ALPN string negotiated during the TLS handshake routes each
-connection to the correct protocol handler. Every service — call,
-channels, HTTP, TTY, tunnels, SFTP — is an ALPN on a shared endpoint
-or a data-channel ALPN inside channels.
+web/browser path. A single endpoint accepts connections on one port
+per transport, and the ALPN string negotiated during the TLS handshake
+routes each connection to the correct protocol handler. Every service —
+call, channels, HTTP, TTY, tunnels, SFTP — is an ALPN on a shared
+endpoint or a data-channel ALPN inside channels.
 
 This is the core insight: **a service IS an ALPN.** One endpoint, one
-port, many protocols — dispatched by the TLS handshake, not by
-application-level peeking or separate listeners.
+port per transport, many protocols — dispatched by the TLS handshake,
+not by application-level peeking or separate listeners.
 
 ### Scope: core mono-repo vs. consumer repos
 
@@ -30,6 +30,24 @@ a hub or worker (docker operations, agent, future applications) are
 **consumer repos** — they depend on the published core crates, not on
 `alknet-core` directly. See [ADR-085](decisions/085-workspace-scope-core-vs-consumer-repos.md)
 for the full scope decision.
+
+### Endpoint types and entry points (ADR-086)
+
+A hub composes a subset of three **endpoint types**, each an independent
+listener with its own identity model, auth model, and transport(s):
+
+| Endpoint type | Identity | Auth model | Transport(s) | Client class |
+|---------------|----------|------------|--------------|--------------|
+| **web** | X.509 (ACME or manual) | token-based (Bearer) | TCP+TLS (HTTP, WebSocket), QUIC (WebTransport — deferred) | browsers, curl, registration |
+| **native** | RFC 7250 raw key (Ed25519) | key-based (fingerprint) | QUIC (primary), TCP+TLS (fallback) | alknet-native clients, workers |
+| **iroh** | RFC 7250 raw key (NodeId) | key-based (fingerprint) | iroh (relay-assisted QUIC) | p2p peers, NAT'd nodes |
+
+A full hub runs all three; a minimal hub runs iroh alone (no public IP
+required). The first real use case is web + native. See
+[ADR-086](decisions/086-endpoint-types-and-entry-points.md) for the
+full model, including the entry-point vs. endpoint ALPN distinction
+(entry points are accepted without identity; endpoints require
+identity resolution) and the split-by-endpoint-type ALPN list pattern.
 
 ## Why ALPN Dispatch
 
@@ -92,12 +110,12 @@ alknet-vault (standalone — foundational to ACL: key derivation, identity)
 ├── Foundational handlers (inside channels as data-channel ALPNs, or on the endpoint)
 │   ├── alknet-tty          alknet/tty — specced (ADR-052–057), implemented
 │   ├── alknet-tty-local    PTY/pipe backend — sibling crate (ADR-054)
-│   ├── alknet-http         h2/http1.1 + WebSocket — the HTTP edge case (registration, browser, MCP)
-│   ├── alknet-ssh          russh server channels wrapper — for git/sftp compat [not yet specced]
-│   ├── alknet-tunnel       alknet/tunnel — POC-validated, minimal spec needed [not yet specced]
-│   ├── alknet-socks5       SOCKS5 proxy over channels [not yet specced]
-│   ├── alknet-fs           filesystem access over channels [not yet specced]
-│   └── alknet-sftp         SFTP over channels [not yet specced]
+│   ├── alknet-http         h2/http1.1 + WebSocket — the web endpoint edge case (registration, browser, MCP)
+│   ├── alknet-ssh          russh server — endpoint ALPN wrapping channels (channels-over-SSH); RFC 7250 keys; legacy compat [not yet specced]
+│   ├── alknet-tunnel       alknet/tunnel — channels data-channel ALPN; POC-validated, minimal spec needed [not yet specced]
+│   ├── alknet-socks5       SOCKS5 proxy — channels data-channel ALPN [not yet specced]
+│   ├── alknet-fs           filesystem access — channels data-channel ALPN [not yet specced]
+│   └── alknet-sftp         SFTP — channels data-channel ALPN [not yet specced]
 │
 └── Consumer repos (separate repos, depend on the published core crates)
     alknet-docker      docker operations — a docker host is a worker
@@ -145,19 +163,38 @@ TLS handshake, dispatched by the endpoint) and **channels data-channel
 ALPNs** (negotiated via `channel/open` inside a channels connection,
 dispatched by the channels substrate). See ADR-071 and ADR-073.
 
+Within the endpoint ALPNs, there is a further distinction (ADR-086 §2):
+**entry points** (connections accepted without an established peer
+identity; per-request auth inside the handler) vs. **endpoints** in the
+narrow sense (connections that require identity resolution before the
+handler runs). This distinction determines which `TlsServerConfig`
+advertises which ALPNs — each endpoint type (web, native, iroh)
+advertises only the ALPNs its client class can negotiate (ADR-086 §3).
+
 ### Endpoint ALPNs
 
-| ALPN | Handler | Description |
-|------|---------|-------------|
-| `alknet/call` | `CallAdapter` | Call protocol: operations, streaming, pub/sub (hand-rolled EventEnvelope — ADR-064) |
-| `alknet/channels` | `ChannelsAdapter` | Multiplexing substrate: N channels over one transport stream (ADR-071); channel 0 = `alknet/call` (ADR-072) |
-| `h2` / `http/1.1` | `HttpAdapter` | Standard HTTP for browsers, curl, registration endpoint (WebSocket for bidirectional — ADR-048) |
+#### Entry points (no identity required at the TLS layer)
+
+| ALPN | Handler | Endpoint type | Description |
+|------|---------|---------------|-------------|
+| `h2` / `http/1.1` | `HttpAdapter` | web | HTTP registration, browser API routes, stealth decoy, WebSocket upgrade (ADR-048) |
+| `alknet/register` (future) | (registration handler) | native, web | Worker registration over QUIC/TCP without HTTP — a direct ALPN for enrollment. Not yet specced. |
+
+#### Endpoints (identity required before dispatch)
+
+| ALPN | Handler | Endpoint type | Description |
+|------|---------|---------------|-------------|
+| `alknet/channels` | `ChannelsAdapter` | native, web (for WS-channels), iroh | Multiplexing substrate: N channels over one transport stream (ADR-071); channel 0 = `alknet/call` (ADR-072). Identity resolved on channel 0 before dispatch. |
+| `alknet/call` | `CallAdapter` | native, iroh | Call protocol: operations, streaming, pub/sub (hand-rolled EventEnvelope — ADR-064). When used as a top-level ALPN; as channel 0 inside channels, identity is resolved before dispatch. |
+| `alknet/ssh` (future) | (ssh handler) | native | SSH server wrapping channels (channels-over-SSH); RFC 7250 keys; legacy-client entry point for git/sftp compat. Not yet specced. |
 
 ### Channels data-channel ALPNs
 
 These ride inside a `alknet/channels` connection as data channels,
 opened via `channel/open` (ADR-073). They get the ACL and
-bidirectionality of channels + call for free.
+bidirectionality of channels + call for free. They are NOT in any
+`TlsServerConfig`'s ALPN list — they are negotiated inside channels,
+not at the TLS layer.
 
 | ALPN | Handler | Status |
 |------|---------|--------|
@@ -167,6 +204,19 @@ bidirectionality of channels + call for free.
 | `alknet/fs` | (fs handler) | not yet specced |
 | `alknet/sftp` | (sftp handler) | not yet specced |
 | (future) | any ALPN a consumer registers | channels supports any ALPN — ADR-071 |
+
+### SSH — an endpoint ALPN that wraps channels (ADR-086 §4)
+
+SSH is structurally different from the channels data-channel ALPNs
+above. It is an **endpoint ALPN** (negotiated at the TLS layer on the
+native config), and it runs channels *inside* it
+(channels-over-SSH): the SSH server accepts a connection, and each SSH
+channel becomes a channels data-channel ALPN. SSH uses the same RFC
+7250 keys as the native endpoint — it is a legacy-client entry point
+for git/sftp compatibility, not a new identity model. SSH is gated by
+channels (the channels run inside it) but is itself an endpoint ALPN,
+not a data-channel ALPN. It comes later in the roadmap — tunnels,
+sftp, and other data-channel ALPNs are prioritized first.
 
 ### Notes
 
@@ -179,11 +229,13 @@ bidirectionality of channels + call for free.
 > (`IdentityProvider`, `PeerEntry`, fingerprint resolution) derives
 > from vault-managed keys. See ADR-008, ADR-014, ADR-018, ADR-019.
 
-> **`alknet/http`** is the HTTP edge case. It is an endpoint ALPN
-> (`h2`/`http/1.1`), not a channels data-channel ALPN — it wraps the
-> call protocol for browser/curl access (registration, MCP/OpenAPI
-> adapters, WebSocket bidirectional path). See
-> [crates/http/README.md](crates/http/README.md).
+> **`alknet/http`** is the web endpoint edge case. It is an
+> entry-point ALPN (`h2`/`http/1.1`), not a channels data-channel ALPN
+> — it wraps the call protocol for browser/curl access (registration,
+> MCP/OpenAPI adapters, WebSocket bidirectional path). It is advertised
+> on the web endpoint's `TlsServerConfig` (X.509/ACME), not the native
+> config. See [crates/http/README.md](crates/http/README.md) and
+> ADR-086 §2 (entry points vs. endpoints).
 
 > **Consumer-repo ALPNs** (e.g., docker operations) are not listed
 > here. A consumer that builds on top of a hub or worker registers its
@@ -317,6 +369,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Shared `TlsServerConfig` across quinn + TCP+TLS + iroh; one ACME state machine |
 | [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner | Endpoint takes no TLS config; TCP+TLS is an owned transport; public `dispatch` for SSH/WT |
 | [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Core mono-repo (substrate + deployment shapes + foundational handlers + vault) vs. consumer repos (docker, agent) |
+| [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type (resolves OQ-62) |
 
 ## Open Questions
 
