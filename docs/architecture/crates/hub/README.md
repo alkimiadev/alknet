@@ -282,8 +282,12 @@ all.
 #### Dial (outbound workers) — transport-agnostic
 
 The hub dials outbound workers via `ChannelClient`, not `CallClient`.
-The dial path mirrors the `from_connection` / `connect_quic` split
-(ADR-080):
+The hub is a client when it dials out — a hub (B) that connects to
+another hub (A) is a client from A's perspective. The dial needs a
+client-side TLS config (`TlsClientConfig`, ADR-087) for the outbound
+connection's `rustls::ClientConfig` (verifier selection per ADR-034:
+fingerprint pin for the worker's known key). The dial path mirrors the
+`from_connection` / `connect_quic` split (ADR-080):
 
 ```rust
 impl Hub {
@@ -299,8 +303,9 @@ impl Hub {
     ) -> Result<(PeerId, ChannelClient), HubError>;
 
     /// QUIC convenience: dial a worker over QUIC, then
-    /// `dial_worker_connection`. Two-way door — additive over
-    /// `dial_worker_connection`.
+    /// `dial_worker_connection`. Builds a `TlsClientConfig` (ADR-087)
+    /// with the worker's fingerprint pinned (ADR-034), dials QUIC,
+    /// wraps as a channels `Connection`, calls `dial_worker_connection`.
     pub async fn connect_quic_worker(
         &self,
         addr: SocketAddr,
@@ -315,11 +320,12 @@ taking over the `Connection`, it runs `from_call` on channel 0 to
 discover the worker's operations, registers the discovered bundles in
 the connection's Layer 2 overlay, and attaches the peer to the
 aggregated env. `connect_quic_worker` is the "I just want QUIC"
-convenience — it calls `ChannelClient::connect_quic`, then
-`dial_worker_connection`. A future `connect_tcp_tls_worker` dials
-TCP+TLS and calls `dial_worker_connection` the same way. The
-one-way-door surface is `dial_worker_connection`; the dial helpers
-are two-way-door conveniences.
+convenience — it builds a `TlsClientConfig` (ADR-087) with the
+worker's fingerprint pinned, calls `ChannelClient::connect_quic`, then
+`dial_worker_connection`. A future `connect_tcp_tls_worker` builds a
+`TlsClientConfig` and dials TCP+TLS the same way. The one-way-door
+surface is `dial_worker_connection`; the dial helpers are two-way-door
+conveniences.
 
 #### Accept (inbound workers and browsers) — transport-agnostic
 
@@ -780,6 +786,7 @@ into `CallAdapter::with_aggregated_env`.
 | Channel 0 pre-negotiated | [ADR-072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 = `alknet/call`; the `CallAdapter` runs here |
 | Channel lifecycle operations | [ADR-073](../../decisions/073-channel-lifecycle-operations.md) | `channel/open`/`close`/`control`/`resources/subscribe` — what the hub translates |
 | Endpoint types and entry points | [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type |
+| `TlsClientConfig` for outbound dials | [ADR-087](../../decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `alknet-tls` provides client-side TLS config; hub-as-client is a first-class use case; not blocked on the dial-seam extraction (OQ-55) |
 
 ## Open Questions
 
@@ -843,6 +850,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 - ADR-082: alknet-tls extraction (`TlsServerConfig` — shared across quinn + TCP+TLS)
 - ADR-083: Endpoint as multi-transport accept-loop runner (`with_tcp_tls` — TCP+TLS owned by the endpoint; the hub composes transports and handlers)
 - ADR-086: Endpoint types and entry points (web/native/iroh; entry-point vs. endpoint; split ALPN lists per endpoint type)
+- ADR-087: `TlsClientConfig` not blocked on dial seam (client-side TLS config; hub-as-client requirement)
 - alkapi [hub.md](/workspace/@alkdev/alkapi/docs/architecture/hub.md) —
   the first hub consumer, the concrete use case that informed this
   crate

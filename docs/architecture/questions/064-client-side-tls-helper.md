@@ -1,55 +1,60 @@
 # OQ-64: Should `alknet-tls` Provide a Client-Side TLS Config Helper?
 
 - **Origin**: `docs/architecture/crates/tls/README.md` (the "Server-only
-  for now" section flags this as deferred); ADR-084 (requires the
+  for now" section flagged this as deferred); ADR-084 (requires the
   client-side `rustls::ClientConfig` to use the same `aws_lc_rs`
-  provider — currently enforced by convention, not shared code).
-- **Status**: deferred(scope)
-- **Door type**: two-way (adding a client helper to `alknet-tls` is
-  additive; the risk is not the addition but *extracting it
-  prematurely* and baking in a QUIC-shaped client — see Blocking on)
-- **Priority**: medium
-- **Blocked on**: the `AlknetClient` dial-seam extraction (OQ-55). The
-  client-side TLS helper and the shared dial are the same seam: both
-  answer "how does an outbound connection build its
-  `rustls::ClientConfig` + select a verifier (ADR-034) + dial the
-  transport." Extracting the TLS helper without a second transport's
-  real client dial existing would bake the QUIC client's shape into a
-  shared helper — the same welding ADR-065 unwound on the server side.
-  The blocking condition is the same as OQ-55: a second transport's
-  real dial (TCP+TLS, SSH raw-TCP, HTTP-wrapped call) existing, so the
-  transport-polymorphic client+TLS seam is extractable from two
-  *different* transport implementations.
-- **Resolution**: Not yet decidable. `alknet-tls` is server-side only
-  as specified. The client side — `rustls::ClientConfig` construction +
-  ADR-034 verifier selection (fingerprint pin for known peers, CA-verify
-  for unknown X.509, fail-closed for unknown raw-key) — lives in
-  `alknet-call`'s `FingerprintPinVerifier` today. The
-  provider-consistency requirement (ADR-084: `aws_lc_rs` on all paths)
-  is enforced by convention (two crates independently constructing
-  `aws_lc_rs::default_provider()`) until this OQ is resolved.
+  provider — previously enforced by convention, not shared code).
+- **Status**: resolved
+- **Door type**: one-way (`TlsClientConfig` as the shared client-side
+  TLS config in `alknet-tls` is structural — every outbound-dialing
+  crate depends on it. Reversing would re-distribute verifier selection
+  + provider wiring across crates.)
+- **Priority**: high (upgraded from medium — the hub-as-client
+  requirement makes this a prerequisite for the first hub deployment,
+  not a future extraction)
+- **Resolution**: **Yes. `alknet-tls` provides `TlsClientConfig`.** It
+  is not blocked on the dial-seam extraction (OQ-55).
 
-  What does NOT block on this: each client (`CallClient`,
-  `ChannelClient`) building its own `ClientConfig` standalone with the
-  matching provider. The friction is duplicated boilerplate (each
-  client rebuilds verifier selection + provider wiring), not a missing
-  capability and not a QUIC-welded client API. The
-  transport-agnostic take-over (`CallClient::spawn_dispatch`,
-  `ChannelClient::from_connection` — ADR-080) is decided and is not
-  the thing being deferred; only the shared *client TLS config helper*
-  is.
+  The previous deferral linked OQ-64 and OQ-55 as "the same seam,"
+  creating a circular dependency: the TLS config is deferred behind the
+  dial, but the dial needs the TLS config. The circle is broken by
+  separating the two concerns:
 
-  Note on the hub-as-client case: a hub (A) that dials another hub (B)
-  uses a client to do so — from B's perspective A is a worker. The
-  bidirectionality of the call and channels protocols means both sides
-  can be both hub and worker within a connection. This does not change
-  the blocking condition: the shared client TLS helper is still about
-  the *dial*, regardless of whether the dialer is a hub, a worker, or a
-  hub-worker. The hub-as-client case is a use case that the resolved
-  helper must cover, not a reason to resolve it now.
-- **Cross-references**: OQ-55 (the `AlknetClient` dial-seam extraction
-  — this OQ's blocking condition), ADR-034 (verifier selection — the
-  rule the helper would centralize), ADR-084 (provider consistency —
-  the convention that holds until this is resolved), ADR-065 (the
-  server-side transport generalization this OQ's deferral avoids
-  preempting on the client side)
+  1. **`TlsClientConfig`** — the `rustls::ClientConfig` + ADR-034
+     verifier selection + ADR-084 crypto provider. Transport-agnostic.
+     All decisions are made. Buildable today. It is a **prerequisite**
+     for any dial, not a consequence of it.
+  2. **The dial** (`AlknetClient::dial()`) — transport-specific
+     connection establishment. Extracting a transport-polymorphic dial
+     from one shape (QUIC) would bake QUIC in. **Legitimate deferral
+     (OQ-55, unchanged).**
+
+  `TlsClientConfig::new` takes a verifier context (the inputs to
+  ADR-034's rule: `PeerEntry` presence, expected fingerprint, remote
+  cert type) and returns a `rustls::ClientConfig`. The caller
+  (transport-specific dial helper, `CallClient::connect_quic`, a future
+  `connect_tcp_tls`) passes it to the transport's connector. Iroh is
+  the exception — it has its own TLS and does not consume a
+  `rustls::ClientConfig`; the iroh dial helper applies the same
+  ADR-034 rule via iroh's `NodeId` verification API.
+
+  The hub makes this non-optional: a hub dials out to workers it
+  supervises and to other hubs (hub-as-client). The hub's
+  `dial_worker_connection` / `supervise_worker` need a
+  `TlsClientConfig` for the outbound dial. The first hub deployment
+  (web + native) dials workers over QUIC with the worker's fingerprint
+  pinned. There is no "later" — it is on the critical path for the
+  first hub and for `alknet-worker`.
+
+  See [ADR-087](../decisions/087-tlsclientconfig-not-blocked-on-dial.md)
+  for the full decision, including the circular-hedge analysis, the
+  hub-as-client requirement, and the iroh exception.
+- **Cross-references**: [ADR-087](../decisions/087-tlsclientconfig-not-blocked-on-dial.md)
+  (the decision), [ADR-034](../decisions/034-outgoing-only-x509-and-three-peer-roles.md)
+  §3 (verifier selection — the rule `TlsClientConfig::new`
+  centralizes), [ADR-084](../decisions/084-aws-lc-rs-crypto-provider.md)
+  (provider consistency — enforced by code, not convention, for the
+  client side), [ADR-082](../decisions/082-alknet-tls-extraction.md)
+  (`TlsServerConfig` — the server-side analogue), OQ-55 (the dial seam
+  — remains deferred; this OQ's resolution does not affect it),
+  OQ-63 (`TlsError` shape — now covers both server and client variants)

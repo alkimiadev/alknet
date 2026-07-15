@@ -5,12 +5,15 @@ last_updated: 2026-07-15
 
 # alknet-tls
 
-Shared TLS configuration and certificate management. Builds a
-`rustls::ServerConfig` (or an ACME state machine + cert resolver) once,
-and shares it across multiple transports — quinn, `tokio-rustls`
-(TCP+TLS), and iroh — so one certificate identity serves QUIC and TCP
-endpoints simultaneously. One ACME state machine, one cert, N
-transports.
+Shared TLS configuration and certificate management — server and
+client. Builds a `rustls::ServerConfig` (or an ACME state machine +
+cert resolver) once and shares it across multiple transports — quinn,
+`tokio-rustls` (TCP+TLS), and iroh — so one certificate identity serves
+QUIC and TCP endpoints simultaneously. Builds a `rustls::ClientConfig`
+with ADR-034 verifier selection and ADR-084 crypto provider, shared
+across all outbound-dialing crates (hub, worker, `CallClient`,
+`ChannelClient`). One ACME state machine, one cert, N transports;
+one verifier rule, N clients.
 
 ## What
 
@@ -388,33 +391,62 @@ behind a `tcp` feature, as an owned transport on `AlknetEndpoint` (via
 cert provider, not the accept loop. This keeps `alknet-tls` focused on
 TLS setup and cert sharing, not transport accept logic.
 
-### Server-only (for now) — client-side config is a separate question
+### Client-side — `TlsClientConfig` (ADR-087)
 
-`alknet-tls` as specified here is **server-side only**:
-`TlsServerConfig` and its accessors (`for_quinn`, `for_tcp_tls`,
-`rustls_config`) produce `rustls::ServerConfig`-shaped outputs for
-inbound listeners. There is no `TlsClientConfig`, no `for_client()`,
-no client-side cert/verifier helper in this crate.
+`alknet-tls` provides a client-side config alongside `TlsServerConfig`.
+A hub dials out to workers it supervises and to other hubs
+(hub-as-client); `alknet-worker` dials a hub. Both need a
+`rustls::ClientConfig` with ADR-034's verifier selection and ADR-084's
+crypto provider. `TlsClientConfig` centralizes this — it is not a
+future extraction deferred behind the dial seam (OQ-55); it is a
+present prerequisite for the first hub deployment.
 
-The client side — the `rustls::ClientConfig` construction used by
-`CallClient` / `ChannelClient` for outbound dials, including
-[ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md)'s
-verifier-selection rule (fingerprint pin for known peers, CA-verify for
-unknown X.509, fail-closed for unknown raw-key) — currently lives in
-`alknet-call`'s `FingerprintPinVerifier`. ADR-084 requires the client
-side to use the same `aws_lc_rs` provider; today that is enforced by
-**convention** (two crates independently constructing
-`aws_lc_rs::default_provider()`), not by shared code.
+```rust
+pub struct TlsClientConfig {
+    config: rustls::ClientConfig,
+}
 
-Whether `alknet-tls` should grow a client-side helper (a
-`TlsClientConfig` that centralizes verifier selection + provider
-consistency, so `alknet-call` / a future `AlknetClient` don't each
-rebuild it) is **deferred** — see OQ-64. The deferral blocks on the
-`AlknetClient` dial-seam extraction (OQ-55): the client-side TLS helper
-and the shared dial are the same seam, and extracting either without a
-second transport's real client dial would bake QUIC in as the client
-shape — the same welding ADR-065 unwound on the server side. The
-provider-consistency convention (ADR-084) holds until then.
+impl TlsClientConfig {
+    /// Build a client TLS config for the given remote identity context.
+    /// Applies ADR-034 verifier selection:
+    ///   - known peer (PeerEntry present) + raw key → fingerprint pin
+    ///   - known peer (PeerEntry present) + X.509 → fingerprint pin
+    ///   - unknown remote + X.509 → CA verification (WebPkiServerVerifier)
+    ///   - unknown remote + raw key → fail closed
+    /// Applies ADR-084 crypto provider (aws_lc_rs::default_provider()).
+    pub fn new(verifier_context: ClientVerifierContext) -> Result<Self, TlsError>;
+}
+```
+
+The `ClientVerifierContext` carries the inputs to ADR-034's verifier
+selection (whether a `PeerEntry` exists for the remote, the expected
+fingerprint, the remote cert type). The exact struct shape is an
+implementation detail; the decisions are in ADR-034. The full
+`TlsError` variant granularity (now covering both server and client
+errors) is OQ-63 (next session).
+
+`TlsClientConfig` produces a `rustls::ClientConfig`; the caller (the
+transport-specific dial helper — `CallClient::connect_quic`, a future
+`connect_tcp_tls`, etc.) passes it to the transport's connector. The
+config is transport-agnostic; the dial is not. This is the client-side
+analogue of ADR-065's server-side separation: the take-over
+(`spawn_dispatch` / `from_connection`, transport-agnostic) is built
+now; the dial (transport-specific) is per-transport. The
+transport-polymorphic dial extraction (`AlknetClient::dial()`) remains
+deferred (OQ-55) — it is about picking the transport and calling the
+right connector, not about the TLS config.
+
+### Iroh — shares the key, not the config (client side too)
+
+Iroh's client side, like its server side (above), does not consume a
+`rustls::ClientConfig` — it takes an `iroh::SecretKey` and handles TLS
+internally. The iroh client dial does not use `TlsClientConfig`. The
+verifier selection for iroh is fingerprint-pinning by another name:
+iroh's built-in TLS verifies the remote's `NodeId` (Ed25519 public key)
+against the expected `NodeId`. An unknown iroh remote fails closed
+(ADR-034 §3, Assumption 1 — no CA to fall back to). The iroh dial
+helper applies the same ADR-034 rule via iroh's own API; the
+consistency is in the rule, not in the type.
 
 ## Crate dependencies (in the dep graph)
 
@@ -455,6 +487,7 @@ All design decisions are documented as ADRs in
 | [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as multi-transport accept-loop runner | `AlknetEndpoint` takes no TLS config; TCP+TLS is an owned transport (`with_tcp_tls`); `dispatch` public for SSH/WT; `acme-tls/1` guard moves to shared `dispatch` |
 | [084](../../decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs crypto provider | `rustls::crypto::aws_lc_rs::default_provider()` on all server + client config paths; matches iroh; FIPS-capable; do not switch to `ring` or process-default without a new ADR |
 | [086](../../decisions/086-endpoint-types-and-entry-points.md) | Endpoint types and entry points | Three endpoint types (web/native/iroh); split ALPN lists per endpoint type (resolves OQ-62); entry-point vs. endpoint ALPN distinction |
+| [087](../../decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` not blocked on dial seam | `alknet-tls` provides `TlsClientConfig` (client-side); not deferred behind OQ-55; breaks the circular hedge; hub-as-client is a first-class use case |
 
 ## Open Questions
 
@@ -484,12 +517,13 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-63** (open): `TlsError` shape — the error type is referenced in
   public signatures but not sketched. Needs a variant-granularity
   decision (single enum vs thin wrapper) before implementation.
-- **OQ-64** (deferred): Client-side TLS config helper. `alknet-tls` is
-  server-side only as specified; the client-side `ClientConfig` +
-  verifier selection lives in `alknet-call`. Blocked on the
-  `AlknetClient` dial-seam extraction (OQ-55) — extracting the client
-  helper without a second transport's dial would bake QUIC in as the
-  client shape.
+- **OQ-64** (resolved): `alknet-tls` provides `TlsClientConfig`
+  (ADR-087). Not blocked on the dial-seam extraction (OQ-55) — the TLS
+  config is a prerequisite for the dial, not a consequence of it.
+  Centralizes ADR-034 verifier selection + ADR-084 provider; the
+  hub-as-client requirement makes it a prerequisite for the first hub
+  deployment. The dial seam (OQ-55) remains deferred; the TLS config
+  does not.
 
 ## References
 
@@ -507,6 +541,9 @@ See [open-questions.md](../../open-questions.md) for full details.
 - `docs/architecture/decisions/086-endpoint-types-and-entry-points.md`
   — three endpoint types (web/native/iroh); split ALPN lists per
   endpoint type (resolves OQ-62); entry-point vs. endpoint distinction
+- `docs/architecture/decisions/087-tlsclientconfig-not-blocked-on-dial.md`
+  — `TlsClientConfig` (client-side); not blocked on the dial seam;
+  breaks the circular hedge; hub-as-client requirement
 - `docs/architecture/crates/core/endpoint.md` — current endpoint design
   (TLS section will be amended to point to `alknet-tls`)
 - `docs/architecture/crates/core/config.md` — `TlsIdentity`, `StaticConfig`

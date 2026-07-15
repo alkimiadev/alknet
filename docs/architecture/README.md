@@ -286,6 +286,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [084](decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs as the TLS Crypto Provider | Accepted |
 | [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Accepted |
 | [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Accepted |
+| [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted |
 
 ## Open Questions
 

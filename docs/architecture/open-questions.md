@@ -185,7 +185,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 |----|-------|--------|------|-----|
 | [OQ-62](questions/062-alpn-list-sharing-two-config-hub.md) | Does a Hub Pass the Same ALPN List to Both `TlsServerConfig`s? | resolved | one | high |
 | [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | open | one | high |
-| [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | deferred(scope) | two | med |
+| [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | resolved | one | high |
 | [OQ-65](questions/065-websocket-carrying-channels.md) | Should WebSocket Carry the Channels Protocol (Not Just the Call Protocol)? | open | one | med |
 
 ## Deferred / Blocked
@@ -294,17 +294,13 @@ filtering the tables above.
 
 ### OQ-64: Should `alknet-tls` Provide a Client-Side TLS Config Helper?
 
-- **Blocked on**: the `AlknetClient` dial-seam extraction (OQ-55). The
-  client-side TLS helper and the shared dial are the same seam — both
-  answer "how does an outbound connection build its
-  `rustls::ClientConfig` + select a verifier (ADR-034) + dial." The
-  blocking condition is the same as OQ-55: a second transport's real
-  client dial existing (TCP+TLS, SSH raw-TCP, HTTP-wrapped call), so the
-  transport-polymorphic client+TLS seam is extractable from two
-  *different* transport implementations, not one QUIC shape. Until then,
-  `alknet-tls` is server-side only; the client side lives in
-  `alknet-call`'s `FingerprintPinVerifier`, with provider consistency
-  (ADR-084) enforced by convention.
-- **Priority**: medium
+- **Resolved** (ADR-087): `alknet-tls` provides `TlsClientConfig`. Not
+  blocked on the dial-seam extraction (OQ-55) — the TLS config is a
+  prerequisite for the dial, not a consequence of it. The circular
+  hedge (TLS config deferred behind the dial, dial needs the TLS
+  config) is broken. The hub-as-client requirement makes it a
+  prerequisite for the first hub deployment. See
+  [ADR-087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) and
+  [OQ-64](questions/064-client-side-tls-helper.md).
 - **Full file**: [OQ-64](questions/064-client-side-tls-helper.md)
 
