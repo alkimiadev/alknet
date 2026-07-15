@@ -421,9 +421,10 @@ impl TlsClientConfig {
 The `ClientVerifierContext` carries the inputs to ADR-034's verifier
 selection (whether a `PeerEntry` exists for the remote, the expected
 fingerprint, the remote cert type). The exact struct shape is an
-implementation detail; the decisions are in ADR-034. The full
-`TlsError` variant granularity (now covering both server and client
-errors) is OQ-63 (next session).
+implementation detail; the decisions are in ADR-034. The `TlsError`
+variant granularity (covering both server and client errors) is
+decided — see [ADR-088](../../decisions/088-tlserror-shape.md) and the
+[`TlsError`](#tlserror) section below.
 
 `TlsClientConfig` produces a `rustls::ClientConfig`; the caller (the
 transport-specific dial helper — `CallClient::connect_quic`, a future
@@ -447,6 +448,81 @@ against the expected `NodeId`. An unknown iroh remote fails closed
 (ADR-034 §3, Assumption 1 — no CA to fall back to). The iroh dial
 helper applies the same ADR-034 rule via iroh's own API; the
 consistency is in the rule, not in the type.
+
+### `TlsError`
+
+The error type for `TlsServerConfig::new`, `TlsClientConfig::new`, and
+`for_quinn()` (`for_tcp_tls` is infallible — `TlsAcceptor::new` cannot
+fail). A single `#[non_exhaustive]` enum with one variant per failure
+category, owned by `alknet-tls`. The shape, the rationale for
+single-enum-over-thin-wrapper, and the "what is NOT a variant" list are
+in [ADR-088](../../decisions/088-tlserror-shape.md); this section is
+the sketch.
+
+```rust
+/// Errors produced by `TlsServerConfig::new`, `TlsClientConfig::new`,
+/// and the transport accessors (`for_quinn`; `for_tcp_tls` is
+/// infallible). One variant per failure category — match on the variant
+/// for the category, inspect the `#[source]` for the detail.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TlsError {
+    /// Cert or key file read / PEM parse. `io::Error` is the type the
+    /// pemfile BufRead APIs return (pemfile funnels its own non-`Error`
+    /// type into `io::Error` — see ADR-088 §"Gotchas" #2).
+    #[error("loading cert/key material: {0}")]
+    CertLoad(#[from] std::io::Error),
+
+    /// Self-signed cert generation (rcgen). Server `SelfSigned` path.
+    #[error("generating self-signed cert: {0}")]
+    SelfSigned(#[from] rcgen::Error),
+
+    /// rustls server or client config construction
+    /// (`with_safe_default_protocol_versions`, `with_single_cert`,
+    /// `CertifiedKey::from_der`, `RootCertStore::add`). Both paths.
+    #[error("building rustls config: {0}")]
+    Rustls(#[from] rustls::Error),
+
+    /// `WebPkiServerVerifier::build()` — the unknown-X.509-remote
+    /// client path (empty root store, invalid CRL). Distinct type and
+    /// remediation from `Rustls`.
+    #[error("building webpki verifier: {0}")]
+    VerifierBuild(#[from] rustls::webpki::VerifierBuilderError),
+
+    /// `QuicServerConfig::try_from(rustls::ServerConfig)` — the one
+    /// path where `for_quinn()` fails. Distinct type
+    /// (`NoInitialCipherSuite`, not `rustls::Error`); quinn-gated.
+    #[cfg(feature = "quinn")]
+    #[error("wrapping rustls config for quinn: {0}")]
+    QuinnWrap(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
+
+    /// ACME config mismatch: "feature not enabled but `Acme`
+    /// configured" (server), or "ACME identity is server-only; cannot
+    /// be used for client auth" (client). A config error, not a
+    /// wrapped third-party error.
+    #[error("ACME configuration error: {0}")]
+    AcmeConfig(String),
+}
+```
+
+**Scope boundary (ADR-088 §6).** `TlsError` is the
+**config-construction** error type — what `new` and `for_quinn` can
+fail on. Handshake-time errors (the unknown-raw-key fail-closed; a
+`rustls::Error::InvalidCertificate` from a rejected cert) are
+**handshake outcomes**, not config-construction errors — they flow
+through the transport's connector (`quinn::Endpoint::connect_with`,
+`TlsConnector::connect`), not through `TlsError`. ACME state-machine
+errors (`EventError`, `OrderError`, `CertParseError`) are stream events,
+logged in the spawned task, not `TlsError` variants — `new` spawns the
+state machine and returns immediately; the state machine's failures
+arrive asynchronously and are logged (ADR-082 §"Behavior-preservation
+invariants").
+
+**Ownership.** `TlsError` lives in `alknet-tls`, owned by the crate
+that produces it. It is not re-exported from `alknet-core`; core's
+`EndpointError` has no `TlsConfig` variant after ADR-083 and does not
+need to know about `TlsError`. The assembly layer (hub/worker) depends
+on `alknet-tls` directly and gets `TlsError` from that dependency.
 
 ## Crate dependencies (in the dep graph)
 
@@ -488,6 +564,7 @@ All design decisions are documented as ADRs in
 | [084](../../decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs crypto provider | `rustls::crypto::aws_lc_rs::default_provider()` on all server + client config paths; matches iroh; FIPS-capable; do not switch to `ring` or process-default without a new ADR |
 | [086](../../decisions/086-endpoint-types-and-entry-points.md) | Endpoint types and entry points | Three endpoint types (web/native/iroh); split ALPN lists per endpoint type (resolves OQ-62); entry-point vs. endpoint ALPN distinction |
 | [087](../../decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` not blocked on dial seam | `alknet-tls` provides `TlsClientConfig` (client-side); not deferred behind OQ-55; breaks the circular hedge; hub-as-client is a first-class use case |
+| [088](../../decisions/088-tlserror-shape.md) | `TlsError` shape — single enum, owned by `alknet-tls` | Single `#[non_exhaustive]` enum, one variant per failure category (`CertLoad`, `SelfSigned`, `Rustls`, `VerifierBuild`, `QuinnWrap`, `AcmeConfig`); not a thin wrapper (the `for_quinn` failure is `NoInitialCipherSuite`, not `rustls::Error`); owned by `alknet-tls`, not re-exported from core |
 
 ## Open Questions
 
@@ -514,9 +591,19 @@ See [open-questions.md](../../open-questions.md) for full details.
   ALPNs + `alknet/channels` on the X.509/ACME config, native ALPNs on
   the iroh builder. The assembly layer filters
   `registry.alpn_strings()` per config.
-- **OQ-63** (open): `TlsError` shape — the error type is referenced in
-  public signatures but not sketched. Needs a variant-granularity
-  decision (single enum vs thin wrapper) before implementation.
+- **OQ-63** (resolved): `TlsError` shape — a single
+  `#[non_exhaustive]` enum with one variant per failure category, owned
+  by `alknet-tls` (not re-exported from core). Six variants: `CertLoad`,
+  `SelfSigned`, `Rustls`, `VerifierBuild`, `QuinnWrap` (quinn-gated),
+  `AcmeConfig`. The decision is grounded in the actual error-producing
+  call sites and the dependency-crate sources; three findings drove
+  the single-enum choice over a thin wrapper (the `for_quinn()` failure
+  is `NoInitialCipherSuite`, not `rustls::Error`;
+  `rustls_pemfile::Error` is not a `std::error::Error`;
+  `WebPkiServerVerifier::build()` returns `VerifierBuilderError`). See
+  [ADR-088](../../decisions/088-tlserror-shape.md) for the full rationale
+  and the "what is NOT a variant" list. The `TlsError` sketch is in the
+  [TlsError](#tlserror) section below.
 - **OQ-64** (resolved): `alknet-tls` provides `TlsClientConfig`
   (ADR-087). Not blocked on the dial-seam extraction (OQ-55) — the TLS
   config is a prerequisite for the dial, not a consequence of it.

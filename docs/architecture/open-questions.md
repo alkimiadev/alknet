@@ -200,7 +200,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | OQ | Title | Status | Door | Pri |
 |----|-------|--------|------|-----|
 | [OQ-62](questions/062-alpn-list-sharing-two-config-hub.md) | Does a Hub Pass the Same ALPN List to Both `TlsServerConfig`s? | resolved | one | high |
-| [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | open | one | high |
+| [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | resolved | one | high |
 | [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | resolved | one | high |
 
 ## Deferred / Blocked
