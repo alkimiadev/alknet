@@ -136,6 +136,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-39](questions/039-to-openapi-published-spec-versioning.md) | `to_openapi` Published-Spec Versioning | resolved | one/two | med |
 | [OQ-40](questions/040-reqwest-client-config-and-connection-pooling.md) | reqwest Client Config and Connection Pooling | resolved | two | low |
 | [OQ-41](questions/041-stream-operators-library.md) | Stream Operators Library | deferred(scope) | two | low |
+| [OQ-65](questions/065-websocket-carrying-channels.md) | Should WebSocket Carry the Channels Protocol (Not Just the Call Protocol)? | open | one | med |
 
 ### Runtime-Spawned Resources and Ownership
 
@@ -170,7 +171,6 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-53](questions/053-backoff-config-defaults.md) | BackoffConfig default policy | open | two | low |
 | [OQ-54](questions/054-inbound-worker-hook-placement.md) | Inbound worker on_worker_connected hook placement | resolved | two | low |
 | [OQ-58](questions/058-worker-registration-flow.md) | Worker Registration Flow | open | one | high |
-| [OQ-65](questions/065-websocket-carrying-channels.md) | Should WebSocket Carry the Channels Protocol (Not Just the Call Protocol)? | open | one | med |
 
 ### alknet-channels
 
@@ -186,7 +186,6 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-62](questions/062-alpn-list-sharing-two-config-hub.md) | Does a Hub Pass the Same ALPN List to Both `TlsServerConfig`s? | resolved | one | high |
 | [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | open | one | high |
 | [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | resolved | one | high |
-| [OQ-65](questions/065-websocket-carrying-channels.md) | Should WebSocket Carry the Channels Protocol (Not Just the Call Protocol)? | open | one | med |
 
 ## Deferred / Blocked
 
