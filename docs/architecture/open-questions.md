@@ -91,7 +91,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-12](questions/012-tls-identity-provisioning-in-alknetendpoint.md) | TLS Identity Provisioning in AlknetEndpoint | resolved | one | high |
 | [OQ-13](questions/013-operation-path-format-and-routing-scope.md) | Operation Path Format and Routing Scope | resolved | two | med |
 | [OQ-14](questions/014-batch-operation-semantics.md) | Batch Operation Semantics | resolved | two | low |
-| [OQ-55](questions/055-alknetclient-establishment-extraction.md) | AlknetClient / Client Establishment Extraction | deferred(scope) | two | med |
+| [OQ-55](questions/055-alknetclient-establishment-extraction.md) | AlknetClient / Client Establishment Extraction | resolved | one | med |
 | [OQ-59](questions/059-fingerprint-module-location.md) | Should `fingerprint.rs` Stay in Core or Move to `alknet-tls`? | resolved | two | med |
 | [OQ-60](questions/060-transport-construction-location.md) | Where Does Transport Construction Live? | resolved | one | high |
 | [OQ-61](questions/061-multi-owner-shutdown-coordination.md) | Multi-Owner Shutdown Coordination | dissolved | two | med |
@@ -203,6 +203,12 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-63](questions/063-tlserror-shape.md) | `TlsError` Shape | resolved | one | high |
 | [OQ-64](questions/064-client-side-tls-helper.md) | Should `alknet-tls` Provide a Client-Side TLS Config Helper? | resolved | one | high |
 
+### alknet-client
+
+| OQ | Title | Status | Door | Pri |
+|----|-------|--------|------|-----|
+| [OQ-66](questions/066-alknet-register-wire-protocol.md) | `alknet/register` Wire Protocol | deferred(scope) | one | med |
+
 ## Deferred / Blocked
 
 The safe-exit visibility surface. These questions are parked because the
@@ -269,21 +275,33 @@ filtering the tables above.
 
 ### OQ-55: AlknetClient / Client Establishment Extraction
 
-- **Blocked on**: a **second transport's** real dial existing (not just a
-  second QUIC dial). The dial is transport-specific (QUIC, HTTP, TCP+TLS,
-  WebTransport, raw TCP); we have one shape implemented (QUIC —
-  `CallClient::connect` and `ChannelClient::connect_quic`). Extracting a
-  QUIC-shaped connector now would bake QUIC in as *the* establishment
-  shape — the same welding ADR-065 unwound on the server side. The blocking
-  condition is met when a non-QUIC dial (SSH raw-TCP, HTTP-wrapped call,
-  TCP+TLS) exists, so the transport-polymorphic dial+TLS seam is
-  extractable from two *different* transport implementations. Note: the
-  *client APIs* are already transport-agnostic — `CallClient::spawn_dispatch`
-  and `ChannelClient::from_connection` (ADR-080) take a pre-established
-  `Connection`. What is deferred is the shared *dial*, not the client
-  protocol surface.
-- **Priority**: medium
+- **Resolved** (ADR-089): `AlknetClient` is extracted as a new crate
+  `alknet-client` — the client-side analogue of `AlknetEndpoint`
+  (ADR-083). Three dial methods (`dial_quic` / `dial_tcp_tls` /
+  `dial_iroh`) produce a `Connection` for the protocol take-overs
+  (`CallClient::spawn_dispatch`, `ChannelClient::from_connection`) to
+  consume. The deferral's blocking condition (a second transport's
+  real dial) is met within the native endpoint type (ADR-086): QUIC +
+  TCP+TLS (both via `TlsClientConfig`, ADR-087) + iroh (key-based) —
+  three dial shapes, two sharing `TlsClientConfig`. The web/browser
+  client (WebSocket, HTTP) was never in scope. See
+  [ADR-089](decisions/089-alknetclient-native-dial-seam.md) and
+  [OQ-55](questions/055-alknetclient-establishment-extraction.md).
 - **Full file**: [OQ-55](questions/055-alknetclient-establishment-extraction.md)
+
+### OQ-66: `alknet/register` Wire Protocol
+
+- **Blocked on**: OQ-58's token model (one-time vs. refresh,
+  single-use vs. multi-use, rotation). The `alknet/register` wire
+  protocol and the HTTP registration endpoint (OQ-58) share the
+  enrollment semantics and the token model — they should converge on
+  one model before either's wire format is locked.
+- **Priority**: medium
+- **Impacts**: Blocks native worker registration over QUIC/TCP+TLS
+  without HTTP (the native-only / no-HTTP-minimal-hub case). Does NOT
+  block the first hub deployment (web + native uses HTTP registration
+  for worker provisioning per OQ-58).
+- **Full file**: [OQ-66](questions/066-alknet-register-wire-protocol.md)
 
 ### OQ-56: Full Channel-Level Flow-Control Windowing
 

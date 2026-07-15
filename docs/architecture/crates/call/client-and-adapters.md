@@ -130,7 +130,9 @@ impl CallClient {
     /// Feature-gated on `quinn` (the dial is QUIC-specific). Additive
     /// and two-way-door — `connect_tcp_tls`, `connect_webtransport`,
     /// etc. join it as transports are added, without touching the
-    /// `spawn_dispatch` contract.
+    /// `spawn_dispatch` contract. This convenience is a thin wrapper
+    /// over `AlknetClient::dial_quic` (ADR-089) — a caller that needs
+    /// transport selection uses `AlknetClient` directly.
     #[cfg(feature = "quinn")]
     pub async fn connect(
         &self,

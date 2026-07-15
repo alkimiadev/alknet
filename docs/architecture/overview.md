@@ -99,13 +99,14 @@ alknet-vault (standalone — foundational to ACL: key derivation, identity)
 │   │                  StaticConfig, DynamicConfig
 │   ├── alknet-tls     TlsServerConfig + TlsClientConfig — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087)
 │   ├── alknet-call    CallAdapter on alknet/call, CallClient, OperationRegistry, adapters
-│   └── alknet-channels
-│       ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081
-│       └── alknet-channels-call  channel 0 pre-negotiation + lifecycle ops — ADR-081
+│   ├── alknet-channels
+│   │   ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081
+│   │   └── alknet-channels-call  channel 0 pre-negotiation + lifecycle ops — ADR-081
+│   └── alknet-client  AlknetClient — native client dial seam (QUIC + TCP+TLS + iroh); produces Connection for CallClient/ChannelClient take-over (ADR-089)
 │
 ├── Deployment shapes
-│   ├── alknet-hub     channels hub — accepts workers, relays, aggregates (ADR-079)
-│   └── alknet-worker  channels worker — dials out to a hub [not yet specced]
+│   ├── alknet-hub     channels hub — accepts workers, relays, aggregates (ADR-079); dials workers via AlknetClient
+│   └── alknet-worker  channels worker — dials out to a hub via AlknetClient [not yet specced]
 │
 ├── Foundational handlers (inside channels as data-channel ALPNs, or on the endpoint)
 │   ├── alknet-tty          alknet/tty — specced (ADR-052–057), implemented
@@ -371,6 +372,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Core mono-repo (substrate + deployment shapes + foundational handlers + vault) vs. consumer repos (docker, agent) |
 | [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type (resolves OQ-62) |
 | [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | `alknet-tls` provides client-side TLS config; not deferred behind OQ-55; breaks the circular hedge; hub-as-client is a first-class use case |
+| [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named (wire protocol deferred, OQ-66) |
 
 ## Open Questions
 

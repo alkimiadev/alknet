@@ -320,12 +320,16 @@ taking over the `Connection`, it runs `from_call` on channel 0 to
 discover the worker's operations, registers the discovered bundles in
 the connection's Layer 2 overlay, and attaches the peer to the
 aggregated env. `connect_quic_worker` is the "I just want QUIC"
-convenience — it builds a `TlsClientConfig` (ADR-087) with the
-worker's fingerprint pinned, calls `ChannelClient::connect_quic`, then
-`dial_worker_connection`. A future `connect_tcp_tls_worker` builds a
-`TlsClientConfig` and dials TCP+TLS the same way. The one-way-door
-surface is `dial_worker_connection`; the dial helpers are two-way-door
-conveniences.
+convenience — it dials QUIC (via `AlknetClient::dial_quic`, ADR-089,
+which builds the `TlsClientConfig` with the worker's fingerprint
+pinned), calls `ChannelClient::from_connection`, then
+`dial_worker_connection`. A future `connect_tcp_tls_worker` dials
+TCP+TLS via `AlknetClient::dial_tcp_tls` the same way. The
+one-way-door surface is `dial_worker_connection`; the dial helpers are
+two-way-door conveniences over `AlknetClient` (ADR-089). The hub's
+`supervise_worker` (below) takes a `dial` closure that can call
+`AlknetClient` internally — the hub does not need to know
+`AlknetClient` exists; the closure seam is preserved.
 
 #### Accept (inbound workers and browsers) — transport-agnostic
 
@@ -787,6 +791,7 @@ into `CallAdapter::with_aggregated_env`.
 | Channel lifecycle operations | [ADR-073](../../decisions/073-channel-lifecycle-operations.md) | `channel/open`/`close`/`control`/`resources/subscribe` — what the hub translates |
 | Endpoint types and entry points | [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type |
 | `TlsClientConfig` for outbound dials | [ADR-087](../../decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `alknet-tls` provides client-side TLS config; hub-as-client is a first-class use case; not blocked on the dial-seam extraction (OQ-55) |
+| `AlknetClient` native dial seam | [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) | New crate `alknet-client`; the hub's outbound worker dials use `AlknetClient` (via the `supervise_worker` closure or the `connect_quic_worker` convenience); resolves OQ-55 |
 
 ## Open Questions
 

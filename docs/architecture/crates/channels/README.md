@@ -39,7 +39,7 @@ protocol work itself.
 | [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | TTY's two modes (direct vs channels); 5 sub-streams; control bidirectional via 3/4; amends ADR-052 scope |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | The two-pump deadlock contract; handler-level, not channels-layer |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | The hub translates channel 0, byte-forwards data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient`, transport-agnostic `from_connection` primary + `connect_quic` convenience; `AlknetClient` dial-seam deferred (OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient`, transport-agnostic `from_connection` primary + `connect_quic` convenience; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
 | [081](../../decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers, not sub-crates |
 | [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | The `Connection` extension point `ChannelBidiStreamSource` implements |
 | [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | The transport-agnostic `Connection` the channels layer rides on |
@@ -52,7 +52,7 @@ protocol work itself.
 
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
-| OQ-55 | AlknetClient / Client Establishment Extraction | deferred(scope) | `ChannelClient`'s API is decided (ADR-080): transport-agnostic `from_connection` primary, `connect_quic` convenience. `AlknetClient` core extraction stays deferred — blocked on a second *transport's* dial (the shared dial+TLS seam), not a second client |
+| OQ-55 | AlknetClient / Client Establishment Extraction | resolved (ADR-089) | `ChannelClient`'s API is decided (ADR-080): transport-agnostic `from_connection` primary, `connect_quic` convenience. `AlknetClient` core extraction is now resolved — the native dial seam is `alknet-client` (ADR-089) |
 | OQ-56 | Full channel-level flow-control windowing | deferred(scope) | Bounded-buffer is decided (ADR-076); full windowing is an extension blocked on "a real deployment observes HOL blocking on a saturated channel where bounded buffer is insufficient" |
 | OQ-57 | Two-pump helper extraction to alknet-core | deferred(scope) | The shutdown-on-completion *contract* is decided (ADR-078); the *helper* extraction is blocked on a second two-pump handler existing (shape convergence) |
 

@@ -159,27 +159,24 @@ populates what operations they expose).
 name follows the `CallClient` convention (the side that dialed), not a
 request/response role.
 
-## Relationship to `AlknetClient` (OQ-55 — deferred)
+## Relationship to `AlknetClient` (ADR-089 — resolved)
 
 `ChannelClient`'s *API* is transport-agnostic — `from_connection` takes a
-pre-established `Connection`. What is deferred (OQ-55) is the shared
-*dial+TLS* seam (`AlknetClient`): the transport-specific work each dial
-helper does — open a socket, run the TLS handshake, apply ADR-034's
-verifier-selection rule, produce a `Connection`. That dial is genuinely
-transport-specific (QUIC, TCP+TLS, WebTransport, raw TCP, SSH), and we have
-one shape implemented (QUIC, in `connect_quic`). Extracting a QUIC-shaped
-connector now and naming it `AlknetClient` would bake QUIC in as *the*
-establishment shape — the same welding ADR-065 unwound on the server side.
+pre-established `Connection`. The shared *dial+TLS* seam
+(`AlknetClient`, OQ-55) is now extracted: [`alknet-client`](../client/README.md)
+provides `AlknetClient` with three dial methods (`dial_quic` /
+`dial_tcp_tls` / `dial_iroh`), each producing a `Connection` that
+`from_connection` consumes. The dial is transport-specific (QUIC,
+TCP+TLS, iroh); the take-over (`from_connection`) is
+transport-agnostic. The two concerns are separated.
 
-This is why `from_connection` is the one-way-door surface and
-`connect_quic` is a two-way-door convenience over it. `AlknetClient` (when
-extracted, after a second transport's dial exists) becomes the shared
-*dial*; `from_connection` stays the shared *channels-take-over*. The two
-concerns are separated now, before the one-way-door API is cast.
-
-The friction while `AlknetClient` is deferred is duplicated
-verifier-selection boilerplate across dial helpers (~20 lines each) — not
-duplicated capability and not a QUIC-welded client API.
+`connect_quic` becomes a thin wrapper over `AlknetClient::dial_quic` —
+dial QUIC, then `from_connection`. A caller that needs transport
+selection (QUIC with TCP+TLS fallback) uses `AlknetClient` directly;
+the fallback policy is a caller concern. See
+[ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) for the
+full decision and [OQ-55](../../questions/055-alknetclient-establishment-extraction.md)
+(resolved).
 
 ## Design Decisions
 
@@ -187,14 +184,15 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary, `connect_quic` convenience; `AlknetClient` dial-seam deferred (OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary, `connect_quic` convenience; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
 
 ## Open Questions
 
-- **OQ-55** (deferred(scope)): `AlknetClient` core **dial+TLS seam**
-  extraction — blocked on a second *transport's* dial. `ChannelClient`'s
-  API is transport-agnostic (`from_connection`); the deferred part is the
-  shared *dial* across transports, not the channels protocol.
+- **OQ-55** (resolved by ADR-089): `AlknetClient` core **dial+TLS seam**
+  — extracted as `alknet-client` with three dial methods.
+  `ChannelClient`'s API is transport-agnostic (`from_connection`); the
+  dial is the shared seam, now extracted. See
+  [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md).
 
 ## References
 

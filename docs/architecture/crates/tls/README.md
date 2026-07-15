@@ -461,12 +461,12 @@ TLS setup and cert sharing, not transport accept logic.
 A hub dials out to workers it supervises and to other hubs
 (hub-as-client); `alknet-worker` dials a hub. Both need a
 `rustls::ClientConfig` with ADR-034's verifier selection and ADR-084's
-crypto provider. `TlsClientConfig` centralizes this — it is not a
-future extraction deferred behind the dial seam (OQ-55); it is a
-present prerequisite for the first hub deployment.
+crypto provider. `TlsClientConfig` centralizes this — it is a
+present prerequisite for the first hub deployment, consumed by
+`AlknetClient`'s QUIC and TCP+TLS dials (ADR-089).
 
 There are exactly two clients in the alknet client surface as far as
-`TlsClientConfig` and a future `AlknetClient` are concerned — **call**
+`TlsClientConfig` and `AlknetClient` are concerned — **call**
 (`CallClient`) and **channels** (`ChannelClient`, which is a proxy over
 many ALPNs via channel 0). Both must support all three transport
 accessors below; the TLS config is shared across them, the dial is
@@ -536,22 +536,21 @@ both server and client errors) is decided — see
 [`TlsError`](#tlserror) section below.
 
 `TlsClientConfig` produces a `rustls::ClientConfig`; the caller (the
-transport-specific dial helper — `CallClient::connect_quic`, a future
-`connect_tcp_tls`, etc.) passes it to the transport's connector. The
+transport-specific dial helper — `AlknetClient::dial_quic` /
+`dial_tcp_tls`, ADR-089) passes it to the transport's connector. The
 config is transport-agnostic; the dial is not. This is the client-side
 analogue of ADR-065's server-side separation: the take-over
 (`spawn_dispatch` / `from_connection`, transport-agnostic) is built
 now; the dial (transport-specific) is per-transport. The
-transport-polymorphic dial extraction (`AlknetClient::dial()`) remains
-deferred (OQ-55) — it is about picking the transport and calling the
-right connector, not about the TLS config.
+transport-polymorphic dial is now extracted as `alknet-client`
+(ADR-089, resolves OQ-55) — `AlknetClient` builds the `TlsClientConfig`
+per-dial and calls the transport's connector.
 
 The client-side accessor API mirrors the server side: `for_quinn()`
 / `for_tcp_tls()` / `rustls_config()` — three transports, same
-pattern. Iroh is the exception (see below). Both `CallClient` and
-`ChannelClient` consume `TlsClientConfig` via these accessors; the
-shared dial seam (OQ-55) is about collapsing the per-transport dial
-boilerplate, not about the TLS config.
+pattern. Iroh is the exception (see below). `AlknetClient` (ADR-089)
+consumes `TlsClientConfig` via these accessors for the QUIC and TCP+TLS
+dials; the iroh dial is the key-not-config exception.
 
 ### Iroh — shares the key, not the config (client side too)
 
@@ -722,44 +721,39 @@ See [open-questions.md](../../open-questions.md) for full details.
   and the "what is NOT a variant" list. The `TlsError` sketch is in the
   [TlsError](#tlserror) section below.
 - **OQ-64** (resolved): `alknet-tls` provides `TlsClientConfig`
-  (ADR-087). Not blocked on the dial-seam extraction (OQ-55) — the TLS
+  (ADR-087). Not blocked on the dial-seam extraction — the TLS
   config is a prerequisite for the dial, not a consequence of it.
   Centralizes ADR-034 verifier selection + ADR-084 provider; the
   hub-as-client requirement makes it a prerequisite for the first hub
-  deployment. The dial seam (OQ-55) remains deferred; the TLS config
-  does not.
+  deployment. The dial seam is now extracted as `alknet-client`
+  (ADR-089, OQ-55 resolved); `TlsClientConfig` is consumed by
+  `AlknetClient`'s QUIC and TCP+TLS dials.
 
-- **OQ-55** (deferred(scope)): `AlknetClient::dial()` — the
-  transport-polymorphic dial seam. Remains deferred (blocked on a
-  second transport's real dial). `TlsClientConfig` (OQ-64, resolved)
-  is not blocked on this; the dial helpers (`CallClient::connect_quic`,
-  a future `connect_tcp_tls`, etc.) each build a `TlsClientConfig` and
-  call their transport's connector standalone. See
-  [OQ-55](../../questions/055-alknetclient-establishment-extraction.md).
+- **OQ-55** (resolved by ADR-089): `AlknetClient::dial()` — the
+  transport-polymorphic dial seam. Extracted as a new crate
+  `alknet-client` with three dial methods (`dial_quic` /
+  `dial_tcp_tls` / `dial_iroh`). `TlsClientConfig` (OQ-64, resolved)
+  is the prerequisite the dial consumes. See
+  [`crates/client/README.md`](../client/README.md) and
+  [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md).
 
 ### Next session — client shape
 
-The client can now be defined. There are exactly two clients in the
-alknet client surface as far as `TlsClientConfig` and a future
-`AlknetClient` are concerned: **call** (`CallClient`) and **channels**
-(`ChannelClient`, a proxy over many ALPNs via channel 0). Both consume
-`TlsClientConfig` via the same three accessors (`for_quinn`,
-`for_tcp_tls`, `rustls_config`); iroh is the exception (shares the key,
-not the config). The connect details across `register`, `call`, and
-`channels` are the same at the TLS layer — an endpoint is one of a few
-well-specified types now (ADR-086), and the `TlsClientConfig` shape is
-the same regardless of which ALPN the client dials.
-
-The client spec was previously deferred because there was no scope for
-it — the endpoint-types tangle (uncovered during the channels spec work)
-had to be pulled apart first. That tangle is resolved (ADR-086); the
-endpoint types are well-specified, and the client shape collapses to
-"same as `CallClient`, different ALPN." The next session should stop
-hedging the client and work out the details: the `AlknetClient` dial
-surface (OQ-55, unblocked once two transport dials exist), the
-`CallClient` / `ChannelClient` shared dial pattern, and the `register`
-ALPN's entry-point dial. This is a prerequisite for the first hub
-deployment (the hub dials workers; workers dial a hub).
+The client is now specced. [`crates/client/README.md`](../client/README.md)
+defines `AlknetClient` — the native client dial seam (ADR-089, resolves
+OQ-55). There are exactly two clients in the alknet client surface as
+far as `TlsClientConfig` and `AlknetClient` are concerned: **call**
+(`CallClient`) and **channels** (`ChannelClient`, a proxy over many
+ALPNs via channel 0). Both consume `TlsClientConfig` via the same three
+accessors (`for_quinn`, `for_tcp_tls`, `rustls_config`); iroh is the
+exception (shares the key, not the config). `AlknetClient` is the dial
+that feeds them — it produces a `Connection` and the protocol
+take-overs (`spawn_dispatch`, `from_connection`) consume it. The
+existing `CallClient::connect` / `ChannelClient::connect_quic`
+convenience constructors become thin wrappers over
+`AlknetClient::dial_quic`. The `alknet/register` ALPN (native
+registration entry point, parallel to HTTP registration in OQ-58) is
+named by ADR-089; its wire protocol is deferred (OQ-66).
 
 ## References
 

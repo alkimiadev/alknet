@@ -71,9 +71,8 @@ data channels byte-forwarded with `channel_id` rewrite; the hub never runs
 protocol-specific handlers),
 [ADR-080](decisions/080-channelclient.md) (`ChannelClient`,
 transport-agnostic `from_connection` primary + `connect_quic` convenience,
-bidirectionality preserved; `AlknetClient` dial-seam extraction stays
-deferred per OQ-55 — blocked on a second *transport's* dial, not a second
-client),
+bidirectionality preserved; `AlknetClient` dial-seam extracted as
+`alknet-client` per ADR-089, resolving OQ-55),
 [ADR-081](decisions/081-channels-subcrate-decomposition.md) (sub-crate
 decomposition — `channels-core` (pure multiplexer, depends on alknet-core
 only, no call dependency) / `channels-call` (channel 0 pre-negotiation +
@@ -188,6 +187,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — composes a subset of three endpoint types (web/native/iroh — ADR-086), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
 | [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
+| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); produces `Connection` for `CallClient`/`ChannelClient` take-over; `alknet/register` named (wire protocol deferred, OQ-66) |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
 | [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
 | [crates/channels/channels-wire.md](crates/channels/channels-wire.md) | draft | 9-byte chunk format, stream types, sentinels, framing disambiguation, wire-level invariants (REQ-CH-01..05) |
@@ -288,6 +288,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Accepted |
 | [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted |
 | [088](decisions/088-tlserror-shape.md) | `TlsError` Shape — Single Enum, Owned by `alknet-tls` | Accepted |
+| [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | Accepted (resolves OQ-55) |
 
 ## Open Questions
 
