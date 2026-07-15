@@ -6,6 +6,9 @@
 - **Status**: deferred(scope)
 - **Door type**: Two-way
 - **Priority**: low
+- **Impacts**: None — the runner *mechanism* (pipe mode) is in alknet-tty.
+  Would impact a future `alknet-runner` crate if job management / log
+  persistence / task graph integration becomes needed.
 - **Blocked on**: a concrete runner-policy use case that forces the API
   surface (job management, log persistence, task graph integration).
 - **Resolution**: Not yet decidable. The runner *mechanism* (pipe mode —

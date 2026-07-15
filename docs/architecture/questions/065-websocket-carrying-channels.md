@@ -23,6 +23,10 @@
   the simplification is worth the one-way-door commitment now, or
   whether the call-protocol-only path suffices until a concrete
   browser-needs-a-data-channel use case arrives.)
+- **Impacts**: Does not block the browser path (ADR-048 works). Would
+  simplify the hub relay (one model, not two) and unblock browser
+  access to data-channel ALPNs (TTY, tunnels) over a single WebSocket
+  if resolved to "WebSocket carries channels."
 - **Resolution**: Not yet decided. The two options:
 
   **Option A — WebSocket carries call only (ADR-048 unchanged).** The

@@ -6,6 +6,9 @@
 - **Door type**: two-way (additive — a helper function does not change any
   API surface; handlers that inline the pattern continue to work)
 - **Priority**: low
+- **Impacts**: None — the two-pump *contract* is decided (ADR-078) and
+  handlers implement it inline. Would reduce ~10 lines of copy-paste
+  per handler when extracted; not a capability gate.
 - **Blocked on**: a second two-pump handler existing, so the shape
   convergence is observable. The tunnel handler is the first two-pump
   consumer; the SSH `direct-tcpip` channel will be the second. Extracting

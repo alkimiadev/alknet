@@ -176,11 +176,13 @@ Before requesting external review:
 - Check that README has a complete ADR table and doc table
 - Ensure documents are focused (split if a spec exceeds ~700 lines)
 - Verify frontmatter statuses are correct
-- **Hedging audit**: Scan resolved OQs for hedging synonyms (anti-patterns
-  #9–#11). If a "resolved" OQ's resolution is primarily about how the
-  decision can be changed later, either drop the undo instructions (the
-  decision is made) or re-mark it `deferred(scope)` (the decision is not
-  made).
+- **Circular-reasoning guard**: For each deferred OQ, check that the
+  blocking condition (for `deferred(scope)`) or investigation target
+  (for `deferred(unclear)`) isn't a *prerequisite* of the thing you're
+  deferring. If the blocker needs what you're deferring, you have a
+  prerequisite inversion — either make the decision now (the pieces
+  exist) or reframe honestly (the shape isn't clear, here's what would
+  make it clear).
 
 ### 5. Safe Exit: Deferred Decisions
 
@@ -204,7 +206,6 @@ task(
     4. Undefined terms or concepts
     5. Ambiguities that could cause implementation issues
     6. Document size (recommend split if >700 lines)
-    7. Hedging language in resolved OQs (anti-patterns #9-#11)
 
     Return a structured review with issues categorized as: critical, warning, suggestion",
     subagent_type="general"
@@ -215,9 +216,9 @@ task(
 
 Address feedback:
 
-- **Critical**: Must fix before stabilization — inline decisions not extracted,
-  ADR references that point to nonexistent files, undefined terms, hedging
-  language in resolved OQs
+- **Critical**: Must fix before stabilization — inline decisions not
+  extracted, ADR references that point to nonexistent files, undefined
+  terms, circular deferrals
 - **Warning**: Should fix — missing cross-references, documents approaching
   split threshold
 - **Suggestion**: Consider — minor clarity improvements
@@ -269,36 +270,18 @@ last_updated: 2026-05-29
 
 ## Door Types and Decision Urgency
 
-ADR-009 classifies decisions by **reversal cost** (one-way vs two-way), not by
-urgency. This distinction is important:
+Door type classifies **reversal cost** (one-way vs two-way), not
+urgency. A two-way door is a decision you make now and can revert
+later — not a decision to defer. Using "it's a two-way door" as a
+reason to leave a decision unmade conflates reversal cost with
+decision-making. See ADR-009 §"What this framework is NOT" for the
+full rationale.
 
-- **One-way door**: Getting it wrong is expensive (rewrites across crates,
-  permanently closed capabilities). Requires an ADR before implementation.
-  Gets the deliberation it deserves.
-- **Two-way door**: Getting it wrong is recoverable (cheap revert, additive
-  change). Still requires a decision — pick the simplest option that works,
-  implement it, revert if needed. The decision is made; what's cheap is the
-  reversal, not the decision.
-
-**Door type ≠ deferral.** A two-way door is not a license to leave a decision
-unmade. Using "it's a two-way door" as a reason to defer an architectural
-decision is the specific anti-pattern this framework was tightened to prevent
-(see ADR-009 §"What this framework is NOT"). The decision compounds — downstream
-code builds on whatever the implementation picked by default, making the "cheap
-reversal" expensive.
-
-**Architecture decisions are the architect's, regardless of door type.** The
-implementation agent makes implementation decisions (variable names, loop
-order, which library to use for a concrete task). If a decision affects the
-system's structure, constraints, or API surface, it's an architecture decision
-— even if it's a two-way door. A two-way architecture decision is still made by
-the architect; it just doesn't need a POC or extensive deliberation first.
-
-**Deferral is separate.** Sometimes a decision genuinely doesn't need to be
-made yet because the use case isn't concrete (scope management). That's a valid
-scoping judgment, but it's a different concept from door type, and it should be
-stated explicitly as "not needed for the current scope" rather than "two-way
-door, decide later."
+Architecture decisions are the architect's, regardless of door type.
+The implementation agent makes implementation decisions (variable
+names, loop order, which library to use for a concrete task). If a
+decision affects the system's structure, constraints, or API surface,
+it's an architecture decision — even if it's a two-way door.
 
 ## Anti-Patterns to Avoid
 
@@ -313,72 +296,96 @@ door, decide later."
 6. **Missing ADR for a visible choice**: If a reader would ask "why X over Y?",
    write an ADR
 7. **No README index**: Without the index table, ADRs and docs are unfindable
-8. **Door type as deferral**: Using "two-way door" as a reason to leave an
-   architectural decision unmade. Door type classifies reversal cost, not
-   urgency. A two-way door is a decision you make now and can revert later —
-   not a decision to defer. If the decision is made, mark the OQ resolved. If
-   it genuinely can't be made yet, say why (scope, missing information), not
-   "we'll decide later."
-9. **Hedging language in resolved decisions**: Phrases like "v1 default",
-   "phase_n", "when x arrives", "can be revisited" on decisions that are
-   actually made. If the decision is made, state it cleanly. Reserve temporal
-   language for decisions that are genuinely deferred by scope — and even
-   then, say "not needed for the current scope" rather than "v1."
-10. **Hedging synonyms in "resolved" OQs**: The following patterns are
-    structurally identical to the hedging in #9 — they reframe deferral as
-    decisiveness. Do not use them on resolved decisions:
-    - "feature extension, not an unmade decision" — if it's not decided, it's
-      not resolved. Mark it `deferred(scope)`.
-    - "additive, not blocking" — if it's not decided, don't claim it is.
-    - "two-way door — can be changed later if needed" — door type classifies
-      reversal cost, not whether a decision is made. A two-way door is a
-      decision you make now. If you're using it to justify not deciding, see
-      anti-pattern #8.
-    - "not a v1 blocker" — if it's not decided, it's deferred. Say what
-      unblocks it.
-    - "for now" / "not yet" on a resolved OQ — if the resolution has an
-      expiration date, it's not resolved. Mark it `deferred(scope)` with the
-      condition that would trigger re-evaluation.
-11. **Resolved with escape hatch**: An OQ marked `resolved` whose resolution
-    text is primarily about how the decision can be changed later. If the
-    resolution is "X, but here's how we'd undo X," the decision is made —
-    drop the undo instructions (they're implementation details, not
-    architecture). If the resolution is "X for now, Y later," the decision
-    is not made — mark it `deferred(scope)`.
+8. **Door type as deferral**: Using "two-way door" as a reason to leave a
+   decision unmade. See "Door Types and Decision Urgency" above.
+9. **Circular deferral**: A deferred OQ whose blocking condition is a
+   prerequisite of the thing being deferred. If the blocker needs what
+   you're deferring, you have a prerequisite inversion, not a deferral.
+
+Hedging detection (resolved OQs with escape hatches, "v1 default"
+language, hedging synonyms) is the **reviewer's** job, not the
+architect's self-review. The architect is too close to its own
+reasoning to see its own circular hedges; a fresh context catches them.
 
 ## Safe Exit: Deferred Decisions
 
-When a decision genuinely can't be made because the information doesn't exist
-yet, the architect has a Safe Exit path. This is not a failure — it's scope
-management. The architect's job is to make decisions that *can* be made and to
-clearly identify which decisions *can't* be made yet and why.
+When a decision can't be made yet, the architect has a Safe Exit path.
+This is not a failure — it's scope management. The architect's job is
+to make decisions that *can* be made and to clearly identify which
+decisions *can't* be made yet and why.
 
-### When to Defer
+There are two kinds of deferral. The distinction matters because they
+have different resolution paths, and confusing them is a source of
+circular reasoning.
 
-A decision should be deferred when:
+### `deferred(scope)` — the information is genuinely missing
 
-- The use case isn't concrete (e.g., "we don't know what the agent crate will
-  need from the call protocol")
-- The options depend on something that doesn't exist yet (e.g., "depends on
-  the alknet-http crate spec")
-- The trade-off requires data that can only come from implementation (e.g.,
-  "need performance benchmarks to choose between X and Y")
+The decision can't be made because something the decision depends on
+doesn't exist yet. Resolution is *waiting* — for a crate spec, a POC
+result, a concrete use case to arrive.
+
+A decision should be `deferred(scope)` when:
+
+- The use case isn't concrete (e.g., "we don't know what the agent crate
+  will need from the call protocol")
+- The options depend on something that doesn't exist yet (e.g.,
+  "depends on the alknet-http crate spec")
+- The trade-off requires data that can only come from implementation
+  (e.g., "need performance benchmarks to choose between X and Y")
 - The decision is genuinely not needed for the current scope (e.g., "the
-  current scope is core + call crates; this question is about the agent crate")
+  current scope is core + call crates; this question is about the agent
+  crate")
+
+### `deferred(unclear)` — the pieces exist but the shape isn't clear
+
+The pieces of the decision exist (decided in other ADRs, existing
+types, existing patterns) but the composition — how they fit together
+into a coherent shape — isn't clear yet. Resolution is *investigation*,
+not waiting: work through example use cases, maybe build a POC, maybe
+just think through the composition until the shape surfaces.
+
+This state exists because not every project is well-defined enough for
+rigid "decide or defer" to work. In a well-defined project (a reverse
+proxy, a known problem with a known solution), the pieces and the shape
+are usually clear together. In a project creating new protocols, the
+pieces can be decided (verifier selection, crypto provider, fingerprint
+normalization) while the shape they compose into (the client config
+type) is still unclear. Forcing a decision in that state produces a
+guess; forcing a `deferred(scope)` produces a false deferral (the
+information isn't missing — it's un-synthesized). `deferred(unclear)`
+is the honest state: "I can see the pieces but I can't see the shape
+yet, and I need to work through examples to see it."
+
+A decision should be `deferred(unclear)` when:
+
+- The pieces exist (cite them: "ADR-X, ADR-Y, ADR-Z are all decided")
+  but the composition isn't clear
+- Resolution requires *work* (thinking through examples, building a
+  POC), not *waiting* (for a spec or use case to arrive)
+- The architect can articulate what investigation would help ("work
+  through 2+ example outbound-dial use cases") — if you can't, that's a
+  signal the deferral might be circular
 
 ### How to Defer
 
-1. **Mark the OQ as `deferred(scope)`** — not `open` (implies it should be
-   resolved now) and not `resolved` (implies it's decided).
-2. **State the blocking condition** — what specific thing would unblock this
-   decision? Be concrete: "blocked on: alknet-agent crate spec exists" not
-   "blocked on: future work."
-3. **Create a blocker task** in `tasks/architecture/` that names the
-   dependency. This makes the deferral visible and actionable rather than
-   buried in hedging language.
-4. **Move on** — the architect continues to decisions that *can* be made.
-   Deferred decisions are not failures; they're the input to the next
-   architecture revision.
+1. **Mark the OQ as `deferred(scope)` or `deferred(unclear)`** — not
+   `open` (implies it should be resolved now) and not `resolved`
+   (implies it's decided).
+2. **State the blocking condition** (`deferred(scope)`) or
+   **investigation target** (`deferred(unclear)`) — what specific thing
+   would unblock this? Be concrete: "blocked on: alknet-agent crate spec
+   exists" or "investigation: work through 2+ example outbound-dial use
+   cases (hub→worker, worker→hub) to see how verifier-selection +
+   provider + connector compose."
+3. **State the impacts** — what does this block downstream? Be
+   specific: "blocks the first hub deployment because the hub dials
+   workers" not "blocks the hub crate." This is the triage signal that
+   makes the deferral's urgency visible. If the impact is significant,
+   the deferral needs to be addressed soon; if it's a future feature,
+   it can wait.
+4. **Move on** — the architect continues to decisions that *can* be
+   made. Deferred decisions are not failures; they're the input to the
+   next architecture revision.
 
 ### Deferred OQ Format
 
@@ -386,24 +393,30 @@ A decision should be deferred when:
 ### OQ-NN: <Question>
 
 - **Origin**: [spec-doc.md]
-- **Status**: deferred(scope)
+- **Status**: deferred(scope) | deferred(unclear)
 - **Door type**: <one-way | two-way>
 - **Priority**: <high | medium | low>
-- **Blocked on**: <concrete dependency — crate spec, POC result, use case>
-- **Resolution**: Not yet decidable. <Why the information doesn't exist yet.>
+- **Impacts**: <what this blocks downstream — be specific>
+- **Blocked on**: <concrete dependency> (for deferred(scope))
+  **Investigation**: <what work would make the shape clear> (for deferred(unclear))
+- **Resolution**: Not yet decidable. <Why — either the information
+  doesn't exist yet (deferred(scope)) or the pieces exist but the
+  composition isn't clear (deferred(unclear), cite the pieces).>
 - **Cross-references**: OQ-NN, ADR-NNN
 ```
 
 ### What NOT to Do
 
-- Do not mark a deferred decision as `resolved` with caveats. "Resolved with
-  an escape hatch" is hedging.
-- Do not use "feature extension" / "additive" / "not blocking" as a
-  substitute for `deferred(scope)`. Those phrases describe implementation
-  sequencing, not architectural decisions.
-- Do not leave a deferred decision as `open` without a blocking condition.
-  "Open" means "needs to be resolved now" — if it can't be resolved now, it's
-  `deferred(scope)`.
+- Do not mark a deferred decision as `resolved` with caveats. "Resolved
+  with an escape hatch" is hedging.
+- Do not leave a deferred decision as `open` without a blocking
+  condition. "Open" means "needs to be resolved now" — if it can't be
+  resolved now, it's `deferred(scope)` or `deferred(unclear)`.
+- Do not confuse the two deferral kinds. If the information is missing,
+  it's `deferred(scope)`. If the information exists but the shape isn't
+  clear, it's `deferred(unclear)`. Confusing them produces circular
+  reasoning — a `deferred(scope)` whose blocker is actually a
+  prerequisite of the thing being deferred.
 
 ## When to Redirect
 

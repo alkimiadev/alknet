@@ -5,6 +5,8 @@
 - **Status**: open (scope, not deferral)
 - **Door type**: One-way (crate boundary), two-way (mechanism)
 - **Priority**: low
+- **Impacts**: None — the browser path uses WebSocket (ADR-044). Would
+  impact a browser-to-P2P-peer relay use case if one arises.
 - **Resolution**: There are two distinct "WebTransport proxy" concepts
   that must not be conflated:
 

@@ -6,6 +6,8 @@
 - **Door type**: Two-way (additive utility library; no protocol or API-surface
   change)
 - **Priority**: low
+- **Impacts**: None — handlers produce streams today without it. Would
+  reduce boilerplate in stream-transforming handlers when added.
 - **Blocked on**: A handler that needs stream operators and finds the existing
   combinators (`Box::pin(stream::iter(...))`, `async_stream::stream!`,
   `futures::stream`) insufficient. The operators library is a convenience, not

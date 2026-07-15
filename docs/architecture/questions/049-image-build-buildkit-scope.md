@@ -7,6 +7,9 @@
 - **Status**: deferred(scope)
 - **Door type**: Two-way
 - **Priority**: low
+- **Impacts**: None — current use cases pull pre-built images. Would
+  impact any use case that builds images via alknet rather than
+  operator-side `docker compose build`.
 - **Blocked on**: a concrete use case for building images over the
   call protocol. The two container use cases (disposable dev
   containers, hosted services) pull pre-built images (`docker/image/pull`)

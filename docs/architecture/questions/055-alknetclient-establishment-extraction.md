@@ -8,6 +8,13 @@
 - **Status**: deferred(scope)
 - **Door type**: two-way
 - **Priority**: medium
+- **Impacts**: Does NOT block individual transport dials — each
+  transport-specific dial helper builds its `TlsClientConfig` (ADR-087)
+  and its own connector standalone. Blocks only the *shared*
+  `AlknetClient::dial()` extraction (one entry point that picks the
+  transport and calls the right connector). Low impact until a second
+  transport's dial exists and the duplicated dial boilerplate becomes
+  worth extracting.
 - **Blocked on**: a **second transport's** real dial existing, not just a
   second QUIC dial. The blocking condition is met when, e.g., the SSH
   crate's raw-TCP dial or the HTTP-wrapped call dial exists — so the

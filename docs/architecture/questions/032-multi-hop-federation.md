@@ -4,6 +4,9 @@
 - **Status**: deferred(scope)
 - **Door type**: One-way (federation model), two-way (mechanism)
 - **Priority**: low
+- **Impacts**: None currently — the one-hop model covers all current use
+  cases. Would impact peer-graph routing if a multi-hop topology becomes
+  needed (e.g., chained hubs).
 - **Blocked on**: A concrete use case for multi-hop federation. The one-hop model covers all current use cases (head→worker, runner→hub).
 - **Resolution**: The model is **one-hop** — worker A does not transitively
   see worker B's ops through the head unless the head explicitly re-exports

@@ -9,6 +9,10 @@
   workers are provisioned against them is a breaking change for every
   deployment)
 - **Priority**: high
+- **Impacts**: Blocks worker provisioning — a freshly-provisioned worker
+  has no way to enroll its key with the hub until the registration
+  endpoint exists. Blocks the first hub deployment that provisions
+  workers (web + native use case).
 - **Blocked on**: nothing structural — the identity machinery
   (`resolve_from_token`, `PeerEntry.auth_token_hash`, ADR-030/034)
   and the HTTP substrate (`HttpAdapter` on `h2`/`http/1.1` over

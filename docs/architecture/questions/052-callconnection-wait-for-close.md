@@ -4,6 +4,9 @@
 - **Status**: open
 - **Door type**: Two-way
 - **Priority**: medium
+- **Impacts**: Blocks clean supervision loop implementation — the hub's
+  `supervise_worker` currently polls `accept_bi()` until `ConnectionClosed`
+  (the interim). A `closed()` method would make this event-driven.
 - **Resolution**: Not yet decided.
 
 The hub's worker supervision loop needs a way to await connection close so it

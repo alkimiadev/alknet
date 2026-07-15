@@ -15,9 +15,25 @@ currently parked and why" is answerable at a glance.
 **Status values**:
 - `open` — Needs to be resolved now. Has a clear path to resolution.
 - `resolved` — Decided. The resolution is stated cleanly, without caveats about how it could be changed later.
-- `deferred(scope)` — Cannot be resolved yet. The information doesn't exist. Has a concrete blocking condition (e.g., "blocked on: alknet-agent crate spec"). Not a failure — scope management.
+- `deferred(scope)` — Cannot be resolved yet. The information is genuinely
+  missing — a crate spec, POC result, or use case that doesn't exist yet.
+  Has a concrete blocking condition. Not a failure — scope management.
+- `deferred(unclear)` — Cannot be resolved yet. The pieces exist (decided
+  in other ADRs, existing types, existing patterns) but the composition
+  — how they fit together — isn't clear yet. Resolution requires
+  investigation (work through examples, maybe POC), not waiting. Has a
+  concrete investigation target and an impacts field. Not a failure —
+  honest uncertainty in a poorly-defined problem space.
 - `partially resolved` — Some aspects decided, others deferred or open.
-- `dissolved` — The question was reframed out of existence (e.g., superseded by an ADR that retires the premise). Kept for reference.
+- `dissolved` — The question was reframed out of existence (e.g., superseded
+  by an ADR that retires the premise). Kept for reference.
+
+**Impacts field**: Every unresolved OQ (`open`, `deferred(scope)`,
+`deferred(unclear)`, `partially resolved`) should have an `Impacts`
+field stating what it blocks downstream. Be specific: "blocks the first
+hub deployment because the hub dials workers" not "blocks the hub
+crate." This is the triage signal that makes the deferral's urgency
+visible.
 
 Door type classifications follow ADR-009 — they describe **reversal cost** (how expensive it is to undo), not urgency:
 - **One-way door**: Reversal requires rewriting significant code or permanently closes a capability. Getting it wrong is expensive — requires ADR before implementation.

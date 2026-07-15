@@ -4,6 +4,9 @@
 - **Status**: open
 - **Door type**: Two-way
 - **Priority**: low
+- **Impacts**: None — the struct shape is committed and the defaults are
+  a starting point. Would affect production tuning if operational
+  experience shows the defaults are wrong.
 - **Resolution**: Not yet decided.
 
 The `BackoffConfig` struct provides configurable backoff for worker

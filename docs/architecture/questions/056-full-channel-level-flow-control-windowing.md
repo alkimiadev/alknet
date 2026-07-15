@@ -6,6 +6,10 @@
 - **Door type**: two-way (additive — per-channel window tracking does not
   change the wire format)
 - **Priority**: low
+- **Impacts**: None — bounded-buffer backpressure (ADR-076) is the v1
+  mechanism and handles the intended use cases (TTY, SSH, tunnels).
+  Would impact high-throughput channel use cases (e.g., file transfer
+  over a tunnel) if HOL blocking is observed in practice.
 - **Blocked on**: a real deployment observes head-of-line blocking on a
   saturated channel where the bounded-buffer's stop-reading mitigation is
   insufficient. The trigger is specific: a channel whose consumer is

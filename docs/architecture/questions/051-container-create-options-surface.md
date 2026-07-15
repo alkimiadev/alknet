@@ -8,6 +8,11 @@
 - **Status**: deferred(scope)
 - **Door type**: Two-way
 - **Priority**: medium
+- **Impacts**: Blocks the full `docker/container/create` input schema —
+  v1 uses the high-frequency fields; the long tail (mounts, port
+  bindings, networks, volumes, capabilities) is deferred to the
+  implementation pass. Does not block the `create` operation itself
+  (ADR-060 §5 is decided); blocks the schema detail.
 - **Blocked on**: v1 implementation. The v1 `create` input schema
   accepts the common fields (image, command, env, labels, name) and
   the full `CreateContainerOptions` surface (mounts, port bindings,

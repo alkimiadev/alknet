@@ -6,6 +6,8 @@
 - **Status**: deferred(scope)
 - **Door type**: Two-way
 - **Priority**: low
+- **Impacts**: None — the `modes` field is reserved as `{}` and backends
+  use their defaults, which work for the common terminal case.
 - **Blocked on**: a concrete mode-control use case (a deployment that
   needs to set echo/raw/canonical/etc. modes on a PTY, beyond the backend's
   defaults).

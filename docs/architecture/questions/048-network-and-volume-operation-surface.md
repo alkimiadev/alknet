@@ -6,6 +6,10 @@
 - **Status**: deferred(scope)
 - **Door type**: Two-way
 - **Priority**: low
+- **Impacts**: None — dev containers use the default bridge network;
+  hosted services declare networks/volumes in docker compose. Would
+  impact a fleet coordinator or dev-container orchestrator if one is
+  built.
 - **Blocked on**: a concrete use case for network or volume management
   over the call protocol. The two container use cases (disposable dev
   containers, hosted services) don't currently require

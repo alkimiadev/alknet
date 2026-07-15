@@ -2,9 +2,10 @@
 
 - **Origin**: `docs/architecture/crates/tls/README.md`
   (`TlsError` is referenced as the `Result` error type in
-  `TlsServerConfig::new`, `for_quinn()`, and the crate's public
-  signatures, but is never sketched or defined); ADR-082 (same —
-  `TlsError` in signatures, no shape).
+  `TlsServerConfig::new`, `TlsClientConfig::new`, `for_quinn()`, and the
+  crate's public signatures, but is never sketched or defined); ADR-082
+  (same — `TlsError` in signatures, no shape); ADR-087 (extends the
+  surface to `TlsClientConfig::new` — the client-side error variants).
 - **Status**: open
 - **Door type**: one-way (the error type is the public API surface of
   `alknet-tls`; changing it after consumers exist is a breaking change
@@ -12,8 +13,14 @@
 - **Priority**: high (an implementer cannot write the crate without
   deciding this; guessing produces divergent shapes — one thin
   `rustls::Error` wrapper vs a 10-variant enum with per-path context)
+- **Impacts**: Blocks `alknet-tls` implementation — both
+  `TlsServerConfig::new` and `TlsClientConfig::new` reference `TlsError`
+  in their signatures. Blocks the hub's assembly-layer wiring (which
+  calls both). This is the next decision needed before the TLS crate
+  can be implemented.
 - **Resolution**: Not yet decided. The shape needs to cover the failure
-  modes across all four identity paths:
+  modes across all server identity paths **and** the client verifier
+  paths (ADR-087):
 
   - **Cert/key loading** (`X509`: file read + PEM parse;
     `SelfSigned`: rcgen generation) — currently `io::Error`-wrapped in
@@ -30,6 +37,14 @@
     returned from `new`), so `new`'s ACME path may only need to cover
     "ACME feature not enabled but `TlsIdentity::Acme` configured"
     (currently an `io::ErrorKind::Unsupported`).
+  - **Client verifier construction** (ADR-087) — `TlsClientConfig::new`
+    builds a `rustls::ClientConfig` with ADR-034's verifier selection.
+    Failure modes: verifier construction error (bad fingerprint format,
+    CA store init failure), unknown-remote fail-closed (not an error to
+    return — it's a `Result::Err` the caller gets for trying to connect
+    to an unknown raw-key remote), provider init failure. These
+    overlap with the server-side rustls-build errors but have
+    client-specific context (verifier selection inputs).
 
   The open question is the granularity: a single `TlsError` enum with
   variants per failure category (cert-load, rustls-build, quinn-wrap,
