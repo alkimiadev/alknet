@@ -426,7 +426,7 @@ alknet-hub (uses AlknetClient for outbound worker dials)
 ├── alknet-client (the dial — the hub's dial_worker closure calls it)
 ├── alknet-channels-call (ChannelClient — the take-over)
 ├── alknet-call (CallAdapter, Dispatcher)
-└── alknet-core (AlknetEndpoint)
+└── alknet-endpoint (AlknetEndpoint)
 
 alknet-worker (uses AlknetClient to dial a hub)
 ├── alknet-client (the dial)
@@ -533,7 +533,7 @@ See [open-questions.md](../../open-questions.md) for full details.
   `ChannelClient::from_connection` (the take-over the dial feeds)
 - [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md)
   — `CallClient::spawn_dispatch` (the take-over the dial feeds)
-- [`crates/core/endpoint.md`](../core/endpoint.md) — `AlknetEndpoint`
+- [`crates/endpoint/README.md`](../endpoint/README.md) — `AlknetEndpoint`
   (the server-side complement)
 - [`crates/tls/README.md`](../tls/README.md) — `TlsClientConfig`
 - [`crates/call/client-and-adapters.md`](../call/client-and-adapters.md)

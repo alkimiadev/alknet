@@ -364,20 +364,25 @@ endpoint section below ("What `AlknetEndpoint` does after the refactor")
 describes the **post-refactor target**, not the current source. The
 current `crates/alknet-core/src/endpoint.rs` is the **extraction
 source** — `AlknetEndpoint::new(static_config, ...)` builds TLS
-internally, the shape ADR-083 replaces. The extraction and refactor
-are **sequenced**, not simultaneous:
+internally, the shape ADR-083 replaces. The endpoint is extracted into
+a new crate `alknet-endpoint` (ADR-083 Amendment 2026-07-15) as part of
+this work. The extraction and refactor are **sequenced**, not
+simultaneous:
 
 1. **`alknet-tls` first** — build the crate in isolation. `TlsServerConfig`
    and `TlsClientConfig` are unit-testable against `TlsIdentity` without
    touching the endpoint. This is the greenfield step.
-2. **Endpoint refactor second** — `endpoint.rs` is refactored to the
-   ADR-083 shape (`new(handlers, dynamic, identity_provider, drain_timeout)`
-   + `with_quinn` / `with_iroh` / `with_tcp_tls`), importing from
-   `alknet-tls` instead of building TLS internally. The call sites move
-   to the assembly layer here.
+2. **`alknet-endpoint` second** — build the new endpoint crate fresh
+   against the ADR-083 shape (`new(handlers, dynamic,
+   identity_provider, drain_timeout)` + `with_quinn` / `with_iroh` /
+   `with_tcp_tls`), importing `Connection`/`ProtocolHandler`/`AuthContext`
+   from `alknet-core` and taking pre-built transports (no TLS config —
+   the assembly layer builds those via `alknet-tls`). The old
+   `crates/alknet-core/src/endpoint.rs` is deleted.
 3. **Assembly layer last** — the deployment binary (hub/worker) builds
    the `TlsServerConfig`(s) and `TlsClientConfig`(s), the transports, and
-   hands them to `AlknetEndpoint` via the builder methods.
+   hands them to `AlknetEndpoint` (in `alknet-endpoint`) via the builder
+   methods.
 
 A compilable intermediate state exists after step 1: `alknet-tls` built
 and tested standalone, with `endpoint.rs` still in its old shape. The
@@ -385,11 +390,12 @@ call sites for `TlsServerConfig` / `TlsClientConfig` do not exist until
 step 2/3 — an implementer testing step 1 writes tests against the TLS
 types directly, not against a wired-up endpoint.
 
-### What `AlknetEndpoint` does after the refactor
+### What `AlknetEndpoint` (in `alknet-endpoint`) does after the refactor
 
 `AlknetEndpoint::new()` currently builds `TlsSetup` internally. After
 the refactor (see [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)),
-the endpoint takes **no TLS config at all** — it is a multi-transport
+the endpoint (extracted into `alknet-endpoint` per ADR-083 Amendment
+2026-07-15) takes **no TLS config at all** — it is a multi-transport
 accept-loop runner. TCP+TLS is an owned transport (via `with_tcp_tls`),
 not an external loop:
 
@@ -449,11 +455,12 @@ shutdown is single-owner — the endpoint owns all its accept loops
 
 `alknet-tls` provides `for_tcp_tls() -> TlsAcceptor`. The actual TCP
 accept loop (`TcpListener::accept` → `TlsAcceptor::accept` →
-`Connection::from_bidi` → `endpoint.dispatch()`) lives in `alknet-core`
-behind a `tcp` feature, as an owned transport on `AlknetEndpoint` (via
-`with_tcp_tls(listener, acceptor)` — see ADR-083). `alknet-tls` is the
-cert provider, not the accept loop. This keeps `alknet-tls` focused on
-TLS setup and cert sharing, not transport accept logic.
+`Connection::from_bidi` → `endpoint.dispatch()`) lives in
+`alknet-endpoint` behind a `tcp` feature, as an owned transport on
+`AlknetEndpoint` (via `with_tcp_tls(listener, acceptor)` — see ADR-083,
+Amendment 2026-07-15). `alknet-tls` is the cert provider, not the
+accept loop. This keeps `alknet-tls` focused on TLS setup and cert
+sharing, not transport accept logic.
 
 ### Client-side — `TlsClientConfig` (ADR-087)
 
@@ -654,10 +661,12 @@ alknet-call (client-side verifier — unchanged)
 
 alknet-hub (multi-transport endpoint)
 ├── alknet-tls (TlsServerConfig — shared across quinn + TCP)
+├── alknet-endpoint (AlknetEndpoint with quinn + iroh + tcp features, HandlerRegistry)
+├── alknet-client (AlknetClient — outbound worker dials, ADR-089)
 ├── alknet-channels-call (ChannelClient)
 ├── alknet-call (CallAdapter, Dispatcher)
 ├── alknet-http (HttpAdapter)
-├── alknet-core (AlknetEndpoint with quinn + iroh + tcp features, HandlerRegistry, Connection)
+├── alknet-core (Connection, ProtocolHandler, AuthContext, IdentityProvider)
 ```
 
 `alknet-tls` depends on `alknet-core` only. No handler crate depends on
@@ -694,8 +703,8 @@ See [open-questions.md](../../open-questions.md) for full details.
   `rustls::sign` usage is a test helper. `alknet-tls` re-exports the
   fingerprint functions for convenience.
 - **OQ-60** (resolved): Where does transport construction live? The
-  TCP+TLS accept loop lives in `alknet-core` behind a `tcp` feature as
-  an owned endpoint transport (`with_tcp_tls`). Builder functions are
+  TCP+TLS accept loop lives in `alknet-endpoint` behind a `tcp` feature
+  as an owned endpoint transport (`with_tcp_tls`). Builder functions are
   inlined by the assembly layer. See ADR-083.
 - **OQ-61** (dissolved): Multi-owner shutdown coordination. The
   problem does not arise — the endpoint owns all its accept loops
@@ -774,8 +783,9 @@ named by ADR-089; its wire protocol is deferred (OQ-66).
 - `docs/architecture/decisions/087-tlsclientconfig-not-blocked-on-dial.md`
   — `TlsClientConfig` (client-side); not blocked on the dial seam;
   breaks the circular hedge; hub-as-client requirement
-- `docs/architecture/crates/core/endpoint.md` — current endpoint design
-  (TLS section will be amended to point to `alknet-tls`)
+- `docs/architecture/crates/endpoint/README.md` — `AlknetEndpoint`
+  (the endpoint spec; TLS config is built by `alknet-tls`, not the
+  endpoint — per ADR-083)
 - `docs/architecture/crates/core/config.md` — `TlsIdentity`, `StaticConfig`
 - `crates/alknet-core/src/endpoint.rs` — the server-side code being
   extracted (`build_rustls_server_config`, `TlsSetup`, `RawKeyCertResolver`,

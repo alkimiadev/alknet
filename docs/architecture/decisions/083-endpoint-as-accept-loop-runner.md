@@ -10,6 +10,12 @@ WebTransport streams. See §"TCP+TLS is a first-class owned transport".
 All TLS-scope OQs resolved; advanced to Accepted ahead of the
 task-decomposition session.)
 
+Accepted (amended 2026-07-15: the endpoint is extracted from
+`alknet-core` into a new crate `alknet-endpoint`. The ADR's shape
+(`new` + builder methods + public `dispatch` + `run` / `shutdown`) is
+unchanged; the *location* changes. See §"Amendment 2026-07-15 — crate
+extraction".)
+
 ## Context
 
 `AlknetEndpoint` (ADR-010) conflates two concerns:
@@ -136,9 +142,9 @@ that's primarily the hub. A pure worker (no inbound endpoints) has a
 trivial assembly layer; a hub-worker combines both. Putting
 hub-specific composition in the hub crate is appropriate; putting
 transport loops that any node might need in the hub crate is not. The
-TCP+TLS loop belongs in `alknet-core` (behind a `tcp` feature), where
-any node that wants it can enable the feature and call `with_tcp_tls` —
-no hub dependency.
+TCP+TLS loop belongs in `alknet-endpoint` (behind a `tcp` feature),
+where any node that wants it can enable the feature and call
+`with_tcp_tls` — no hub dependency.
 
 ## Decision
 
@@ -251,11 +257,11 @@ iroh loops. It is not an external sibling. This means:
   accepts inbound TCP+TLS enables the `tcp` feature and calls
   `with_tcp_tls(listener, acceptor)`. No hub dependency. The loop isn't
   duplicated per binary.
-- **The TCP+TLS loop's home is `alknet-core`** (behind a `tcp` feature),
-  not the hub crate or the assembly layer. Core already has `quinn` and
-  `iroh` as feature-gated transport deps; adding `tcp` (pulling
-  `tokio-rustls`) is the same pattern. A deployment that doesn't use
-  TCP+TLS doesn't enable the feature.
+- **The TCP+TLS loop's home is `alknet-endpoint`** (behind a `tcp`
+  feature), not the hub crate or the assembly layer. The endpoint
+  crate has `quinn` and `iroh` as feature-gated transport deps; adding
+  `tcp` (pulling `tokio-rustls`) is the same pattern. A deployment that
+  doesn't use TCP+TLS doesn't enable the feature.
 
 ### `dispatch` is public — for genuinely external shapes
 
@@ -328,7 +334,7 @@ The `tcp` feature pulls `tokio-rustls`. A deployment enables the
 features for the transports it runs. A pure-QUIC node enables `quinn` +
 `iroh`; a hub serving HTTPS enables `quinn` + `tcp`; a hub-worker
 enables all three. This matches the existing pattern (`quinn` and
-`iroh` are already feature-gated transport deps on `alknet-core`).
+`iroh` are already feature-gated transport deps on `alknet-endpoint`).
 
 ### `StaticConfig` stays in core; the endpoint drops it
 
@@ -380,11 +386,14 @@ live in the hub crate, not a generic transport crate.
 | `load_cert_chain()` / `load_private_key()` | `alknet-tls` (ADR-082) |
 | `build_quinn_server_config_from_rustls()` | `alknet-tls` (`for_quinn()`, ADR-082) |
 | `build_iroh_endpoint()` | Assembly layer (inlined; 15 lines of iroh API calls) |
+| `AlknetEndpoint`, `HandlerRegistry`, `EndpointError`, all dispatch/loop/extraction code | `alknet-endpoint` (this ADR, §"Amendment 2026-07-15") |
 
-### What stays in `alknet-core/endpoint.rs`
+### What stays in `alknet-endpoint` (the new crate)
 
 - `AlknetEndpoint` struct (multi-transport accept-loop runner + public `dispatch`)
 - `HandlerRegistry`
+- `EndpointError`
+- `TcpTlsListener` (the `(TcpListener, TlsAcceptor)` tuple for the TCP+TLS field)
 - `dispatch` (public — ACME guard, handler lookup, `build_auth_context`, spawn)
 - `dispatch_quinn` / `dispatch_iroh` / `dispatch_tcp_tls` (private — transport-specific extraction, then call `dispatch`)
 - `run_quinn_accept_loop` / `run_iroh_accept_loop` / `run_tcp_tls_accept_loop`
@@ -401,6 +410,132 @@ assembly layer builds transports from `TlsServerConfig`s and hands them
 to the endpoint via `with_quinn` / `with_iroh` / `with_tcp_tls`. ADR-082
 should reference this ADR for the endpoint signature and focus on what
 `alknet-tls` provides (`TlsServerConfig` and its accessors).
+
+### Amendment 2026-07-15 — crate extraction (`alknet-endpoint`)
+
+The endpoint is extracted from `alknet-core` into a new crate
+`alknet-endpoint`. The ADR's shape — `new(handlers, dynamic,
+identity_provider, drain_timeout)` + `with_quinn` / `with_iroh` /
+`with_tcp_tls` + public `dispatch` + `run` / `shutdown` — is **unchanged**
+by this amendment. Only the *location* changes: `endpoint.rs`,
+`HandlerRegistry`, and `EndpointError` move from `alknet-core` to
+`alknet-endpoint`.
+
+#### Why extract (the dependency data)
+
+`alknet-core` is currently two things welded together with different
+audiences:
+
+| Concern | Modules | Depended on by |
+|---------|---------|----------------|
+| **Shared types + auth + config** | `types.rs`, `auth.rs`, `config.rs`, `fingerprint.rs`, `ownership.rs`, `store.rs` | every handler crate (call, http, tty, tty-local) — 124 import sites |
+| **Endpoint (accept-loop runner)** | `endpoint.rs` (1606 LOC) | **zero handler crates** — only the assembly layer (hub/worker) |
+
+The handler crates import `alknet_core::types` (57×), `alknet_core::auth`
+(41×), `alknet_core::config` (13×), `alknet_core::ownership` (7×),
+`alknet_core::fingerprint` (6×). They import `alknet_core::endpoint`
+**zero times**. `endpoint.rs` is a one-way leaf consumer of the shared
+types (it imports `auth`, `config`, `types`; nothing in core imports
+*from* it). This is the textbook shape for an extraction: a leaf
+consumer depended on by a different audience than the shared types.
+
+#### The dependency-weight win
+
+`alknet-core`'s `Cargo.toml` currently carries `quinn`, `iroh`,
+`rustls-pemfile`, `rcgen`, `rustls-acme`, `rustls` — heavy transport/TLS
+deps — because `endpoint.rs` uses them. Every handler crate transitively
+pulls these via `alknet-core`, even though none of them use the
+endpoint. `alknet-tty` is a pure wire-format handler — it has no business
+linking quinn.
+
+After extraction:
+
+- **`alknet-core`** loses `quinn`, `iroh`, `rcgen`, `rustls-pemfile`,
+  `rustls-acme` from its `[dependencies]` (the TLS-setup deps already
+  move to `alknet-tls` per ADR-082; the transport deps move with the
+  endpoint). It keeps `rustls`/`rustls-pki-types` (narrow — for
+  `fingerprint.rs` types, per OQ-59), `ed25519-dalek`, `sha2`, `tokio`,
+  `serde`, `arc-swap`. It becomes a **lightweight types+auth+config
+  crate** — what the handler crates actually want.
+- **`alknet-endpoint`** gains `quinn`, `iroh` (the accept-loop
+  transports). It depends on `alknet-core` for `Connection`,
+  `ProtocolHandler`, `AuthContext`, `IdentityProvider`, `DynamicConfig`.
+  It does **not** depend on `alknet-tls` — the endpoint takes pre-built
+  transports (per this ADR), so TLS config construction stays in
+  `alknet-tls` at the assembly layer.
+
+A handler crate (call, http, tty) no longer transitively links quinn,
+iroh, rcgen, or rustls-acme. A pure worker (client-only, no inbound)
+depends on `alknet-client` + handler crates + `alknet-core` and does
+**not** pull `alknet-endpoint` at all.
+
+#### The `quinn` feature split
+
+`alknet-core`'s `quinn` feature currently gates two unrelated things:
+(1) `endpoint.rs`'s quinn accept loop and (2) `types.rs`'s
+`Connection::from_quinn` / `QuinnBidiStreamSource` constructor. After
+extraction:
+
+- **`Connection::from_quinn` stays in `alknet-core`** (in `types.rs`).
+  It's a shared-type constructor used by both the endpoint's accept
+  loop (server) and `alknet-client`'s `dial_quic` (client, ADR-089) and
+  `CallClient` tests. The `quinn` feature on `alknet-core` gates this
+  constructor — "does `Connection` support quinn-constructed
+  connections" — not "does core run a quinn accept loop." Same for
+  `from_iroh` and the `iroh` feature.
+- **The quinn accept loop moves to `alknet-endpoint`**, which has its
+  own `quinn` feature for the accept loop. The heavy quinn accept-loop
+  code is in `alknet-endpoint`, not core.
+
+#### Symmetry with `alknet-client` (ADR-089)
+
+The extraction mirrors the client-side extraction (ADR-089):
+
+| Server side | Client side | Audience |
+|-------------|-------------|----------|
+| `alknet-endpoint` (this ADR) | `alknet-client` (ADR-089) | the assembly layer (hub, worker, hub-worker) |
+| `alknet-core` (shared types) | `alknet-core` (shared types) | every handler crate |
+
+A **hub** depends on `alknet-endpoint` + `alknet-client` + handler
+crates + `alknet-core` (transitively). A **pure worker** depends on
+`alknet-client` + handler crates + `alknet-core` — no `alknet-endpoint`.
+A **handler crate** depends on `alknet-core` only — neither endpoint
+nor client.
+
+#### Implementation: build new, delete old
+
+The endpoint's `endpoint.rs` is 1606 lines of `#[cfg(feature = "quinn")]`
+/ `#[cfg(feature = "iroh")]` / `#[cfg(feature = "acme")]` conditionals —
+the TLS-setup code that ADR-082 moves to `alknet-tls`, the
+`StaticConfig`-taking constructor that this ADR replaces, the
+`acme-tls/1` guard that this ADR moves to shared `dispatch`. Building
+`alknet-endpoint` fresh against this ADR's shape — `new()` + builder
+methods + public `dispatch` + `run` / `shutdown`, importing
+`Connection`/`ProtocolHandler`/`AuthContext` from `alknet-core`, no TLS
+setup (that's `alknet-tls`'s job now) — is cleaner than editing the
+1606-line conditional file in place. The old `endpoint.rs` becomes a
+deletion, not a refactor. This is pruning (cutting the endpoint + the
+TLS deps that already move to `alknet-tls`), not a massive inline
+refactor.
+
+#### What `alknet-core` looks like after
+
+`alknet-core` after the extraction + the ADR-082 TLS pruning:
+
+| Module | LOC | Stays? |
+|--------|-----|--------|
+| `types.rs` (`Connection`, `ProtocolHandler`, `BiStream`, `BidiStreamSource`, `StreamError`, `Capabilities`) | ~1100 | yes — shared by every crate |
+| `auth.rs` (`AuthContext`, `Identity`, `IdentityProvider`, `IdentityStore`, `AuthToken`) | ~640 | yes — shared by every crate |
+| `config.rs` (`StaticConfig`, `DynamicConfig`, `TlsIdentity`, `Ed25519SecretKey`) | ~710 | yes — shared config types |
+| `fingerprint.rs` | ~260 | yes — shared by server + client (OQ-59) |
+| `ownership.rs` (`OwnershipStore`, `OwnershipProvider`) | ~280 | yes — shared |
+| `store.rs` (`CredentialStore`, `EncryptedData`) | ~200 | yes — shared |
+| `endpoint.rs` (`AlknetEndpoint`, `HandlerRegistry`, `EndpointError`) | ~1600 | **no** — moves to `alknet-endpoint` |
+
+Core loses ~1600 LOC (the endpoint) and 5 heavy deps (`quinn`, `iroh`,
+`rcgen`, `rustls-pemfile`, `rustls-acme`). The remaining ~3200 LOC is
+the lightweight types+auth+config+ownership+store+fingerprint surface
+that every handler crate depends on.
 
 ## Consequences
 
@@ -430,23 +565,30 @@ should reference this ADR for the endpoint signature and focus on what
 - `dispatch` stays public for genuinely external shapes (SSH channels,
   future WT streams) — transports the endpoint can't own because they're
   connection-internal multiplexing, not listener-based.
+- **The endpoint is extracted into `alknet-endpoint`** (Amendment
+  2026-07-15). Handler crates no longer transitively link quinn, iroh,
+  rcgen, or rustls-acme. A pure worker (client-only) does not pull the
+  endpoint at all. The dep graph is symmetric with `alknet-client`
+  (ADR-089): `alknet-core` is the shared types crate; `alknet-endpoint`
+  and `alknet-client` are the server-side and client-side establishment
+  crates that depend on it.
 
 **Negative:**
 - `AlknetEndpoint::new` signature changes (breaking). Pre-1.0, in-repo
   consumers only — the assembly layer and tests must update. Expected;
   this is the point of the refactor.
-- `alknet-core` gains a `tcp` feature (pulls `tokio-rustls`). This is
-  the same pattern as the existing `quinn` and `iroh` features — a
-  transport that the endpoint can own. A deployment that doesn't use
-  TCP+TLS doesn't enable it. `alknet-core` already depends on `rustls`
-  (for `fingerprint.rs` types, per OQ-59); `tokio-rustls` is the
-  acceptor wrapper over `rustls::ServerConfig`, not a separate TLS
-  stack.
+- `alknet-endpoint` gains a `tcp` feature (pulls `tokio-rustls`). This is
+  the same pattern as the `quinn` and `iroh` features — a transport that
+  the endpoint can own. A deployment that doesn't use TCP+TLS doesn't
+  enable it. `alknet-core` keeps a narrow `rustls` dep (for
+  `fingerprint.rs` types, per OQ-59); `tokio-rustls` is the acceptor
+  wrapper over `rustls::ServerConfig`, not a separate TLS stack, and
+  lives in `alknet-endpoint`, not core.
 - `build_iroh_endpoint` leaves core (inlined by the assembly layer).
   This is a one-way dep-graph change: the binary that uses iroh depends
-  on `iroh` directly, not via `alknet-core`. This is correct — the
-  binary *is* the thing that knows which transports it wants. The 15
-  lines are pure iroh API calls; no shared logic is lost.
+  on `iroh` directly, not via `alknet-core` or `alknet-endpoint`. This
+  is correct — the binary *is* the thing that knows which transports it
+  wants. The 15 lines are pure iroh API calls; no shared logic is lost.
 - This ADR revises ADR-010's "TCP is not an endpoint struct concern"
   more deeply than the original ADR-083 draft. The reason TCP was
   excluded (the endpoint built transports internally, TCP+TLS couldn't
@@ -456,12 +598,14 @@ should reference this ADR for the endpoint signature and focus on what
 ## Door type
 
 **One-way.** The endpoint's `new` signature, the public `dispatch`
-contract, the "endpoint owns dispatch, not construction" boundary, and
-the "endpoint owns TCP+TLS as a first-class transport" decision are
-structural. Reversing would mean re-welding transport construction to
-the endpoint, re-privatizing `dispatch`, and pushing TCP+TLS back outside
-— breaking every multi-transport consumer (hub, hub-worker, future SSH,
-future WT).
+contract, the "endpoint owns dispatch, not construction" boundary, the
+"endpoint owns TCP+TLS as a first-class transport" decision, and the
+extraction of the endpoint into `alknet-endpoint` (a separate crate
+from `alknet-core`) are structural. Reversing would mean re-welding
+transport construction to the endpoint, re-privatizing `dispatch`,
+pushing TCP+TLS back outside, and re-merging the endpoint into core —
+breaking every multi-transport consumer (hub, hub-worker, future SSH,
+future WT) and re-coupling every handler crate to quinn/iroh/rcgen.
 
 The `dispatch` signature (`connection, alpn, fingerprint, remote_addr`)
 is one-way — changing it after consumers exist is a rewrite. The
@@ -492,9 +636,14 @@ tasks, the TCP+TLS loop's internal structure) is two-way.
   client pattern this ADR mirrors on the server side)
 - `docs/research/alknet-endpoint-refactor/findings.md` — the analysis
   that surfaced the conflation and the two-config hub case
-- `crates/alknet-core/src/endpoint.rs` — the code being refactored
+- `docs/architecture/crates/endpoint/README.md` — the canonical spec for
+  `alknet-endpoint` (this ADR's amendment is the decision; that spec is
+  the description)
+- `crates/alknet-core/src/endpoint.rs` — the code being extracted into
+  `alknet-endpoint` (the old module becomes a deletion after the
+  extraction)
 - OQ-60: resolved — transport construction is inlined by the assembly
   layer (the deployment binary); the TCP+TLS loop lives in
-  `alknet-core` behind a `tcp` feature as an owned transport
+  `alknet-endpoint` behind a `tcp` feature as an owned transport
 - OQ-61: dissolved — the multi-owner shutdown problem does not arise;
   the endpoint owns all its accept loops (quinn, iroh, TCP+TLS)

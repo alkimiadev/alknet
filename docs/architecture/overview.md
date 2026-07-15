@@ -94,15 +94,17 @@ graph — they depend on the published core crates from their own repos
 alknet-vault (standalone — foundational to ACL: key derivation, identity)
 │
 ├── Substrate
-│   alknet-core        ProtocolHandler, endpoint (multi-transport accept loop),
-│   │                  Connection, BidiStreamSource, AuthContext, IdentityProvider,
-│   │                  StaticConfig, DynamicConfig
+│   alknet-core        ProtocolHandler, Connection, BidiStreamSource, AuthContext,
+│   │                  IdentityProvider, StaticConfig, DynamicConfig, fingerprint
+│   │                  (endpoint extracted to alknet-endpoint; core is now lightweight
+│   │                  types+auth+config — no quinn/iroh/rcgen deps)
 │   ├── alknet-tls     TlsServerConfig + TlsClientConfig — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087)
 │   ├── alknet-call    CallAdapter on alknet/call, CallClient, OperationRegistry, adapters
 │   ├── alknet-channels
 │   │   ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081
 │   │   └── alknet-channels-call  channel 0 pre-negotiation + lifecycle ops — ADR-081
-│   └── alknet-client  AlknetClient — native client dial seam (QUIC + TCP+TLS + iroh); produces Connection for CallClient/ChannelClient take-over (ADR-089)
+│   ├── alknet-client  AlknetClient — native client dial seam (QUIC + TCP+TLS + iroh); produces Connection for CallClient/ChannelClient take-over (ADR-089)
+│   └── alknet-endpoint  AlknetEndpoint — multi-transport accept-loop runner, extracted from core (ADR-083 Am. 2026-07-15); takes pre-built transports; public dispatch for SSH/WT
 │
 ├── Deployment shapes
 │   ├── alknet-hub     channels hub — accepts workers, relays, aggregates (ADR-079); dials workers via AlknetClient
@@ -368,7 +370,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [071](decisions/071-channels-wire-format.md) | alknet-channels Wire Format | 9-byte chunk header; N channels over one transport stream |
 | [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate `channel/open`, byte-forward data channels; the hub never runs protocol-specific handlers |
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Shared `TlsServerConfig` across quinn + TCP+TLS + iroh; one ACME state machine |
-| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner | Endpoint takes no TLS config; TCP+TLS is an owned transport; public `dispatch` for SSH/WT |
+| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner | Endpoint takes no TLS config; TCP+TLS is an owned transport; public `dispatch` for SSH/WT; endpoint extracted from `alknet-core` into `alknet-endpoint` (Am. 2026-07-15) |
 | [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Core mono-repo (substrate + deployment shapes + foundational handlers + vault) vs. consumer repos (docker, agent) |
 | [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type (resolves OQ-62) |
 | [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | `alknet-tls` provides client-side TLS config; not deferred behind OQ-55; breaks the circular hedge; hub-as-client is a first-class use case |

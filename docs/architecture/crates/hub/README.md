@@ -657,15 +657,18 @@ alknet-hub (Hub struct deps)
 │                from_call, FromCallConfig, AdapterError, ClientError)
 ├── alknet-http (HttpAdapter — for the registration endpoint and browser access)
 ├── alknet-core (IdentityProvider, Connection, OperationRegistry,
-│                HandlerRegistry, AuthContext)
+│                AuthContext)
 ├── tokio (spawn, time::sleep)
 └── tracing (logging)
 
   (assembly-layer deps — used by the hub's composition code, not by
    the Hub struct itself)
+  ├── alknet-endpoint (AlknetEndpoint with quinn + iroh + tcp features,
+  │   │               HandlerRegistry — the accept-loop runner)
+  ├── alknet-client (AlknetClient — outbound worker dials, ADR-089)
   ├── alknet-tls (TlsServerConfig — builds the raw-key + X.509/ACME
   │               configs handed to the endpoint's transports)
-  └── alknet-core [tcp feature] (with_tcp_tls — the TCP+TLS accept loop)
+  └── alknet-core [quinn/iroh features] (Connection::from_quinn/from_iroh)
 ```
 
 `alknet-hub` depends on `alknet-channels-call`, `alknet-call`, and
