@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed (amended 2026-07-14: the `AlknetEndpoint::new` signature
+Accepted (amended 2026-07-14: the `AlknetEndpoint::new` signature
 referenced here was superseded by ADR-083 — the endpoint takes no TLS
-config; the assembly layer builds transports from `TlsServerConfig`s)
+config; the assembly layer builds transports from `TlsServerConfig`s.
+All TLS-scope OQs resolved; advanced to Accepted ahead of the
+task-decomposition session.)
 
 ## Context
 

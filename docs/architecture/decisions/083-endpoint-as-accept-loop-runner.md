@@ -2,11 +2,13 @@
 
 ## Status
 
-Proposed (revised 2026-07-14: TCP+TLS moved inside the endpoint as a
+Accepted (revised 2026-07-14: TCP+TLS moved inside the endpoint as a
 third owned transport, not an external loop. This dissolves the
 multi-owner shutdown problem — the endpoint owns all its accept loops.
 `dispatch` stays public for genuinely external shapes: SSH channels,
-WebTransport streams. See §"TCP+TLS is a first-class owned transport".)
+WebTransport streams. See §"TCP+TLS is a first-class owned transport".
+All TLS-scope OQs resolved; advanced to Accepted ahead of the
+task-decomposition session.)
 
 ## Context
 
