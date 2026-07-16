@@ -341,13 +341,19 @@ wraps in `QuicStream` → feeds to `serve_io`. After the fix, it does
 `QuicStreamDuplex` test helper (lines 456-471) is replaced with
 `Connection::from_stream` test helpers.
 
-**Verification needed:** confirm that `accept_bi()` on a `from_bidi`
-connection yields the single bidi stream per ADR-070's yield-once
-contract, and that the yielded streams are directly usable as
-`AsyncRead+AsyncWrite` (no wrapper needed). If the yield-once semantics
-require a different path for single-stream connections, the fix is
-slightly larger — but the `serve_io` signature already accepts any
-`AsyncRead+AsyncWrite`, so the adapter is ready.
+**Verification needed:** confirmed — `StreamBidiStreamSource::accept_bi`
+(`types.rs:482`) yields the underlying `(SendStream, RecvStream)` pair
+once (then `ConnectionClosed`). The `SendStream`/`RecvStream` are
+`from_stream`-wrapped adapters (lines 267/289) — already
+`AsyncRead`/`AsyncWrite`. So `accept_bi()` on a `from_bidi` connection
+returns streams directly usable as `AsyncRead+AsyncWrite` — no
+`QuicStream` wrapper needed. The `BidiStreamSource` trait has a unified
+intent (`accept_bi`/`open_bi`/`remote_addr`/`close`); all three impls
+(quinn, iroh, stream) collapse into adapters with the same shape. The
+`QuicStream` wrapper is redundant — delete it, use the streams from
+`accept_bi()` directly via `TokioIo::new`. The `QuicStreamDuplex` test
+helper is replaced with `Connection::from_stream` test helpers (the
+`stub_connection()` pattern already used in `call_client.rs` tests).
 
 **Compilable state:** `cargo test -p alknet-http` passes. The crate no
 longer has the hand-rolled `QuicStream` wrapper.
@@ -513,30 +519,20 @@ in Phase 1 (adapted to the new API), keep 6 tests unchanged, update one
 doc comment. The `connect` removal breaks zero tests because no test
 calls `connect`.
 
-## Open questions for the migration plan
+## Resolved questions
 
-- **Phase 6 `accept_bi` semantics:** does `accept_bi()` on a
-  `from_bidi` connection yield the single bidi stream directly usable
-  as `AsyncRead+AsyncWrite`, or does it need a wrapper? Needs
-  verification against the `BidiStreamSource` impl for `from_bidi`
-  in `types.rs`.
+- **Phase 6 `accept_bi` semantics:** **Resolved.**
+  `StreamBidiStreamSource::accept_bi` yields the `(SendStream,
+  RecvStream)` pair once; the streams are already
+  `AsyncRead`/`AsyncWrite` adapters. The `QuicStream` wrapper is
+  redundant — delete it. The `BidiStreamSource` trait has a unified
+  intent; all three impls (quinn, iroh, stream) collapse into adapters
+  with the same shape. See Phase 6 above.
+- **Integration test home:** **Resolved.** The dial + take-over
+  composition test moves to `alknet-client/tests/` with a minimal echo
+  `ProtocolHandler` on a test ALPN — no `alknet-call` dependency, no
+  circular path. The call-protocol-specific tests stay in
+  `alknet-call` (rewritten to use `spawn_dispatch` + loopback
+  `Connection`). See Phase 5 / open questions above.
 - **Workspace `Cargo.toml`:** the three new crates need to be added to
   the workspace member list. Trivial but worth noting.
-- **Integration tests (`tests/two_node_call.rs`):** the one integration
-  test file (331 lines, 2 tests) calls `client.connect()` twice and
-  builds its own raw quinn server (`build_raw_quinn_server`, lines
-  58-94 — hand-rolled rustls + quinn server config, no
-  `AlknetEndpoint`). Both tests (`call_round_trips_over_quic_loopback`
-  and `from_call_discovers_and_forwards_over_quic_loopback`) need the
-  `connect` path replaced with `AlknetClient::dial_quic` +
-  `spawn_dispatch`. The server side (`build_raw_quinn_server`) should
-  eventually use `AlknetEndpoint` + `TlsServerConfig`, but that's a
-  larger rewrite — for Phase 5, the minimal fix is to replace just the
-  client `connect` call with the dial + take-over composition. The
-  server-side raw quinn setup can stay (it's a test helper, not
-  production code). This integration test will need
-  `alknet-call` to dev-depend on `alknet-client` (or the test moves to
-  `alknet-client`'s own integration tests). The cleaner option: move
-  `two_node_call.rs` to `alknet-client/tests/` once `alknet-client`
-  exists (Phase 3), since it's testing the dial + take-over
-  composition, not just the protocol.
