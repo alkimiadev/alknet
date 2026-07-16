@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-15
+last_updated: 2026-07-16
 ---
 
 # Open Questions
@@ -208,6 +208,7 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | OQ | Title | Status | Door | Pri |
 |----|-------|--------|------|-----|
 | [OQ-66](questions/066-alknet-register-wire-protocol.md) | `alknet/register` Wire Protocol | deferred(scope) | one | med |
+| [OQ-67](questions/067-iroh-proxy-support.md) | iroh Proxy Support (Direct-Connection Peer Exposure) | deferred(unclear) | two | med |
 
 ## Deferred / Blocked
 
@@ -302,6 +303,29 @@ filtering the tables above.
   block the first hub deployment (web + native uses HTTP registration
   for worker provisioning per OQ-58).
 - **Full file**: [OQ-66](questions/066-alknet-register-wire-protocol.md)
+
+### OQ-67: iroh Proxy Support (Direct-Connection Peer Exposure)
+
+- **Investigation**: Work through the iroh socket stack to determine
+  whether iroh exposes a socket abstraction analogous to quinn's
+  `AsyncUdpSocket` + `new_with_abstract_socket` (the hook the quinn
+  POC uses). If it does, a `Socks5UdpSocket`-equivalent for iroh is
+  the same shape as the quinn integration. If it does not, the
+  alternatives are: (a) force relay-only when a proxy is configured
+  (the conservative default — the peer always sees the relay's IP,
+  never the client's), or (b) accept the gap (document that iroh direct
+  connections expose the client's IP). The investigation needs a
+  concrete iroh-direct-with-proxy use case to drive the choice —
+  without one, "force relay-only" is the conservative default.
+- **Priority**: medium
+- **Impacts**: A client that dials over iroh direct (hole-punched)
+  connections and wants to hide its real IP from the peer. Does NOT
+  block the first hub deployment — hub outbound dials use QUIC/TCP+TLS
+  (both honor the proxy, ADR-090). Does NOT block the relay-mediated
+  iroh path — iroh's relay hides the client's IP from the peer, and
+  iroh's `proxy_url` hides it from the relay. The gap is the iroh
+  *direct* path only.
+- **Full file**: [OQ-67](questions/067-iroh-proxy-support.md)
 
 ### OQ-56: Full Channel-Level Flow-Control Windowing
 

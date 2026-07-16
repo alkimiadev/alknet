@@ -1,11 +1,37 @@
 ---
 status: draft
-last_updated: 2026-07-15
+last_updated: 2026-07-16
 ---
 
 # Alknet Architecture
 
 ## Current State
+
+**Client-dial SOCKS5 proxy seam added (ADR-090, 2026-07-16).**
+`AlknetClient` (ADR-089) gains an optional SOCKS5 proxy
+(`with_socks5_proxy`) so a native client can hide its real IP from the
+hub. `dial_quic` routes QUIC through SOCKS5 UDP ASSOCIATE (validated by
+the `/workspace/quinn-proxy-poc` PoC and
+[`docs/research/quinn-quic-proxy/findings.md`](../research/quinn-quic-proxy/findings.md)
+— quinn's `AsyncUdpSocket` + `new_with_abstract_socket` is the
+extension point; 5/5 runs clean); `dial_tcp_tls` routes through SOCKS5
+CONNECT. The proxy is invisible above the dial (`Connection`,
+dispatch, credentials, TLS config all proxy-unaware) and the no-proxy
+path is the zero-cost default (the `socks5` feature and `fast-socks5`
+dep are opt-in). SOCKS5 is the sole proxy protocol (it covers both TCP
+and UDP, so no HTTP CONNECT variant needed). The two distinct SOCKS5
+concepts — the client-dial proxy (ADR-090, transport-layer privacy)
+and the planned `alknet-socks5` channels data-channel handler (ADR-085
+scope table, a service one side offers the other) — compose without
+coupling (a client using the hub's `alknet/socks5` service tunnels it
+locally and points its `Socks5ProxyConfig` at the local tunnel end).
+iroh is the exception: `dial_iroh` does not consume
+`Socks5ProxyConfig` — iroh's `proxy_url` covers the relay-exposure
+surface, but the direct-connection peer-exposure case is
+[OQ-67](open-questions.md) (deferred(unclear) — the pieces exist but
+the iroh socket-stack composition isn't clear; does not block the
+first hub deployment, which uses QUIC/TCP+TLS). See
+[ADR-090](decisions/090-client-dial-socks5-proxy-seam.md).
 
 **Workspace scope corrected (ADR-085, 2026-07-15).** The overview's
 crate graph had been describing the wrong scope since ADR-003 — a flat
@@ -187,7 +213,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — composes a subset of three endpoint types (web/native/iroh — ADR-086), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
 | [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
-| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); produces `Connection` for `CallClient`/`ChannelClient` take-over; `alknet/register` named (wire protocol deferred, OQ-66) |
+| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); optional SOCKS5 proxy (ADR-090 — UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS; iroh deferred OQ-67); produces `Connection` for `CallClient`/`ChannelClient` take-over; `alknet/register` named (wire protocol deferred, OQ-66) |
 | [crates/endpoint/README.md](crates/endpoint/README.md) | draft | alknet-endpoint crate — the server-side accept-loop runner (`AlknetEndpoint`), extracted from `alknet-core` (ADR-083 Am. 2026-07-15); takes pre-built transports via `with_quinn`/`with_iroh`/`with_tcp_tls`; public `dispatch` for SSH/WT; handler crates no longer transitively link quinn/iroh |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
 | [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
@@ -290,10 +316,11 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted |
 | [088](decisions/088-tlserror-shape.md) | `TlsError` Shape — Single Enum, Owned by `alknet-tls` | Accepted |
 | [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | Accepted (resolves OQ-55) |
+| [090](decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | Accepted (raises OQ-67 for iroh) |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (65 OQs across 18 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (67 OQs across 20 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 

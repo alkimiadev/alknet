@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-15
+last_updated: 2026-07-16
 ---
 
 # alknet-client
@@ -12,7 +12,10 @@ on a chosen ALPN, and produces a `Connection` for the protocol
 take-overs (`CallClient::spawn_dispatch`,
 `ChannelClient::from_connection`) to consume. It is the Rust native
 client; it does not run protocols, manage peer lifecycle, or supervise
-reconnection. It dials and produces a `Connection`.
+reconnection. It dials and produces a `Connection`. A client that wants
+to hide its real IP from the hub configures a SOCKS5 proxy
+(`with_socks5_proxy`, ADR-090) — the rustls dials route through it
+transparently.
 
 ## What
 
@@ -57,7 +60,10 @@ that produces `Connection`s for the protocol take-overs to consume.
 Narrowed to the **native case**: dialing native endpoint types (QUIC +
 TCP+TLS, both rustls-consuming via `TlsClientConfig`; iroh as the
 key-not-config exception) over the native ALPNs (`alknet/register`,
-`alknet/call`, `alknet/channels`).
+`alknet/call`, `alknet/channels`). With an optional SOCKS5 proxy
+(ADR-090), the rustls dials route their transport through the proxy
+(UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS) to hide the client's
+real IP from the hub.
 
 ### What `AlknetClient` is NOT
 
@@ -101,6 +107,11 @@ pub struct AlknetClient {
     tcp_connector: Option<tokio_rustls::TlsConnector>,
     #[cfg(feature = "iroh")]
     iroh: Option<iroh::Endpoint>,
+    // When set, `dial_quic` and `dial_tcp_tls` route through this
+    // SOCKS5 proxy (UDP ASSOCIATE / CONNECT respectively). `dial_iroh`
+    // is the exception — see OQ-67. Feature-gated on `socks5`.
+    #[cfg(feature = "socks5")]
+    socks5: Option<Socks5ProxyConfig>,
 }
 
 impl AlknetClient {
@@ -114,6 +125,13 @@ impl AlknetClient {
 
     #[cfg(feature = "iroh")]
     pub fn with_iroh(mut self, endpoint: iroh::Endpoint) -> Self;
+
+    /// Set the SOCKS5 proxy for all subsequent dials. When set, every
+    /// dial routes its transport through this proxy: UDP ASSOCIATE for
+    /// `dial_quic`, CONNECT for `dial_tcp_tls`. `dial_iroh` is the
+    /// exception — see OQ-67. Feature-gated on `socks5`.
+    #[cfg(feature = "socks5")]
+    pub fn with_socks5_proxy(mut self, proxy: Socks5ProxyConfig) -> Self;
 }
 ```
 
@@ -122,7 +140,9 @@ The builder mirrors `AlknetEndpoint`'s `with_quinn` / `with_iroh` /
 handles and hands them to the client via builder methods. A native
 client that needs QUIC-with-TCP+TLS-fallback holds both a quinn
 endpoint and a TCP+TLS connector; a minimal iroh-only client holds only
-the iroh endpoint.
+the iroh endpoint. The `with_socks5_proxy` builder (ADR-090) adds the
+privacy posture: when set, the rustls dials route through the proxy,
+hiding the client's real IP from the hub.
 
 ### The three dials
 
@@ -202,6 +222,83 @@ exception as the server side (ADR-082, ADR-087 §3).
   TCP+TLS. `AlknetClient` provides both dials; the fallback policy is a
   caller concern (or a future `dial_with_fallback` helper —
   two-way-door).
+
+### SOCKS5 proxy (ADR-090)
+
+A client that wants to hide its real IP from the hub (the primary
+privacy use case) configures a SOCKS5 proxy via `with_socks5_proxy`.
+When set, the rustls dials route their transport through the proxy —
+the hub sees the proxy's IP, not the client's. The proxy is a
+first-class dial capability, not a niche feature. See
+[ADR-090](../../decisions/090-client-dial-socks5-proxy-seam.md) for the
+full rationale, the PoC grounding, and the limitations.
+
+| Dial | SOCKS5 command | Mechanism | Hides IP from |
+|------|----------------|-----------|--------------|
+| `dial_quic` | UDP ASSOCIATE (RFC 1928 §6) | `Socks5UdpSocket` (the crate's `quinn::AsyncUdpSocket` impl, behind `socks5`) → `new_with_abstract_socket` — see ADR-090 §3 | The hub (peer) |
+| `dial_tcp_tls` | CONNECT (RFC 1928 §3) | `TcpStream` to the proxy + SOCKS5 CONNECT handshake, then `TlsConnector` over the proxied stream | The hub (peer) |
+| `dial_iroh` | (exception — OQ-67) | iroh's own `proxy_url` (set at the assembly layer) covers the relay-exposure surface; direct-connection peer exposure is deferred | The relay (via `proxy_url`); peer exposure on direct connections is OQ-67 |
+
+The proxy config:
+
+```rust
+pub struct Socks5ProxyConfig {
+    /// The proxy's TCP address (where the SOCKS5 control connection
+    /// connects). For UDP ASSOCIATE (the QUIC dial), the proxy replies
+    /// with a UDP relay address that may differ; the dial uses that.
+    pub addr: SocketAddr,
+    /// Optional username/password auth (RFC 1929). None = no-auth.
+    pub credentials: Option<Socks5Credentials>,
+}
+```
+
+The config comes from `Capabilities` / the assembly layer (ADR-014),
+never from `ALL_PROXY` / `HTTPS_PROXY` env vars — the no-env-vars
+invariant. The config's crate location (it can live in `alknet-client`,
+`alknet-core`, or `alknet-tls`) is a two-way-door implementation
+detail; the shape is decided (ADR-090 §1).
+
+**The proxy is invisible above the dial.** `Connection`, dispatch,
+`CallCredentials`, `TlsClientConfig`, the hub's `supervise_worker`
+closure — none know a proxy is in the path. The proxy is purely an
+establishment concern, localized to `alknet-client`. A proxied QUIC
+connection still yields a `Connection::from_quinn_with_alpn`; a
+proxied TCP+TLS connection still yields a `Connection::from_bidi`. The
+protocol take-overs are proxy-unaware.
+
+**The no-proxy path is the zero-cost default.** `dial_quic` and
+`dial_tcp_tls` without a configured proxy are byte-identical to ADR-089.
+The `socks5` feature and the `fast-socks5` dep are opt-in; deployments
+that don't use a proxy pay nothing.
+
+**Limitations (accepted, documented in ADR-090):**
+- **ECN is lost on proxied QUIC.** The SOCKS5 UDP header carries no ECN
+  bits, so the proxied QUIC path falls back to non-ECN congestion
+  control. A performance cost on congested links, not a correctness
+  issue. An expected cost of the privacy choice.
+- **The proxy must support UDP ASSOCIATE for `dial_quic`.** A
+  deployment requirement — `ssh -D` does not work; a UDP-capable SOCKS5
+  daemon (dante, fast-socks5-based, etc.) is needed. The dial surfaces
+  a clear error when the proxy lacks UDP support.
+- **No silent fallback.** When a proxy is configured and the proxy
+  rejects the command, the dial returns `ClientDialError::Proxy`. The
+  dial does not silently fall back to a direct connection — that would
+  defeat the privacy posture the caller configured the proxy to
+  enforce. A caller that wants "try proxy, fall back to direct"
+  composes it: catch the error, dial on an `AlknetClient` *without*
+  the proxy set. Because the proxy is set once on the client, this
+  means two `AlknetClient` instances (one with `with_socks5_proxy`,
+  one without) — see ADR-090 §6 for the rationale. The fallback
+  policy is the caller's, not the dial's — same stance as ADR-089's
+  "no transport fallback."
+
+**Two distinct SOCKS5 uses — do not conflate.** The client-dial proxy
+(this section, ADR-090) is transport-layer privacy for the
+establishment side. The planned `alknet-socks5` crate (ADR-085 scope
+table) is a SOCKS5 *service* one side offers the other over a channels
+data channel (`alknet/socks5` ALPN) — a foundational handler, not a
+client-dial concern. The two compose at the SOCKS5 protocol level, not
+the alknet type level — see ADR-090 §"Two distinct SOCKS5 uses".
 
 ### Credentials
 
@@ -342,13 +439,25 @@ pub enum ClientDialError {
     /// `dial_quic` called but `with_quinn` was not set.
     #[error("no transport handle configured for {transport}")]
     NoTransport { transport: &'static str },
+
+    /// SOCKS5 proxy failure — handshake rejected, UDP ASSOCIATE
+    /// unsupported, auth failed, or the proxy closed the control
+    /// connection (ADR-090). The dial did not reach the remote; the
+    /// caller decides whether to fall back to a direct dial or
+    /// surface the error. The dial never silently falls back — that
+    /// would defeat the privacy posture.
+    #[cfg(feature = "socks5")]
+    #[error("SOCKS5 proxy: {0}")]
+    Proxy(String),
 }
 ```
 
 `TlsConfig` wraps `alknet_tls::TlsError` (ADR-088) — the config
 construction errors. `Connect` and `Handshake` are transport-level
 failures (pre- and post-handshake). `NoTransport` is a wiring error
-(calling a dial without the matching `with_*`).
+(calling a dial without the matching `with_*`). `Proxy` (ADR-090) is
+the SOCKS5 proxy failure category — the dial's transport never reached
+the remote because the proxy rejected or dropped the association.
 
 **`Handshake` resolves an ADR-088 §6 deferral.** ADR-088 §6 explicitly
 scoped `TlsError` to *config-construction* errors and deferred the
@@ -380,6 +489,7 @@ default = []
 quinn = ["dep:quinn", "alknet-tls/quinn"]
 tcp = ["dep:tokio-rustls", "alknet-tls/tcp"]
 iroh = ["dep:iroh"]
+socks5 = ["dep:fast-socks5"]   # enables the proxied dial paths (ADR-090)
 ```
 
 A deployment that dials QUIC only enables `quinn`. A deployment that
@@ -388,7 +498,13 @@ dials TCP+TLS enables `tcp`. A deployment that dials iroh enables
 all three. The `quinn` and `tcp` features pull the corresponding
 features on `alknet-tls` (for `TlsClientConfig::for_quinn` /
 `for_tcp_tls`). The `iroh` feature does not pull `alknet-tls` features
-— iroh has its own TLS.
+— iroh has its own TLS. The `socks5` feature (ADR-090) is independent
+of the transport features — it enables the proxy code path that
+`dial_quic` (UDP ASSOCIATE) and `dial_tcp_tls` (CONNECT) use when a
+proxy is configured. Enabling `socks5` without `quinn` or `tcp` is a
+no-op; enabling `quinn` + `socks5` enables proxied QUIC; `tcp` +
+`socks5` enables proxied TCP+TLS. The `fast-socks5` dep is behind
+`socks5`, so deployments that don't use a proxy don't pay the dep.
 
 ### Dependencies
 
@@ -401,6 +517,7 @@ alknet-client
 ├── tokio-rustls      (optional — dial_tcp_tls)
 ├── tokio             (TcpStream, spawn)
 ├── iroh              (optional — dial_iroh)
+├── fast-socks5       (optional — SOCKS5 client, `socks5` feature — ADR-090)
 └── thiserror         (ClientDialError)
 ```
 
@@ -452,8 +569,14 @@ A downstream worker or hub uses `alknet-client` like this:
 let quinn_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
 
 // 2. Build the AlknetClient with the transport handles it needs.
+//    Optionally set a SOCKS5 proxy (ADR-090) to hide the client's real
+//    IP from the hub — all rustls dials route through it.
 let client = AlknetClient::new()
-    .with_quinn(quinn_endpoint);
+    .with_quinn(quinn_endpoint)
+    .with_socks5_proxy(Socks5ProxyConfig {
+        addr: "127.0.0.1:1080".parse()?,
+        credentials: None,  // no-auth; or Some(Socks5Credentials { ... })
+    });
     // .with_tcp_tls(tls_connector) — if TCP+TLS fallback is needed
     // .with_iroh(iroh_endpoint)   — if iroh is needed
 
@@ -465,6 +588,9 @@ let creds = CallCredentials::new()
     });
 
 // 4. Dial the hub on alknet/channels, take over as channels.
+//    The proxy (if set) is applied transparently by dial_quic —
+//    UDP ASSOCIATE for QUIC. The Connection, the channels take-over,
+//    and the credentials are all proxy-unaware.
 let conn = client
     .dial_quic(hub_addr, "alknet", b"alknet/channels", &creds)
     .await?;
@@ -489,6 +615,7 @@ All design decisions are documented as ADRs in
 | ADR | Decision | Summary |
 |-----|----------|---------|
 | [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred |
+| [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT; iroh deferred (OQ-67); grounded in the quinn-proxy PoC |
 
 ## Open Questions
 
@@ -507,11 +634,22 @@ See [open-questions.md](../../open-questions.md) for full details.
   crate's ACL and OQ-58 (the token model is the shared blocker) and
   needs a dedicated ADR. The HTTP registration endpoint (OQ-58)
   remains the first implementation.
+- **OQ-67** (deferred(unclear)): iroh proxy support — `dial_iroh` does
+  not consume `Socks5ProxyConfig` (ADR-090). iroh's `proxy_url` (set at
+  the assembly layer) covers the relay-exposure surface; the open case
+  is iroh's *direct* (hole-punched) connection, where the peer sees the
+  client's real IP. Wrapping iroh's QUIC in SOCKS5 UDP ASSOCIATE is a
+  different integration than the quinn POC (iroh has its own socket
+  stack, not `quinn::AsyncUdpSocket`). Does not block the first hub
+  deployment (hub outbound dials use QUIC/TCP+TLS). See
+  [OQ-67](../../questions/067-iroh-proxy-support.md).
 
 ## References
 
 - [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) —
   the decision this spec implements
+- [ADR-090](../../decisions/090-client-dial-socks5-proxy-seam.md) —
+  the SOCKS5 proxy seam (client-dial privacy)
 - [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) —
   `AlknetEndpoint` (the server-side shape this spec mirrors)
 - [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) —
@@ -533,6 +671,8 @@ See [open-questions.md](../../open-questions.md) for full details.
   `ChannelClient::from_connection` (the take-over the dial feeds)
 - [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md)
   — `CallClient::spawn_dispatch` (the take-over the dial feeds)
+- [`docs/research/quinn-quic-proxy/findings.md`](../../research/quinn-quic-proxy/findings.md)
+  — the quinn-over-SOCKS5 PoC findings (grounds ADR-090's QUIC path)
 - [`crates/endpoint/README.md`](../endpoint/README.md) — `AlknetEndpoint`
   (the server-side complement)
 - [`crates/tls/README.md`](../tls/README.md) — `TlsClientConfig`
