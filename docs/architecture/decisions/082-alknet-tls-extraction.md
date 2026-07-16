@@ -130,8 +130,8 @@ impl TlsServerConfig {
 | `TlsIdentity` enum | `alknet-core/config.rs` | Config type — `StaticConfig` holds it |
 | `Ed25519SecretKey` | `alknet-core/config.rs` | Config type — iroh reads it directly |
 | `AcmeDirectory` | `alknet-core/config.rs` | Config type |
-| `fingerprint.rs` | `alknet-core` | Shared by server (endpoint) and client (`alknet-call`'s `FingerprintPinVerifier`) — moving it would create a dep edge from `alknet-call` to `alknet-tls`. Production code uses `sha2` + manual DER only; `rustls` is test-only. See OQ-59. |
-| `AlknetEndpoint` | `alknet-core` | The endpoint struct stays; it takes no TLS config (see ADR-083) |
+| `fingerprint.rs` | `alknet-core` | Shared by server (endpoint) and client (`FingerprintPinVerifier`, now in `alknet-tls` per ADR-089 §5 — the original dep-edge concern from `alknet-call` is dissolved) — production code uses `sha2` + manual DER only; `rustls` is test-only. See OQ-59. |
+| `AlknetEndpoint` | `alknet-endpoint` | Extracted from `alknet-core` per ADR-083 Am. 2026-07-15; takes no TLS config (see ADR-083) |
 
 ### Feature gates
 
@@ -240,9 +240,10 @@ that compiles and passes type-checks but silently changes TLS behavior:
   [ADR-083](083-endpoint-as-accept-loop-runner.md)). This is expected —
   it is the point of the extraction.
 - `alknet-core` may keep a narrow `rustls` dep if `fingerprint.rs` stays
-  (OQ-59). If `fingerprint.rs` moves to `alknet-tls`, `alknet-call`'s
-  client-side `FingerprintPinVerifier` gains a dep on `alknet-tls`. The
-  trade-off is documented in OQ-59.
+  (OQ-59). (Resolved by ADR-089 §5: `FingerprintPinVerifier` moved to
+  `alknet-tls`, so the `alknet-call` → `alknet-tls` dep-edge concern that
+  drove this trade-off is moot — `alknet-call` shed its `rustls` dep
+  entirely.)
 - A new crate in the dep graph. Small, focused, one clear
   responsibility.
 
@@ -278,8 +279,10 @@ details that can change without breaking the contract.
 - ADR-080 — `ChannelClient::from_connection` (transport-agnostic
   client; the pattern this ADR mirrors on the TLS side)
 - OQ-59 — resolved: `fingerprint.rs` stays in `alknet-core` (the
-  client-side `FingerprintPinVerifier` in `alknet-call` must not depend
-  on `alknet-tls`; the `rustls` dep in core is test-only).
+  client-side `FingerprintPinVerifier` is now in `alknet-tls` per
+  ADR-089 §5, so the `alknet-call` → `alknet-tls` dep-edge concern that
+  drove this resolution is dissolved; the `rustls` dep in core is
+  test-only).
 - `crates/alknet-core/src/endpoint.rs` — the code being extracted
 - `crates/alknet-core/src/config.rs` — `TlsIdentity`, `Ed25519SecretKey`
   (staying in core)

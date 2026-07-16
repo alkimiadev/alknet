@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (amended 2026-06-26 and 2026-07-13 — see "Amendments" below)
+Accepted (amended 2026-06-26, 2026-07-13, and 2026-07-16 — see "Amendments" below; the 2026-07-16 amendment per ADR-089 §5 removes `CallClient::connect`)
 
 ## Context
 
@@ -468,17 +468,21 @@ existing code (which already has the right structure —
   shared dispatch loop, returns a live `CallConnection`. Mirrors the
   server-side `CallAdapter::handle(Connection)` and
   `ChannelClient::from_connection` (ADR-080).
-- **`CallClient::connect(addr, credentials)`** — a QUIC convenience
-  constructor: dial QUIC (feature-gated on `quinn`), then
-  `spawn_dispatch`. Additive and two-way-door. `connect_tcp_tls`,
-  `connect_webtransport`, etc. join it as transports are added,
-  without touching the `spawn_dispatch` contract.
+- **`CallClient::connect(addr, credentials)`** — ~~a QUIC convenience
+  constructor~~ **REMOVED per ADR-089 §5 (2026-07-16)**. The dial is
+  centralized in `AlknetClient` (`alknet-client`); `connect` is
+  deleted, not retained as a two-way-door convenience, to avoid
+  `alknet-call` depending on `alknet-client` and to let `alknet-call`
+  shed its TLS/transport deps. Callers compose
+  `AlknetClient::dial_quic(...).await?` +
+  `CallClient::new(...).spawn_dispatch(conn)`.
 
-The door-type classification is unchanged: `spawn_dispatch` is one-way
-(the handler-facing surface), `connect` is two-way (additive
-convenience). The `AlknetClient` extraction (OQ-55 — the shared
-dial+TLS seam) remains deferred; what is deferred is the shared *dial*,
-not a QUIC-welded client API. `spawn_dispatch` is decided now.
+The door-type classification is updated: `spawn_dispatch` is one-way
+(the handler-facing surface); ~~`connect` is two-way (additive
+convenience)~~ `connect` is **removed** (ADR-089 §5). The
+`AlknetClient` extraction (OQ-55) is **resolved** by ADR-089 — the
+shared dial seam is `alknet-client`; `spawn_dispatch` is the
+protocol-crate take-over that consumes the dial's `Connection`.
 
 See [client-and-adapters.md](../crates/call/client-and-adapters.md)
 §"CallClient" for the reframed operational spec.

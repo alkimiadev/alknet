@@ -32,8 +32,10 @@
   `TlsClientConfig::new` takes a verifier context (the inputs to
   ADR-034's rule: `PeerEntry` presence, expected fingerprint, remote
   cert type) and returns a `rustls::ClientConfig`. The caller
-  (transport-specific dial helper, `CallClient::connect_quic`, a future
-  `connect_tcp_tls`) passes it to the transport's connector. Iroh is
+  (transport-specific dial helper — now `AlknetClient::dial_quic` /
+  `dial_tcp_tls` per ADR-089; the per-protocol `CallClient::connect` /
+  `ChannelClient::connect_quic` convenience constructors are removed
+  per ADR-089 §5) passes it to the transport's connector. Iroh is
   the exception — it has its own TLS and does not consume a
   `rustls::ClientConfig`; the iroh dial helper applies the same
   ADR-034 rule via iroh's `NodeId` verification API.

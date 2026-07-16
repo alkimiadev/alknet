@@ -125,7 +125,8 @@ translates `channel/open` on channel 0 with `forwarded_for` — ADR-032;
 data channels byte-forwarded with `channel_id` rewrite; the hub never runs
 protocol-specific handlers),
 [ADR-080](decisions/080-channelclient.md) (`ChannelClient`,
-transport-agnostic `from_connection` primary + `connect_quic` convenience,
+transport-agnostic `from_connection` primary; `connect_quic` removed
+per ADR-089 §5 (dial extracted to `AlknetClient`),
 bidirectionality preserved; `AlknetClient` dial-seam extracted as
 `alknet-client` per ADR-089, resolving OQ-55),
 [ADR-081](decisions/081-channels-subcrate-decomposition.md) (sub-crate
@@ -209,7 +210,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 |----------|--------|-------------|
 | [overview.md](overview.md) | draft | Workspace-level overview, crate graph (core mono-repo scope per ADR-085), hub/worker model, shared types, design principles |
 | [open-questions.md](open-questions.md) | draft | OQ index — theme-grouped tables + Deferred/Blocked section; per-OQ files in [`questions/`](questions/) |
-| [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index — shared types + auth + config (endpoint extracted to `alknet-endpoint` per ADR-083 Am. 2026-07-15) |
+| [crates/core/README.md](crates/core/README.md) | draft | alknet-core crate index — shared types + auth + config (endpoint extracted to `alknet-endpoint` per ADR-083 Am. 2026-07-15; `CallCredentials`/`RemoteIdentity` moved here from `alknet-call` per ADR-089 §5) |
 | [crates/core/core-types.md](crates/core/core-types.md) | draft | ProtocolHandler, HandlerError, Connection (`Box<dyn BidiStreamSource>` — ADR-070), BidiStreamSource trait, BiStream, StreamError |
 | [crates/core/endpoint.md](crates/core/endpoint.md) | deprecated | Endpoint spec — **moved to `alknet-endpoint`** (ADR-083 Am. 2026-07-15); see [`crates/endpoint/README.md`](crates/endpoint/README.md) |
 | [crates/core/auth.md](crates/core/auth.md) | draft | AuthContext (incl. `anonymous` constructor), Identity, IdentityProvider, AuthToken, resolution flow |
@@ -217,7 +218,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/call/README.md](crates/call/README.md) | draft | alknet-call crate index |
 | [crates/call/call-protocol.md](crates/call/call-protocol.md) | draft | CallAdapter, hand-rolled EventEnvelope framing (no irpc — ADR-064), stream model, PendingRequestMap, bidirectional calls, streaming subscribe example |
 | [crates/call/operation-registry.md](crates/call/operation-registry.md) | draft | OperationSpec, Handler, OperationRegistry, AccessControl, capability injection, service discovery (hand-rolled, no irpc) |
-| [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (transport-agnostic `spawn_dispatch` primary, `connect` QUIC convenience — ADR-017 Am. 2026-07-13), from_call, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern (from_jsonschema moved to alknet-http per ADR-066) |
+| [crates/call/client-and-adapters.md](crates/call/client-and-adapters.md) | draft | CallClient (transport-agnostic `spawn_dispatch` primary; `connect` removed per ADR-089 §5 — dial extracted to `AlknetClient`), from_call, OperationAdapter trait, adapter location map, no-env-vars invariant, exchange-of-operations pattern (from_jsonschema moved to alknet-http per ADR-066) |
 | [crates/http/README.md](crates/http/README.md) | draft | alknet-http crate index |
 | [crates/http/overview.md](crates/http/overview.md) | draft | Crate purpose, two roles (server + client host), dependencies, adapter location map |
 | [crates/http/http-server.md](crates/http/http-server.md) | draft | HttpAdapter for h2/http1.1 + WebSocket upgrade route, axum over QUIC, Bearer auth, stealth, /healthz |
@@ -241,16 +242,16 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — composes a subset of three endpoint types (web/native/iroh — ADR-086), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
-| [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
-| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); optional SOCKS5 proxy (ADR-090 — UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS, force-relay-only + HTTP-to-SOCKS5 bridge for iroh; OQ-67 resolved); produces `Connection` for `CallClient`/`ChannelClient` take-over; `alknet/register` named (wire protocol deferred, OQ-66) |
-| [crates/endpoint/README.md](crates/endpoint/README.md) | draft | alknet-endpoint crate — the server-side accept-loop runner (`AlknetEndpoint`), extracted from `alknet-core` (ADR-083 Am. 2026-07-15); takes pre-built transports via `with_quinn`/`with_iroh`/`with_tcp_tls`; public `dispatch` for SSH/WT; handler crates no longer transitively link quinn/iroh |
+| [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); `FingerprintPinVerifier` moved here from `alknet-call` (ADR-089 §5); `webpki-roots` fallback for empty platform stores (ADR-088 §5); fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
+| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); optional SOCKS5 proxy (ADR-090 — UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS, force-relay-only + HTTP-to-SOCKS5 bridge for iroh; OQ-67 resolved); produces `Connection` for `CallClient`/`ChannelClient` take-over; `CallClient::connect`/`ChannelClient::connect_quic` removed (dial centralized here); `alknet/register` named (wire protocol deferred, OQ-66) |
+| [crates/endpoint/README.md](crates/endpoint/README.md) | draft | alknet-endpoint crate — the server-side accept-loop runner (`AlknetEndpoint`), extracted from `alknet-core` (ADR-083 Am. 2026-07-15); takes pre-built transports via `with_quinn`/`with_iroh`/`with_tcp_tls`; public `dispatch` for SSH/WT; `EndpointError` removed (vestigial); handler crates no longer transitively link quinn/iroh |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
 | [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
 | [crates/channels/channels-wire.md](crates/channels/channels-wire.md) | draft | 9-byte chunk format, stream types, sentinels, framing disambiguation, wire-level invariants (REQ-CH-01..05) |
 | [crates/channels/channels-connection.md](crates/channels/channels-connection.md) | draft | `ChannelBidiStreamSource` (implements `BidiStreamSource`), `into_sub_streams()` typed accessor, recursive composition |
 | [crates/channels/channels-adapter.md](crates/channels/channels-adapter.md) | draft | `ChannelsAdapter`, `ChannelManager`, demux/mux contracts (REQ-CH-01..04), two-pump pattern (ADR-078) |
 | [crates/channels/channel-operations.md](crates/channels/channel-operations.md) | draft | `channel/open`/`close`/`control`/`resources/subscribe`, ACL flow, `direction` semantics, hub relay contract (ADR-079) |
-| [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, transport-agnostic `from_connection` primary + `connect_quic` convenience, bidirectionality preserved |
+| [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5 (dial extracted to `AlknetClient`); bidirectionality preserved |
 
 ## ADR Table
 
@@ -338,13 +339,13 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [080](decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | Accepted |
 | [081](decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | Accepted |
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Accepted (amended — endpoint signature superseded by ADR-083) |
-| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner with Public Dispatch | Accepted (revised — TCP+TLS is an owned transport, not external; amended 2026-07-15 — endpoint extracted from `alknet-core` into `alknet-endpoint`) |
+| [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner with Public Dispatch | Accepted (revised — TCP+TLS is an owned transport, not external; amended 2026-07-15 — endpoint extracted from `alknet-core` into `alknet-endpoint`; `EndpointError` removed — both variants vestigial, `shutdown()` infallible) |
 | [084](decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs as the TLS Crypto Provider | Accepted |
 | [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Accepted |
 | [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Accepted |
-| [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted |
-| [088](decisions/088-tlserror-shape.md) | `TlsError` Shape — Single Enum, Owned by `alknet-tls` | Accepted |
-| [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | Accepted (resolves OQ-55) |
+| [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted (§5 amended by ADR-089 — `FingerprintPinVerifier` moves to `alknet-tls`; `alknet-call` sheds TLS deps) |
+| [088](decisions/088-tlserror-shape.md) | `TlsError` Shape — Single Enum, Owned by `alknet-tls` | Accepted (§5 added — `webpki-roots` fallback when platform store is empty; §7 references ADR-089 for handshake-error surfacing) |
+| [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | Accepted (resolves OQ-55; `CallClient::connect` / `ChannelClient::connect_quic` removed; `CallCredentials`/`RemoteIdentity` moved to `alknet-core`; `FingerprintPinVerifier` moved to `alknet-tls`; `ClientError` removed; `alknet-call` sheds TLS deps) |
 | [090](decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | Accepted (§5 amended 2026-07-16 — OQ-67 resolved: iroh force-relay-only + HTTP-to-SOCKS5 bridge) |
 
 ## Open Questions

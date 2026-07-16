@@ -114,7 +114,7 @@ operations discovered when the connection was established.
 /// opened). Holds the connection's Layer 2 overlay (imported ops).
 pub struct CallConnection {
     /// The underlying transport Connection (from endpoint.accept,
-    /// CallClient::spawn_dispatch, or CallClient::connect). May be QUIC,
+    /// CallClient::spawn_dispatch, or AlknetClient::dial_*). May be QUIC,
     /// TCP+TLS, WebTransport, SSH, or any Connection::from_stream source
     /// (ADR-065).
     connection: Connection,
@@ -176,10 +176,12 @@ The adapter:
 6. Manages the `PendingRequestMap` for outgoing calls
 
 The dispatch loop is **shared** with `CallClient` (ADR-017 §1): both
-`CallAdapter::handle` (accept path) and `CallClient::connect` (connect path)
-construct a `Dispatcher` (`protocol/dispatch.rs`) and call `run_loop` — the
-dispatch half is one implementation, the connection-establishment half differs
-(accept vs dial). Peer authorization flows through the existing
+`CallAdapter::handle` (accept path) and `CallClient::spawn_dispatch`
+(connect path — the dial is now `AlknetClient::dial_*` per ADR-089 §5;
+`CallClient::connect` is removed) construct a `Dispatcher`
+(`protocol/dispatch.rs`) and call `run_loop` — the dispatch half is one
+implementation, the connection-establishment half differs (accept vs
+dial). Peer authorization flows through the existing
 `AccessControl::check(peer_identity)` — no `RemoteFilter`/`remote_safe` gate
 (ADR-029 §3). The composition env is peer-keyed (`PeerCompositeEnv`,
 ADR-029 §1) to handle head→N-workers routing. See

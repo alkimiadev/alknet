@@ -39,9 +39,10 @@
   own client standalone with a shared `TlsClientConfig` (ADR-087), and
   each transport-specific dial helper. `CallClient`'s transport-agnostic
   take-over (`spawn_dispatch`) and `ChannelClient`'s transport-agnostic
-  take-over (`from_connection`, ADR-080) are decided; the existing
-  `connect` / `connect_quic` convenience constructors become thin
-  wrappers over `AlknetClient::dial_quic` (ADR-089 §5).
+  take-over (`from_connection`, ADR-080) are decided; the
+  `connect` / `connect_quic` convenience constructors are **removed**
+  per ADR-089 §5 (not delegated — the dial is centralized in
+  `AlknetClient`, and the protocol crates shed their TLS/transport deps).
 - **Cross-references**: ADR-089 (the resolution — `AlknetClient` native
   dial seam), ADR-083 (the server-side shape mirrored), ADR-086
   (endpoint types — native has QUIC + TCP+TLS + iroh), ADR-087

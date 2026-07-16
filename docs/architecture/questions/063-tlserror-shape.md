@@ -76,14 +76,14 @@
   Subsidiary question: does `TlsError` live in `alknet-tls` (owned by
   the crate that produces it) or is it re-exported from `alknet-core`?
   **Resolved: `alknet-tls`, owned by the crate that produces it.**
-  `alknet-core`'s `EndpointError` no longer has a `TlsConfig` variant
-  after ADR-083 (the endpoint takes no TLS config); core does not need to
-  know about `TlsError`. Re-exporting from core would invert the
-  ownership (core re-exporting a type from a crate that depends on it).
+  `EndpointError` is removed entirely after ADR-083 (both variants
+  vestigial); core has no endpoint error type and does not need to know
+  about `TlsError`. Re-exporting from core would invert the ownership
+  (core re-exporting a type from a crate that depends on it).
 - **Cross-references**: ADR-088 (the resolution — single enum, owned by
   `alknet-tls`, six variants), ADR-082 (the extraction that introduces
   `TlsError`), ADR-083 (the endpoint refactor that removes
-  `EndpointError::TlsConfig`, making `TlsError` the sole TLS error
+  `EndpointError` entirely, making `TlsError` the sole TLS error
   surface), ADR-087 (extends the surface to client-side variants),
   `crates/alknet-core/src/endpoint.rs` (the current
   `io::Error`-wrapping pattern the new type replaces),

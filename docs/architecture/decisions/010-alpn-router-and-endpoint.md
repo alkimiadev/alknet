@@ -152,7 +152,16 @@ This reframes the connectivity model. The quinn and iroh paths are not distingui
 
 ### Error taxonomy
 
+> **`EndpointError` is removed** per ADR-083 (Amendment 2026-07-15 +
+> the `EndpointError`-removal amendment). `BindFailed` is vestigial
+> (the endpoint takes pre-bound transports); `TlsConfig` is removed
+> (the endpoint takes no TLS config); `HandlerNotFound` is swallowed
+> by `dispatch` (close + log, not an error). `shutdown()` is
+> infallible. The sketch below is the historical shape; it does not
+> survive into `alknet-endpoint`. `HandlerError` is unchanged.
+
 ```rust
+// HISTORICAL — removed per ADR-083. See the note above.
 pub enum EndpointError {
     BindFailed(io::Error),
     TlsConfig(io::Error),
@@ -167,8 +176,11 @@ pub enum HandlerError {
 }
 ```
 
-- `EndpointError`: Problems starting or running the endpoint. Fatal — the endpoint cannot accept connections.
-- `HandlerError`: Problems within a handler's `handle()` method. Non-fatal — the connection is closed, but the endpoint keeps running.
+- ~~`EndpointError`~~: **removed** (ADR-083). The endpoint takes
+  pre-built transports and swallows no-handler matches; `shutdown()` is
+  infallible.
+- `HandlerError`: Problems within a handler's `handle()` method.
+  Non-fatal — the connection is closed, but the endpoint keeps running.
 
 ## Consequences
 

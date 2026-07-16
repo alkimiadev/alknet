@@ -135,11 +135,13 @@ pub struct Socks5Credentials {
 }
 ```
 
-The config's crate location is an implementation detail (it can live in
-`alknet-client`, `alknet-core`, or `alknet-tls` alongside the other
-client config types), same as the `CallCredentials` location is an
-implementation detail per ADR-089 §5. The shape is decided; the crate
-home is two-way-door.
+The config's crate location is an implementation detail (it can live
+in `alknet-client`, `alknet-core`, or `alknet-tls` alongside the other
+client config types) — the shape is decided; the crate home is
+two-way-door. (Note: `CallCredentials`'s location is **not** a
+two-way-door — it is decided as `alknet-core` per ADR-089 §5, because it
+determines the dep graph; `Socks5ProxyConfig`'s location does not have
+that dep-graph consequence.)
 
 ### 2. `AlknetClient` holds the proxy; each dial applies it
 

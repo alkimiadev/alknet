@@ -55,6 +55,12 @@ impl ChannelClient {
     /// it is additive over `from_connection` and is a two-way door —
     /// `connect_tcp_tls`, `connect_webtransport`, etc. can be added
     /// alongside it without touching the one-way-door surface.
+    ///
+    /// **REMOVED per ADR-089 §5.** The dial is extracted into
+    /// `AlknetClient` (`alknet-client`); `connect_quic` is deleted,
+    /// not delegated, to avoid `alknet-channels-call` depending on
+    /// `alknet-client`. Callers compose `AlknetClient::dial_quic` +
+    /// `from_connection`. See "Relationship to `AlknetClient`" below.
     pub async fn connect_quic(
         addr: SocketAddr,
         credentials: CallCredentials,
@@ -130,19 +136,19 @@ a WebTransport `BiStream`, an SSH `direct-tcpip` channel wrapped via
 ADR-044) — all produce a `Connection` that `from_connection` accepts
 unchanged. This mirrors the server side's `ChannelsAdapter::handle(Connection)`, which is substrate-agnostic by the same mechanism.
 
-`connect_quic(addr, credentials)` is a **convenience** constructor — dial
-QUIC, then `from_connection`. It is additive and two-way-door: transport-specific dial helpers (`connect_tcp_tls`, `connect_webtransport`, …)
-join it as transports are added, none of which touch the `from_connection`
-contract. The dial helper set is open-ended by design.
+`connect_quic(addr, credentials)` was a **convenience** constructor —
+dial QUIC, then `from_connection`. It is **removed** per ADR-089 §5:
+keeping it as a thin wrapper over `AlknetClient::dial_quic` would make
+`alknet-channels-call` depend on `alknet-client`, contradicting the dep
+graph (the protocol crates are parallel to the dial, not downstream of
+it). Callers compose `AlknetClient::dial_quic(...).await?` +
+`ChannelClient::from_connection(conn).await?` — two lines, the dial
+then the take-over.
 
-The credential/verifier-selection rule (ADR-034) lives in the transport's
-own dial path, not in `from_connection` — `from_connection` receives an
-already-established, already-authenticated `Connection`, exactly as
-`ChannelsAdapter::handle` does on the server side. The ~20 lines of
-verifier-selection boilerplate each dial helper rebuilds is the known
-duplicated cost of not having `AlknetClient` (OQ-55) extracted yet;
-`from_connection` keeps that boilerplate on the *transport-specific dial*
-side, not on the channels protocol's one-way-door surface.
+The credential/verifier-selection rule (ADR-034) lives in the dial
+(`AlknetClient`), not in `from_connection` — `from_connection` receives
+an already-established, already-authenticated `Connection`, exactly as
+`ChannelsAdapter::handle` does on the server side.
 
 ## Bidirectionality preserved
 
@@ -170,8 +176,8 @@ provides `AlknetClient` with three dial methods (`dial_quic` /
 TCP+TLS, iroh); the take-over (`from_connection`) is
 transport-agnostic. The two concerns are separated.
 
-`connect_quic` becomes a thin wrapper over `AlknetClient::dial_quic` —
-dial QUIC, then `from_connection`. A caller that needs transport
+`connect_quic` is removed (see above) — `AlknetClient::dial_quic` is the
+dial that feeds `from_connection`. A caller that needs transport
 selection (QUIC with TCP+TLS fallback) uses `AlknetClient` directly;
 the fallback policy is a caller concern. See
 [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) for the
@@ -184,7 +190,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary, `connect_quic` convenience; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` convenience **removed** per ADR-089 §5 (dial extracted to `AlknetClient`); `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
 
 ## Open Questions
 

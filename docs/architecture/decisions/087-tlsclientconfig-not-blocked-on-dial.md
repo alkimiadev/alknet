@@ -123,22 +123,30 @@ sketched lightly here; the full variant-granularity of `TlsError` is
 OQ-63 (the next session).
 
 This is **not** the dial. `TlsClientConfig` produces a
-`rustls::ClientConfig`; the caller (the transport-specific dial helper,
-or `CallClient::connect_quic`, or a future `connect_tcp_tls`) passes
-it to the transport's connector. The config is transport-agnostic; the
-dial is not.
+`rustls::ClientConfig`; the caller (the transport-specific dial helper
+— now `AlknetClient::dial_quic` / `dial_tcp_tls` per ADR-089; the
+per-protocol `CallClient::connect` / `ChannelClient::connect_quic`
+convenience constructors are removed per ADR-089 §5) passes it to the
+transport's connector. The config is transport-agnostic; the dial is
+not.
 
-### 2. The dial seam (OQ-55) is unaffected
+### 2. The dial seam (OQ-55) — subsequently resolved by ADR-089
+
+> **Update (2026-07-16):** OQ-55 is now resolved by ADR-089. The text
+> below is the original (pre-ADR-089) framing, preserved for context.
+> `AlknetClient` is the extracted dial seam; the per-protocol
+> convenience constructors are removed, not retained as wrappers.
 
 OQ-55 (the `AlknetClient` transport-polymorphic dial extraction)
-remains deferred. The deferral is about the *dial* —
-transport-specific connection establishment — not about the TLS config.
-With `TlsClientConfig` in `alknet-tls`, each transport-specific dial
-helper (`CallClient::connect_quic`, a future `connect_tcp_tls`, a
-future `connect_iroh`) builds its `TlsClientConfig` and passes it to
-its transport's connector. The friction (each dial helper calls
-`TlsClientConfig::new` + its transport's connect) is real but narrow —
-it's duplicated `TlsClientConfig::new` calls, not duplicated verifier
+~~remains deferred~~ **is resolved by ADR-089**. The deferral was about
+the *dial* — transport-specific connection establishment — not about
+the TLS config. With `TlsClientConfig` in `alknet-tls`, each
+transport-specific dial helper (now `AlknetClient::dial_quic` /
+`dial_tcp_tls` / `dial_iroh`, ADR-089) builds its `TlsClientConfig`
+and passes it to its transport's connector. The friction (each dial
+helper calls `TlsClientConfig::new` + its transport's connect) is real
+but narrow — it's duplicated `TlsClientConfig::new` calls, not
+duplicated verifier
 selection logic. When a second transport's dial exists, the dial
 seam is extractable (OQ-55 unblocked); the TLS config is already
 shared by then.
@@ -207,12 +215,12 @@ the same way.
   establishing that `Connection`, not about the take-over.
 - **`FingerprintPinVerifier`** — the existing verifier in
   `alknet-call` is the current implementation of ADR-034's
-  fingerprint-pin path. `TlsClientConfig::new` centralizes the
-  verifier construction (including the CA-verify and fail-closed
-  paths that `FingerprintPinVerifier` does not cover). The
-  `FingerprintPinVerifier` type may move to `alknet-tls` or stay in
-  `alknet-call` and be constructed by `TlsClientConfig::new` — an
-  implementation detail, not an architecture decision.
+  fingerprint-pin path. It **moves to `alknet-tls`** (amended by
+  ADR-089 §5): with `CallClient::connect` removed, it has no remaining
+  home in `alknet-call`, and it is a TLS concern (implements
+  `rustls::client::danger::ServerCertVerifier`). `TlsClientConfig::new`
+  constructs it. Moving it lets `alknet-call` shed its direct `rustls`
+  dep entirely — `CallClient` becomes a pure protocol crate.
 
 ## Consequences
 

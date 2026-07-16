@@ -8,13 +8,17 @@ last_updated: 2026-07-15
 Shared types, auth, config, and identity for ALPN-based protocol
 dispatch. Every handler crate depends on `alknet-core` for
 `ProtocolHandler`, `Connection`, `AuthContext`, `IdentityProvider`, and
-config types. The endpoint (`AlknetEndpoint`, `HandlerRegistry`,
-`EndpointError`) has been extracted to
-[`alknet-endpoint`](../endpoint/README.md) (ADR-083 Amendment
-2026-07-15); core no longer carries the accept-loop runner or its
-transport deps (quinn, iroh, rcgen, rustls-acme). `Connection::from_quinn`
-/ `from_iroh` stay in core's `types.rs` as shared constructors (gated
-on core's `quinn` / `iroh` features).
+config types. The endpoint (`AlknetEndpoint`, `HandlerRegistry`) has
+been extracted to [`alknet-endpoint`](../endpoint/README.md) (ADR-083
+Amendment 2026-07-15; `EndpointError` is removed — both variants were
+vestigial); core no longer carries the accept-loop runner or its
+transport deps (quinn, iroh, rcgen, rustls-acme).
+`Connection::from_quinn` / `from_iroh` stay in core's `types.rs` as
+shared constructors (gated on core's `quinn` / `iroh` features).
+`CallCredentials` and `RemoteIdentity` move to `alknet-core` (from
+`alknet-call`, per ADR-089 §5) — both the call and channels clients
+need them, and the dial (`alknet-client`) must not depend on the call
+protocol for the credential type.
 
 ## Documents
 

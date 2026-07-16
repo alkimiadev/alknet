@@ -67,7 +67,7 @@ The decision is grounded in two sources, not memory:
 | `FingerprintPinVerifier::new(...)` | **infallible** | stores the fingerprint + supported algorithms; the known-peer path |
 | `WebPkiServerVerifier::builder_with_provider(...).build()` | **`VerifierBuilderError`** | `rustls::webpki::VerifierBuilderError` — `NoRootAnchors`, `InvalidCrl`; the unknown-X.509-remote path |
 | `rustls::RootCertStore::add(cert)` | `rustls::Error` | adding a native root cert (maps `webpki::Error` → `InvalidCertificate(...)`) |
-| `rustls-native-certs::load_native_certs()` errors | logged, not returned | the current client code logs and continues; an empty store falls back to built-in webpki-roots |
+| `rustls-native-certs::load_native_certs()` errors | logged, not returned | native-certs load errors are logged and the load continues; the built-in `webpki-roots` are merged into the store when the platform store is empty (see §5), so the store is never empty and `NoRootAnchors` is unreachable in practice |
 | Client-auth cert resolver — RawKey | **infallible** | builds `CertifiedKey` in-memory |
 | Client-auth cert resolver — X.509 | `io::Error` (load) + `rustls::Error` (`CertifiedKey::from_der`) | cert/key file load + key parse |
 | "ACME TLS identity is server-only; cannot be used for client auth" | `io::Error`-shape | the `TlsIdentity::Acme` as client-identity guard |
@@ -287,7 +287,37 @@ The enum is `#[non_exhaustive]` so adding variants (e.g., a future
 `TcpWrap` if `for_tcp_tls` ever gains a failure path — it does not today)
 is not a breaking change.
 
-### 5. ACME — errors are stream events, not `TlsError` variants
+### 5. Root store fallback — `webpki-roots` when the platform store is empty
+
+The unknown-X.509-remote CA-verification path in `TlsClientConfig::new`
+loads the platform's native root certs (`rustls-native-certs`). The
+current code's comment claims a fallback to built-in `webpki-roots` when
+the platform store is empty, but the code does no such thing — an empty
+store produces `NoRootAnchors` from `WebPkiServerVerifier::build()`,
+surfacing as `TlsError::VerifierBuild`. This is a latent bug for
+containerized deployments (no system CA bundle) dialing public X.509
+endpoints — a real deployment shape.
+
+The extraction to `alknet-tls` is the moment to make the claim true.
+`TlsClientConfig::new`'s CA-verify path merges the built-in
+`webpki-roots` into the `RootCertStore` when the platform store comes
+back empty (or unconditionally — the built-in roots are a superset of
+trust, and native certs are mostly the same CAs). `webpki-roots` is an
+always-present dep in `alknet-tls` (not feature-gated — the CA-verify
+path is transport-agnostic). Native-certs *load* errors are still
+logged, not returned (preserved behavior); the fallback guarantees the
+store is non-empty regardless, so `NoRootAnchors` is unreachable in
+practice. The `VerifierBuild` variant remains in `TlsError` for the
+`InvalidCrl` case and forward-compatibility, but the empty-store case
+is eliminated.
+
+This is a behavior change from the current code (which silently fails on
+empty stores), but it is the behavior the docs already claimed — making
+the claim true, not preserving a latent bug. See ADR-089 §5 for the
+broader principle: preserve behavior only when it makes sense; a claim
+without code is a bug, not a contract.
+
+### 6. ACME — errors are stream events, not `TlsError` variants
 
 `AcmeConfig::new()` and `AcmeConfig::state()` are infallible (confirmed
 in the rustls-acme 0.12.1 source). `TlsServerConfig::new`'s ACME branch
@@ -310,7 +340,7 @@ the caller (rather than log them), that is a new ADR — it changes the
 `TlsServerConfig` API (the ACME handle would need an error channel) and
 is out of scope for the error-shape decision.
 
-### 6. The fail-closed distinction
+### 7. The fail-closed distinction
 
 OQ-63's framing listed "unknown-remote fail-closed (not an error to
 return — it's a `Result::Err` the caller gets for trying to connect to
@@ -334,9 +364,10 @@ distinction:
 `TlsError` is the **config-construction** error type. Handshake-time
 errors are the transport's error type. This keeps `TlsError` scoped to
 what `new` and `for_quinn` can actually fail on, and avoids pretending
-handshake outcomes are config-construction errors. A future ADR that
-introduces a dial helper (the OQ-55 dial seam) would define how
-handshake errors are surfaced then; that is not this ADR.
+handshake outcomes are config-construction errors. The dial seam
+(ADR-089, `AlknetClient`) surfaces handshake errors as
+`ClientDialError::Handshake(String)` — see the client spec's
+`ClientDialError` section.
 
 ## Consequences
 

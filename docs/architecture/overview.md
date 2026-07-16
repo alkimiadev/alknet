@@ -95,15 +95,17 @@ alknet-vault (standalone — foundational to ACL: key derivation, identity)
 │
 ├── Substrate
 │   alknet-core        ProtocolHandler, Connection, BidiStreamSource, AuthContext,
-│   │                  IdentityProvider, StaticConfig, DynamicConfig, fingerprint
+│   │                  IdentityProvider, StaticConfig, DynamicConfig, fingerprint,
+│   │                  CallCredentials, RemoteIdentity
 │   │                  (endpoint extracted to alknet-endpoint; core is now lightweight
-│   │                  types+auth+config — no quinn/iroh/rcgen deps)
-│   ├── alknet-tls     TlsServerConfig + TlsClientConfig — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087)
-│   ├── alknet-call    CallAdapter on alknet/call, CallClient, OperationRegistry, adapters
+│   │                  types+auth+config — no quinn/iroh/rcgen deps; CallCredentials
+│   │                  moved here from alknet-call per ADR-089 §5)
+│   ├── alknet-tls     TlsServerConfig + TlsClientConfig + FingerprintPinVerifier — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087; FingerprintPinVerifier moved from alknet-call per ADR-089 §5)
+│   ├── alknet-call    CallAdapter on alknet/call, CallClient (spawn_dispatch only — connect removed per ADR-089 §5), OperationRegistry, adapters (no TLS/transport deps)
 │   ├── alknet-channels
 │   │   ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081
 │   │   └── alknet-channels-call  channel 0 pre-negotiation + lifecycle ops — ADR-081
-│   ├── alknet-client  AlknetClient — native client dial seam (QUIC + TCP+TLS + iroh); produces Connection for CallClient/ChannelClient take-over (ADR-089)
+│   ├── alknet-client  AlknetClient — native client dial seam (QUIC + TCP+TLS + iroh); produces Connection for CallClient/ChannelClient take-over (ADR-089; CallClient::connect/ChannelClient::connect_quic removed — dial centralized here)
 │   └── alknet-endpoint  AlknetEndpoint — multi-transport accept-loop runner, extracted from core (ADR-083 Am. 2026-07-15); takes pre-built transports; public dispatch for SSH/WT
 │
 ├── Deployment shapes
@@ -354,7 +356,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [014](decisions/014-secret-material-flow-and-capability-injection.md) | Secret Material Flow and Capability Injection | Capabilities carry outbound credentials; call protocol carries no secret material |
 | [015](decisions/015-privilege-model-and-authority-context.md) | Privilege Model and Authority Context | `internal` = authority switch not ACL skip; External/Internal visibility; handler identity + scoped env |
 | [016](decisions/016-abort-cascade-for-nested-calls.md) | Abort Cascade for Nested Calls | `call.aborted` cascades to descendants; default `abort-dependents`, `continue-running` opt-in |
-| [017](decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `CallClient` takes over connections (`spawn_dispatch` transport-agnostic primary, `connect` QUIC convenience); `from_call` imports remote ops; connection direction independent of call direction |
+| [017](decisions/017-call-protocol-client-and-adapter-contract.md) | Call Protocol Client and Adapter Contract | `CallClient` takes over connections (`spawn_dispatch` transport-agnostic primary; `connect` removed per ADR-089 §5 — dial extracted to `AlknetClient`); `from_call` imports remote ops; connection direction independent of call direction |
 | [018](decisions/018-vault-standalone-crate.md) | Vault as Standalone Crate | Zero alknet crate dependencies; vault defines own types and errors |
 | [019](decisions/019-vault-assembly-layer-only.md) | Vault Assembly-Layer-Only Access | The assembly layer (CLI binary) is the sole direct caller; handlers never hold a vault reference |
 | [020](decisions/020-hd-derivation-for-encryption-keys.md) | HD Derivation for Encryption Keys | SLIP-0010 derivation from seed, not PBKDF2; salt field unused in v2 |

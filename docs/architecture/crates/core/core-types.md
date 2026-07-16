@@ -67,8 +67,8 @@ impl Connection {
     pub fn from_quinn(conn: quinn::Connection) -> Self;
 
     /// Construct from a quinn connection with an explicit ALPN (feature-gated
-    /// on quinn). Used by the client path (`CallClient::connect`) and the
-    /// endpoint's quinn accept loop.
+    /// on quinn). Used by the client path (`AlknetClient::dial_quic` per
+    /// ADR-089) and the endpoint's quinn accept loop.
     #[cfg(feature = "quinn")]
     pub fn from_quinn_with_alpn(conn: quinn::Connection, alpn: Vec<u8>) -> Self;
 

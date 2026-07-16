@@ -2,7 +2,23 @@
 
 ## Status
 
-Accepted (amended 2026-07-12 — see "Amendment: transport-agnostic API" below)
+Accepted (amended 2026-07-12 — see "Amendment: transport-agnostic API"
+below; amended 2026-07-16 — `connect_quic` removed per ADR-089 §5, see
+"Amendment: `connect_quic` removed" below)
+
+## Amendment: `connect_quic` removed (2026-07-16, per ADR-089 §5)
+
+The `connect_quic(addr, credentials)` convenience constructor is
+**removed**. Keeping it as a thin wrapper over
+`AlknetClient::dial_quic` would make `alknet-channels-call` depend on
+`alknet-client`, contradicting the dep graph (the protocol crates are
+parallel to the dial, not downstream of it). Callers compose
+`AlknetClient::dial_quic(...).await?` + `ChannelClient::from_connection(conn).await?`.
+The `from_connection` primary constructor (the 2026-07-12 amendment
+below) is unchanged and remains the one-way-door surface. The
+`connect_quic` references in the body of this ADR are the historical
+shape; they do not survive into the implementation. See ADR-089 §5 for
+the full rationale and the breaking-change acknowledgment.
 
 ## Amendment: transport-agnostic API (2026-07-12)
 

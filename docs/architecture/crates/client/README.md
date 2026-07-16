@@ -26,7 +26,10 @@ QUIC dial inline — building a `TlsClientConfig`, constructing a
 `quinn::Endpoint`, calling `connect_with`, wrapping as a `Connection`.
 The dial boilerplate was duplicated, and there was no place for a
 second transport's dial (TCP+TLS, iroh) to live without each protocol
-client growing its own per-transport dial helper.
+client growing its own per-transport dial helper. Those convenience
+constructors are removed (see "Relationship to `CallClient` /
+`ChannelClient`" below); `AlknetClient` is the single dial home, and
+the protocol crates shed their TLS/transport deps entirely.
 
 `alknet-client` extracts the dial the same way ADR-083 extracted the
 accept loop on the server side: one type that takes pre-built transport
@@ -325,15 +328,25 @@ the alknet type level — see ADR-090 §"Two distinct SOCKS5 uses".
 
 ### Credentials
 
-`AlknetClient`'s dials take a `CallCredentials` bundle — the existing
-type from `alknet-call` (the local `TlsIdentity`, the optional
-`auth_token`, and the `RemoteIdentity` for verifier selection). The
-credentials come from `Capabilities` (ADR-014), never from environment
-variables — the no-env-vars invariant. The assembly layer derives them
-from the vault at startup and passes them to each dial. The credential
-type's crate location is a two-way-door detail — see
-[ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) §"What
-this does NOT change" and the Dependencies section below.
+`AlknetClient`'s dials take a `CallCredentials` bundle — the shared
+type from `alknet-core` (moved out of `alknet-call` so the dial does
+not depend on the call protocol; see ADR-089 §5). It carries the local
+`TlsIdentity`, the optional call-protocol-level `auth_token`, and the
+`RemoteIdentity` for verifier selection. The credentials come from
+`Capabilities` (ADR-014), never from environment variables — the
+no-env-vars invariant. The assembly layer derives them from the vault
+at startup and passes them to each dial.
+
+**The `auth_token` is stripped at the TLS boundary.** `TlsClientConfig`
+and `ClientVerifierContext` are TLS-level types and do not carry the
+call-protocol auth token. The dial extracts the TLS-relevant fields
+from `CallCredentials` — `tls_identity` → the client-cert
+`local_identity`, `remote_identity` → the fingerprint-pin input to
+`ClientVerifierContext` — and builds a `TlsClientConfig` from those
+alone. The `auth_token` travels with the `Connection` into the
+protocol take-over (`spawn_dispatch` / `from_connection`), where it is
+sent as the first call-protocol frame when the protocol requires it.
+This keeps `alknet-tls` free of any call-protocol coupling.
 
 ### The dialable ALPNs
 
@@ -387,13 +400,18 @@ let conn = client.dial_tcp_tls("hub.example", addr, b"alknet/call", &creds).awai
 let call = CallClient::new(registry, idp).spawn_dispatch(conn);
 ```
 
-The existing convenience constructors (`CallClient::connect`,
-`ChannelClient::connect_quic`) become thin wrappers over
-`AlknetClient::dial_quic` — they build an ephemeral `AlknetClient` (or
-accept one), dial QUIC, and call `spawn_dispatch` / `from_connection`.
-They remain for the "I just want QUIC, no `AlknetClient` wiring" case.
-A caller that needs transport selection (QUIC with TCP+TLS fallback)
-uses `AlknetClient` directly. See
+The per-protocol QUIC convenience constructors that previously lived on
+`CallClient` / `ChannelClient` (`connect` / `connect_quic`) are
+**removed**. They welded the dial into the protocol crate — every
+`CallClient` user transitively pulled `quinn` + `rustls` + the TLS
+verifier machinery, and the convenience constructor's existence made
+`alknet-call` / `alknet-channels-call` depend on `alknet-client` (or
+duplicate the dial), contradicting the dep graph below. The dial is a
+distinct concern from the protocol take-over; `AlknetClient` is the
+single home for it. A caller that wants the old one-liner shape composes
+two lines: `client.dial_quic(...).await?` then
+`CallClient::new(...).spawn_dispatch(conn)` (or
+`ChannelClient::from_connection(conn).await?`). See
 [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) §5.
 
 ### Iroh — shares the key, not the config (client side too)
@@ -509,9 +527,9 @@ implementation detail.
 ```toml
 [features]
 default = []
-quinn = ["dep:quinn", "alknet-tls/quinn"]
+quinn = ["dep:quinn", "alknet-tls/quinn", "alknet-core/quinn"]
 tcp = ["dep:tokio-rustls", "alknet-tls/tcp"]
-iroh = ["dep:iroh"]
+iroh = ["dep:iroh", "alknet-core/iroh"]
 socks5 = ["dep:fast-socks5"]   # enables the proxied dial paths (ADR-090)
 ```
 
@@ -520,21 +538,27 @@ dials TCP+TLS enables `tcp`. A deployment that dials iroh enables
 `iroh`. A full native client (QUIC + TCP+TLS fallback + iroh) enables
 all three. The `quinn` and `tcp` features pull the corresponding
 features on `alknet-tls` (for `TlsClientConfig::for_quinn` /
-`for_tcp_tls`). The `iroh` feature does not pull `alknet-tls` features
-— iroh has its own TLS. The `socks5` feature (ADR-090) is independent
-of the transport features — it enables the proxy code path that
-`dial_quic` (UDP ASSOCIATE) and `dial_tcp_tls` (CONNECT) use when a
-proxy is configured. Enabling `socks5` without `quinn` or `tcp` is a
-no-op; enabling `quinn` + `socks5` enables proxied QUIC; `tcp` +
-`socks5` enables proxied TCP+TLS. The `fast-socks5` dep is behind
-`socks5`, so deployments that don't use a proxy don't pay the dep.
+`for_tcp_tls`). The `quinn` and `iroh` features also pull the
+corresponding features on `alknet-core` — `dial_quic` produces a
+`Connection` via `Connection::from_quinn_with_alpn` and `dial_iroh`
+via `Connection::from_iroh`, both of which live in `alknet-core`'s
+`types.rs` behind core's `quinn` / `iroh` features (the "quinn feature
+split" from ADR-083 §"The `quinn` feature split"). The `iroh` feature
+does not pull `alknet-tls` features — iroh has its own TLS. The
+`socks5` feature (ADR-090) is independent of the transport features —
+it enables the proxy code path that `dial_quic` (UDP ASSOCIATE) and
+`dial_tcp_tls` (CONNECT) use when a proxy is configured. Enabling
+`socks5` without `quinn` or `tcp` is a no-op; enabling `quinn` +
+`socks5` enables proxied QUIC; `tcp` + `socks5` enables proxied
+TCP+TLS. The `fast-socks5` dep is behind `socks5`, so deployments that
+don't use a proxy don't pay the dep.
 
 ### Dependencies
 
 ```
 alknet-client
-├── alknet-core       (Connection, CallCredentials/RemoteIdentity if
-│                     moved here, Ed25519SecretKey, types)
+├── alknet-core       (Connection, CallCredentials, RemoteIdentity,
+│                     Ed25519SecretKey, types)
 ├── alknet-tls        (TlsClientConfig — for quinn + tcp dials)
 ├── quinn             (optional — dial_quic)
 ├── tokio-rustls      (optional — dial_tcp_tls)
@@ -545,14 +569,16 @@ alknet-client
 ```
 
 `alknet-client` depends on `alknet-tls` (for `TlsClientConfig`) and
-`alknet-core` (for `Connection` and types). It does **not** depend on
-`alknet-call` or `alknet-channels-call` — the dial is below the
-protocol. If `CallCredentials` / `RemoteIdentity` stay in
-`alknet-call`, `alknet-client` depends on `alknet-call` for the type
-only; the cleaner option (moving the credential type to `alknet-core`
-or `alknet-client`) keeps the dial below the protocol. See
-[ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) §5 —
-this is a two-way-door implementation detail.
+`alknet-core` (for `Connection`, `CallCredentials`, `RemoteIdentity`,
+and types). It does **not** depend on `alknet-call` or
+`alknet-channels-call` — the dial is below the protocol.
+`CallCredentials` and `RemoteIdentity` live in `alknet-core` (moved
+from `alknet-call` per ADR-089 §5 — both the call and channels clients
+need them, and the dial must not depend on the call protocol; see
+ADR-089 §5). `FingerprintPinVerifier` lives in `alknet-tls` (moved from
+`alknet-call` per ADR-087 §5 — it is a TLS concern, and
+`TlsClientConfig::new` constructs it; moving it lets `alknet-call` shed
+its direct `rustls` dep entirely).
 
 ## Crate dependencies (in the dep graph)
 
@@ -580,7 +606,9 @@ alknet-worker (uses AlknetClient to dial a hub)
 `AlknetClient` is one producer, but a test can hand them a
 `Connection::from_stream` directly. The dependency direction is:
 `alknet-client → alknet-tls → alknet-core`; the protocol crates are
-parallel, not downstream of the dial.
+parallel, not downstream of the dial. `CallCredentials` and
+`RemoteIdentity` live in `alknet-core` (not `alknet-call`), so the dial
+does not depend on the call protocol for the credential type.
 
 ## Assembly layer integration
 

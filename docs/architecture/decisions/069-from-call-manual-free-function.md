@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed
+Proposed (amended 2026-07-16 by ADR-089 §5: `CallClient::connect()` is
+removed; `from_call` is now called by the assembly layer after
+`AlknetClient::dial_*` + `CallClient::new(...).spawn_dispatch(conn)`,
+not after `connect()`. The manual-free-function decision stands; the
+`connect()` references in the body are the pre-ADR-089 shape.)
 
 ## Context
 

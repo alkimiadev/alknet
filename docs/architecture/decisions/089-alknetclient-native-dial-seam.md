@@ -216,18 +216,68 @@ type — a native client can reach a native endpoint over QUIC, TCP+TLS
 choice is the caller's, driven by network conditions and the remote
 endpoint's reachability.
 
-### 5. `CallClient::connect` / `ChannelClient::connect_quic` delegate
+### 5. `CallClient::connect` / `ChannelClient::connect_quic` are removed
 
 The existing QUIC convenience constructors on `CallClient` and
-`ChannelClient` (`connect` / `connect_quic`) become thin wrappers over
-`AlknetClient::dial_quic`. They build an ephemeral `AlknetClient` (or
-accept one), dial QUIC, and call `spawn_dispatch` / `from_connection`.
-The one-way-door surface is the `AlknetClient` dial + take-over pattern;
-the per-protocol convenience constructors are two-way-door sugar over
-it. This does not break the existing APIs — they remain for the "I just
-want QUIC, no `AlknetClient` wiring" case. A caller that needs
-transport selection (QUIC with TCP+TLS fallback) uses `AlknetClient`
-directly.
+`ChannelClient` (`connect` / `connect_quic`) are **removed**, not
+delegated. Keeping them as thin wrappers over `AlknetClient::dial_quic`
+would make `alknet-call` / `alknet-channels-call` depend on
+`alknet-client` — contradicting the dep graph (§1: the protocol crates
+are parallel to the dial, not downstream of it) and re-coupling every
+`CallClient` user to `quinn` + `rustls` + the TLS verifier machinery,
+the exact welding the extraction undoes. Duplicating the dial inline in
+each convenience constructor would preserve the dep graph but defeats
+the point of centralizing the dial.
+
+The dial is a distinct concern from the protocol take-over.
+`AlknetClient` is the single home for the dial; `CallClient` /
+`ChannelClient` are the single home for the take-over. A caller that
+wants the old one-liner shape composes two lines:
+`client.dial_quic(...).await?` then
+`CallClient::new(...).spawn_dispatch(conn)` (or
+`ChannelClient::from_connection(conn).await?`). The one-way-door
+surface is the `AlknetClient` dial + take-over pattern; the
+per-protocol convenience constructors are gone, not retained as
+two-way-door sugar.
+
+This is a breaking change to `CallClient` / `ChannelClient`'s public
+APIs. It is expected — the develop branch is a total rewrite addressing
+issues not feasible to fix inline against `main`; there are no external
+consumers to preserve compatibility for. The migration plan handles
+the call-site updates.
+
+**Consequence: `CallCredentials` / `RemoteIdentity` move to
+`alknet-core`.** These types were in `alknet-call` because
+`CallClient::connect` consumed them. With `connect` removed, the dial
+(`AlknetClient`) is the consumer, and the dial must not depend on
+`alknet-call` (§1). Both the call and channels clients need them (the
+channels client takes `CallCredentials` for its own removed
+`connect_quic`, and the dial takes them for all three dials). They move
+to `alknet-core` — the shared-types crate, alongside `TlsIdentity` and
+`AuthToken` which already live there. This is the cleaner of the two
+options the original ADR-089 draft called a "two-way-door
+implementation detail"; it is not implementation detail — it determines
+the dep graph, and the dep graph requires it.
+
+**Consequence: `FingerprintPinVerifier` moves to `alknet-tls`.** With
+`connect` removed and the verifier-selection logic centralized in
+`TlsClientConfig::new` (ADR-087), `FingerprintPinVerifier` has no
+remaining home in `alknet-call`. It is a TLS concern (it implements
+`rustls::client::danger::ServerCertVerifier`); moving it to
+`alknet-tls` lets `alknet-call` shed its direct `rustls`,
+`rustls-pemfile`, and `rustls-native-certs` deps entirely — `CallClient`
+becomes a pure protocol crate (`{registry, identity_provider}` +
+`spawn_dispatch`). See ADR-087 §5 (amended).
+
+**Consequence: `ClientError` is removed.** The existing
+`ClientError { Transport, TlsSetup, ConnectionClosed }` was produced
+only by `connect` (`Transport` and `TlsSetup`) and by no current
+`spawn_dispatch` path (`ConnectionClosed` is a `FrameError`/`StreamError`
+variant internal to the dispatch loop, not a `CallClient` API error).
+With `connect` gone, `ClientError` has no producing call site. It is
+removed rather than left as a vestigial enum. If `spawn_dispatch` ever
+gains a failure path, a fresh error type is cleaner than retrofitting
+this one.
 
 ### 6. `alknet/register` is a dialable ALPN (entry point, wire protocol deferred)
 
@@ -292,10 +342,11 @@ several possible native clients sharing the same wire protocols.
 - **`CallClient::spawn_dispatch` / `ChannelClient::from_connection`**
   — the take-over APIs are unchanged. They consume the `Connection`
   the dial produces; they do not know `AlknetClient` produced it.
-- **`CallCredentials` / `RemoteIdentity`** — unchanged. The credential
-  bundle `AlknetClient` takes is the existing type from `alknet-call`
-  (or moved to `alknet-client` / `alknet-core` as a shared type — an
-  implementation detail; the shape is decided).
+- **`CallCredentials` / `RemoteIdentity`** — **moved to `alknet-core`**
+  (see §5). The shape is unchanged; the location changes from
+  `alknet-call` to `alknet-core` so the dial does not depend on the
+  call protocol. Both the call and channels clients consume them from
+  core.
 - **The channels substrate (ADR-071)** — unchanged. The dial produces a
   `Connection`; the channels protocol runs on it.
 - **ADR-086 (endpoint types / entry points)** — the endpoint-type model
@@ -318,9 +369,16 @@ several possible native clients sharing the same wire protocols.
 
 - **OQ-55 is resolved.** The transport-polymorphic dial seam is
   extracted, for the native case. The duplicated dial boilerplate
-  (each convenience constructor rebuilding `TlsClientConfig::new` +
-  its transport's connector) is centralized in `AlknetClient`. The
-  friction the deferral accepted is removed.
+  (the removed convenience constructors each rebuilt
+  `TlsClientConfig::new` + their transport's connector) is centralized
+  in `AlknetClient`. The friction the deferral accepted is removed.
+- **`alknet-call` becomes a pure protocol crate.** With `connect`
+  removed and `FingerprintPinVerifier` moved to `alknet-tls` (§5),
+  `alknet-call` sheds its direct `quinn`, `rustls`, `rustls-pemfile`,
+  and `rustls-native-certs` deps. `CallClient` is `{registry,
+  identity_provider}` + `spawn_dispatch` — no TLS, no transport. Every
+  handler crate that uses `CallClient` stops transitively linking the
+  TLS/transport stack.
 - **The client-side shape is symmetric with the server side.** A
   reader who understands `AlknetEndpoint` (accept + dispatch) can
   understand `AlknetClient` (dial + produce `Connection`) by
@@ -342,6 +400,15 @@ several possible native clients sharing the same wire protocols.
 
 **Negative:**
 
+- **Breaking change: `CallClient::connect` / `ChannelClient::connect_quic`
+  removed; `CallCredentials` / `RemoteIdentity` / `FingerprintPinVerifier`
+  relocated; `ClientError` removed.** Call sites that used the
+  convenience constructors must switch to `AlknetClient::dial_*` +
+  `spawn_dispatch` / `from_connection`. Import paths for
+  `CallCredentials` / `RemoteIdentity` change from `alknet_call` to
+  `alknet_core`. This is expected — the develop branch is a total
+  rewrite; there are no external consumers to preserve compatibility
+  for. The migration plan handles the call-site + import updates.
 - **A new crate.** `alknet-client` is one more crate in the workspace.
   The cost is low (the dial is narrow), and the dependency profile
   rules out the alternatives, but it is a new entry in the crate

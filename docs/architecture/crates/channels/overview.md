@@ -249,7 +249,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); 5 sub-streams; control bidirectional via 3/4 |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract; handler-level |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary, `connect_quic` convenience; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5 (dial extracted to `AlknetClient`); `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
 | [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers |
 
 ## Open Questions

@@ -27,9 +27,10 @@ assembly layer does both (transports from `alknet-tls`'s
 endpoint is a leaf consumer of core's shared types (it imports `auth`,
 `config`, `types`; nothing in core imports from it), depended on by a
 different audience (the assembly layer) than the shared types (every
-handler crate). No handler crate imports `AlknetEndpoint`,
-`HandlerRegistry`, or `EndpointError` — they depend on `alknet-core`
-for `ProtocolHandler`, `Connection`, `AuthContext`, and types only.
+handler crate). No handler crate imports `AlknetEndpoint` or
+`HandlerRegistry` — they depend on `alknet-core` for
+`ProtocolHandler`, `Connection`, `AuthContext`, and types only.
+(`EndpointError` is removed — see below.)
 
 ## Why
 
@@ -89,7 +90,16 @@ impl AlknetEndpoint {
     );
 
     pub async fn run(self: Arc<Self>);
-    pub async fn shutdown(&self) -> Result<(), EndpointError>;
+
+    /// Signal all owned accept loops to stop and drain in-flight handlers
+    /// for `drain_timeout`. Infallible — the accept loops are owned by
+    /// the endpoint (quinn, iroh, TCP+TLS), so there is no external
+    /// coordination and no bind failure path (the assembly layer binds
+    /// before handing pre-built transports to the endpoint via
+    /// `with_quinn` / `with_iroh` / `with_tcp_tls`). No-handler matches
+    /// are swallowed by `dispatch` (ADR-083: close + log, not an error).
+    /// One owner, one shutdown — no external loop coordination needed.
+    pub async fn shutdown(&self);
 }
 ```
 
@@ -131,25 +141,25 @@ Registration is static at startup (ADR-010, OQ-04). The assembly layer
 builds a `HandlerRegistry`, inserts all handlers, and passes it to
 `AlknetEndpoint::new()`.
 
-### `EndpointError`
+### `EndpointError` — removed
 
-The error type for `AlknetEndpoint::shutdown` and listener bind
-failures. Lives in `alknet-endpoint` (moves with the endpoint from
-core).
+The endpoint previously had an `EndpointError { BindFailed(io::Error),
+HandlerNotFound(Vec<u8>) }` enum. Both variants are vestigial after
+ADR-083:
 
-```rust
-pub enum EndpointError {
-    BindFailed(io::Error),
-    HandlerNotFound(Vec<u8>),  // ALPN string with no registered handler
-}
-```
+- `BindFailed` — the endpoint takes pre-built, pre-bound transports
+  (the assembly layer does the binding); the endpoint performs no bind,
+  so it cannot produce a bind error.
+- `HandlerNotFound` — `dispatch` swallows no-handler matches (close +
+  log per ADR-083), so this variant is never returned.
 
-After ADR-083, the endpoint takes no TLS config and constructs no
-transports — TLS config errors surface as `TlsError` in `alknet-tls` /
-the assembly layer, not as `EndpointError`. The `TlsConfig(io::Error)`
-variant that existed when the endpoint built TLS internally is removed.
-`BindFailed` covers listener bind failures (quinn, iroh, TCP+TLS
-`TcpListener::bind`).
+The enum is removed. `shutdown()` is infallible (`async fn shutdown(&self)`,
+no `Result`). If a future requirement adds a real failure path to
+shutdown or dispatch, a fresh error type is cleaner than retrofitting
+this one. The `EndpointError` type, its `TlsConfig` variant (already
+removed by ADR-083), and the `BindFailed`/`HandlerNotFound` variants all
+move out of the codebase with the endpoint extraction — none survives
+into `alknet-endpoint`.
 
 ### `TcpTlsListener`
 
@@ -254,9 +264,11 @@ alknet-endpoint
 
 `alknet-endpoint` depends on `alknet-core` (for `Connection`,
 `ProtocolHandler`, `AuthContext`, `IdentityProvider`, `DynamicConfig`).
-`HandlerRegistry` and `EndpointError` live in `alknet-endpoint` (they
-move with the endpoint from core). The endpoint does **not** depend on
-`alknet-tls` — it takes pre-built transports, so TLS config
+`HandlerRegistry` lives in `alknet-endpoint` (it moves with the
+endpoint from core). `EndpointError` is removed (both variants were
+vestigial — see "`EndpointError` — removed" above). The endpoint does
+**not** depend on `alknet-tls` — it takes pre-built transports, so TLS
+config
 construction stays at the assembly layer.
 
 ### Crate dependencies (in the dep graph)

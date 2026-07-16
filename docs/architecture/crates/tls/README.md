@@ -121,7 +121,7 @@ transports the deployment runs.
 | `AcceptAnyCertVerifier` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` |
 | `SelfSignedCert` / `generate_self_signed_cert()` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` |
 | `load_cert_chain()` / `load_private_key()` | `alknet-core/endpoint.rs` | `alknet-tls` (consolidates with the `alknet-call` duplicate — see client table) |
-| `fingerprint.rs` | `alknet-core/fingerprint.rs` | **stays in core** (shared by server + client; client is in `alknet-call`; production code uses `sha2` + manual DER only — `rustls` is test-only. See OQ-59.) |
+| `fingerprint.rs` | `alknet-core/fingerprint.rs` | **stays in core** (shared by server + client; the client-side `FingerprintPinVerifier` is now in `alknet-tls` per ADR-089 §5, so both consumers are co-located; production code uses `sha2` + manual DER only — `rustls` is test-only. See OQ-59 — the original dep-edge concern that motivated keeping `fingerprint.rs` in core is dissolved by ADR-089 §5.) |
 
 ### What moves from `alknet-call` to `alknet-tls` (client side)
 
@@ -137,12 +137,12 @@ extraction is the client-side analogue of the server-side
 | `build_client_auth()` | `alknet-call/client/call_client.rs` | `alknet-tls` (client-auth cert resolver construction inside `TlsClientConfig::new`) |
 | `select_server_verifier()` | `alknet-call/client/call_client.rs` | `alknet-tls` (ADR-034 verifier selection inside `TlsClientConfig::new`) |
 | `load_platform_root_cert_store()` | `alknet-call/client/call_client.rs` | `alknet-tls` (the unknown-X.509-remote CA path inside `TlsClientConfig::new`) |
-| `FingerprintPinVerifier` | `alknet-call/client/call_client.rs` | `alknet-tls` or stays in `alknet-call` (implementation detail — ADR-087 §5; `TlsClientConfig::new` constructs it either way) |
+| `FingerprintPinVerifier` | `alknet-call/client/call_client.rs` | `alknet-tls` (moved — it is a TLS concern; `TlsClientConfig::new` constructs it; moving it lets `alknet-call` shed its direct `rustls` dep entirely per ADR-089 §5) |
 | `Ed25519SigningKey` (client-side copy) | `alknet-call/client/call_client.rs` | `alknet-tls` (consolidates with the `endpoint.rs` duplicate — one copy in `alknet-tls`) |
 | `RawKeyClientCertResolver` | `alknet-call/client/call_client.rs` | `alknet-tls` |
 | `NoClientCertResolver` | `alknet-call/client/call_client.rs` | `alknet-tls` |
 | `load_cert_chain()` / `load_private_key()` (client-side copies) | `alknet-call/client/call_client.rs` | `alknet-tls` (consolidates with the `endpoint.rs` duplicate — one copy in `alknet-tls`) |
-| `CallClient::connect` | `alknet-call/client/call_client.rs` | **stays in `alknet-call`** (the dial; calls `TlsClientConfig::new` + `for_quinn()` instead of `build_quinn_client_config`) |
+| `CallClient::connect` | `alknet-call/client/call_client.rs` | **removed** (ADR-089 §5 — the dial is extracted to `AlknetClient`; `CallClient` keeps only `spawn_dispatch`, shedding its TLS/transport deps) |
 
 **Consolidation note.** `Ed25519SigningKey` and
 `load_cert_chain`/`load_private_key` are currently **duplicated** across
@@ -156,11 +156,14 @@ updated to import from `alknet-tls`.
 types — `StaticConfig` holds a `TlsIdentity`, and config types belong in
 core. `alknet-tls` re-exports them for convenience. `fingerprint.rs` stays
 in core because it's shared by both the server path (endpoint extracts
-fingerprint from the client cert) and the client path (`FingerprintPinVerifier`
-in `alknet-call` matches the server's cert against a pinned fingerprint).
+fingerprint from the client cert) and the client path
+(`FingerprintPinVerifier` — now in `alknet-tls` per ADR-089 §5 —
+matches the server's cert against a pinned fingerprint).
 The production code in `fingerprint.rs` uses only `sha2` and manual DER
 parsing — the `rustls::sign` usage is in the test helper only. See OQ-59
-for the full trade-off.
+(the original dep-edge concern that motivated keeping `fingerprint.rs`
+in core is dissolved by ADR-089 §5 — `FingerprintPinVerifier` moved to
+`alknet-tls`, so its consumers are co-located).
 
 ### `TlsServerConfig`
 
@@ -319,10 +322,16 @@ present (it's the core TLS library).
 ```
 alknet-tls
 ├── alknet-core       (TlsIdentity, Ed25519SecretKey, fingerprint — re-exported)
-├── rustls            (ServerConfig, cert types — always present)
+├── rustls            (ServerConfig, ClientConfig, cert types — always present)
 ├── rustls-pki-types  (CertificateDer, PrivateKeyDer, etc. — via rustls re-export
 │                     or direct dep; core lists it directly)
 ├── rustls-pemfile    (cert/key file loading — always present)
+├── rustls-native-certs (platform root cert store — always present; the
+│                       unknown-X.509-remote CA path in `TlsClientConfig::new`)
+├── webpki-roots      (built-in CA roots fallback — always present; merged
+│                       into the root store when the platform store is empty,
+│                       so a containerized deployment with no system CA bundle
+│                       can still verify public X.509 remotes — see ADR-088 §5)
 ├── rcgen             (self-signed cert generation — always present)
 ├── ed25519-dalek     (Ed25519 signing key — always present, via core)
 ├── sha2              (fingerprint computation — always present, via core)
@@ -333,6 +342,14 @@ alknet-tls
 ├── tokio-rustls      (optional — for_tcp_tls())
 └── rustls-acme       (optional — ACME state machine)
 ```
+
+`rustls-native-certs` and `webpki-roots` are always-present deps (not
+feature-gated) because the unknown-X.509-remote CA-verification path in
+`TlsClientConfig::new` is needed by any client dialing a public X.509
+endpoint, regardless of transport (QUIC or TCP+TLS). In the
+pre-extraction code these lived in `alknet-call` behind the `quinn`
+feature; the extraction (ADR-089 §5) moves them to `alknet-tls` ungated,
+and `alknet-call` sheds the deps entirely.
 
 `alknet-core` loses `rustls-pemfile`, `rcgen`, and `rustls-acme` from
 its dependencies — the cert-loading, self-signed generation, and ACME
@@ -431,7 +448,7 @@ impl AlknetEndpoint {
     );
 
     pub async fn run(self: Arc<Self>);
-    pub async fn shutdown(&self) -> Result<(), EndpointError>;
+    pub async fn shutdown(&self);
 }
 ```
 
@@ -537,10 +554,28 @@ impl TlsClientConfig {
 The `ClientVerifierContext` carries the inputs to ADR-034's verifier
 selection (whether a `PeerEntry` exists for the remote, the expected
 fingerprint). The exact struct shape is an implementation detail; the
-decisions are in ADR-034. The `TlsError` variant granularity (covering
-both server and client errors) is decided — see
+decisions are in ADR-034. `ClientVerifierContext` is derived from
+`CallCredentials` (in `alknet-core`) at the dial site — `AlknetClient`
+extracts the TLS-relevant fields (`tls_identity` → `local_identity`,
+`remote_identity` → fingerprint-pin input) and builds a
+`ClientVerifierContext` from those. The call-protocol `auth_token` is
+**stripped at the TLS boundary** — it never reaches `TlsClientConfig` or
+`ClientVerifierContext`; it travels with the `Connection` into the
+protocol take-over. The `TlsError` variant granularity (covering both
+server and client errors) is decided — see
 [ADR-088](../../decisions/088-tlserror-shape.md) and the
 [`TlsError`](#tlserror) section below.
+
+**Root store fallback (ADR-088 §5).** The unknown-X.509-remote
+CA-verification path loads the platform's native root certs
+(`rustls-native-certs`). If the platform store is empty (e.g. a
+containerized deployment with no system CA bundle), the built-in
+`webpki-roots` are merged in so the store is never empty. This makes
+the `NoRootAnchors` failure mode unreachable in practice — a
+containerized worker dialing a public X.509 hub succeeds without
+requiring the operator to mount a CA bundle. Native-certs *load* errors
+are logged, not returned (preserved behavior); the fallback guarantees
+the store is non-empty regardless. See ADR-088 §5.
 
 `TlsClientConfig` produces a `rustls::ClientConfig`; the caller (the
 transport-specific dial helper — `AlknetClient::dial_quic` /
@@ -642,10 +677,11 @@ arrive asynchronously and are logged (ADR-082 §"Behavior-preservation
 invariants").
 
 **Ownership.** `TlsError` lives in `alknet-tls`, owned by the crate
-that produces it. It is not re-exported from `alknet-core`; core's
-`EndpointError` has no `TlsConfig` variant after ADR-083 and does not
-need to know about `TlsError`. The assembly layer (hub/worker) depends
-on `alknet-tls` directly and gets `TlsError` from that dependency.
+that produces it. It is not re-exported from `alknet-core`; `EndpointError`
+is removed entirely after ADR-083 (both variants were vestigial), so
+core has no endpoint error type and does not need to know about
+`TlsError`. The assembly layer (hub/worker) depends on `alknet-tls`
+directly and gets `TlsError` from that dependency.
 
 ## Crate dependencies (in the dep graph)
 
@@ -653,11 +689,12 @@ on `alknet-tls` directly and gets `TlsError` from that dependency.
 alknet-tls
 ├── alknet-core (TlsIdentity, Ed25519SecretKey, fingerprint)
 
-alknet-core (loses TLS setup code)
+alknet-core (loses TLS setup code + endpoint)
 ├── (rustls — only for fingerprint.rs types, if kept)
 
-alknet-call (client-side verifier — unchanged)
-├── alknet-core (fingerprint.rs)
+alknet-call (pure protocol crate — no TLS/transport deps per ADR-089 §5)
+└── alknet-core (ProtocolHandler, Connection, types; CallCredentials/RemoteIdentity
+    moved to core per ADR-089 §5)
 
 alknet-hub (multi-transport endpoint)
 ├── alknet-tls (TlsServerConfig — shared across quinn + TCP)
@@ -696,12 +733,13 @@ All design decisions are documented as ADRs in
 See [open-questions.md](../../open-questions.md) for full details.
 
 - **OQ-59** (resolved): `fingerprint.rs` stays in `alknet-core`. The
-  client-side `FingerprintPinVerifier` (in `alknet-call`) uses fingerprint
-  functions and must not depend on `alknet-tls` (which would pull TLS
-  setup infra into client-only deployments). The `rustls` dep in core is
-  narrow — production fingerprint code uses only `sha2` + manual DER; the
-  `rustls::sign` usage is a test helper. `alknet-tls` re-exports the
-  fingerprint functions for convenience.
+  client-side `FingerprintPinVerifier` (now in `alknet-tls` per
+  ADR-089 §5 — the original `alknet-call` → `alknet-tls` dep-edge
+  concern that motivated keeping `fingerprint.rs` in core is
+  dissolved). `fingerprint.rs` stays in core because `alknet-core`'s
+  own `Identity`/fingerprint code uses it; `alknet-tls` re-exports.
+  The `rustls` dep in core is narrow — production fingerprint code uses
+  only `sha2` + manual DER; the `rustls::sign` usage is a test helper.
 - **OQ-60** (resolved): Where does transport construction live? The
   TCP+TLS accept loop lives in `alknet-endpoint` behind a `tcp` feature
   as an owned endpoint transport (`with_tcp_tls`). Builder functions are
@@ -758,9 +796,10 @@ accessors (`for_quinn`, `for_tcp_tls`, `rustls_config`); iroh is the
 exception (shares the key, not the config). `AlknetClient` is the dial
 that feeds them — it produces a `Connection` and the protocol
 take-overs (`spawn_dispatch`, `from_connection`) consume it. The
-existing `CallClient::connect` / `ChannelClient::connect_quic`
-convenience constructors become thin wrappers over
-`AlknetClient::dial_quic`. The `alknet/register` ALPN (native
+per-protocol QUIC convenience constructors (`CallClient::connect` /
+`ChannelClient::connect_quic`) are **removed** per ADR-089 §5 — the
+dial is centralized in `AlknetClient`, and the protocol crates shed
+their TLS/transport deps. The `alknet/register` ALPN (native
 registration entry point, parallel to HTTP registration in OQ-58) is
 named by ADR-089; its wire protocol is deferred (OQ-66).
 

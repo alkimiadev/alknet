@@ -223,9 +223,12 @@ impl AlknetEndpoint {
     pub async fn run(self: Arc<Self>);
 
     /// Signal all owned accept loops to stop, drain in-flight handlers
-    /// for `drain_timeout`, then close. One owner, one shutdown — no
-    /// external loop coordination needed.
-    pub async fn shutdown(&self) -> Result<(), EndpointError>;
+    /// for `drain_timeout`, then close. Infallible — the endpoint owns
+    /// all its accept loops (quinn, iroh, TCP+TLS) and takes pre-built
+    /// pre-bound transports, so there is no bind failure path and no
+    /// external loop coordination. No-handler matches are swallowed by
+    /// `dispatch` (close + log). One owner, one shutdown.
+    pub async fn shutdown(&self);
 }
 ```
 
@@ -386,13 +389,13 @@ live in the hub crate, not a generic transport crate.
 | `load_cert_chain()` / `load_private_key()` | `alknet-tls` (ADR-082) |
 | `build_quinn_server_config_from_rustls()` | `alknet-tls` (`for_quinn()`, ADR-082) |
 | `build_iroh_endpoint()` | Assembly layer (inlined; 15 lines of iroh API calls) |
-| `AlknetEndpoint`, `HandlerRegistry`, `EndpointError`, all dispatch/loop/extraction code | `alknet-endpoint` (this ADR, §"Amendment 2026-07-15") |
+| `AlknetEndpoint`, `HandlerRegistry`, all dispatch/loop/extraction code | `alknet-endpoint` (this ADR, §"Amendment 2026-07-15") |
+| `EndpointError` | **removed** — `BindFailed` and `HandlerNotFound` are both vestigial (endpoint takes pre-bound transports; `dispatch` swallows no-handler matches); `shutdown()` is infallible |
 
 ### What stays in `alknet-endpoint` (the new crate)
 
 - `AlknetEndpoint` struct (multi-transport accept-loop runner + public `dispatch`)
 - `HandlerRegistry`
-- `EndpointError`
 - `TcpTlsListener` (the `(TcpListener, TlsAcceptor)` tuple for the TCP+TLS field)
 - `dispatch` (public — ACME guard, handler lookup, `build_auth_context`, spawn)
 - `dispatch_quinn` / `dispatch_iroh` / `dispatch_tcp_tls` (private — transport-specific extraction, then call `dispatch`)
@@ -418,8 +421,8 @@ The endpoint is extracted from `alknet-core` into a new crate
 identity_provider, drain_timeout)` + `with_quinn` / `with_iroh` /
 `with_tcp_tls` + public `dispatch` + `run` / `shutdown` — is **unchanged**
 by this amendment. Only the *location* changes: `endpoint.rs`,
-`HandlerRegistry`, and `EndpointError` move from `alknet-core` to
-`alknet-endpoint`.
+`HandlerRegistry` move from `alknet-core` to `alknet-endpoint`
+(`EndpointError` is removed — see above).
 
 #### Why extract (the dependency data)
 
@@ -530,7 +533,7 @@ refactor.
 | `fingerprint.rs` | ~260 | yes — shared by server + client (OQ-59) |
 | `ownership.rs` (`OwnershipStore`, `OwnershipProvider`) | ~280 | yes — shared |
 | `store.rs` (`CredentialStore`, `EncryptedData`) | ~200 | yes — shared |
-| `endpoint.rs` (`AlknetEndpoint`, `HandlerRegistry`, `EndpointError`) | ~1600 | **no** — moves to `alknet-endpoint` |
+| `endpoint.rs` (`AlknetEndpoint`, `HandlerRegistry`) | ~1600 | **no** — moves to `alknet-endpoint` (`EndpointError` is removed, not moved) |
 
 Core loses ~1600 LOC (the endpoint) and 5 heavy deps (`quinn`, `iroh`,
 `rcgen`, `rustls-pemfile`, `rustls-acme`). The remaining ~3200 LOC is

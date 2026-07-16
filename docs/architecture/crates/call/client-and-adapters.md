@@ -22,11 +22,11 @@ This document specifies three components, all in `alknet-call`:
 
 1. **`CallClient`** — takes over an established transport `Connection`
    on ALPN `alknet/call`, spawns the shared dispatch loop, and produces
-   a `CallConnection`. Transport-agnostic (`spawn_dispatch` primary,
-   `connect` QUIC convenience); the dispatch loop is shared with the
-   server-side `CallAdapter` (ADR-017 §1); `CallClient` is the
-   connection-establishment + credential-handling half, not a parallel
-   protocol implementation.
+   a `CallConnection`. Transport-agnostic (`spawn_dispatch` primary;
+   `connect` removed per ADR-089 §5 — dial extracted to `AlknetClient`);
+   the dispatch loop is shared with the server-side `CallAdapter`
+   (ADR-017 §1); `CallClient` is the connection-take-over half, not a
+   parallel protocol implementation.
 2. **`from_call`** — discovers operations on a remote call-protocol endpoint
    via `services/list` + `services/schema` (already implemented in
    `registry/discovery.rs`) and registers them in the connection's Layer 2
@@ -124,15 +124,13 @@ impl CallClient {
     /// a transport.
     pub fn spawn_dispatch(&self, connection: Connection) -> CallConnection;
 
-    /// QUIC convenience constructor. Dials a QUIC connection to `addr`
-    /// on ALPN `alknet/call` (using `credentials` for the TLS handshake
-    /// — ADR-034 verifier selection), then calls `spawn_dispatch`.
-    /// Feature-gated on `quinn` (the dial is QUIC-specific). Additive
-    /// and two-way-door — `connect_tcp_tls`, `connect_webtransport`,
-    /// etc. join it as transports are added, without touching the
-    /// `spawn_dispatch` contract. This convenience is a thin wrapper
-    /// over `AlknetClient::dial_quic` (ADR-089) — a caller that needs
-    /// transport selection uses `AlknetClient` directly.
+    /// **REMOVED per ADR-089 §5.** The dial is extracted into
+    /// `AlknetClient` (`alknet-client`); `connect` is deleted, not
+    /// delegated, to avoid `alknet-call` depending on `alknet-client`
+    /// and to let `alknet-call` shed its TLS/transport deps entirely.
+    /// Callers compose `AlknetClient::dial_quic(...).await?` +
+    /// `CallClient::new(...).spawn_dispatch(conn)`. `ClientError` is
+    /// removed (it was produced only by `connect`).
     #[cfg(feature = "quinn")]
     pub async fn connect(
         &self,
@@ -192,19 +190,23 @@ authorization machinery that gates every other call. No `RemoteFilter`, no
 primary constructor — it takes a pre-established `Connection`,
 constructs a `CallConnection`, builds a `Dispatcher`, spawns the
 dispatch task, and returns the live `CallConnection`. `connect()` is
-the QUIC convenience over it: dial QUIC (feature-gated on `quinn`),
-then `spawn_dispatch`. Tests use `spawn_dispatch` directly to wire
-mock/loopback connections. A future `connect_tcp_tls` /
-`connect_webtransport` would dial their transport and call
-`spawn_dispatch` the same way. The one-way-door surface is
-`spawn_dispatch`; the dial helpers are two-way-door conveniences.
+**removed** per ADR-089 §5: the dial is extracted into `AlknetClient`
+(`alknet-client`), and keeping a QUIC convenience constructor on
+`CallClient` would make `alknet-call` depend on `alknet-client`,
+contradicting the dep graph (the protocol crates are parallel to the
+dial, not downstream of it). Callers compose `AlknetClient::dial_quic`
++ `spawn_dispatch` — two lines, the dial then the take-over. Tests use
+`spawn_dispatch` directly to wire mock/loopback connections. The
+one-way-door surface is `spawn_dispatch`; the dial lives in
+`alknet-client`.
 
-This mirrors `ChannelClient::from_connection` / `connect_quic`
-(ADR-080) and is the client-side analogue of the server-side
-generalization ADR-065 made. The call protocol, like the channels
-protocol, is transport-agnostic — `Connection::from_stream` /
-`from_bidi` (ADR-065) accept any `AsyncRead + AsyncWrite`, and
-`spawn_dispatch` takes the resulting `Connection` unchanged.
+This mirrors `ChannelClient::from_connection` (ADR-080; its
+`connect_quic` is likewise removed per ADR-089 §5) and is the
+client-side analogue of the server-side generalization ADR-065 made.
+The call protocol, like the channels protocol, is transport-agnostic —
+`Connection::from_stream` / `from_bidi` (ADR-065) accept any
+`AsyncRead + AsyncWrite`, and `spawn_dispatch` takes the resulting
+`Connection` unchanged.
 
 #### Peer-keyed composition env (ADR-029)
 
@@ -244,8 +246,10 @@ attribution, filtered by the calling peer's authorization). See
 
 ### Credential sources for connections
 
-`CallClient::connect()` takes a `CallCredentials` bundle. Credentials come
-from `Capabilities` (ADR-014), never from environment variables. The three
+`CallCredentials` (now in `alknet-core`, moved from `alknet-call` per
+ADR-089 §5 so the dial does not depend on the call protocol) carries
+the three credential dimensions (ADR-017 §7). Credentials come from
+`Capabilities` (ADR-014), never from environment variables. The three
 credential dimensions (ADR-017 §7):
 
 ```rust

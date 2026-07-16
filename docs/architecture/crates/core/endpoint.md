@@ -5,10 +5,11 @@ last_updated: 2026-07-15
 
 # Endpoint (moved to `alknet-endpoint`)
 
-> **This document is deprecated.** The `AlknetEndpoint`,
-> `HandlerRegistry`, and `EndpointError` types have been extracted from
-> `alknet-core` into a new crate `alknet-endpoint` (ADR-083 Amendment
-> 2026-07-15). The canonical spec is now
+> **This document is deprecated.** The `AlknetEndpoint` and
+> `HandlerRegistry` types have been extracted from `alknet-core` into a
+> new crate `alknet-endpoint` (ADR-083 Amendment 2026-07-15).
+> `EndpointError` is removed (both variants were vestigial). The
+> canonical spec is now
 > [`crates/endpoint/README.md`](../endpoint/README.md).
 >
 > The shared types the endpoint imports (`ProtocolHandler`,
