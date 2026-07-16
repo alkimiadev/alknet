@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (adds a capability to ADR-089's `AlknetClient`; raises OQ-67 for iroh)
+Accepted (adds a capability to ADR-089's `AlknetClient`; §5 amended
+2026-07-16 — OQ-67 resolved: iroh proxy support decided as force
+relay-only + HTTP-to-SOCKS5 bridge, grounded in the iroh-proxy POC)
 
 ## Context
 
@@ -149,8 +151,8 @@ builder pattern:
 impl AlknetClient {
     /// Set the SOCKS5 proxy for all subsequent dials. When set, every
     /// dial routes its transport through this proxy: UDP ASSOCIATE for
-    /// `dial_quic`, CONNECT for `dial_tcp_tls`. `dial_iroh` is the
-    /// exception — see OQ-67.
+    /// `dial_quic`, CONNECT for `dial_tcp_tls`, and force-relay-only +
+    /// HTTP-to-SOCKS5 bridge for `dial_iroh` (§5).
     pub fn with_socks5_proxy(mut self, proxy: Socks5ProxyConfig) -> Self;
 }
 ```
@@ -237,31 +239,127 @@ TCP-native. The `TlsClientConfig`, the SNI, the ALPN, and the
 Without a proxy, `dial_tcp_tls` is unchanged — `TcpStream::connect(addr)`
 then `TlsConnector::connect`. Same zero-cost default as `dial_quic`.
 
-### 5. `dial_iroh` is the exception — deferred (OQ-67)
+### 5. `dial_iroh` — force relay-only via iroh's `proxy_url` (OQ-67 resolved)
 
-iroh's `proxy_url` (set at `iroh::Endpoint` construction) proxies iroh's
-HTTP(S) traffic — relay connections, DNS-over-HTTPS, pkarr publishing —
-through the proxy. This hides the client's IP from iroh's *relay*, which
-is a distinct privacy goal from hiding it from the *peer*. iroh's relay
-already hides the client's IP from the peer (the peer sees the relay's
-IP, by design), so `proxy_url` covers both exposure surfaces for the
-relay-mediated path without touching iroh's QUIC socket.
+> **Amendment 2026-07-16** — OQ-67 resolved by the iroh-proxy POC
+> (`/workspace/iroh-proxy-poc`,
+> [`docs/research/iroh-proxy-poc/findings.md`](../../research/iroh-proxy-poc/findings.md)).
+> The original §5 deferred the iroh direct-path to OQ-67. This
+> amendment replaces that deferral with the decision: **force
+> relay-only when a proxy is configured**, via three stable public
+> iroh Builder knobs. It also corrects a factual error about what
+> iroh's `proxy_url` covers (relay WebSocket only, not pkarr/DoH).
 
-The open case is iroh's *direct* (hole-punched) connection: if iroh
-establishes a direct QUIC connection to the peer, the peer sees the
-client's real IP. Wrapping iroh's QUIC in SOCKS5 UDP ASSOCIATE is a
-*different* integration than the quinn POC — iroh has its own socket
-stack, not `quinn::AsyncUdpSocket` — and whether to force relay-only
-when a proxy is configured vs. wrap iroh's QUIC is an open question. See
-[OQ-67](../questions/067-iroh-proxy-support.md).
+When a proxy is configured, `dial_iroh` forces the iroh endpoint to
+relay-only mode, eliminating the direct (hole-punched) path entirely
+and tunneling the relay WebSocket through the proxy. The peer sees
+the relay's IP; the relay sees the proxy's IP; the client's real IP is
+hidden on both surfaces.
 
-For now, `dial_iroh` does not consume `Socks5ProxyConfig`. The iroh
-endpoint is built by the assembly layer (ADR-089 §3 — iroh shares the
-key, not the config); if the assembly layer sets iroh's `proxy_url`, the
-relay-exposure surface is covered. The peer-exposure surface for iroh
-direct connections is deferred to OQ-67. This does not block the first
-hub deployment — the hub's outbound worker dials (the hub-as-client case,
-ADR-087 §5) use QUIC or TCP+TLS, both of which honor the proxy.
+The iroh endpoint is built by the assembly layer (ADR-089 §3 — iroh
+shares the key, not the config). When `Socks5ProxyConfig` is set, the
+assembly applies three stable public iroh Builder knobs together:
+
+1. **`clear_ip_transports()`** — no IP/direct transport is bound. There
+   is no kernel UDP socket from which a direct path could start.
+2. **`addr_filter(AddrFilter::relay_only())`** — the endpoint's
+   published addresses contain only relay URLs, no direct IPs, so the
+   peer cannot attempt a direct connection.
+3. **`proxy_url(http://...)`** — the relay's WebSocket is tunneled
+   through an HTTP CONNECT proxy. The relay sees the proxy's IP.
+
+All three are unconditional (no `unstable-*` feature flags). The POC
+(`docs/research/iroh-proxy-poc/findings.md`) validates the composition
+end-to-end: `selected_is_relay=true`, `selected_is_ip=false`,
+`any_direct_ip_path=false`, 45-byte echo through the proxied relay,
+5/5 runs clean. See
+[`docs/research/iroh-proxy-poc/findings.md`](../../research/iroh-proxy-poc/findings.md)
+§5.
+
+**Why force relay-only, not wrap iroh's QUIC in SOCKS5 UDP ASSOCIATE.**
+iroh uses a quinn fork (`noq`) that *has*
+`Endpoint::new_with_abstract_socket` (the hook the quinn POC uses), but
+iroh calls it internally with its own `Transport` multiplexer and keeps
+the accessor `pub(crate)`. The IP/direct transport binds its own
+`netwatch::UdpSocket` with no injection point. The only public
+socket-injection surface (`unstable-custom-transports`,
+`CustomTransport`) operates on a separate `CustomAddr` address space
+that iroh's hole-punching does not route through — wrong shape. The
+quinn POC's `Socks5UdpSocket` does not transfer to iroh. Making
+SOCKS5-UDP-over-iroh-direct work would require forking iroh, for a use
+case that is currently hypothetical (direct-path peer-IP privacy with
+direct-path latency). Force relay-only uses only stable public APIs,
+requires no fork, and fully closes the peer-IP-exposure gap (by
+eliminating the direct path when a proxy is configured). The quinn
+POC's `Socks5UdpSocket` remains the reference shape *if* iroh ever
+exposes an IP-transport socket hook upstream. See
+[`docs/research/iroh-proxy-poc/findings.md`](../../research/iroh-proxy-poc/findings.md)
+§2–§3.
+
+**Correction: what `proxy_url` actually covers.** The original §5
+stated `proxy_url` "proxies iroh's HTTP(S) traffic — relay connections,
+DNS-over-HTTPS, pkarr publishing." Tracing iroh 1.0.2, this is **only
+partially true**: `proxy_url` flows only to the relay transport actor
+and is used only for the relay's WebSocket connection (an HTTP CONNECT
+handshake, `iroh-relay-1.0.2/src/client/tls.rs:127-216`). It does
+**not** flow to the pkarr publisher (uses the `pkarr` crate directly,
+not reqwest), nor to the DNS-over-HTTPS resolver (uses
+`hickory-resolver` directly), nor to the `reqwest` client builder
+(`util.rs:80-91` has no `.proxy()` call). So `proxy_url` covers the
+**relay WebSocket** exposure surface only. For alknet's privacy model
+this is fine because the recommended configuration is force
+relay-only: with `clear_ip_transports()`, QAD (QUIC address
+discovery) is disabled, and the peer-IP exposure is fully handled by
+the relay path. The pkarr/DoH surfaces are not proxied by `proxy_url`;
+if a deployment needs those proxied too, that is a separate gap (a
+small upstream contribution to wire reqwest's `.proxy()` into
+`util::reqwest_client_builder`), not this ADR's scope. See
+[`docs/research/iroh-proxy-poc/findings.md`](../../research/iroh-proxy-poc/findings.md)
+§4.
+
+**The proxy-protocol mismatch: HTTP-to-SOCKS5 bridge.** There is one
+integration wrinkle. `Socks5ProxyConfig` (this ADR) is a SOCKS5 proxy.
+iroh's `proxy_url` expects an **HTTP CONNECT** proxy
+(`iroh-relay-1.0.2/src/client/tls.rs:173` — `Method::CONNECT`, checks
+`scheme() == "http"`). They are different protocols:
+
+- `dial_quic` uses SOCKS5 UDP ASSOCIATE (UDP/QUIC).
+- `dial_tcp_tls` uses SOCKS5 CONNECT (TCP).
+- iroh's relay path uses HTTP CONNECT (the relay WebSocket).
+
+A single `Socks5ProxyConfig` cannot be fed verbatim into iroh's
+`proxy_url`. The integration runs a tiny local **HTTP-to-SOCKS5 bridge**
+in the alknet client process when `Socks5ProxyConfig` is set and the
+iroh path is used: a local HTTP CONNECT server (~80 lines, the POC's
+`src/proxy.rs` is the template) that forwards each CONNECT tunnel to
+the SOCKS5 proxy's CONNECT command. iroh's `proxy_url` is then pointed
+at `http://127.0.0.1:<local-port>`. This unifies on a single
+`Socks5ProxyConfig` and is invisible to the operator — the operator
+configures one SOCKS5 proxy, and the bridge adapts it to the HTTP
+CONNECT protocol iroh's relay client expects. The bridge is local-only
+(no external surface), behind the `socks5` feature flag, and adds no
+new deps beyond what the quinn PoC already uses (`fast-socks5`).
+
+Without a proxy, `dial_iroh` is unchanged — the iroh endpoint is built
+with direct + relay as before. The proxy is a strict addition; the
+no-proxy path is the zero-cost default (same as `dial_quic` and
+`dial_tcp_tls`).
+
+**What is given up.** Force relay-only forgoes iroh's direct-connection
+latency advantage (the relay adds one network hop). For the hub
+deployment (ADR-087, where the hub runs its own relay), this is
+negligible. Relay availability becomes a hard dependency: with
+`clear_ip_transports()`, if the relay is down, the client cannot
+connect at all — there is no direct fallback. This is the intended
+privacy/availability tradeoff: privacy is absolute (no IP leak),
+availability is relay-bounded. A caller that prefers availability over
+privacy for the iroh path simply does not set the proxy.
+
+This does not block the first hub deployment — the hub's outbound
+worker dials (the hub-as-client case, ADR-087 §5) use QUIC or TCP+TLS,
+both of which honor the proxy directly (no bridge needed). The iroh
+path is one of three dials, and the force-relay-only resolution is the
+conservative default that closes the peer-IP-exposure gap with no fork.
 
 ### 6. Fallback policy is a caller concern, not a dial decision
 
@@ -399,12 +497,24 @@ SOCKS5 protocol implementation.
 
 **Negative:**
 
-- **iroh direct connections are not proxied by this ADR.** `dial_iroh`
-  does not consume `Socks5ProxyConfig`; iroh's `proxy_url` (set at the
-  assembly layer) covers the relay-exposure surface, but a direct
-  iroh connection exposes the client's real IP to the peer. This is
-  OQ-67. It does not block the first hub deployment (hub outbound
-  dials use QUIC/TCP+TLS), but it is a gap for iroh-direct privacy.
+- **iroh direct connections forgo direct-path latency when a proxy is
+  configured.** `dial_iroh` with a proxy forces relay-only (§5),
+  eliminating the direct path. The relay adds one network hop; for the
+  hub deployment (hub runs its own relay), this is negligible. Relay
+  availability becomes a hard dependency — with `clear_ip_transports()`,
+  if the relay is down, the client cannot connect at all. This is the
+  intended privacy/availability tradeoff; a caller that prefers
+  availability over privacy for the iroh path simply does not set the
+  proxy. Does not block the first hub deployment (hub outbound dials
+  use QUIC/TCP+TLS).
+- **pkarr/DoH exposure surfaces are not covered by `proxy_url`.**
+  iroh's `proxy_url` proxies the relay WebSocket only, not pkarr
+  publishing or DNS-over-HTTPS (§5 correction). For the recommended
+  force-relay-only configuration this is acceptable (QAD is disabled,
+  peer-IP exposure is fully handled by the relay path). If a deployment
+  needs pkarr/DoH proxied too, that is a separate gap (a small upstream
+  contribution to wire reqwest's `.proxy()` into iroh's
+  `util::reqwest_client_builder`), not this ADR's scope.
 - **The `socks5` feature and `fast-socks5` dep are new.** A new
   optional feature and a new optional dep. The cost is contained (off
   by default, only pulled when a deployment uses a proxy), but it is
@@ -432,7 +542,9 @@ them after consumers exist is a rewrite. The `Proxy` variant on
 `socks5` feature name and the `fast-socks5` dep choice are two-way
 (the feature can be renamed pre-1.0; the dep can be vendored later).
 The `Socks5UdpSocket` internal implementation is two-way. The iroh
-proxy question (OQ-67) is two-way until decided. The fallback policy
+force-relay-only decision (§5) is one-way (it's a deployment
+tradeoff: relay-bounded availability, no direct fallback) — the
+HTTP-to-SOCKS5 bridge implementation is two-way. The fallback policy
 (caller's concern, not the dial's) is one-way — once the dial refuses
 to silently fall back, callers rely on that for their privacy
 posture.
@@ -473,5 +585,13 @@ posture.
 - BotBrowser UDP-over-SOCKS5
   (`deepwiki.com/botswin/BotBrowser/6.4-udp-over-socks5`) — production
   implementation of the identical pattern in Chromium's network stack.
-- OQ-67 (raised by this ADR) — iroh proxy support (direct-connection
-  peer exposure).
+- **iroh-proxy PoC:** `/workspace/iroh-proxy-poc` — run `cargo run -r`.
+  Load-bearing files: `src/main.rs` (Option 2 end-to-end), `src/proxy.rs`
+  (HTTP CONNECT proxy). 5/5 runs clean.
+- **iroh-proxy research findings:**
+  [`docs/research/iroh-proxy-poc/findings.md`](../../research/iroh-proxy-poc/findings.md)
+  — the iroh socket-stack investigation (no public IP-transport
+  injection hook; `CustomTransport` is the wrong address space), the
+  `proxy_url` coverage correction (relay WebSocket only, not pkarr/DoH),
+  the three force-relay-only knobs, and the HTTP-to-SOCKS5 bridge.
+- OQ-67 (resolved by this ADR's §5 amendment) — iroh proxy support.

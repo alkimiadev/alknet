@@ -14,8 +14,9 @@ take-overs (`CallClient::spawn_dispatch`,
 client; it does not run protocols, manage peer lifecycle, or supervise
 reconnection. It dials and produces a `Connection`. A client that wants
 to hide its real IP from the hub configures a SOCKS5 proxy
-(`with_socks5_proxy`, ADR-090) — the rustls dials route through it
-transparently.
+(`with_socks5_proxy`, ADR-090) — all three dials route through it
+(UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS, force-relay-only +
+HTTP-to-SOCKS5 bridge for iroh).
 
 ## What
 
@@ -61,9 +62,10 @@ Narrowed to the **native case**: dialing native endpoint types (QUIC +
 TCP+TLS, both rustls-consuming via `TlsClientConfig`; iroh as the
 key-not-config exception) over the native ALPNs (`alknet/register`,
 `alknet/call`, `alknet/channels`). With an optional SOCKS5 proxy
-(ADR-090), the rustls dials route their transport through the proxy
-(UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS) to hide the client's
-real IP from the hub.
+(ADR-090), the dials route their transport through the proxy — UDP
+ASSOCIATE for QUIC, CONNECT for TCP+TLS, force-relay-only +
+HTTP-to-SOCKS5 bridge for iroh — to hide the client's real IP from
+the hub.
 
 ### What `AlknetClient` is NOT
 
@@ -109,7 +111,8 @@ pub struct AlknetClient {
     iroh: Option<iroh::Endpoint>,
     // When set, `dial_quic` and `dial_tcp_tls` route through this
     // SOCKS5 proxy (UDP ASSOCIATE / CONNECT respectively). `dial_iroh`
-    // is the exception — see OQ-67. Feature-gated on `socks5`.
+    // forces relay-only via an HTTP-to-SOCKS5 bridge — see ADR-090 §5.
+    // Feature-gated on `socks5`.
     #[cfg(feature = "socks5")]
     socks5: Option<Socks5ProxyConfig>,
 }
@@ -128,8 +131,9 @@ impl AlknetClient {
 
     /// Set the SOCKS5 proxy for all subsequent dials. When set, every
     /// dial routes its transport through this proxy: UDP ASSOCIATE for
-    /// `dial_quic`, CONNECT for `dial_tcp_tls`. `dial_iroh` is the
-    /// exception — see OQ-67. Feature-gated on `socks5`.
+    /// `dial_quic`, CONNECT for `dial_tcp_tls`, and force-relay-only +
+    /// HTTP-to-SOCKS5 bridge for `dial_iroh` (ADR-090 §5). Feature-gated
+    /// on `socks5`.
     #[cfg(feature = "socks5")]
     pub fn with_socks5_proxy(mut self, proxy: Socks5ProxyConfig) -> Self;
 }
@@ -237,7 +241,7 @@ full rationale, the PoC grounding, and the limitations.
 |------|----------------|-----------|--------------|
 | `dial_quic` | UDP ASSOCIATE (RFC 1928 §6) | `Socks5UdpSocket` (the crate's `quinn::AsyncUdpSocket` impl, behind `socks5`) → `new_with_abstract_socket` — see ADR-090 §3 | The hub (peer) |
 | `dial_tcp_tls` | CONNECT (RFC 1928 §3) | `TcpStream` to the proxy + SOCKS5 CONNECT handshake, then `TlsConnector` over the proxied stream | The hub (peer) |
-| `dial_iroh` | (exception — OQ-67) | iroh's own `proxy_url` (set at the assembly layer) covers the relay-exposure surface; direct-connection peer exposure is deferred | The relay (via `proxy_url`); peer exposure on direct connections is OQ-67 |
+| `dial_iroh` | force relay-only (HTTP CONNECT, bridged) | `clear_ip_transports()` + `addr_filter(relay_only)` + `proxy_url` (HTTP CONNECT via a local HTTP-to-SOCKS5 bridge) — see ADR-090 §5 | The peer (via relay) + the relay (via the bridge → SOCKS5 proxy) |
 
 The proxy config:
 
@@ -280,6 +284,25 @@ that don't use a proxy pay nothing.
   deployment requirement — `ssh -D` does not work; a UDP-capable SOCKS5
   daemon (dante, fast-socks5-based, etc.) is needed. The dial surfaces
   a clear error when the proxy lacks UDP support.
+- **`dial_iroh` forces relay-only, forgoing direct-path latency.**
+  iroh does not expose a socket-injection hook for the IP/direct
+  transport (the quinn POC's `Socks5UdpSocket` does not transfer —
+  see ADR-090 §5). With a proxy configured, the iroh endpoint is built
+  with `clear_ip_transports()` + `addr_filter(relay_only)` +
+  `proxy_url`, eliminating the direct path. The peer sees the relay's
+  IP; the relay sees the proxy's IP (via the local HTTP-to-SOCKS5
+  bridge). Relay availability becomes a hard dependency — if the relay
+  is down, the client cannot connect at all. This is the intended
+  privacy/availability tradeoff; a caller that prefers availability
+  over privacy for the iroh path simply does not set the proxy.
+- **`proxy_url` covers the relay WebSocket only, not pkarr/DoH.** iroh's
+  `proxy_url` proxies the relay WebSocket (HTTP CONNECT), not pkarr
+  publishing or DNS-over-HTTPS (those use `pkarr`/`hickory-resolver`
+  directly, not reqwest with a proxy). For the recommended
+  force-relay-only configuration this is acceptable (QAD is disabled,
+  peer-IP exposure is fully handled by the relay path). If a deployment
+  needs pkarr/DoH proxied too, that is a separate gap (a small upstream
+  contribution), not this ADR's scope.
 - **No silent fallback.** When a proxy is configured and the proxy
   rejects the command, the dial returns `ClientDialError::Proxy`. The
   dial does not silently fall back to a direct connection — that would
@@ -615,7 +638,7 @@ All design decisions are documented as ADRs in
 | ADR | Decision | Summary |
 |-----|----------|---------|
 | [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred |
-| [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT; iroh deferred (OQ-67); grounded in the quinn-proxy PoC |
+| [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT, `dial_iroh` forces relay-only via an HTTP-to-SOCKS5 bridge; OQ-67 resolved; grounded in the quinn-proxy + iroh-proxy PoCs |
 
 ## Open Questions
 
@@ -634,14 +657,16 @@ See [open-questions.md](../../open-questions.md) for full details.
   crate's ACL and OQ-58 (the token model is the shared blocker) and
   needs a dedicated ADR. The HTTP registration endpoint (OQ-58)
   remains the first implementation.
-- **OQ-67** (deferred(unclear)): iroh proxy support — `dial_iroh` does
-  not consume `Socks5ProxyConfig` (ADR-090). iroh's `proxy_url` (set at
-  the assembly layer) covers the relay-exposure surface; the open case
-  is iroh's *direct* (hole-punched) connection, where the peer sees the
-  client's real IP. Wrapping iroh's QUIC in SOCKS5 UDP ASSOCIATE is a
-  different integration than the quinn POC (iroh has its own socket
-  stack, not `quinn::AsyncUdpSocket`). Does not block the first hub
-  deployment (hub outbound dials use QUIC/TCP+TLS). See
+- **OQ-67** (resolved by ADR-090 §5 amendment): iroh proxy support —
+  `dial_iroh` with a proxy configured forces relay-only via three
+  stable public iroh Builder knobs (`clear_ip_transports()` +
+  `addr_filter(relay_only)` + `proxy_url`), with a local
+  HTTP-to-SOCKS5 bridge adapting the SOCKS5 proxy to iroh's HTTP
+  CONNECT expectation. iroh does not expose a socket-injection hook
+  for the IP/direct transport (the quinn POC's `Socks5UdpSocket` does
+  not transfer), so force-relay-only is the conservative default — no
+  fork, fully closes the peer-IP-exposure gap by eliminating the
+  direct path. Grounded in the iroh-proxy POC. See
   [OQ-67](../../questions/067-iroh-proxy-support.md).
 
 ## References
@@ -673,6 +698,9 @@ See [open-questions.md](../../open-questions.md) for full details.
   — `CallClient::spawn_dispatch` (the take-over the dial feeds)
 - [`docs/research/quinn-quic-proxy/findings.md`](../../research/quinn-quic-proxy/findings.md)
   — the quinn-over-SOCKS5 PoC findings (grounds ADR-090's QUIC path)
+- [`docs/research/iroh-proxy-poc/findings.md`](../../research/iroh-proxy-poc/findings.md)
+  — the iroh-proxy PoC findings (grounds ADR-090 §5's iroh
+  force-relay-only decision + HTTP-to-SOCKS5 bridge)
 - [`crates/endpoint/README.md`](../endpoint/README.md) — `AlknetEndpoint`
   (the server-side complement)
 - [`crates/tls/README.md`](../tls/README.md) — `TlsClientConfig`

@@ -25,13 +25,42 @@ and the planned `alknet-socks5` channels data-channel handler (ADR-085
 scope table, a service one side offers the other) — compose without
 coupling (a client using the hub's `alknet/socks5` service tunnels it
 locally and points its `Socks5ProxyConfig` at the local tunnel end).
-iroh is the exception: `dial_iroh` does not consume
+iroh was the exception: `dial_iroh` did not consume
 `Socks5ProxyConfig` — iroh's `proxy_url` covers the relay-exposure
-surface, but the direct-connection peer-exposure case is
-[OQ-67](open-questions.md) (deferred(unclear) — the pieces exist but
-the iroh socket-stack composition isn't clear; does not block the
+surface, but the direct-connection peer-exposure case was
+[OQ-67](open-questions.md) (deferred(unclear) — the pieces existed but
+the iroh socket-stack composition wasn't clear; did not block the
 first hub deployment, which uses QUIC/TCP+TLS). See
 [ADR-090](decisions/090-client-dial-socks5-proxy-seam.md).
+
+**iroh proxy resolved — force relay-only + HTTP-to-SOCKS5 bridge (ADR-090
+§5 amended, OQ-67 resolved, 2026-07-16).** The iroh-proxy POC
+(`/workspace/iroh-proxy-poc`,
+[`docs/research/iroh-proxy-poc/findings.md`](../research/iroh-proxy-poc/findings.md),
+5/5 runs clean) settled OQ-67: iroh does **not** expose a
+socket-injection hook for the IP/direct transport (the quinn POC's
+`Socks5UdpSocket` does not transfer — `noq_endpoint()` is `pub(crate)`,
+the IP transport binds its own `netwatch::UdpSocket`, and
+`CustomTransport` operates on a separate `CustomAddr` address space
+iroh's hole-punching doesn't route through). The decision is **force
+relay-only** when a proxy is configured: three stable public iroh
+Builder knobs (`clear_ip_transports()` + `addr_filter(relay_only)` +
+`proxy_url`) eliminate the direct path and tunnel the relay WebSocket
+through the proxy. The peer sees the relay's IP; the relay sees the
+proxy's IP; the client's real IP is hidden on both surfaces. No iroh
+fork required. Because iroh's `proxy_url` expects an HTTP CONNECT proxy
+(not SOCKS5), the integration runs a tiny local **HTTP-to-SOCKS5
+bridge** (~80 lines) so a single `Socks5ProxyConfig` covers all three
+dials uniformly. The POC also corrected a factual error: iroh's
+`proxy_url` proxies the relay WebSocket only, not pkarr/DoH (those use
+`pkarr`/`hickory-resolver` directly) — acceptable for the
+force-relay-only config (QAD disabled), but the spec text in ADR-090
+§5 is corrected. Force relay-only forgoes iroh's direct-path latency
+advantage (negligible for the hub deployment, which runs its own
+relay) and makes relay availability a hard dependency — the intended
+privacy/availability tradeoff; a caller that prefers availability over
+privacy for the iroh path simply does not set the proxy. See
+[ADR-090](decisions/090-client-dial-socks5-proxy-seam.md) §5.
 
 **Workspace scope corrected (ADR-085, 2026-07-15).** The overview's
 crate graph had been describing the wrong scope since ADR-003 — a flat
@@ -213,7 +242,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — composes a subset of three endpoint types (web/native/iroh — ADR-086), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
 | [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
-| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); optional SOCKS5 proxy (ADR-090 — UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS; iroh deferred OQ-67); produces `Connection` for `CallClient`/`ChannelClient` take-over; `alknet/register` named (wire protocol deferred, OQ-66) |
+| [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); optional SOCKS5 proxy (ADR-090 — UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS, force-relay-only + HTTP-to-SOCKS5 bridge for iroh; OQ-67 resolved); produces `Connection` for `CallClient`/`ChannelClient` take-over; `alknet/register` named (wire protocol deferred, OQ-66) |
 | [crates/endpoint/README.md](crates/endpoint/README.md) | draft | alknet-endpoint crate — the server-side accept-loop runner (`AlknetEndpoint`), extracted from `alknet-core` (ADR-083 Am. 2026-07-15); takes pre-built transports via `with_quinn`/`with_iroh`/`with_tcp_tls`; public `dispatch` for SSH/WT; handler crates no longer transitively link quinn/iroh |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
 | [crates/channels/overview.md](crates/channels/overview.md) | draft | Crate purpose, the multiplexing collapse, dependencies, transport agnosticism, WASM, relationship to existing crates |
@@ -316,7 +345,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted |
 | [088](decisions/088-tlserror-shape.md) | `TlsError` Shape — Single Enum, Owned by `alknet-tls` | Accepted |
 | [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | Accepted (resolves OQ-55) |
-| [090](decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | Accepted (raises OQ-67 for iroh) |
+| [090](decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | Accepted (§5 amended 2026-07-16 — OQ-67 resolved: iroh force-relay-only + HTTP-to-SOCKS5 bridge) |
 
 ## Open Questions
 
