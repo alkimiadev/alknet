@@ -10,9 +10,9 @@
 //!   relationship). Not used for arbitrary public APIs (those use CA
 //!   verification via `WebPkiServerVerifier`, not fingerprint pinning).
 //!
-//! Shared by the server-side endpoint (`alknet_core::endpoint`, which extracts
+//! Shared by the server-side endpoint (`alknet-endpoint`, which extracts
 //! the fingerprint from the presented client cert for `PeerEntry` resolution)
-//! and the client-side `FingerprintPinVerifier` in `alknet_call::client`
+//! and the client-side `FingerprintPinVerifier` in `alknet-tls`
 //! (which matches the server's presented cert against a pinned fingerprint).
 
 use sha2::{Digest, Sha256};

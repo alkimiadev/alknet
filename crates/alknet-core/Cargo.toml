@@ -3,7 +3,7 @@ name = "alknet-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core library for ALPN-based protocol dispatch: ProtocolHandler trait, Connection, auth, config, and multi-connectivity endpoint"
+description = "Core library for ALPN-based protocol dispatch: ProtocolHandler trait, Connection, auth, config, and transport-level credentials"
 repository.workspace = true
 
 [lib]
@@ -13,7 +13,6 @@ name = "alknet_core"
 default = ["quinn"]
 quinn = ["dep:quinn"]
 iroh = ["dep:iroh"]
-acme = ["dep:rustls-acme"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -21,7 +20,6 @@ quinn = { version = "0.11", optional = true }
 iroh = { version = "1.0", optional = true, default-features = false, features = ["tls-aws-lc-rs"] }
 rustls = "0.23"
 rustls-pki-types = "1"
-rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -35,9 +33,7 @@ futures = "0.3"
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
-rcgen = "0.13"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-rustls-acme = { version = "0.12", optional = true, features = ["aws-lc-rs"] }
 
 [dev-dependencies]
 tempfile = "3"
