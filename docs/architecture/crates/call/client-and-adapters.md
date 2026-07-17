@@ -246,18 +246,42 @@ attribution, filtered by the calling peer's authorization). See
 
 ### Credential sources for connections
 
-`CallCredentials` (now in `alknet-core`, moved from `alknet-call` per
-ADR-089 §5 so the dial does not depend on the call protocol) carries
-the three credential dimensions (ADR-017 §7). Credentials come from
-`Capabilities` (ADR-014), never from environment variables. The three
-credential dimensions (ADR-017 §7):
+The credential dimensions are split across two layers (ADR-091):
+
+- **`ConnectionCredentials`** (in `alknet-core`, moved from
+  `alknet-call` per ADR-091) — the **transport-level** credential
+  bundle, consumed by the dial (`AlknetClient`). Carries the two
+  transport-identity dimensions: `local_identity` (the local node's
+  `TlsIdentity`) and `remote_identity` (the expected fingerprint). The
+  dial does not depend on the call protocol for this type.
+- **`CallCredentials`** (stays in `alknet-call`) — the
+  **call-protocol** credential bundle. The `auth_token` dimension
+  (ADR-017 §7) is a call-protocol / hub-layer concept: a bearer token
+  correlated to an identity via `IdentityProvider::resolve_from_token`,
+  used for browsers (no raw-key support) and `alknet/register` (no
+  prior peer relationship). It is a per-request field on
+  `call.requested` payloads, not a transport credential.
+
+Credentials come from `Capabilities` (ADR-014), never from environment
+variables. The three credential dimensions (ADR-017 §7):
 
 ```rust
-pub struct CallCredentials {
-    pub tls_identity: Option<TlsIdentity>,      // RFC 7250 raw key or X.509
-    pub auth_token: Option<AuthToken>,           // call-protocol-level token
-    pub remote_identity: Option<RemoteIdentity>, // expected fingerprint/cert (None = CA path, see below)
+// Transport-level (alknet-core, consumed by the dial — ADR-091)
+pub struct ConnectionCredentials {
+    pub local_identity: Option<TlsIdentity>,   // RFC 7250 raw key or X.509
+    pub remote_identity: Option<RemoteIdentity>, // expected fingerprint (None = CA path / fail-closed)
 }
+
+// Call-protocol-level (alknet-call — the auth_token stays here)
+// The auth_token is set per-request on call.requested payloads, not
+// carried by the dial.
+```
+
+`CallCredentials` retains `auth_token` (and may assemble from
+`ConnectionCredentials` + `auth_token` at the take-over site, or the
+caller provides `auth_token` per-request via `call_with_payload`). The
+transport dimensions (`local_identity`, `remote_identity`) moved to
+`ConnectionCredentials` in `alknet-core` per ADR-091.
 
 /// Expected identity of the remote node (ADR-017 §7, extended by
 /// ADR-034 §2). Carries a fingerprint string the assembly layer

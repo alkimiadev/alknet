@@ -503,7 +503,8 @@ pub struct TlsClientConfig {
 
 impl TlsClientConfig {
     /// Build a client TLS config. Takes two inputs, both derived from
-    /// `Capabilities` (ADR-014) / `CallCredentials`-shaped values:
+    /// `Capabilities` (ADR-014) / `ConnectionCredentials`-shaped values
+    /// (ADR-091):
     ///
     /// 1. `local_identity` — the local node's `TlsIdentity` (RFC 7250
     ///    raw key or X.509), presented as the client cert. `None` →
@@ -555,14 +556,15 @@ The `ClientVerifierContext` carries the inputs to ADR-034's verifier
 selection (whether a `PeerEntry` exists for the remote, the expected
 fingerprint). The exact struct shape is an implementation detail; the
 decisions are in ADR-034. `ClientVerifierContext` is derived from
-`CallCredentials` (in `alknet-core`) at the dial site — `AlknetClient`
-extracts the TLS-relevant fields (`tls_identity` → `local_identity`,
-`remote_identity` → fingerprint-pin input) and builds a
-`ClientVerifierContext` from those. The call-protocol `auth_token` is
-**stripped at the TLS boundary** — it never reaches `TlsClientConfig` or
-`ClientVerifierContext`; it travels with the `Connection` into the
-protocol take-over. The `TlsError` variant granularity (covering both
-server and client errors) is decided — see
+`ConnectionCredentials` (in `alknet-core`, per ADR-091) at the dial
+site — `AlknetClient` extracts the TLS-relevant fields
+(`local_identity` → client cert, `remote_identity` → fingerprint-pin
+input) and builds a `ClientVerifierContext` from the latter. The
+call-protocol `auth_token` is not in `ConnectionCredentials` — it is a
+per-request field on `call.requested` payloads (a call-protocol / hub
+concept), not a transport credential; it never reaches `TlsClientConfig`
+or `ClientVerifierContext`. The `TlsError` variant granularity (covering
+both server and client errors) is decided — see
 [ADR-088](../../decisions/088-tlserror-shape.md) and the
 [`TlsError`](#tlserror) section below.
 
@@ -693,8 +695,9 @@ alknet-core (loses TLS setup code + endpoint)
 ├── (rustls — only for fingerprint.rs types, if kept)
 
 alknet-call (pure protocol crate — no TLS/transport deps per ADR-089 §5)
-└── alknet-core (ProtocolHandler, Connection, types; CallCredentials/RemoteIdentity
-    moved to core per ADR-089 §5)
+└── alknet-core (ProtocolHandler, Connection, types; ConnectionCredentials/
+    RemoteIdentity moved to core per ADR-091; CallCredentials stays in
+    alknet-call)
 
 alknet-hub (multi-transport endpoint)
 ├── alknet-tls (TlsServerConfig — shared across quinn + TCP)

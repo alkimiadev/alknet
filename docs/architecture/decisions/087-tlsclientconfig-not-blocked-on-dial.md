@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (resolves OQ-64)
+Accepted (resolves OQ-64; input framing amended 2026-07-16 by ADR-091 —
+`ClientVerifierContext` is derived from `ConnectionCredentials.remote_identity`,
+not `CallCredentials.remote_identity`; the `auth_token` is not in the
+dial's credential bundle)
 
 ## Context
 
@@ -121,6 +124,16 @@ shape of this context is an implementation detail (the decisions are
 in ADR-034; the struct is a bag of already-decided inputs). It is
 sketched lightly here; the full variant-granularity of `TlsError` is
 OQ-63 (the next session).
+
+> **Amendment 2026-07-16 (ADR-091):** `ClientVerifierContext` is derived
+> from `ConnectionCredentials.remote_identity` (the transport-level
+> credential bundle), not `CallCredentials.remote_identity`. The dial
+> (`AlknetClient::dial_quic` / `dial_tcp_tls`) extracts
+> `creds.remote_identity` from `ConnectionCredentials` and builds
+> `ClientVerifierContext` from it. `CallCredentials` is no longer in the
+> dial's path — its `auth_token` dimension is a call-protocol concept,
+> not a transport credential. See
+> [ADR-091](091-connectioncredentials-decouple-dial-from-call.md).
 
 This is **not** the dial. `TlsClientConfig` produces a
 `rustls::ClientConfig`; the caller (the transport-specific dial helper

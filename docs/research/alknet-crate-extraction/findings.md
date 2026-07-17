@@ -16,8 +16,8 @@ with what intermediate states.
 
 The migration is **additive-then-subtractive**: build all three new
 crates first (no breakage), then prune the old code from core and call
-(breakage confined to a single phase), then fix the http residual. Six
-phases, four compilable intermediate states. The heaviest single file
+(breakage confined to a single phase), then fix the http residual. Seven
+phases (0-6), each leaving the workspace compilable. The heaviest single file
 (`endpoint.rs`, 1606 lines) is not a monolith — it's three concerns
 welded together, each going to a different destination.
 
@@ -87,27 +87,35 @@ already removed per ADR-065; tests use `from_stream` with
 
 ## The seven phases
 
-### Phase 0: Move `CallCredentials`/`RemoteIdentity` to `alknet-core` (additive, no breakage)
+### Phase 0: Move `ConnectionCredentials`/`RemoteIdentity` to `alknet-core` (additive, no breakage)
 
-**What:** Add `CallCredentials` + `RemoteIdentity` to a new
-`crates/alknet-core/src/credentials.rs` (~50 lines). Update
-`alknet-core/src/lib.rs` to `pub mod credentials` + re-export. Update
-`alknet-call/src/client/mod.rs` to re-export from core instead of
-defining locally. No other changes.
+**What:** Add `ConnectionCredentials` + `RemoteIdentity` to a new
+`crates/alknet-core/src/credentials.rs` (~40 lines).
+`ConnectionCredentials` is the transport-level credential bundle
+(ADR-091) — it carries `local_identity` + `remote_identity` (the two
+dimensions the dial consumes). `CallCredentials` stays in
+`alknet-call` (it is the call-protocol bundle; its `auth_token` field
+is a per-request call-protocol concept, not a transport credential).
+Update `alknet-core/src/lib.rs` to `pub mod credentials` + re-export.
+Update `alknet-call` to import `ConnectionCredentials` + `RemoteIdentity`
+from core and re-export them; `CallCredentials` retains `auth_token` and
+references the core types for the transport dimensions. No other
+changes.
 
 **Why first:** It's independent of the three new crates, purely
 additive (core gains types, nothing breaks), and means `alknet-client`
 (Phase 3) never has a temporary dep on `alknet-call`. The dep graph is
-clean from the start.
+clean from the start. `ConnectionCredentials` (not `CallCredentials`)
+is what moves — the dial consumes transport-level dimensions, not
+call-protocol dimensions (ADR-091).
 
 **Compilable state:** `cargo test` passes across the workspace.
-`alknet-call` re-exports the types from core; its own code + tests
-import via `alknet_call::client::CallCredentials` (unchanged — the
-re-export preserves the path).
+`alknet-call` imports the types from core; its own code + tests
+continue to work via the re-export.
 
-**Done when:** `cargo test` passes, `CallCredentials` +
-`RemoteIdentity` are defined in `alknet-core`, `alknet-call` re-exports
-them.
+**Done when:** `cargo test` passes, `ConnectionCredentials` +
+`RemoteIdentity` are defined in `alknet-core`, `alknet-call` imports
+them from core, `CallCredentials` stays in `alknet-call`.
 
 ### Phase 1: Create `alknet-tls` (greenfield, additive)
 
@@ -126,6 +134,12 @@ helpers from `alknet-call/client/call_client.rs` (lines 189-320).
 **Deps:** `alknet-core` (TlsIdentity, Ed25519SecretKey, fingerprint),
 `rustls`, `rustls-pemfile`, `rustls-native-certs`, `webpki-roots`,
 `rcgen`, `tokio`, optional `quinn`/`tokio-rustls`/`rustls-acme`.
+`rustls-native-certs` and `webpki-roots` are **always-present (not
+feature-gated)** — the unknown-X.509-remote CA-verification path in
+`TlsClientConfig::new` is transport-agnostic; the `webpki-roots`
+fallback merges built-in roots when the platform store is empty so
+`NoRootAnchors` is unreachable in practice (ADR-088 §5). Do not gate
+them under `quinn`/`tcp`.
 
 **Compilable state:** `alknet-tls` builds and tests standalone. Core and
 call are unchanged — the old code still exists (duplicated). No
@@ -209,15 +223,16 @@ self-contained, no other crate changed.
 
 **What:** New crate `crates/alknet-client/`. The `AlknetClient` dial
 seam — three dial methods (`dial_quic`/`dial_tcp_tls`/`dial_iroh`),
-consuming `TlsClientConfig` from `alknet-tls` + `CallCredentials` from
+all unified on `&ConnectionCredentials` (ADR-091), consuming
+`TlsClientConfig` from `alknet-tls` + `ConnectionCredentials` from
 `alknet-core`. The SOCKS5 proxy path (ADR-090) is feature-gated.
 
 **Types:** `AlknetClient`, `ClientDialError`, `Socks5ProxyConfig`,
 `Socks5Credentials` (behind `socks5` feature).
 
-**Deps:** `alknet-core` (Connection, CallCredentials, RemoteIdentity,
-Ed25519SecretKey), `alknet-tls` (TlsClientConfig), optional
-`quinn`/`tokio-rustls`/`iroh`/`fast-socks5`.
+**Deps:** `alknet-core` (Connection, ConnectionCredentials,
+RemoteIdentity, Ed25519SecretKey), `alknet-tls` (TlsClientConfig),
+optional `quinn`/`tokio-rustls`/`iroh`/`fast-socks5`.
 
 **Feature gates:** `quinn = ["dep:quinn", "alknet-tls/quinn",
 "alknet-core/quinn"]`, `tcp = ["dep:tokio-rustls", "alknet-tls/tcp"]`,
@@ -238,8 +253,9 @@ self-contained, no other crate changed.
 from `lib.rs`. Remove the heavy deps (`quinn`, `iroh`, `rcgen`,
 `rustls-pemfile`, `rustls-acme`) from `Cargo.toml` — but keep the
 `quinn`/`iroh` *features* (they gate `Connection::from_quinn`/
-`from_iroh` in `types.rs`). Add `CallCredentials` + `RemoteIdentity`
-to core (from `alknet-call`).
+`from_iroh` in `types.rs`). Add `ConnectionCredentials` +
+`RemoteIdentity` to core (from `alknet-call` — done in Phase 0;
+`CallCredentials` stays in `alknet-call` per ADR-091).
 
 **The `lib.rs` change:**
 ```rust
@@ -252,7 +268,7 @@ pub mod config;
 // After:
 pub mod auth;
 pub mod config;
-pub mod credentials;  // ← new (CallCredentials, RemoteIdentity)
+pub mod credentials;  // ← new (ConnectionCredentials, RemoteIdentity)
 // ... rest unchanged
 ```
 
@@ -284,19 +300,24 @@ lightweight (~3200 LOC, no heavy transport deps).
 ### Phase 5: Prune `alknet-call` (subtractive, breakage confined)
 
 **What:** Delete `connect()` + all TLS helpers + `ClientError` from
-`call_client.rs`. Move `CallCredentials`/`RemoteIdentity` to core
-(already done in Phase 4 — here we just remove the old definitions +
-update imports). Update `Cargo.toml` to drop `quinn`/`rustls`/
-`rustls-native-certs`/`rustls-pemfile`. Rewrite the tests that used
-`connect` to use `spawn_dispatch` directly (with `Connection::from_stream`
-mocks) or `AlknetClient::dial_quic` + `spawn_dispatch`.
+`call_client.rs`. The transport dimensions (`ConnectionCredentials`/
+`RemoteIdentity`) already moved to core in Phase 0; here we remove the
+old definitions from `call_client.rs` and update imports.
+`CallCredentials` stays in `alknet-call` (retaining `auth_token`,
+referencing the core types — ADR-091). Update `Cargo.toml` to drop
+`quinn`/`rustls`/`rustls-native-certs`/`rustls-pemfile`. Rewrite the
+tests that used `connect` to use `spawn_dispatch` directly (with
+`Connection::from_stream` mocks) or `AlknetClient::dial_quic` +
+`spawn_dispatch`.
 
 **The `call_client.rs` after prune:**
 - `CallClient` struct + `new` + `registry` + `identity_provider` +
   `spawn_dispatch` (~85 lines — unchanged)
 - `CallConnection` + `Dispatcher` wiring (stays — protocol)
-- `RemoteIdentity`/`CallCredentials` — removed (now in `alknet-core`,
-  re-imported from there)
+- `RemoteIdentity`/`ConnectionCredentials` — removed from
+  `call_client.rs` (now in `alknet-core`, re-imported from there).
+  `CallCredentials` stays in `alknet-call` (retaining `auth_token` —
+  ADR-091).
 - `ClientError` — removed
 - `connect` + all `build_*`/`select_*`/`load_*`/`Ed25519SigningKey`/
   `RawKeyClientCertResolver`/`NoClientCertResolver`/
@@ -304,8 +325,11 @@ mocks) or `AlknetClient::dial_quic` + `spawn_dispatch`.
 
 **The `Cargo.toml` after prune:** `quinn`, `rustls`,
 `rustls-native-certs`, `rustls-pemfile` all leave. The `quinn` feature
-either disappears or becomes a no-op (it only gated `connect` + the
-TLS helpers, both removed). `alknet-call` becomes a pure protocol crate.
+is **removed** (it only gated `connect` + the TLS helpers, both
+removed — keeping it as a no-op would mislead a user enabling
+`quinn` on `alknet-call` expecting QUIC support; removing it surfaces
+any stray `#[cfg(feature = "quinn")]` the prune missed). `alknet-call`
+becomes a pure protocol crate.
 
 **Test impact (per the test audit below):** the lib tests in
 `call_client.rs` (16 tests) split into 6 that stay unchanged
@@ -367,11 +391,11 @@ wrapper is gone.
 
 | After phase | State |
 |-------------|-------|
-| 0 (credentials) | `CallCredentials`/`RemoteIdentity` in core; call re-exports; no breakage |
+| 0 (credentials) | `ConnectionCredentials`/`RemoteIdentity` in core; call imports from core; `CallCredentials` stays in call; no breakage |
 | 1 (tls) | `alknet-tls` builds standalone; core/call/http unchanged (old code duplicated) |
 | 2 (endpoint) | `alknet-endpoint` builds standalone; core still has old `endpoint.rs` (duplicate) |
 | 3 (client) | `alknet-client` builds standalone; call still has old `connect` (duplicate) |
-| 4 (core prune) | core is lightweight; `endpoint.rs` gone; `CallCredentials` in core |
+| 4 (core prune) | core is lightweight; `endpoint.rs` gone; `ConnectionCredentials` in core |
 | 5 (call prune) | call is pure protocol; `connect` + TLS helpers gone; Category B tests already moved |
 | 6 (http fix) | http has no `QuicStream` wrapper; clean `accept_bi` path |
 
@@ -386,9 +410,9 @@ tests — the TLS tests moved in Phase 1, the protocol tests use
 
 The ordering is **deps before dependents, additive before subtractive**:
 
-- **Phase 0** (`CallCredentials` to core) first because it's
+- **Phase 0** (`ConnectionCredentials` to core) first because it's
   independent, additive, and makes `alknet-client` (Phase 3) never
-  depend on `alknet-call`. ~50 lines moved, zero breakage.
+  depend on `alknet-call`. ~40 lines moved, zero breakage.
 - `alknet-tls` (Phase 1) because both `alknet-endpoint` (indirectly —
   the assembly layer builds `TlsServerConfig`) and `alknet-client`
   (directly — `TlsClientConfig`) depend on it. It has no dep on the
@@ -399,8 +423,8 @@ The ordering is **deps before dependents, additive before subtractive**:
   tls first means the assembly layer's transport-building code has a
   home from the start.
 - `alknet-client` (Phase 3) depends on `alknet-tls`
-  (`TlsClientConfig`) + `alknet-core` (`CallCredentials` — moved in
-  Phase 0, so the dep is clean from the start).
+  (`TlsClientConfig`) + `alknet-core` (`ConnectionCredentials` — moved
+  in Phase 0, so the dep is clean from the start).
 - Phases 4-5 (the prunes) go last because they're subtractive. The
   new crates (0-3) must exist first so the pruned code's
   functionality has a home.
@@ -409,34 +433,37 @@ The ordering is **deps before dependents, additive before subtractive**:
   after ADR-065 landed (which it did). Putting it last keeps the
   extraction phases clean.
 
-- Phases 4-5 (the prunes) go last because they're subtractive. The
-  new crates (1-3) must exist first so the pruned code's
-  functionality has a home.
-- Phase 6 (http fix) goes last because it's independent of the
-  extraction — it's a residual fix that could happen at any point
-  after ADR-065 landed (which it did). Putting it last keeps the
-  extraction phases clean.
-
 ## Resolved decisions
 
-### `CallCredentials`/`RemoteIdentity` move — Phase 0 (before Phase 1)
+### `ConnectionCredentials`/`RemoteIdentity` move — Phase 0 (before Phase 1)
 
-**Decision:** Move `CallCredentials`/`RemoteIdentity` to `alknet-core`
-as a standalone additive step *before any new crate is created*. It's
-independent of everything else, purely additive (core gains two small
-types, nothing breaks), and `alknet-call` re-exports them from core
-so its own code + tests don't change yet. This means `alknet-client`
-(Phase 3) never depends on `alknet-call` — the dep graph is clean from
-the start, no temporary dep to clean up later.
+**Decision:** Move `ConnectionCredentials`/`RemoteIdentity` to
+`alknet-core` as a standalone additive step *before any new crate is
+created* (ADR-091). It's independent of everything else, purely
+additive (core gains two small types, nothing breaks), and
+`alknet-call` imports them from core so its own code + tests don't
+change yet. This means `alknet-client` (Phase 3) never depends on
+`alknet-call` — the dep graph is clean from the start, no temporary dep
+to clean up later.
 
-The move is ~50 lines (struct definitions + builder impls) into a new
+`ConnectionCredentials` (not `CallCredentials`) is what moves — it is
+the transport-level credential bundle (`local_identity` +
+`remote_identity`), carrying only the dimensions the dial consumes.
+`CallCredentials` stays in `alknet-call` because its `auth_token` field
+is a call-protocol / hub-layer concept (bearer-token identity
+correlation for browsers and `alknet/register`), not a transport
+credential. See ADR-091 for the full rationale.
+
+The move is ~40 lines (struct definitions + builder impls) into a new
 `crates/alknet-core/src/credentials.rs` (or `auth.rs` — `auth.rs`
 already holds `AuthToken`, so `credentials.rs` is cleaner to keep the
-auth module from growing). `alknet-call`'s `client/mod.rs` changes
-`pub use call_client::{CallCredentials, RemoteIdentity}` to
-`pub use alknet_core::{CallCredentials, RemoteIdentity}` (re-export).
-No test changes — the tests import `CallCredentials` from
-`alknet_call::client`, which still works via the re-export.
+auth module from growing). `alknet-call`'s `client/mod.rs` imports
+`ConnectionCredentials` + `RemoteIdentity` from core and re-exports
+them; `CallCredentials` stays defined in `alknet-call` (retaining
+`auth_token`, referencing the core types for the transport dimensions).
+Test changes are minimal — the Category A tests that reference
+`CallCredentials` directly may need import updates depending on how
+`CallCredentials` is restructured.
 
 ### Phase 5 test audit — `call_client.rs` (16 tests)
 
@@ -460,13 +487,17 @@ transport-agnostic. These survive the prune unchanged.
 | `call_client_is_send_sync` | 705 | trait bounds |
 | `remote_identity_none_is_load_bearing_not_defaulted` | 921 | `CallCredentials::new()` |
 
-**Category B — TLS/verifier tests, move to `alknet-tls` (8 tests):**
+**Category B — TLS/verifier tests, move to `alknet-tls` (10 tests):**
 
 These test `FingerprintPinVerifier`, `build_client_auth`,
 `select_server_verifier`, and `build_quinn_client_config` directly.
 They're `#[cfg(feature = "quinn")]`-gated and test the TLS helpers,
 not the call protocol. They move to `alknet-tls` in Phase 1 (adapted
-to test `TlsClientConfig::new` instead of the free functions).
+to test `TlsClientConfig::new` instead of the free functions). The
+two `build_quinn_client_config` tests test the full config build
+(verifier + client-auth + provider wired together) and are adapted
+to test `TlsClientConfig::new` + `for_quinn()` instead of the free
+function.
 
 | Test | Line | What it tests | Move target |
 |------|------|---------------|-------------|
@@ -480,11 +511,6 @@ to test `TlsClientConfig::new` instead of the free functions).
 | `build_client_auth_none_resolves_to_no_client_cert` | 879 | no-cert resolver | `alknet-tls` |
 | `build_quinn_client_config_with_raw_key_identity_builds_without_error` | 893 | full config build | `alknet-tls` |
 | `build_quinn_client_config_with_no_remote_identity_builds_without_error` | 909 | CA-verify config | `alknet-tls` |
-
-Wait — that's 10, not 8. The two `build_quinn_client_config` tests
-test the full config build (verifier + client-auth + provider wired
-together). They move to `alknet-tls` and are adapted to test
-`TlsClientConfig::new` + `for_quinn()` instead of the free function.
 
 **Category C — `connect` integration test, remove (0 tests):**
 
@@ -507,11 +533,13 @@ The one reference to `connect()` is in a doc comment (line 76:
 **Net Phase 5 test impact:** 6 tests stay unchanged (Category A), 10
 tests move to `alknet-tls` in Phase 1 (Category B), 0 tests need
 rewriting. The `from_call.rs` tests (27) stay unchanged. The prune
-of `call_client.rs` is mechanical: delete lines 90-640 (the error
-enum + `connect` + TLS helpers), keep lines 102-187 (`CallClient` +
-`spawn_dispatch`), update imports. The tests (lines 640-930) keep the
-Category A tests, remove the Category B tests (moved in Phase 1), and
-update the one doc comment.
+of `call_client.rs` is mechanical: delete `ClientError`, `connect`,
+and all the TLS helpers (`build_*`, `select_*`, `load_*`,
+`Ed25519SigningKey`, `RawKeyClientCertResolver`, `NoClientCertResolver`,
+`FingerprintPinVerifier`); keep `CallClient` + `new` + `spawn_dispatch`
+unchanged; update imports. The test suite keeps the Category A tests,
+removes the Category B tests (moved in Phase 1), and updates the one
+doc comment.
 
 This is much simpler than the initial estimate of "~290 lines of test
 restructuring." The actual test work is: move 10 tests to `alknet-tls`

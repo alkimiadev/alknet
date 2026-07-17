@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted (resolves OQ-55)
+Accepted (resolves OQ-55; §3 and §5 amended 2026-07-16 by ADR-091 —
+the dial credential bundle is `ConnectionCredentials` (transport-level),
+not `CallCredentials` (call-protocol-level); all three dial signatures
+unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` parameter is
+derived from `remote_identity`; the `auth_token` stays in the
+call-protocol layer, not the dial; `CallCredentials` stays in
+`alknet-call`, only `ConnectionCredentials`/`RemoteIdentity` move to
+`alknet-core`)
 
 ## Context
 
@@ -195,6 +202,9 @@ impl AlknetClient {
         local_key: &alknet_core::config::Ed25519SecretKey,
     ) -> Result<Connection, ClientDialError>;
 }
+
+// NOTE: The signatures above are the ORIGINAL (pre-ADR-091) shapes.
+// ADR-091 amends §3 — see the amendment note below.
 ```
 
 The three dials share `CallCredentials` (the local identity + remote
@@ -204,6 +214,33 @@ iroh dial uses the raw `Ed25519SecretKey` directly. This mirrors the
 server side's "iroh shares the key, not the config" (ADR-082, ADR-087
 §3) — the consistency is in the rule (ADR-034 verifier selection), not
 in the type.
+
+> **Amendment 2026-07-16 (ADR-091):** The dial credential bundle is
+> `ConnectionCredentials`, not `CallCredentials`. `CallCredentials`
+> couples the dial to the call protocol (its `auth_token` field is a
+> call-protocol / hub-layer concept — bearer-token identity correlation
+> for browsers and `alknet/register`, not a transport credential). The
+> dial uses only the transport-identity dimensions (`local_identity` +
+> `remote_identity`); those move to `ConnectionCredentials` in
+> `alknet-core`. All three dial signatures unify on
+> `&ConnectionCredentials`:
+>
+> ```rust
+> dial_quic(addr, server_name, alpn, creds: &ConnectionCredentials) -> Connection
+> dial_tcp_tls(host, addr, alpn, creds: &ConnectionCredentials) -> Connection
+> dial_iroh(alpn, creds: &ConnectionCredentials) -> Connection
+> ```
+>
+> The `node_id: iroh::NodeId` parameter on `dial_iroh` is removed — it
+> is derived from `creds.remote_identity.fingerprint`
+> (`ed25519:<hex>` → `NodeId::from_bytes`), the same extraction pattern
+> the rustls dials use for the verifier. The consistency is now in both
+> the rule (ADR-034) and the type. `CallCredentials` stays in
+> `alknet-call` as the call-protocol credential bundle; the
+> `auth_token` is a per-request field on `call.requested` payloads
+> (set by the caller or the `from_call` forwarding handler, resolved by
+> `Dispatcher::resolve_identity`), not a dial-level credential. See
+> [ADR-091](091-connectioncredentials-decouple-dial-from-call.md).
 
 ### 4. The dial is transport-polymorphic across the native endpoint type
 
@@ -258,6 +295,18 @@ to `alknet-core` — the shared-types crate, alongside `TlsIdentity` and
 options the original ADR-089 draft called a "two-way-door
 implementation detail"; it is not implementation detail — it determines
 the dep graph, and the dep graph requires it.
+
+> **Amendment 2026-07-16 (ADR-091):** This consequence is superseded.
+> `CallCredentials` does **not** move to `alknet-core` — it stays in
+> `alknet-call` (it is the call-protocol credential bundle; its
+> `auth_token` field is a call-protocol / hub-layer concept, not a
+> transport credential). What moves to `alknet-core` is
+> `ConnectionCredentials` (a new type carrying only the
+> transport-identity dimensions: `local_identity` + `remote_identity`)
+> and `RemoteIdentity`. The dial consumes `ConnectionCredentials`, not
+> `CallCredentials`. All three dial signatures unify on
+> `&ConnectionCredentials`. See
+> [ADR-091](091-connectioncredentials-decouple-dial-from-call.md).
 
 **Consequence: `FingerprintPinVerifier` moves to `alknet-tls`.** With
 `connect` removed and the verifier-selection logic centralized in

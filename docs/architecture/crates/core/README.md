@@ -15,10 +15,12 @@ vestigial); core no longer carries the accept-loop runner or its
 transport deps (quinn, iroh, rcgen, rustls-acme).
 `Connection::from_quinn` / `from_iroh` stay in core's `types.rs` as
 shared constructors (gated on core's `quinn` / `iroh` features).
-`CallCredentials` and `RemoteIdentity` move to `alknet-core` (from
-`alknet-call`, per ADR-089 §5) — both the call and channels clients
-need them, and the dial (`alknet-client`) must not depend on the call
-protocol for the credential type.
+`ConnectionCredentials` and `RemoteIdentity` move to `alknet-core`
+(from `alknet-call`, per ADR-091) — the transport-level credential
+bundle consumed by the dial (`alknet-client`) and by server-side
+transport construction. `CallCredentials` (the call-protocol credential
+bundle, including `auth_token`) stays in `alknet-call` — the dial does
+not carry call-protocol dimensions.
 
 ## Documents
 

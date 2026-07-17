@@ -155,7 +155,7 @@ hiding the client's real IP from the hub.
 
 ```rust
 impl AlknetClient {
-    /// QUIC dial. Builds a `TlsClientConfig` from `credentials`
+    /// QUIC dial. Builds a `TlsClientConfig` from `creds`
     /// (ADR-034 verifier selection + ADR-084 provider), dials `addr`
     /// on `alpn`, returns a `Connection` via
     /// `Connection::from_quinn_with_alpn`. The `server_name` is the
@@ -167,10 +167,10 @@ impl AlknetClient {
         addr: SocketAddr,
         server_name: &str,
         alpn: &[u8],
-        credentials: &CallCredentials,
+        creds: &ConnectionCredentials,
     ) -> Result<Connection, ClientDialError>;
 
-    /// TCP+TLS dial. Builds a `TlsClientConfig` from `credentials`,
+    /// TCP+TLS dial. Builds a `TlsClientConfig` from `creds`,
     /// connects a `TcpStream` to `addr`, wraps with `TlsConnector`
     /// using `host` as the SNI, returns a `Connection` via
     /// `Connection::from_bidi` (ADR-065). Feature-gated on `tcp`.
@@ -180,21 +180,23 @@ impl AlknetClient {
         host: &str,
         addr: SocketAddr,
         alpn: &[u8],
-        credentials: &CallCredentials,
+        creds: &ConnectionCredentials,
     ) -> Result<Connection, ClientDialError>;
 
-    /// Iroh dial. Dials `node_id` on `alpn` via the iroh endpoint.
-    /// The iroh path does NOT use `TlsClientConfig` — iroh has its
-    /// own TLS (shares the `Ed25519SecretKey`, not the rustls config —
-    /// ADR-087 §3, ADR-089 §3). The verifier is iroh's `NodeId` match
-    /// (fingerprint pin by another name — ADR-034 §3). An unknown
-    /// iroh remote fails closed (no CA). Feature-gated on `iroh`.
+    /// Iroh dial. Dials on `alpn` via the iroh endpoint. The iroh path
+    /// does NOT use `TlsClientConfig` — iroh has its own TLS (shares the
+    /// `Ed25519SecretKey`, not the rustls config — ADR-087 §3, ADR-089
+    /// §3). The local key is extracted from `creds.local_identity`; the
+    /// remote `NodeId` is derived from `creds.remote_identity.fingerprint`
+    /// (`ed25519:<hex>` → `NodeId::from_bytes`). The verifier is iroh's
+    /// `NodeId` match (fingerprint pin by another name — ADR-034 §3).
+    /// An unknown iroh remote fails closed (no CA). Feature-gated on
+    /// `iroh`.
     #[cfg(feature = "iroh")]
     pub async fn dial_iroh(
         &self,
-        node_id: iroh::NodeId,
         alpn: &[u8],
-        local_key: &alknet_core::config::Ed25519SecretKey,
+        creds: &ConnectionCredentials,
     ) -> Result<Connection, ClientDialError>;
 }
 ```
@@ -204,9 +206,12 @@ The two rustls dials (`dial_quic`, `dial_tcp_tls`) share
 pin for a known peer, CA-verify for an unknown X.509 remote, fail-closed
 for an unknown raw-key remote) and the ADR-084 crypto provider
 (`aws_lc_rs`). The iroh dial is the exception: iroh has its own TLS and
-takes the `Ed25519SecretKey` directly, not a `rustls::ClientConfig`.
-The consistency is in the rule (ADR-034), not in the type — the same
-exception as the server side (ADR-082, ADR-087 §3).
+takes the `Ed25519SecretKey` directly (extracted from
+`creds.local_identity`), not a `rustls::ClientConfig`. The consistency
+is in the rule (ADR-034), not in the type — the same exception as the
+server side (ADR-082, ADR-087 §3). All three dials take
+`&ConnectionCredentials` — the unified transport-level credential
+bundle (ADR-091).
 
 ### What the dial does NOT do
 
@@ -266,7 +271,7 @@ invariant. The config's crate location (it can live in `alknet-client`,
 detail; the shape is decided (ADR-090 §1).
 
 **The proxy is invisible above the dial.** `Connection`, dispatch,
-`CallCredentials`, `TlsClientConfig`, the hub's `supervise_worker`
+`ConnectionCredentials`, `TlsClientConfig`, the hub's `supervise_worker`
 closure — none know a proxy is in the path. The proxy is purely an
 establishment concern, localized to `alknet-client`. A proxied QUIC
 connection still yields a `Connection::from_quinn_with_alpn`; a
@@ -328,25 +333,25 @@ the alknet type level — see ADR-090 §"Two distinct SOCKS5 uses".
 
 ### Credentials
 
-`AlknetClient`'s dials take a `CallCredentials` bundle — the shared
-type from `alknet-core` (moved out of `alknet-call` so the dial does
-not depend on the call protocol; see ADR-089 §5). It carries the local
-`TlsIdentity`, the optional call-protocol-level `auth_token`, and the
-`RemoteIdentity` for verifier selection. The credentials come from
-`Capabilities` (ADR-014), never from environment variables — the
-no-env-vars invariant. The assembly layer derives them from the vault
-at startup and passes them to each dial.
+`AlknetClient`'s dials take a `ConnectionCredentials` bundle — the
+transport-level credential type from `alknet-core` (ADR-091). It
+carries the two dimensions every dial consumes: the local `TlsIdentity`
+(presented to the transport's identity layer) and the `RemoteIdentity`
+for verifier selection. The credentials come from `Capabilities`
+(ADR-014), never from environment variables — the no-env-vars
+invariant. The assembly layer derives them from the vault at startup
+and passes them to each dial.
 
-**The `auth_token` is stripped at the TLS boundary.** `TlsClientConfig`
-and `ClientVerifierContext` are TLS-level types and do not carry the
-call-protocol auth token. The dial extracts the TLS-relevant fields
-from `CallCredentials` — `tls_identity` → the client-cert
-`local_identity`, `remote_identity` → the fingerprint-pin input to
-`ClientVerifierContext` — and builds a `TlsClientConfig` from those
-alone. The `auth_token` travels with the `Connection` into the
-protocol take-over (`spawn_dispatch` / `from_connection`), where it is
-sent as the first call-protocol frame when the protocol requires it.
-This keeps `alknet-tls` free of any call-protocol coupling.
+`ConnectionCredentials` is **not** the call-protocol credential bundle.
+The call-protocol `auth_token` (a hub-correlated bearer for browsers
+and `alknet/register` — ADR-017 §7) is a per-request field on
+`call.requested` payloads, not a transport credential. It stays in the
+call-protocol layer (`CallCredentials` in `alknet-call`); the dial does
+not carry it. `Dispatcher::resolve_identity` resolves it via
+`IdentityProvider::resolve_from_token` at dispatch time; the `from_call`
+forwarding handler sets it via `build_forwarded_payload`. This keeps
+`alknet-client` free of call-protocol coupling. See
+[ADR-091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md).
 
 ### The dialable ALPNs
 
@@ -425,11 +430,13 @@ public key) is verified against the expected `NodeId`, which is
 fingerprint-pinning by another name. An unknown iroh remote fails
 closed (no CA to fall back to — ADR-034 §3, Assumption 1).
 
-The `dial_iroh` method takes the `Ed25519SecretKey` as a parameter
-rather than pulling it from `CallCredentials` because iroh does not use
-the `TlsClientConfig` path. The assembly layer reads the key from
-`StaticConfig` (in core) and passes it directly, same as the server
-side's iroh endpoint construction.
+The `dial_iroh` method extracts the key from
+`creds.local_identity` (`ConnectionCredentials`) rather than taking a
+separate `Ed25519SecretKey` parameter because the dial signature is
+unified — all three dials take `&ConnectionCredentials` (ADR-091). The
+assembly layer reads the key from `StaticConfig` (in core) and passes
+it via `ConnectionCredentials`, same as the server side's iroh endpoint
+construction.
 
 ### Non-Rust native clients (out of scope)
 
@@ -557,7 +564,7 @@ don't use a proxy don't pay the dep.
 
 ```
 alknet-client
-├── alknet-core       (Connection, CallCredentials, RemoteIdentity,
+├── alknet-core       (Connection, ConnectionCredentials, RemoteIdentity,
 │                     Ed25519SecretKey, types)
 ├── alknet-tls        (TlsClientConfig — for quinn + tcp dials)
 ├── quinn             (optional — dial_quic)
@@ -569,14 +576,15 @@ alknet-client
 ```
 
 `alknet-client` depends on `alknet-tls` (for `TlsClientConfig`) and
-`alknet-core` (for `Connection`, `CallCredentials`, `RemoteIdentity`,
-and types). It does **not** depend on `alknet-call` or
+`alknet-core` (for `Connection`, `ConnectionCredentials`,
+`RemoteIdentity`, and types). It does **not** depend on `alknet-call` or
 `alknet-channels-call` — the dial is below the protocol.
-`CallCredentials` and `RemoteIdentity` live in `alknet-core` (moved
-from `alknet-call` per ADR-089 §5 — both the call and channels clients
-need them, and the dial must not depend on the call protocol; see
-ADR-089 §5). `FingerprintPinVerifier` lives in `alknet-tls` (moved from
-`alknet-call` per ADR-087 §5 — it is a TLS concern, and
+`ConnectionCredentials` and `RemoteIdentity` live in `alknet-core`
+(transport-level credential types, moved from `alknet-call` per
+ADR-091 — the dial and the server-side transport construction both
+consume them, and the dial must not depend on the call protocol for the
+credential type). `FingerprintPinVerifier` lives in `alknet-tls` (moved
+from `alknet-call` per ADR-087 §5 — it is a TLS concern, and
 `TlsClientConfig::new` constructs it; moving it lets `alknet-call` shed
 its direct `rustls` dep entirely).
 
@@ -606,7 +614,7 @@ alknet-worker (uses AlknetClient to dial a hub)
 `AlknetClient` is one producer, but a test can hand them a
 `Connection::from_stream` directly. The dependency direction is:
 `alknet-client → alknet-tls → alknet-core`; the protocol crates are
-parallel, not downstream of the dial. `CallCredentials` and
+parallel, not downstream of the dial. `ConnectionCredentials` and
 `RemoteIdentity` live in `alknet-core` (not `alknet-call`), so the dial
 does not depend on the call protocol for the credential type.
 
@@ -632,8 +640,8 @@ let client = AlknetClient::new()
     // .with_iroh(iroh_endpoint)   — if iroh is needed
 
 // 3. Derive credentials from the vault (ADR-014 — no env vars).
-let creds = CallCredentials::new()
-    .with_tls_identity(TlsIdentity::RawKey(local_key))
+let creds = ConnectionCredentials::new()
+    .with_local_identity(TlsIdentity::RawKey(local_key))
     .with_remote_identity(RemoteIdentity {
         fingerprint: hub_fingerprint,  // known peer → fingerprint pin
     });
@@ -665,8 +673,9 @@ All design decisions are documented as ADRs in
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred |
+| [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred (§3/§5 amended by ADR-091 — dial takes `ConnectionCredentials`, not `CallCredentials`) |
 | [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT, `dial_iroh` forces relay-only via an HTTP-to-SOCKS5 bridge; OQ-67 resolved; grounded in the quinn-proxy + iroh-proxy PoCs |
+| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `local_identity` + `remote_identity`), not `CallCredentials` (call-protocol-level); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` stays in the call-protocol layer; `CallCredentials` stays in `alknet-call` |
 
 ## Open Questions
 
@@ -700,7 +709,10 @@ See [open-questions.md](../../open-questions.md) for full details.
 ## References
 
 - [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) —
-  the decision this spec implements
+  the decision this spec implements (§3/§5 amended by ADR-091)
+- [ADR-091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md)
+  — `ConnectionCredentials` (the dial credential bundle; decouples the
+  dial from the call protocol)
 - [ADR-090](../../decisions/090-client-dial-socks5-proxy-seam.md) —
   the SOCKS5 proxy seam (client-dial privacy)
 - [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) —
