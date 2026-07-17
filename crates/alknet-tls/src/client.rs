@@ -48,6 +48,12 @@ impl TlsClientConfig {
                 .map_err(|e| TlsError::Config(e.to_string()))?,
         )))
     }
+
+    /// Consume the config and return the inner `rustls::ClientConfig`.
+    /// Used by `dial_tcp_tls` to build a `TlsConnector`.
+    pub fn into_rustls_config(self) -> rustls::ClientConfig {
+        self.rustls_config
+    }
 }
 
 /// Build the client-auth cert resolver that presents the local node's TLS

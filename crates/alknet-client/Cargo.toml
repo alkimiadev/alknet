@@ -1,0 +1,31 @@
+[package]
+name = "alknet-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native client dial seam — multi-transport dialer that produces Connections for protocol take-overs"
+repository.workspace = true
+
+[lib]
+name = "alknet_client"
+
+[features]
+default = []
+quinn = ["dep:quinn", "alknet-tls/quinn", "alknet-core/quinn"]
+tcp = ["dep:tokio-rustls", "alknet-tls/tcp"]
+iroh = ["dep:iroh", "alknet-core/iroh"]
+socks5 = ["dep:fast-socks5"]
+
+[dependencies]
+alknet-core = { path = "../alknet-core" }
+alknet-tls = { path = "../alknet-tls" }
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+quinn = { version = "0.11", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+iroh = { version = "1.0", optional = true, default-features = false, features = ["tls-aws-lc-rs"] }
+fast-socks5 = { version = "1", optional = true }
+rustls = "0.23"
+rustls-pki-types = "1"
+hex = "0.4"
