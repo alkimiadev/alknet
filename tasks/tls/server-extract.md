@@ -1,7 +1,7 @@
 ---
 id: tls/server-extract
 name: Extract server-side TLS code from alknet-core/endpoint.rs into alknet-tls
-status: pending
+status: completed
 depends_on: [tls/crate-init]
 scope: moderate
 risk: medium

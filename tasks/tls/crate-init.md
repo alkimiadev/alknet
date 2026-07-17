@@ -1,7 +1,7 @@
 ---
 id: tls/crate-init
 name: Initialize alknet-tls crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: [core/connection-credentials]
 scope: moderate
 risk: low

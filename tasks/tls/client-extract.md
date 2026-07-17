@@ -1,7 +1,7 @@
 ---
 id: tls/client-extract
 name: Extract client-side TLS code from alknet-call/call_client.rs into alknet-tls
-status: pending
+status: completed
 depends_on: [tls/server-extract]
 scope: narrow
 risk: medium

@@ -1,7 +1,7 @@
 ---
 id: tls/tests
 name: Move and adapt TLS tests from endpoint.rs and call_client.rs into alknet-tls
-status: pending
+status: completed
 depends_on: [tls/client-extract]
 scope: moderate
 risk: low

@@ -1,7 +1,7 @@
 ---
 id: core/connection-credentials
 name: Add ConnectionCredentials + RemoteIdentity to alknet-core (purely additive)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low

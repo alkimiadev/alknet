@@ -1,7 +1,7 @@
 ---
 id: tls/review-tls
 name: Review alknet-tls implementation for spec conformance, deduplication, and test coverage
-status: pending
+status: completed
 depends_on: [tls/tests]
 scope: moderate
 risk: low
