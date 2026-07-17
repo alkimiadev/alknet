@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use alknet_core::config::{Ed25519SecretKey, TlsIdentity};
 #[cfg(feature = "acme")]
 use alknet_core::config::AcmeDirectory;
+use alknet_core::config::{Ed25519SecretKey, TlsIdentity};
 #[cfg(feature = "acme")]
 use tracing::{debug, error, warn};
 
@@ -24,10 +24,7 @@ pub struct TlsServerConfig {
 impl TlsServerConfig {
     /// Build a server config from a `TlsIdentity` and ALPN list.
     /// ACME identities spawn a background cert-renewal task.
-    pub async fn new(
-        tls_identity: &TlsIdentity,
-        alpns: &[Vec<u8>],
-    ) -> Result<Self, TlsError> {
+    pub async fn new(tls_identity: &TlsIdentity, alpns: &[Vec<u8>]) -> Result<Self, TlsError> {
         match tls_identity {
             TlsIdentity::Acme {
                 domains,
@@ -209,8 +206,7 @@ struct SelfSignedCert {
 
 fn generate_self_signed_cert() -> Result<SelfSignedCert, TlsError> {
     use rcgen::{CertificateParams, KeyPair};
-    let key_pair =
-        KeyPair::generate().map_err(|e| TlsError::Config(e.to_string()))?;
+    let key_pair = KeyPair::generate().map_err(|e| TlsError::Config(e.to_string()))?;
     let params = CertificateParams::default();
     let cert = params
         .self_signed(&key_pair)
@@ -436,6 +432,7 @@ mod tests {
         let _ = build_rustls_server_config(&identity, &[]);
     }
 
+    #[cfg(feature = "quinn")]
     #[test]
     fn build_quinn_server_config_from_rustls_succeeds() {
         let sk = Ed25519SecretKey::generate();

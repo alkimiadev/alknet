@@ -20,10 +20,7 @@ impl TlsClientConfig {
     /// Build a client config from `ConnectionCredentials` and an ALPN.
     /// Selects the server cert verifier by `remote_identity` presence
     /// (ADR-034 §3): `Some` → fingerprint pin, `None` → CA verification.
-    pub fn new(
-        credentials: &ConnectionCredentials,
-        alpn: &[u8],
-    ) -> Result<Self, TlsError> {
+    pub fn new(credentials: &ConnectionCredentials, alpn: &[u8]) -> Result<Self, TlsError> {
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
         let client_auth = build_client_auth(&provider, &credentials.tls_identity)?;
@@ -38,7 +35,9 @@ impl TlsClientConfig {
         config.alpn_protocols = vec![alpn.to_vec()];
         config.enable_early_data = true;
 
-        Ok(Self { rustls_config: config })
+        Ok(Self {
+            rustls_config: config,
+        })
     }
 
     /// Convert to a `quinn::ClientConfig` for QUIC transport.
@@ -63,9 +62,7 @@ fn build_client_auth(
 ) -> Result<Arc<dyn rustls::client::ResolvesClientCert>, TlsError> {
     match tls_identity {
         Some(TlsIdentity::RawKey(secret_key)) => {
-            let signing_key = Arc::new(crate::signing::Ed25519SigningKey::new(
-                secret_key.clone(),
-            ));
+            let signing_key = Arc::new(crate::signing::Ed25519SigningKey::new(secret_key.clone()));
             let spki = signing_key.spki_public_key();
             let cert = rustls::pki_types::CertificateDer::from(spki.to_vec());
             let certified_key = Arc::new(rustls::sign::CertifiedKey::new(vec![cert], signing_key));
@@ -74,9 +71,8 @@ fn build_client_auth(
         Some(TlsIdentity::X509 { cert, key }) => {
             let cert_chain = crate::pem::load_cert_chain(cert)?;
             let key_der = crate::pem::load_private_key(key)?;
-            let certified_key =
-                rustls::sign::CertifiedKey::from_der(cert_chain, key_der, provider)
-                    .map_err(|e| TlsError::Config(e.to_string()))?;
+            let certified_key = rustls::sign::CertifiedKey::from_der(cert_chain, key_der, provider)
+                .map_err(|e| TlsError::Config(e.to_string()))?;
             Ok(Arc::new(RawKeyClientCertResolver::new(Arc::new(
                 certified_key,
             ))))
@@ -489,6 +485,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "quinn")]
     #[test]
     fn build_quinn_client_config_with_raw_key_identity_builds_without_error() {
         let sk = Ed25519SecretKey::generate();
@@ -503,11 +500,11 @@ mod tests {
         let _ = quinn_config;
     }
 
+    #[cfg(feature = "quinn")]
     #[test]
     fn build_quinn_client_config_with_no_remote_identity_builds_without_error() {
         let sk = Ed25519SecretKey::generate();
-        let credentials =
-            ConnectionCredentials::new().with_tls_identity(TlsIdentity::RawKey(sk));
+        let credentials = ConnectionCredentials::new().with_tls_identity(TlsIdentity::RawKey(sk));
         let config = TlsClientConfig::new(&credentials, b"alknet/call")
             .expect("TlsClientConfig::new must build for CA-verification path");
         let quinn_config = config.for_quinn().expect("for_quinn must convert");
