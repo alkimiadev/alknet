@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod credentials;
 pub mod endpoint;
 pub mod fingerprint;
 pub mod ownership;
@@ -15,5 +16,6 @@ pub mod store;
 pub mod types;
 
 pub use auth::{IdentityProvider, IdentityStore};
+pub use credentials::{ConnectionCredentials, RemoteIdentity};
 pub use ownership::{InMemoryOwnershipStore, OwnershipError, OwnershipProvider, OwnershipStore};
 pub use store::{CredentialStore, EncryptedData, InMemoryCredentialStore, StoreError};
