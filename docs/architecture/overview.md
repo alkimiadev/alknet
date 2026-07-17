@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-15
+last_updated: 2026-07-17
 ---
 
 # Alknet Overview
@@ -97,11 +97,12 @@ alknet-vault (standalone — foundational to ACL: key derivation, identity)
 │   alknet-core        ProtocolHandler, Connection, BidiStreamSource, AuthContext,
 │   │                  IdentityProvider, StaticConfig, DynamicConfig, fingerprint,
 │   │                  ConnectionCredentials, RemoteIdentity
-│   │                  (endpoint extracted to alknet-endpoint; core is now lightweight
-│   │                  types+auth+config — no quinn/iroh/rcgen deps; ConnectionCredentials
-│   │                  + RemoteIdentity moved here from alknet-call per ADR-091;
+│   │                  (lightweight types+auth+config+credentials; endpoint in
+│   │                  alknet-endpoint; no rcgen/rustls-pemfile/rustls-acme deps;
+│   │                  quinn/iroh stay for Connection::from_quinn/from_iroh;
+│   │                  ConnectionCredentials + RemoteIdentity per ADR-091;
 │   │                  CallCredentials removed per ADR-091 Am. 2026-07-17)
-│   ├── alknet-tls     TlsServerConfig + TlsClientConfig + FingerprintPinVerifier — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087; FingerprintPinVerifier moved from alknet-call per ADR-089 §5)
+│   ├── alknet-tls     TlsServerConfig + TlsClientConfig + FingerprintPinVerifier — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087; FingerprintPinVerifier per ADR-089 §5)
 │   ├── alknet-call    CallAdapter on alknet/call, CallClient (spawn_dispatch only — connect removed per ADR-089 §5), OperationRegistry, adapters (no TLS/transport deps)
 │   ├── alknet-channels
 │   │   ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081

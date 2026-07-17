@@ -1,6 +1,6 @@
 ---
 status: reviewed
-last_updated: 2026-07-15
+last_updated: 2026-07-17
 ---
 
 # alknet-tls
@@ -17,16 +17,9 @@ one verifier rule, N clients.
 
 ## What
 
-`alknet-tls` extracts the TLS setup that was welded to the quinn endpoint
-in `alknet-core`. The existing code (`endpoint.rs`) builds a
-`rustls::ServerConfig` from a `TlsIdentity`, then **consumes** it into a
-`quinn::ServerConfig` — making it impossible to reuse the same cert for a
-TCP+TLS listener. ACME is worse: the `AcmeState` task is spawned inside
-the quinn endpoint, so a TCP+TLS listener would need its own ACME state
-machine (two orders for the same domain, two cert caches, potential
-Let's Encrypt rate-limiting).
-
-`alknet-tls` fixes this by making the TLS config **shareable**:
+`alknet-tls` provides `TlsServerConfig` and `TlsClientConfig` —
+shareable TLS setup types that a deployment builds once and hands to
+whichever transports it runs:
 
 ```rust
 pub struct TlsServerConfig {
@@ -64,15 +57,17 @@ transports.
 
 ## Why
 
-`alknet-core` builds the `rustls::ServerConfig` once, then consumes it
-into a `quinn::ServerConfig` — making the cert unreusable for a TCP+TLS
-listener. For ACME the problem is worse: the `AcmeState` task is spawned
-inside the quinn endpoint, so a TCP+TLS listener would need a second ACME
-state machine for the same domain (duplicate orders, divergent cert
-caches, Let's Encrypt rate-limit risk). The full rationale, including
-the cert-reuse problem, the ACME worst case, and the three reasons a
-separate crate is the right shape (dependency isolation, ACME weight,
-quinn/iroh having their own TLS), is in
+Without a shareable TLS config, a `rustls::ServerConfig` built for one
+transport gets consumed into that transport's wrapper (e.g.
+`quinn::ServerConfig`), making the cert unreusable for a TCP+TLS
+listener. For ACME the problem is worse: the `AcmeState` task spawned
+inside the quinn endpoint means a TCP+TLS listener would need a second
+ACME state machine for the same domain (duplicate orders, divergent cert
+caches, Let's Encrypt rate-limit risk). `alknet-tls` isolates TLS setup
+from the transport so one config serves all transports. The full
+rationale, including the cert-reuse problem, the ACME worst case, and
+the three reasons a separate crate is the right shape (dependency
+isolation, ACME weight, quinn/iroh having their own TLS), is in
 [ADR-082](../../decisions/082-alknet-tls-extraction.md).
 
 ### The three endpoint types (ADR-086)
@@ -107,63 +102,72 @@ transports the deployment runs.
 
 ## Architecture
 
-### What moves from `alknet-core` to `alknet-tls` (server side)
+### Server-side contents
 
-| Component | Current location | New location |
-|-----------|-----------------|-------------|
-| `TlsIdentity` enum | `alknet-core/config.rs` | **stays in core** (it's a config type) |
-| `Ed25519SecretKey` | `alknet-core/config.rs` | **stays in core** (config type) |
-| `build_rustls_server_config()` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` (unconditional) |
-| `build_quinn_server_config_from_rustls()` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` (`for_quinn()` — wraps rustls config in `QuicServerConfig`) |
-| `TlsSetup` (ACME state machine) | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` (the `TlsServerConfig::new` ACME path) |
-| `RawKeyCertResolver` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` |
-| `Ed25519SigningKey` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` (consolidates with the `alknet-call` duplicate — see client table) |
-| `AcceptAnyCertVerifier` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` |
-| `SelfSignedCert` / `generate_self_signed_cert()` | `alknet-core/endpoint.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` |
-| `load_cert_chain()` / `load_private_key()` | `alknet-core/endpoint.rs` | `alknet-tls` (consolidates with the `alknet-call` duplicate — see client table) |
-| `fingerprint.rs` | `alknet-core/fingerprint.rs` | **stays in core** (shared by server + client; the client-side `FingerprintPinVerifier` is now in `alknet-tls` per ADR-089 §5, so both consumers are co-located; production code uses `sha2` + manual DER only — `rustls` is test-only. See OQ-59 — the original dep-edge concern that motivated keeping `fingerprint.rs` in core is dissolved by ADR-089 §5.) |
+The server-side TLS setup — `rustls::ServerConfig` construction, cert
+resolvers, the ACME state machine — is in `alknet-tls/src/server.rs`.
+These components were originally part of `alknet-core`'s endpoint
+module (quinn-gated); ADR-082 moved them into `alknet-tls` so a
+`TlsServerConfig` is shareable across transports rather than consumed
+into a single transport's wrapper.
 
-### What moves from `alknet-call` to `alknet-tls` (client side)
+| Component | Notes |
+|-----------|-------|
+| `TlsServerConfig` | The central type — wraps `rustls::ServerConfig` + the optional ACME task handle |
+| `build_rustls_server_config()` | Unconditional; called by `TlsServerConfig::new` |
+| `for_quinn()` | Wraps the rustls config in a `QuicServerConfig` (feature-gated on `quinn`) |
+| `TlsSetup` / ACME path | The `TlsServerConfig::new` ACME branch spawns the state-machine task |
+| `RawKeyCertResolver` | Presents an Ed25519 key as an RFC 7250 raw public key server cert |
+| `Ed25519SigningKey` | One copy in `alknet-tls`, shared by server + client (see below) |
+| `AcceptAnyCertVerifier` | Accepts any client cert and extracts the fingerprint (raw-key servers don't pin client certs) |
+| `SelfSignedCert` / `generate_self_signed_cert()` | The dev `SelfSigned` identity path |
+| `load_cert_chain()` / `load_private_key()` | In `pem.rs`; one copy, shared by server + client |
 
-`TlsClientConfig::new` (ADR-087) centralizes the client-side verifier
-selection + provider wiring + client-auth cert presentation that
-currently lives in `alknet-call/src/client/call_client.rs`. The
-extraction is the client-side analogue of the server-side
-`endpoint.rs` extraction above.
-
-| Component | Current location | New location |
-|-----------|-----------------|-------------|
-| `build_quinn_client_config()` | `alknet-call/client/call_client.rs` (`#[cfg(feature = "quinn")]`) | `alknet-tls` (`TlsClientConfig::new` + `for_quinn()`) |
-| `build_client_auth()` | `alknet-call/client/call_client.rs` | `alknet-tls` (client-auth cert resolver construction inside `TlsClientConfig::new`) |
-| `select_server_verifier()` | `alknet-call/client/call_client.rs` | `alknet-tls` (ADR-034 verifier selection inside `TlsClientConfig::new`) |
-| `load_platform_root_cert_store()` | `alknet-call/client/call_client.rs` | `alknet-tls` (the unknown-X.509-remote CA path inside `TlsClientConfig::new`) |
-| `FingerprintPinVerifier` | `alknet-call/client/call_client.rs` | `alknet-tls` (moved — it is a TLS concern; `TlsClientConfig::new` constructs it; moving it lets `alknet-call` shed its direct `rustls` dep entirely per ADR-089 §5) |
-| `Ed25519SigningKey` (client-side copy) | `alknet-call/client/call_client.rs` | `alknet-tls` (consolidates with the `endpoint.rs` duplicate — one copy in `alknet-tls`) |
-| `RawKeyClientCertResolver` | `alknet-call/client/call_client.rs` | `alknet-tls` |
-| `NoClientCertResolver` | `alknet-call/client/call_client.rs` | `alknet-tls` |
-| `load_cert_chain()` / `load_private_key()` (client-side copies) | `alknet-call/client/call_client.rs` | `alknet-tls` (consolidates with the `endpoint.rs` duplicate — one copy in `alknet-tls`) |
-| `CallClient::connect` | `alknet-call/client/call_client.rs` | **removed** (ADR-089 §5 — the dial is extracted to `AlknetClient`; `CallClient` keeps only `spawn_dispatch`, shedding its TLS/transport deps) |
-
-**Consolidation note.** `Ed25519SigningKey` and
-`load_cert_chain`/`load_private_key` are currently **duplicated** across
-`endpoint.rs` (server) and `call_client.rs` (client). After extraction
-there is one copy of each in `alknet-tls`, used by both
-`TlsServerConfig::new` and `TlsClientConfig::new`. Both call sites
-(`endpoint.rs`'s server path, `call_client.rs`'s client path) are
-updated to import from `alknet-tls`.
-
-`TlsIdentity` and `Ed25519SecretKey` stay in core because they're config
-types — `StaticConfig` holds a `TlsIdentity`, and config types belong in
-core. `alknet-tls` re-exports them for convenience. `fingerprint.rs` stays
-in core because it's shared by both the server path (endpoint extracts
-fingerprint from the client cert) and the client path
-(`FingerprintPinVerifier` — now in `alknet-tls` per ADR-089 §5 —
-matches the server's cert against a pinned fingerprint).
-The production code in `fingerprint.rs` uses only `sha2` and manual DER
-parsing — the `rustls::sign` usage is in the test helper only. See OQ-59
-(the original dep-edge concern that motivated keeping `fingerprint.rs`
-in core is dissolved by ADR-089 §5 — `FingerprintPinVerifier` moved to
+The config types `TlsIdentity` and `Ed25519SecretKey` live in
+`alknet-core` (`config.rs`) — `StaticConfig` holds a `TlsIdentity`, and
+config types belong in core. `alknet-tls` imports them. `fingerprint.rs`
+lives in core because it is shared by both the server path (the
+endpoint extracts the fingerprint from the client cert) and the client
+path (`FingerprintPinVerifier`, in `alknet-tls`, matches the server's
+cert against a pinned fingerprint). The production code in
+`fingerprint.rs` uses only `sha2` and manual DER parsing; the
+`rustls::sign` usage is in the test helper only. See OQ-59 — the
+original dep-edge concern that motivated keeping `fingerprint.rs` in
+core is dissolved by ADR-089 §5 (`FingerprintPinVerifier` is in
 `alknet-tls`, so its consumers are co-located).
+
+### Client-side contents
+
+The client-side TLS setup — verifier selection, client-auth cert
+presentation, provider wiring — is in `alknet-tls/src/client.rs`.
+These components were originally part of `alknet-call`'s client
+module (quinn-gated); ADR-087 / ADR-089 §5 moved them into `alknet-tls`
+so `alknet-call` has no direct `rustls` dep and the verifier selection
+is shared across all outbound dials.
+
+| Component | Notes |
+|-----------|-------|
+| `TlsClientConfig::new` | Builds a `rustls::ClientConfig` from `ConnectionCredentials` + ALPN; runs ADR-034 verifier selection + ADR-084 provider wiring + client-auth cert presentation |
+| `for_quinn()` | Wraps the rustls config in a `quinn::ClientConfig` (feature-gated on `quinn`) |
+| `into_rustls_config()` | Returns the inner `rustls::ClientConfig` for consumers that build their own transport wrapper (e.g. `dial_tcp_tls` wraps it in a `TlsConnector`) |
+| `build_client_auth()` | Constructs the client-auth cert resolver inside `TlsClientConfig::new` |
+| `select_server_verifier()` | ADR-034 verifier selection (fingerprint pin / CA / fail-closed) inside `TlsClientConfig::new` |
+| `load_platform_root_cert_store()` | The unknown-X.509-remote CA path inside `TlsClientConfig::new` |
+| `FingerprintPinVerifier` | A TLS concern; `TlsClientConfig::new` constructs it. Locating it in `alknet-tls` lets `alknet-call` have no direct `rustls` dep (ADR-089 §5) |
+| `RawKeyClientCertResolver` | Presents the local key as an RFC 7250 raw public key client cert |
+| `NoClientCertResolver` | The no-client-cert path |
+| `Ed25519SigningKey` | One copy in `alknet-tls` (`signing.rs`), shared by server + client |
+| `load_cert_chain()` / `load_private_key()` | In `pem.rs`; one copy, shared by server + client |
+
+`Ed25519SigningKey` and `load_cert_chain`/`load_private_key` are single
+copies in `alknet-tls`, used by both `TlsServerConfig::new` and
+`TlsClientConfig::new`. Before the extraction these were duplicated
+across the server (in core's endpoint module) and the client (in call's
+client module); the extraction consolidated them.
+
+`CallClient::connect` is removed (ADR-089 §5) — the dial is in
+`AlknetClient` (`alknet-client`); `CallClient` keeps only
+`spawn_dispatch`, and `alknet-call` has no TLS/transport deps.
 
 ### `TlsServerConfig`
 
@@ -230,12 +234,12 @@ architecture decision.
 
 ### Behavior-preservation invariants
 
-The extraction must preserve these load-bearing TLS behaviors. They
-originate from [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md),
+These load-bearing TLS behaviors must be preserved. They originate from
+[ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md),
 which established the `TlsIdentity` model, the `Acme` variant, and the
-`acme-tls/1` ALPN challenge handling. An implementer who omits any of
-these produces a crate that compiles and passes type-checks but silently
-changes TLS behavior:
+`acme-tls/1` ALPN challenge handling. Omitting any of them produces a
+crate that compiles and passes type-checks but silently changes TLS
+behavior:
 
 - **`max_early_data_size = u32::MAX`** on all server config paths (X509,
   RawKey, SelfSigned, ACME). Enables 0-RTT / early data. Omitting it
@@ -278,8 +282,8 @@ impl TlsServerConfig {
     /// build their own transport-specific wrapper not covered by
     /// `for_quinn` / `for_tcp_tls`. No current consumer (iroh reads the
     /// `Ed25519SecretKey` directly, not the rustls config — see "Iroh:
-    /// shares the key, not the rustls config" below); kept as a
-    /// forward-looking accessor for future transport wrappers.
+    /// shares the key, not the rustls config" below); retained for
+    /// transport wrappers that do not fit `for_quinn` / `for_tcp_tls`.
     pub fn rustls_config(&self) -> &rustls::ServerConfig;
 }
 ```
@@ -291,7 +295,7 @@ the `Endpoint`, using RFC 7250 raw keys. It does not consume a
 `rustls::ServerConfig` — it takes an `iroh::SecretKey` and handles TLS
 internally. So `alknet-tls` does not have a `for_iroh()` method. Instead,
 the assembly layer reads the `Ed25519SecretKey` from `StaticConfig`
-(stays in core) and passes it to iroh's `Endpoint::builder().secret_key()`
+(lives in core) and passes it to iroh's `Endpoint::builder().secret_key()`
 directly. `alknet-tls` is involved only when iroh is not the sole
 transport — in that case, the same `Ed25519SecretKey` feeds both
 `TlsServerConfig::new(TlsIdentity::RawKey(key), ...)` (for quinn/TCP) and
@@ -346,22 +350,20 @@ alknet-tls
 `rustls-native-certs` and `webpki-roots` are always-present deps (not
 feature-gated) because the unknown-X.509-remote CA-verification path in
 `TlsClientConfig::new` is needed by any client dialing a public X.509
-endpoint, regardless of transport (QUIC or TCP+TLS). In the
-pre-extraction code these lived in `alknet-call` behind the `quinn`
-feature; the extraction (ADR-089 §5) moves them to `alknet-tls` ungated,
-and `alknet-call` sheds the deps entirely.
+endpoint, regardless of transport (QUIC or TCP+TLS). They are not gated
+under `quinn`/`tcp` — a TCP+TLS-only or QUIC-only deployment both need
+the CA path. `alknet-call` does not depend on them (the dial's TLS
+deps are in `alknet-tls`/`alknet-client` now).
 
-`alknet-core` loses `rustls-pemfile`, `rcgen`, and `rustls-acme` from
-its dependencies — the cert-loading, self-signed generation, and ACME
-machinery move to `alknet-tls`. Core's `acme` feature
-(`acme = ["dep:rustls-acme"]` in `Cargo.toml` and the
-`#[cfg(feature = "acme")]` gates on `acme_state_handle` in `endpoint.rs`)
-becomes vestigial after the extraction and is removed — the ACME state
-machine now lives on `TlsServerConfig` in `alknet-tls`, not on
-`AlknetEndpoint`. Core keeps `quinn` and `iroh` (the endpoint struct and
-accept loops remain in core), `ed25519-dalek` (`Ed25519SecretKey` stays
-in `config.rs`), and `rustls` / `rustls-pki-types` (`fingerprint.rs` uses
-`rustls::pki_types` in production and `rustls::sign` in the test helper
+`alknet-core` does not depend on `rustls-pemfile`, `rcgen`, or
+`rustls-acme` — cert-loading, self-signed generation, and the ACME
+state machine are in `alknet-tls` (on `TlsServerConfig`, not on
+`AlknetEndpoint`). Core has no `acme` feature. Core does keep `quinn`
+and `iroh` (for `Connection::from_quinn` / `from_iroh` — the shared
+constructors the endpoint and the dial both use),
+`ed25519-dalek` (`Ed25519SecretKey` in `config.rs`), and `rustls` /
+`rustls-pki-types` (`fingerprint.rs` uses `rustls::pki_types` in
+production and `rustls::sign` in the test helper
 `build_ed25519_spki_der` — see OQ-59).
 
 > **Terminology — hub, worker, hub-worker.** A *hub* is a node that
@@ -374,47 +376,11 @@ in `config.rs`), and `rustls` / `rustls-pki-types` (`fingerprint.rs` uses
 > "assembly layer" (ADR-014) is the deployment binary that wires crates
 > — in practice, today, usually a hub or hub-worker.
 
-### Implementation ordering
+### What `AlknetEndpoint` (in `alknet-endpoint`) does
 
-`alknet-tls` is greenfield — `crates/alknet-tls` does not exist yet. The
-endpoint section below ("What `AlknetEndpoint` does after the refactor")
-describes the **post-refactor target**, not the current source. The
-current `crates/alknet-core/src/endpoint.rs` is the **extraction
-source** — `AlknetEndpoint::new(static_config, ...)` builds TLS
-internally, the shape ADR-083 replaces. The endpoint is extracted into
-a new crate `alknet-endpoint` (ADR-083 Amendment 2026-07-15) as part of
-this work. The extraction and refactor are **sequenced**, not
-simultaneous:
-
-1. **`alknet-tls` first** — build the crate in isolation. `TlsServerConfig`
-   and `TlsClientConfig` are unit-testable against `TlsIdentity` without
-   touching the endpoint. This is the greenfield step.
-2. **`alknet-endpoint` second** — build the new endpoint crate fresh
-   against the ADR-083 shape (`new(handlers, dynamic,
-   identity_provider, drain_timeout)` + `with_quinn` / `with_iroh` /
-   `with_tcp_tls`), importing `Connection`/`ProtocolHandler`/`AuthContext`
-   from `alknet-core` and taking pre-built transports (no TLS config —
-   the assembly layer builds those via `alknet-tls`). The old
-   `crates/alknet-core/src/endpoint.rs` is deleted.
-3. **Assembly layer last** — the deployment binary (hub/worker) builds
-   the `TlsServerConfig`(s) and `TlsClientConfig`(s), the transports, and
-   hands them to `AlknetEndpoint` (in `alknet-endpoint`) via the builder
-   methods.
-
-A compilable intermediate state exists after step 1: `alknet-tls` built
-and tested standalone, with `endpoint.rs` still in its old shape. The
-call sites for `TlsServerConfig` / `TlsClientConfig` do not exist until
-step 2/3 — an implementer testing step 1 writes tests against the TLS
-types directly, not against a wired-up endpoint.
-
-### What `AlknetEndpoint` (in `alknet-endpoint`) does after the refactor
-
-`AlknetEndpoint::new()` currently builds `TlsSetup` internally. After
-the refactor (see [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)),
-the endpoint (extracted into `alknet-endpoint` per ADR-083 Amendment
-2026-07-15) takes **no TLS config at all** — it is a multi-transport
-accept-loop runner. TCP+TLS is an owned transport (via `with_tcp_tls`),
-not an external loop:
+`AlknetEndpoint` takes **no TLS config at all** — it is a
+multi-transport accept-loop runner. TCP+TLS is an owned transport (via
+`with_tcp_tls`), not an external loop:
 
 ```rust
 impl AlknetEndpoint {
@@ -466,7 +432,9 @@ handle lives on the `TlsServerConfig`, not the endpoint.
 This resolves the single-`Arc<TlsServerConfig>` problem: the endpoint
 has no "the TLS config" to take because a hub has two. It also means
 shutdown is single-owner — the endpoint owns all its accept loops
-(quinn, iroh, TCP+TLS); one `shutdown()` stops them all.
+(quinn, iroh, TCP+TLS); one `shutdown()` stops them all. See
+[`crates/endpoint/README.md`](../endpoint/README.md) and
+[ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md).
 
 ### The TCP+TLS accept loop (out of scope for this crate)
 
@@ -485,86 +453,74 @@ sharing, not transport accept logic.
 A hub dials out to workers it supervises and to other hubs
 (hub-as-client); `alknet-worker` dials a hub. Both need a
 `rustls::ClientConfig` with ADR-034's verifier selection and ADR-084's
-crypto provider. `TlsClientConfig` centralizes this — it is a
-present prerequisite for the first hub deployment, consumed by
+crypto provider. `TlsClientConfig` centralizes this, and is consumed by
 `AlknetClient`'s QUIC and TCP+TLS dials (ADR-089).
 
 There are exactly two clients in the alknet client surface as far as
 `TlsClientConfig` and `AlknetClient` are concerned — **call**
 (`CallClient`) and **channels** (`ChannelClient`, which is a proxy over
-many ALPNs via channel 0). Both must support all three transport
-accessors below; the TLS config is shared across them, the dial is
-per-transport per-client.
+many ALPNs via channel 0). Both share `TlsClientConfig` via the dial;
+the TLS config is shared across them, the dial is per-transport
+per-client.
 
 ```rust
 pub struct TlsClientConfig {
-    config: rustls::ClientConfig,
+    rustls_config: rustls::ClientConfig,
 }
 
 impl TlsClientConfig {
-    /// Build a client TLS config. Takes two inputs, both derived from
-    /// `Capabilities` (ADR-014) / `ConnectionCredentials`-shaped values
-    /// (ADR-091):
+    /// Build a client TLS config from `ConnectionCredentials` and the
+    /// dial's ALPN. `ConnectionCredentials` (ADR-091, in `alknet-core`)
+    /// carries the two dimensions the dial consumes:
     ///
-    /// 1. `local_identity` — the local node's `TlsIdentity` (RFC 7250
+    /// 1. `tls_identity` — the local node's `TlsIdentity` (RFC 7250
     ///    raw key or X.509), presented as the client cert. `None` →
     ///    no client cert (the server gets nothing to fingerprint).
     ///    `SelfSigned` → no client cert (dev-only). `Acme` →
     ///    `TlsError::AcmeConfig` (server-only identity).
     ///
-    /// 2. `verifier_context` — the inputs to ADR-034's server-cert
+    /// 2. `remote_identity` — the inputs to ADR-034's server-cert
     ///    verifier selection:
-    ///    - known peer (PeerEntry present) → fingerprint pin
-    ///      (FingerprintPinVerifier)
-    ///    - unknown remote + X.509 → CA verification
-    ///      (WebPkiServerVerifier)
-    ///    - unknown remote + raw key → fail closed at handshake (not
-    ///      a `new`-time error; see ADR-088 §6)
+    ///    - `Some(fingerprint)` (known peer, `PeerEntry` present) →
+    ///      fingerprint pin (`FingerprintPinVerifier`)
+    ///    - `None` + X.509 transport → CA verification
+    ///      (`WebPkiServerVerifier`)
+    ///    - `None` + raw key → fail closed at handshake (not a `new`-
+    ///      time error; see ADR-088 §6)
     ///
     /// Applies ADR-084 crypto provider (aws_lc_rs::default_provider()).
     pub fn new(
-        local_identity: &Option<TlsIdentity>,
-        verifier_context: &ClientVerifierContext,
+        credentials: &ConnectionCredentials,
+        alpn: &[u8],
     ) -> Result<Self, TlsError>;
 
-    /// Produce a `quinn::ClientConfig` for a QUIC dial. Clones the
-    /// inner rustls config, wraps it in `QuicClientConfig`. Returns
-    /// `Result` because `QuicClientConfig::try_from(rustls::ClientConfig)`
-    /// can fail with `NoInitialCipherSuite` — the same failure the
-    /// server-side `for_quinn()` surfaces as `TlsError::QuinnWrap`.
-    /// Feature-gated on `quinn`.
+    /// Consume the config and produce a `quinn::ClientConfig` for a
+    /// QUIC dial. Returns `Result` because
+    /// `QuicClientConfig::try_from(rustls::ClientConfig)` can fail with
+    /// `NoInitialCipherSuite` — the same failure the server-side
+    /// `for_quinn()` surfaces as `TlsError::QuinnWrap`. Feature-gated
+    /// on `quinn`.
     #[cfg(feature = "quinn")]
-    pub fn for_quinn(&self) -> Result<quinn::ClientConfig, TlsError>;
+    pub fn for_quinn(self) -> Result<quinn::ClientConfig, TlsError>;
 
-    /// Produce a `tokio_rustls::TlsConnector` for a TCP+TLS dial.
-    /// Clones the inner rustls config. Infallible —
-    /// `TlsConnector::new(rustls::ClientConfig)` cannot fail.
-    /// Feature-gated on `tcp` (pulls `tokio-rustls`).
-    #[cfg(feature = "tcp")]
-    pub fn for_tcp_tls(&self) -> tokio_rustls::TlsConnector;
-
-    /// Borrow the underlying rustls config, for consumers that need to
-    /// build their own transport-specific wrapper not covered by
-    /// `for_quinn` / `for_tcp_tls` (e.g. a future transport). Not
-    /// feature-gated — returns the raw rustls config, not a
-    /// transport-specific wrapper.
-    pub fn rustls_config(&self) -> &rustls::ClientConfig;
+    /// Consume the config and return the inner `rustls::ClientConfig`,
+    /// for consumers that build their own transport-specific wrapper —
+    /// e.g. `dial_tcp_tls` wraps it in a
+    /// `tokio_rustls::TlsConnector::from(Arc::new(rustls_config))`. Not
+    /// feature-gated; the raw rustls config is transport-agnostic.
+    pub fn into_rustls_config(self) -> rustls::ClientConfig;
 }
 ```
 
-The `ClientVerifierContext` carries the inputs to ADR-034's verifier
-selection (whether a `PeerEntry` exists for the remote, the expected
-fingerprint). The exact struct shape is an implementation detail; the
-decisions are in ADR-034. `ClientVerifierContext` is derived from
-`ConnectionCredentials` (in `alknet-core`, per ADR-091) at the dial
-site — `AlknetClient` extracts the TLS-relevant fields
-(`local_identity` → client cert, `remote_identity` → fingerprint-pin
-input) and builds a `ClientVerifierContext` from the latter. The
-call-protocol `auth_token` is not in `ConnectionCredentials` — it is a
-per-request field on `call.requested` payloads (a call-protocol / hub
-concept), not a transport credential; it never reaches `TlsClientConfig`
-or `ClientVerifierContext`. The `TlsError` variant granularity (covering
-both server and client errors) is decided — see
+`TlsClientConfig::new` runs ADR-034's verifier selection directly off
+`ConnectionCredentials.remote_identity` — there is no separate
+`ClientVerifierContext` type; the credential bundle carries the
+fingerprint (or its absence), which is all the verifier selection needs.
+The call-protocol `auth_token` is not in `ConnectionCredentials` — it
+is a per-request field on `call.requested` payloads (a call-protocol /
+hub concept), not a transport credential; it never reaches
+`TlsClientConfig`. The `TlsError` variant granularity (covering both
+server and client errors) is decided — see
 [ADR-088](../../decisions/088-tlserror-shape.md) and the
 [`TlsError`](#tlserror) section below.
 
@@ -576,25 +532,26 @@ containerized deployment with no system CA bundle), the built-in
 the `NoRootAnchors` failure mode unreachable in practice — a
 containerized worker dialing a public X.509 hub succeeds without
 requiring the operator to mount a CA bundle. Native-certs *load* errors
-are logged, not returned (preserved behavior); the fallback guarantees
-the store is non-empty regardless. See ADR-088 §5.
+are logged, not returned; the fallback guarantees the store is
+non-empty regardless. See ADR-088 §5.
 
 `TlsClientConfig` produces a `rustls::ClientConfig`; the caller (the
 transport-specific dial helper — `AlknetClient::dial_quic` /
 `dial_tcp_tls`, ADR-089) passes it to the transport's connector. The
 config is transport-agnostic; the dial is not. This is the client-side
 analogue of ADR-065's server-side separation: the take-over
-(`spawn_dispatch` / `from_connection`, transport-agnostic) is built
-now; the dial (transport-specific) is per-transport. The
-transport-polymorphic dial is now extracted as `alknet-client`
-(ADR-089, resolves OQ-55) — `AlknetClient` builds the `TlsClientConfig`
-per-dial and calls the transport's connector.
+(`spawn_dispatch` / `from_connection`, transport-agnostic) is
+transport-agnostic; the dial (transport-specific) is per-transport.
+The transport-polymorphic dial is `alknet-client` (ADR-089, resolves
+OQ-55) — `AlknetClient` builds the `TlsClientConfig` per-dial and
+calls the transport's connector.
 
-The client-side accessor API mirrors the server side: `for_quinn()`
-/ `for_tcp_tls()` / `rustls_config()` — three transports, same
-pattern. Iroh is the exception (see below). `AlknetClient` (ADR-089)
-consumes `TlsClientConfig` via these accessors for the QUIC and TCP+TLS
-dials; the iroh dial is the key-not-config exception.
+The client-side accessor API: `for_quinn()` (QUIC) and
+`into_rustls_config()` (any other transport — `dial_tcp_tls` wraps the
+rustls config in a `TlsConnector`). Iroh is the exception (see below).
+`AlknetClient` (ADR-089) consumes `TlsClientConfig` via these accessors
+for the QUIC and TCP+TLS dials; the iroh dial is the key-not-config
+exception.
 
 ### Iroh — shares the key, not the config (client side too)
 
@@ -617,7 +574,16 @@ the `for_quinn()` accessors on both (`for_tcp_tls` is infallible —
 `alknet-tls`. The shape, the rationale for single-enum-over-thin-wrapper,
 and the "what is NOT a variant" list are in
 [ADR-088](../../decisions/088-tlserror-shape.md); this section is
-the sketch.
+the target shape per that ADR.
+
+> **Implementation note.** The current `alknet-tls/src/lib.rs`
+> `TlsError` is a simplified 3-variant enum (`Config(String)`,
+> `Io(io::Error)`, `Cert(String)`) without `#[non_exhaustive]`. The
+> full ADR-088 shape below (six typed variants, `#[non_exhaustive]`,
+> `#[from` sources) is the target; the present code folds the
+> finer-grained categories into `Config`/`Cert` strings. An implementer
+> refining `TlsError` to match ADR-088 is a two-way-door change (the
+> enum is crate-local, no external match arms).
 
 ```rust
 /// Errors produced by `TlsServerConfig::new`, `TlsClientConfig::new`,
@@ -679,9 +645,9 @@ arrive asynchronously and are logged (ADR-082 §"Behavior-preservation
 invariants").
 
 **Ownership.** `TlsError` lives in `alknet-tls`, owned by the crate
-that produces it. It is not re-exported from `alknet-core`; `EndpointError`
-is removed entirely after ADR-083 (both variants were vestigial), so
-core has no endpoint error type and does not need to know about
+that produces it. It is not re-exported from `alknet-core`; there is no
+`EndpointError` (removed per ADR-083 — both variants were vestigial),
+so core has no endpoint error type and does not need to know about
 `TlsError`. The assembly layer (hub/worker) depends on `alknet-tls`
 directly and gets `TlsError` from that dependency.
 
@@ -689,15 +655,15 @@ directly and gets `TlsError` from that dependency.
 
 ```
 alknet-tls
-├── alknet-core (TlsIdentity, Ed25519SecretKey, fingerprint)
+└── alknet-core (TlsIdentity, Ed25519SecretKey, fingerprint)
 
-alknet-core (loses TLS setup code + endpoint)
-├── (rustls — only for fingerprint.rs types, if kept)
+alknet-core (lightweight — types + auth + config + fingerprint + credentials)
+└── (rustls / rustls-pki-types — only for fingerprint.rs types)
 
 alknet-call (pure protocol crate — no TLS/transport deps per ADR-089 §5)
 └── alknet-core (ProtocolHandler, Connection, types; ConnectionCredentials/
-    RemoteIdentity moved to core per ADR-091; CallCredentials removed per ADR-091 Am. 2026-07-17
-    alknet-call)
+    RemoteIdentity from core per ADR-091; CallCredentials removed per
+    ADR-091 Am. 2026-07-17)
 
 alknet-hub (multi-transport endpoint)
 ├── alknet-tls (TlsServerConfig — shared across quinn + TCP)
@@ -706,7 +672,7 @@ alknet-hub (multi-transport endpoint)
 ├── alknet-channels-call (ChannelClient)
 ├── alknet-call (CallAdapter, Dispatcher)
 ├── alknet-http (HttpAdapter)
-├── alknet-core (Connection, ProtocolHandler, AuthContext, IdentityProvider)
+└── alknet-core (Connection, ProtocolHandler, AuthContext, IdentityProvider)
 ```
 
 `alknet-tls` depends on `alknet-core` only. No handler crate depends on
@@ -725,7 +691,7 @@ All design decisions are documented as ADRs in
 | ADR | Decision | Summary |
 |-----|----------|---------|
 | [082](../../decisions/082-alknet-tls-extraction.md) | alknet-tls crate extraction | Extract TLS setup from alknet-core/endpoint.rs; `TlsServerConfig` shareable across quinn + TCP+TLS + iroh; one ACME state machine |
-| [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as multi-transport accept-loop runner | `AlknetEndpoint` takes no TLS config; TCP+TLS is an owned transport (`with_tcp_tls`); `dispatch` public for SSH/WT; `acme-tls/1` guard moves to shared `dispatch` |
+| [083](../../decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as multi-transport accept-loop runner | `AlknetEndpoint` takes no TLS config; TCP+TLS is an owned transport (`with_tcp_tls`); `dispatch` public for SSH/WT; `acme-tls/1` guard is in shared `dispatch` |
 | [084](../../decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs crypto provider | `rustls::crypto::aws_lc_rs::default_provider()` on all server + client config paths; matches iroh; FIPS-capable; do not switch to `ring` or process-default without a new ADR |
 | [086](../../decisions/086-endpoint-types-and-entry-points.md) | Endpoint types and entry points | Three endpoint types (web/native/iroh); split ALPN lists per endpoint type (resolves OQ-62); entry-point vs. endpoint ALPN distinction |
 | [087](../../decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` not blocked on dial seam | `alknet-tls` provides `TlsClientConfig` (client-side); not deferred behind OQ-55; breaks the circular hedge; hub-as-client is a first-class use case |
@@ -773,38 +739,35 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-64** (resolved): `alknet-tls` provides `TlsClientConfig`
   (ADR-087). Not blocked on the dial-seam extraction — the TLS
   config is a prerequisite for the dial, not a consequence of it.
-  Centralizes ADR-034 verifier selection + ADR-084 provider; the
-  hub-as-client requirement makes it a prerequisite for the first hub
-  deployment. The dial seam is now extracted as `alknet-client`
-  (ADR-089, OQ-55 resolved); `TlsClientConfig` is consumed by
-  `AlknetClient`'s QUIC and TCP+TLS dials.
+  Centralizes ADR-034 verifier selection + ADR-084 provider. The dial
+  seam is `alknet-client` (ADR-089, OQ-55 resolved); `TlsClientConfig`
+  is consumed by `AlknetClient`'s QUIC and TCP+TLS dials.
 
 - **OQ-55** (resolved by ADR-089): `AlknetClient::dial()` — the
-  transport-polymorphic dial seam. Extracted as a new crate
-  `alknet-client` with three dial methods (`dial_quic` /
-  `dial_tcp_tls` / `dial_iroh`). `TlsClientConfig` (OQ-64, resolved)
-  is the prerequisite the dial consumes. See
-  [`crates/client/README.md`](../client/README.md) and
+  transport-polymorphic dial seam. `alknet-client` has three dial
+  methods (`dial_quic` / `dial_tcp_tls` / `dial_iroh`).
+  `TlsClientConfig` (OQ-64, resolved) is the prerequisite the dial
+  consumes. See [`crates/client/README.md`](../client/README.md) and
   [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md).
 
-### Next session — client shape
+### Client shape (in `alknet-client`)
 
-The client is now specced. [`crates/client/README.md`](../client/README.md)
-defines `AlknetClient` — the native client dial seam (ADR-089, resolves
-OQ-55). There are exactly two clients in the alknet client surface as
-far as `TlsClientConfig` and `AlknetClient` are concerned: **call**
+[`crates/client/README.md`](../client/README.md) defines `AlknetClient`
+— the native client dial seam (ADR-089, resolves OQ-55). There are
+exactly two clients in the alknet client surface as far as
+`TlsClientConfig` and `AlknetClient` are concerned: **call**
 (`CallClient`) and **channels** (`ChannelClient`, a proxy over many
-ALPNs via channel 0). Both consume `TlsClientConfig` via the same three
-accessors (`for_quinn`, `for_tcp_tls`, `rustls_config`); iroh is the
-exception (shares the key, not the config). `AlknetClient` is the dial
-that feeds them — it produces a `Connection` and the protocol
-take-overs (`spawn_dispatch`, `from_connection`) consume it. The
-per-protocol QUIC convenience constructors (`CallClient::connect` /
-`ChannelClient::connect_quic`) are **removed** per ADR-089 §5 — the
-dial is centralized in `AlknetClient`, and the protocol crates shed
-their TLS/transport deps. The `alknet/register` ALPN (native
-registration entry point, parallel to HTTP registration in OQ-58) is
-named by ADR-089; its wire protocol is deferred (OQ-66).
+ALPNs via channel 0). Both consume `TlsClientConfig` through the dial
+(`for_quinn` for QUIC, `into_rustls_config` wrapped in a `TlsConnector`
+for TCP+TLS); iroh is the exception (shares the key, not the config).
+`AlknetClient` is the dial that feeds them — it produces a `Connection`
+and the protocol take-overs (`spawn_dispatch`, `from_connection`)
+consume it. The per-protocol QUIC convenience constructors
+(`CallClient::connect` / `ChannelClient::connect_quic`) are removed
+per ADR-089 §5 — the dial is centralized in `AlknetClient`, and the
+protocol crates have no TLS/transport deps. The `alknet/register` ALPN
+(native registration entry point, parallel to HTTP registration in
+OQ-58) is named by ADR-089; its wire protocol is deferred (OQ-66).
 
 ## References
 
@@ -829,15 +792,14 @@ named by ADR-089; its wire protocol is deferred (OQ-66).
   (the endpoint spec; TLS config is built by `alknet-tls`, not the
   endpoint — per ADR-083)
 - `docs/architecture/crates/core/config.md` — `TlsIdentity`, `StaticConfig`
-- `crates/alknet-core/src/endpoint.rs` — the server-side code being
-  extracted (`build_rustls_server_config`, `TlsSetup`, `RawKeyCertResolver`,
-  `Ed25519SigningKey`, `AcceptAnyCertVerifier`, `generate_self_signed_cert`,
-  `load_cert_chain`, `load_private_key`)
-- `crates/alknet-call/src/client/call_client.rs` — the client-side code
-  being extracted (`build_quinn_client_config`, `build_client_auth`,
-  `select_server_verifier`, `load_platform_root_cert_store`,
+- `crates/alknet-tls/src/server.rs` — `TlsServerConfig`,
+  `RawKeyCertResolver`, `AcceptAnyCertVerifier`,
+  `generate_self_signed_cert`, `build_rustls_server_config`
+- `crates/alknet-tls/src/client.rs` — `TlsClientConfig`,
   `FingerprintPinVerifier`, `RawKeyClientCertResolver`,
-  `NoClientCertResolver`, `Ed25519SigningKey` (duplicate),
-  `load_cert_chain`/`load_private_key` (duplicates))
+  `NoClientCertResolver`, `select_server_verifier`, `build_client_auth`,
+  `load_platform_root_cert_store`
+- `crates/alknet-tls/src/pem.rs` — `load_cert_chain`, `load_private_key`
+- `crates/alknet-tls/src/signing.rs` — `Ed25519SigningKey`
 - `crates/alknet-core/src/fingerprint.rs` — fingerprint extraction
   (shared by server endpoint and client verifier)

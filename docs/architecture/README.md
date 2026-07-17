@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-16
+last_updated: 2026-07-17
 ---
 
 # Alknet Architecture
@@ -242,7 +242,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/vault/service.md](crates/vault/service.md) | stable | VaultServiceHandle lifecycle, direct dispatch, cache, error model |
 | [crates/vault/protocol.md](crates/vault/protocol.md) | stable | DerivedKey redaction, KeyType, serialization behavior |
 | [crates/hub/README.md](crates/hub/README.md) | draft | alknet-hub crate — composes a subset of three endpoint types (web/native/iroh — ADR-086), channels substrate (ADR-079 relay), worker registration flow (OQ-58), identity over transports, aggregated peer env, connection lifecycle, service discovery |
-| [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); `FingerprintPinVerifier` moved here from `alknet-call` (ADR-089 §5); `webpki-roots` fallback for empty platform stores (ADR-088 §5); fixes cert-reuse welding in `alknet-core/endpoint.rs` (ADR-082) |
+| [crates/tls/README.md](crates/tls/README.md) | reviewed | alknet-tls crate — shared TLS config (`TlsServerConfig` + `TlsClientConfig`) shared across quinn + TCP+TLS + iroh; one cert, one ACME state machine, N transports; split ALPN lists per endpoint type (ADR-086, resolves OQ-62); `FingerprintPinVerifier` in `alknet-tls` (ADR-089 §5); `webpki-roots` fallback for empty platform stores (ADR-088 §5); isolates cert-reuse from transport wrappers (ADR-082) |
 | [crates/client/README.md](crates/client/README.md) | draft | alknet-client crate — the native client dial seam (`AlknetClient`), client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key) unified on `&ConnectionCredentials` (ADR-091); optional SOCKS5 proxy (ADR-090 — UDP ASSOCIATE for QUIC, CONNECT for TCP+TLS, force-relay-only + HTTP-to-SOCKS5 bridge for iroh; OQ-67 resolved); produces `Connection` for `CallClient`/`ChannelClient` take-over; `CallClient::connect`/`ChannelClient::connect_quic` removed (dial centralized here); `alknet/register` named (wire protocol deferred, OQ-66) |
 | [crates/endpoint/README.md](crates/endpoint/README.md) | draft | alknet-endpoint crate — the server-side accept-loop runner (`AlknetEndpoint`), extracted from `alknet-core` (ADR-083 Am. 2026-07-15); takes pre-built transports via `with_quinn`/`with_iroh`/`with_tcp_tls`; public `dispatch` for SSH/WT; `EndpointError` removed (vestigial); handler crates no longer transitively link quinn/iroh |
 | [crates/channels/README.md](crates/channels/README.md) | draft | alknet-channels crate — multiplexing proxy, 9-byte chunk format, N channels over one transport stream |
@@ -343,7 +343,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [084](decisions/084-aws-lc-rs-crypto-provider.md) | aws-lc-rs as the TLS Crypto Provider | Accepted |
 | [085](decisions/085-workspace-scope-core-vs-consumer-repos.md) | Workspace Scope — Core vs. Consumer Repos | Accepted |
 | [086](decisions/086-endpoint-types-and-entry-points.md) | Endpoint Types and Entry Points | Accepted |
-| [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted (§5 amended by ADR-089 — `FingerprintPinVerifier` moves to `alknet-tls`; `alknet-call` sheds TLS deps; input framing amended by ADR-091 — `ClientVerifierContext` derived from `ConnectionCredentials`, not `CallCredentials`) |
+| [087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `TlsClientConfig` Not Blocked on Dial Seam | Accepted (§5 amended by ADR-089 — `FingerprintPinVerifier` in `alknet-tls`; `alknet-call` sheds TLS deps; input framing amended by ADR-091 — `TlsClientConfig::new` takes `ConnectionCredentials`, not `CallCredentials`) |
 | [088](decisions/088-tlserror-shape.md) | `TlsError` Shape — Single Enum, Owned by `alknet-tls` | Accepted (§5 added — `webpki-roots` fallback when platform store is empty; §7 references ADR-089 for handshake-error surfacing) |
 | [089](decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | Accepted (resolves OQ-55; `CallClient::connect` / `ChannelClient::connect_quic` removed; §3/§5 amended by ADR-091 — dial takes `ConnectionCredentials`, not `CallCredentials`; `CallCredentials` removed per ADR-091 Am. 2026-07-17; `FingerprintPinVerifier` moved to `alknet-tls`; `ClientError` removed; `alknet-call` sheds TLS deps) |
 | [090](decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | Accepted (§5 amended 2026-07-16 — OQ-67 resolved: iroh force-relay-only + HTTP-to-SOCKS5 bridge) |

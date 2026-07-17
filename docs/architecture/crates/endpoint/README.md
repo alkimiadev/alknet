@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-15
+last_updated: 2026-07-17
 ---
 
 # alknet-endpoint
@@ -22,24 +22,23 @@ It does not build transports and does not build TLS configs — the
 assembly layer does both (transports from `alknet-tls`'s
 `TlsServerConfig`, per ADR-082).
 
-`alknet-endpoint` is extracted from `alknet-core` (ADR-083 Amendment
-2026-07-15). The extraction is structural pruning, not a refactor: the
-endpoint is a leaf consumer of core's shared types (it imports `auth`,
-`config`, `types`; nothing in core imports from it), depended on by a
-different audience (the assembly layer) than the shared types (every
-handler crate). No handler crate imports `AlknetEndpoint` or
-`HandlerRegistry` — they depend on `alknet-core` for
-`ProtocolHandler`, `Connection`, `AuthContext`, and types only.
-(`EndpointError` is removed — see below.)
+`alknet-endpoint` is a leaf consumer of `alknet-core`'s shared types
+(it imports `auth`, `config`, `types`; nothing in core imports from
+it), depended on by the assembly layer — a different audience than the
+shared types (every handler crate). No handler crate imports
+`AlknetEndpoint` or `HandlerRegistry` — they depend on `alknet-core`
+for `ProtocolHandler`, `Connection`, `AuthContext`, and types only.
+This keeps the heavy transport deps (quinn, iroh, tokio-rustls) out of
+the handler crates' dep closure. (`EndpointError` is removed — see
+below.)
 
 ## Why
 
-`alknet-core` was two things welded: shared types (depended on by every
-handler crate) + the endpoint (depended on by zero handler crates).
-Extracting the endpoint into `alknet-endpoint` lets core shed the heavy
-transport deps (quinn, iroh, rcgen, rustls-acme) and become the
-lightweight types+auth+config crate the handler crates actually want.
-See [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)
+Separating the endpoint from the shared-types crate lets `alknet-core`
+be the lightweight types+auth+config crate that every handler crate
+wants, while the accept-loop runner (which only the assembly layer
+depends on) carries the heavy transport deps. See
+[ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)
 §"Amendment 2026-07-15 — crate extraction" for the full rationale,
 including the dependency data and the symmetry with `alknet-client`.
 
@@ -332,15 +331,16 @@ The endpoint takes the pre-built transports; the assembly layer built
 them from `alknet-tls`'s `TlsServerConfig`s. The endpoint does not see
 `alknet-tls` — it sees `quinn::Endpoint` and `TlsAcceptor`.
 
-## What `alknet-core` looks like after the extraction
+## What `alknet-core` looks like
 
-Core loses the endpoint module (~1600 LOC) and 5 heavy deps (`quinn`,
-`iroh`, `rcgen`, `rustls-pemfile`, `rustls-acme`). The remaining surface
-is the lightweight types+auth+config+ownership+store+fingerprint crate.
-See [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md)
-§"Amendment 2026-07-15 — crate extraction" §"What `alknet-core` looks
-like after" for the module-level table and the `quinn` feature split
-(`Connection::from_quinn` stays in core; the accept loop moves here).
+Core is the lightweight types+auth+config+ownership+store+fingerprint
+crate (~3200 LOC, no `quinn`/`iroh`/`rcgen`/`rustls-pemfile`/
+`rustls-acme` deps). The endpoint module is not in core; the accept
+loops are here. See [ADR-083](../../decisions/083-endpoint-as-accept-
+loop-runner.md) §"Amendment 2026-07-15 — crate extraction" §"What
+`alknet-core` looks like after" for the module-level table and the
+`quinn` feature split (`Connection::from_quinn` stays in core; the
+accept loop is here).
 
 ## Design Decisions
 

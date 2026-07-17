@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-16
+last_updated: 2026-07-17
 ---
 
 # alknet-client
@@ -186,12 +186,13 @@ impl AlknetClient {
     /// Iroh dial. Dials on `alpn` via the iroh endpoint. The iroh path
     /// does NOT use `TlsClientConfig` — iroh has its own TLS (shares the
     /// `Ed25519SecretKey`, not the rustls config — ADR-087 §3, ADR-089
-    /// §3). The local key is extracted from `creds.local_identity`; the
-    /// remote `NodeId` is derived from `creds.remote_identity.fingerprint`
-    /// (`ed25519:<hex>` → `NodeId::from_bytes`). The verifier is iroh's
-    /// `NodeId` match (fingerprint pin by another name — ADR-034 §3).
-    /// An unknown iroh remote fails closed (no CA). Feature-gated on
-    /// `iroh`.
+    /// §3). The local key is on the pre-built iroh endpoint (set when
+    /// `with_iroh` configured it); the remote `NodeId` is derived from
+    /// `creds.remote_identity.fingerprint` (`ed25519:<hex>` →
+    /// `NodeId::from_bytes`). The verifier is iroh's `NodeId` match
+    /// (fingerprint pin by another name — ADR-034 §3). An unknown iroh
+    /// remote fails closed (no CA — `remote_identity` must be `Some`).
+    /// Feature-gated on `iroh`.
     #[cfg(feature = "iroh")]
     pub async fn dial_iroh(
         &self,
@@ -206,10 +207,10 @@ The two rustls dials (`dial_quic`, `dial_tcp_tls`) share
 pin for a known peer, CA-verify for an unknown X.509 remote, fail-closed
 for an unknown raw-key remote) and the ADR-084 crypto provider
 (`aws_lc_rs`). The iroh dial is the exception: iroh has its own TLS and
-takes the `Ed25519SecretKey` directly (extracted from
-`creds.local_identity`), not a `rustls::ClientConfig`. The consistency
-is in the rule (ADR-034), not in the type — the same exception as the
-server side (ADR-082, ADR-087 §3). All three dials take
+takes the `Ed25519SecretKey` directly (on the pre-built iroh endpoint,
+not extracted from `creds` at dial time), not a `rustls::ClientConfig`.
+The consistency is in the rule (ADR-034), not in the type — the same
+exception as the server side (ADR-082, ADR-087 §3). All three dials take
 `&ConnectionCredentials` — the unified transport-level credential
 bundle (ADR-091).
 
@@ -422,21 +423,19 @@ two lines: `client.dial_quic(...).await?` then
 ### Iroh — shares the key, not the config (client side too)
 
 The iroh client dial, like the iroh server side (ADR-082, ADR-087 §3),
-does not consume a `rustls::ClientConfig`. It takes the
-`Ed25519SecretKey` directly and feeds it to
-`iroh::SecretKey::from_bytes`. Iroh handles TLS internally. The
-verifier is iroh's `NodeId` match — the remote's `NodeId` (Ed25519
+does not consume a `rustls::ClientConfig`. The `Ed25519SecretKey` is set
+on the pre-built iroh endpoint at `with_iroh` time (the assembly layer
+reads it from `StaticConfig` and feeds it to
+`iroh::Endpoint::builder().secret_key()`). The `dial_iroh` method
+consumes only `creds.remote_identity` (deriving the remote `NodeId`);
+the local key is not in `ConnectionCredentials` for the iroh path — it
+is on the endpoint. The dial signature is unified — all three dials
+take `&ConnectionCredentials` (ADR-091) — and the iroh dial simply
+ignores the `tls_identity` field (the key is already on the endpoint).
+The verifier is iroh's `NodeId` match — the remote's `NodeId` (Ed25519
 public key) is verified against the expected `NodeId`, which is
 fingerprint-pinning by another name. An unknown iroh remote fails
 closed (no CA to fall back to — ADR-034 §3, Assumption 1).
-
-The `dial_iroh` method extracts the key from
-`creds.local_identity` (`ConnectionCredentials`) rather than taking a
-separate `Ed25519SecretKey` parameter because the dial signature is
-unified — all three dials take `&ConnectionCredentials` (ADR-091). The
-assembly layer reads the key from `StaticConfig` (in core) and passes
-it via `ConnectionCredentials`, same as the server side's iroh endpoint
-construction.
 
 ### Non-Rust native clients (out of scope)
 
@@ -641,7 +640,7 @@ let client = AlknetClient::new()
 
 // 3. Derive credentials from the vault (ADR-014 — no env vars).
 let creds = ConnectionCredentials::new()
-    .with_local_identity(TlsIdentity::RawKey(local_key))
+    .with_tls_identity(TlsIdentity::RawKey(local_key))
     .with_remote_identity(RemoteIdentity {
         fingerprint: hub_fingerprint,  // known peer → fingerprint pin
     });
@@ -675,7 +674,7 @@ All design decisions are documented as ADRs in
 |-----|----------|---------|
 | [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred (§3/§5 amended by ADR-091 — dial takes `ConnectionCredentials`, not `CallCredentials`) |
 | [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT, `dial_iroh` forces relay-only via an HTTP-to-SOCKS5 bridge; OQ-67 resolved; grounded in the quinn-proxy + iroh-proxy PoCs |
-| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `local_identity` + `remote_identity`), not `CallCredentials` (call-protocol-level); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field; `CallCredentials` removed per Am. 2026-07-17 |
+| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `tls_identity` + `remote_identity`), not `CallCredentials` (call-protocol-level); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field; `CallCredentials` removed per Am. 2026-07-17 |
 
 ## Open Questions
 

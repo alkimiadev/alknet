@@ -1,12 +1,12 @@
 ---
 status: draft
-last_updated: 2026-07-09
-review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean. Call-completion gap (ADR-017 client/adapter surface) addressed 2026-06-26; ADR-029 migration pending. Transport generalization sweep (ADR-064 supersedes ADR-005; ADR-065 `from_stream`) synced 2026-07-09.
+last_updated: 2026-07-17
+review: call/review-call passed 2026-06-23 — registry, protocol, ADR (005/012/014/015/016/017/022/023/024), security, and pattern-consistency checks all conformant; 159 unit/integration tests green; `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` clean. Call-completion gap (ADR-017 client/adapter surface) addressed 2026-06-26; ADR-029 migration landed. Transport generalization sweep (ADR-064 supersedes ADR-005; ADR-065 `from_stream`) synced 2026-07-09. Crate-extraction sweep (phases 0–5) landed 2026-07-17: `ConnectionCredentials`/`RemoteIdentity` in `alknet-core` (ADR-091), `CallCredentials` removed (ADR-091 Am. 2026-07-17), TLS helpers in `alknet-tls` (ADR-089 §5), `connect`/`ClientError` removed, `alknet-call` is a pure protocol crate with no TLS/transport deps.
 ---
 
 # alknet-call
 
-Structured RPC: operations, request/response, streaming subscriptions, and service discovery. Implements `ProtocolHandler` on ALPN `alknet/call`. Runs over QUIC (quinn/iroh) and, via `Connection::from_stream` (ADR-065), over any `AsyncRead + AsyncWrite` transport.
+Structured RPC: operations, request/response, streaming subscriptions, and service discovery. Implements `ProtocolHandler` on ALPN `alknet/call`. Runs over QUIC (quinn/iroh) and, via `Connection::from_stream` (ADR-065), over any `AsyncRead + AsyncWrite` transport. A pure protocol crate — no TLS or transport deps (the dial is in `alknet-client`, the TLS config is in `alknet-tls`).
 
 ## Documents
 
@@ -46,6 +46,8 @@ Structured RPC: operations, request/response, streaming subscriptions, and servi
 | [030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | PeerEntry and Identity.id Decoupling | `PeerId` source = `Identity.id` = `PeerEntry.peer_id` (stable); supersedes ADR-029's UUID source |
 | [032](../../decisions/032-forwarded-for-identity.md) | Forwarded-For Identity | `forwarded_for` on `OperationContext` and `call.requested`; metadata only, never used by `AccessControl::check` |
 | [033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Storage Boundary and Repo/Adapter Pattern | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
+| [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — Native Client Dial Seam | `CallClient::connect` removed; the dial is in `alknet-client`; `ClientError` removed; `alknet-call` sheds TLS/transport deps (pure protocol crate) |
+| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — Decouple Dial from Call Protocol | `ConnectionCredentials`/`RemoteIdentity` in `alknet-core` (not `alknet-call`); `CallCredentials` removed (Am. 2026-07-17); `auth_token` is a per-request payload field |
 
 ## Relevant Open Questions
 

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-09
+last_updated: 2026-07-17
 ---
 
 # alknet-call — Client and Adapters
@@ -251,12 +251,12 @@ attribution, filtered by the calling peer's authorization). See
 The credential dimensions are split across two layers (ADR-091, amended
 2026-07-17):
 
-- **`ConnectionCredentials`** (in `alknet-core`, moved from
-  `alknet-call` per ADR-091) — the **transport-level** credential
-  bundle, consumed by the dial (`AlknetClient`). Carries the two
-  transport-identity dimensions: `local_identity` (the local node's
-  `TlsIdentity`) and `remote_identity` (the expected fingerprint). The
-  dial does not depend on the call protocol for this type.
+- **`ConnectionCredentials`** (in `alknet-core`, per ADR-091) — the
+  **transport-level** credential bundle, consumed by the dial
+  (`AlknetClient`). Carries the two transport-identity dimensions:
+  `tls_identity` (the local node's `TlsIdentity`) and `remote_identity`
+  (the expected fingerprint). The dial does not depend on the call
+  protocol for this type.
 - **`auth_token`** — a **per-request payload field**, not a
   call-protocol credential bundle. `Dispatcher::resolve_identity`
   reads `payload.get("auth_token")` on each `call.requested` payload.
@@ -276,7 +276,7 @@ variables. The transport-identity dimensions (ADR-017 §7):
 ```rust
 // Transport-level (alknet-core, consumed by the dial — ADR-091)
 pub struct ConnectionCredentials {
-    pub local_identity: Option<TlsIdentity>,   // RFC 7250 raw key or X.509
+    pub tls_identity: Option<TlsIdentity>,     // RFC 7250 raw key or X.509
     pub remote_identity: Option<RemoteIdentity>, // expected fingerprint (None = CA path / fail-closed)
 }
 
@@ -286,30 +286,28 @@ pub struct ConnectionCredentials {
 // Dispatcher::resolve_identity reads payload.get("auth_token").
 ```
 
-There is no call-protocol credential bundle. `CallCredentials` is
-removed. The transport dimensions (`local_identity`, `remote_identity`)
-moved to `ConnectionCredentials` in `alknet-core` per ADR-091.
+`RemoteIdentity` (ADR-017 §7, extended by ADR-034 §2) carries a
+fingerprint string the assembly layer derives from `Capabilities` when
+the local node has a `PeerEntry` for the remote (the known-peer case →
+fingerprint pin). `remote_identity: None` is the **public X.509
+endpoint** case: the local node has no `PeerEntry` for the remote, so
+there is no fingerprint to pin. Combined with an X.509 transport, `None`
+selects CA verification (`WebPkiServerVerifier`) per the
+verifier-selection rule in ADR-034 §3. Combined with an Ed25519
+raw-key transport, `None` fails closed (raw-key remotes are always
+known peers — no CA to fall back to). The `Option` is load-bearing, not
+cosmetic: `Some(fingerprint)` means "pin this" (known peer), `None`
+means "trust the CA or fail" (unknown remote). An implementer must not
+default `remote_identity` to a placeholder value to "satisfy" the field
+— `None` is a real state that drives verifier selection.
 
-/// Expected identity of the remote node (ADR-017 §7, extended by
-/// ADR-034 §2). Carries a fingerprint string the assembly layer
-/// derives from `Capabilities` when the local node has a `PeerEntry`
-/// for the remote (the known-peer case → fingerprint pin).
-///
-/// `remote_identity: None` is the **public X.509 endpoint** case: the
-/// local node has no `PeerEntry` for the remote, so there is no
-/// fingerprint to pin. Combined with an X.509 transport, `None`
-/// selects CA verification (`WebPkiServerVerifier`) per the
-/// verifier-selection rule in ADR-034 §3. Combined with an Ed25519
-/// raw-key transport, `None` fails closed (raw-key remotes are always
-/// known peers — no CA to fall back to).
-///
-/// The `Option` is therefore load-bearing, not cosmetic: `Some(fingerprint)`
-/// means "pin this" (known peer), `None` means "trust the CA or fail"
-/// (unknown remote). An implementer must not default `remote_identity`
-/// to a placeholder value to "satisfy" the field — `None` is a real
-/// state that drives verifier selection.
+```rust
 pub struct RemoteIdentity { pub fingerprint: String }
 ```
+
+There is no call-protocol credential bundle. `CallCredentials` is
+removed. The transport dimensions (`tls_identity`, `remote_identity`)
+are in `ConnectionCredentials` in `alknet-core` per ADR-091.
 
 - **TLS identity** — the local node's Ed25519 raw key (RFC 7250) or X.509 cert,
   derived from the vault at startup (ADR-020, ADR-026, ADR-027).
@@ -783,7 +781,7 @@ Based on the gap analysis and the downstream unblock chain:
 | Abort cascade for nested calls | [ADR-016](../../decisions/016-abort-cascade-for-nested-calls.md) | Cross-node abort through `from_call` forwarding handler's `parent_request_id` |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | `error_schemas` mirrored by `from_call` from remote op's spec |
 | Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `from_call` `Subscription` ops register a `StreamingHandler` (`HandlerKind::Stream`) that calls `CallConnection::subscribe()` and forwards the remote stream; `Query`/`Mutation` stay `HandlerKind::Once` |
-| TLS identity redesign | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | RFC 7250 raw key / X.509 cert dimensions of `CallCredentials` |
+| TLS identity redesign | [ADR-027](../../decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | RFC 7250 raw key / X.509 cert dimensions of the local `TlsIdentity` (now carried by `ConnectionCredentials.tls_identity`) |
 | Outgoing-only X.509 and three peer roles | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Public X.509 endpoint is not a `PeerEntry` on the client side (no `PeerId`, not in peer graph); client-side verifier by `PeerEntry` presence (CA vs fingerprint pin); hub = mixed-fingerprint `PeerEntry` |
 | HD derivation for encryption keys | [ADR-020](../../decisions/020-hd-derivation-for-encryption-keys.md) | Vault-derived TLS identity material |
 | Vault key model | [ADR-026](../../decisions/026-vault-key-model-hd-derivation.md) | Vault-derived TLS identity material |

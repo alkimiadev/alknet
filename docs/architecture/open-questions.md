@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-16
+last_updated: 2026-07-17
 ---
 
 # Open Questions
