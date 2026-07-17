@@ -1,7 +1,7 @@
 ---
 id: endpoint/review-endpoint
 name: Review alknet-endpoint implementation for spec conformance, API shape, and test coverage
-status: pending
+status: completed
 depends_on: [endpoint/tests]
 scope: moderate
 risk: low

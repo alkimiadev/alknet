@@ -134,7 +134,12 @@ impl AlknetEndpoint {
         }
 
         #[cfg(feature = "tcp")]
-        if let Some((listener, acceptor)) = self.tcp_tls.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some((listener, acceptor)) = self
+            .tcp_tls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             let handlers = self.handlers.clone();
             let identity_provider = self.identity_provider.clone();
             let mut shutdown_rx = self.shutdown_rx.clone();
@@ -183,10 +188,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
-    use alknet_core::config::DynamicConfig;
     #[cfg(feature = "iroh")]
     use alknet_core::auth::AuthContext;
+    use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
+    use alknet_core::config::DynamicConfig;
     #[cfg(feature = "iroh")]
     use alknet_core::types::{Connection, HandlerError};
     #[cfg(feature = "iroh")]

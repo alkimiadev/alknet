@@ -1,7 +1,7 @@
 ---
 id: endpoint/tests
 name: Move and adapt endpoint tests from alknet-core/endpoint.rs into alknet-endpoint
-status: pending
+status: completed
 depends_on: [endpoint/accept-quinn, endpoint/accept-iroh, endpoint/accept-tcp-tls]
 scope: moderate
 risk: medium
