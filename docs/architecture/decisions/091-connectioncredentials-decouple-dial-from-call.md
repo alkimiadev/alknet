@@ -3,7 +3,10 @@
 ## Status
 
 Accepted (amends ADR-089 §3 and §5; amends ADR-087's `TlsClientConfig::new`
-input framing)
+input framing; amended 2026-07-17 — `CallCredentials` is removed, not
+retained in `alknet-call`; `from_call`'s `credentials_auth_token` dead
+path removed; `auth_token` is a per-request payload field, not a
+call-protocol credential)
 
 ## Context
 
@@ -173,21 +176,104 @@ Each dial extracts what its transport's identity layer needs:
   `Ed25519SecretKey` → `iroh::SecretKey::from_bytes`;
   `creds.remote_identity.fingerprint` → `NodeId` (verifier).
 
-### `CallCredentials` stays in `alknet-call`
+### `CallCredentials` is removed (amendment 2026-07-17)
 
-`CallCredentials` remains the **call-protocol** credential bundle. Its
-`auth_token` field stays — the call protocol uses it (the `from_call`
-forwarding handler populates `auth_token` on outgoing `call.requested`
-payloads; the hub's `Dispatcher::resolve_identity` resolves it via
-`IdentityProvider::resolve_from_token`). The call protocol layer
-assembles `CallCredentials` from `ConnectionCredentials` (the
-transport-level dimensions) + the call-protocol `auth_token`, or the
-caller provides the `auth_token` per-request via `call_with_payload`.
+> **This section supersedes the original "CallCredentials stays in
+> `alknet-call`" decision.** The original rationale rested on a code
+> path that does not exist. The trace below is the correction.
 
-`CallCredentials` does **not** move to `alknet-core`. ADR-089 §5's move
-of `CallCredentials` to core is superseded by this ADR: only
-`ConnectionCredentials` and `RemoteIdentity` move to core. The call
-protocol's own credential type stays in the call crate.
+`CallCredentials` is **removed**, not retained. Once the transport
+dimensions (`local_identity`, `remote_identity`) move to
+`ConnectionCredentials` in `alknet-core`, `CallCredentials` would
+reduce to a one-field struct `{ auth_token: Option<AuthToken> }` — and
+that field has **no reader**.
+
+**The trace (why the original rationale was wrong).** The original
+section claimed the call protocol uses `CallCredentials.auth_token`
+because "the `from_call` forwarding handler populates `auth_token` on
+outgoing `call.requested` payloads." That chain does not connect:
+
+- `from_call`'s signature is `from_call(connection: &CallConnection,
+  config: FromCallConfig)` — no `CallCredentials` parameter.
+  `FromCallConfig` has no credential field.
+- The `auth_token` the `from_call` forwarding handlers *can* set on
+  payloads is sourced from `OpSummary.credentials_auth_token`, an
+  `Option<String>` that is **hardcoded to `None` at every construction
+  site** (`from_call.rs:185, 748, 757`). It is not read from
+  `CallCredentials.auth_token`, and it is a different type
+  (`Option<String>` vs `Option<AuthToken>`). The two were never
+  connected, even in intent.
+- The consuming side — `Dispatcher::resolve_identity`
+  (`dispatch.rs:119`) — reads `payload.get("auth_token").as_str()` from
+  the per-request call payload. It does not read `CallCredentials`.
+
+**Where `auth_token` actually originates.** It is a per-request payload
+field, populated by two real paths, neither of which touches
+`CallCredentials`:
+
+- **Browsers over WebSocket** — the browser sends `auth_token` directly
+  in the `call.requested` JSON payload (`websocket/mod.rs:202–206`); the
+  WS layer (`upgrade.rs:178–181`) passes `envelope.payload` straight to
+  `dispatch_requested`. The browser is the originator; the WS layer is
+  a transparent passthrough.
+- **HTTP gateway (bearer)** — `gateway/dispatch.rs` resolves the
+  `Authorization: Bearer` header to an `Identity` at the HTTP boundary
+  (`resolve_bearer`, line 58) and passes the `Identity` into
+  `build_root_context`. The call protocol sees the resolved `Identity`,
+  not the token. `auth_token` does not enter the call payload on this
+  path.
+
+So `CallCredentials.auth_token` is a write-only field (it has a setter,
+`with_auth_token`, and zero readers). `connect()` — `CallCredentials`'s
+only consumer — is removed in Phase 5 of the migration. With `connect`
+gone, nothing constructs or reads `CallCredentials` except the tests.
+
+**`auth_token`'s two real use cases (confirming no call-protocol
+credential bundle is needed):**
+
+1. **HTTP auth** — the inbound case. The HTTP gateway resolves the
+   bearer token to an `Identity` via `IdentityProvider::resolve_from_token`
+   at the HTTP boundary. The call protocol receives the `Identity`, not
+   the token.
+2. **Registration** (`alknet/register` native ALPN, `/register` HTTP
+   endpoint) — a client not yet associated with a hub presents a
+   one-time registration token; the hub creates a `PeerEntry` (a new
+   identity based on the fingerprint). Outbound, the vault manages the
+   token on the client side; inbound, the hub's registration handler
+   consumes it. Neither path involves `CallCredentials`.
+
+A hub does not "forward with its own token" in the way the original
+rationale assumed. Where the hub authenticates to an outside service
+(another hub's HTTP interface, an external API), the vault manages that
+outbound token — it is not a call-protocol credential. The
+`from_call` `credentials_auth_token` path was a future hatch for a
+use case that dissolved once `IdentityProvider::resolve_from_token`
+solved the inbound identity problem: the hub authenticates as itself
+(its `Identity` is on the connection), and the spoke authorizes the hub
+as the direct caller. No per-forwarded-call token is needed.
+
+**`from_call`'s `credentials_auth_token` is removed too.** It is the
+same family of dead code — an always-`None` field of a different type
+than `CallCredentials.auth_token`, never connected to anything. The
+`credentials_auth_token` field on `OpSummary`, the `credentials_auth_token`
+parameters on `make_forwarding_handler` / `make_streaming_forwarding_handler`,
+and the `auth_token` parameter on `build_forwarded_payload` are removed.
+The forwarding handlers stop emitting `auth_token` in payloads (which
+they never did in practice — the source was always `None`). The two
+`from_call` tests asserting the `Some` path
+(`build_forwarded_payload_sets_auth_token_when_provided`,
+`streaming_forwarding_handler_sets_auth_token_when_provided`) are
+removed — they test a code path never exercised in production. If a
+future hub needs its own token on forwarded payloads, that is a fresh,
+end-to-end-wired feature, not a vestigial path.
+
+**What does NOT move to `alknet-core`:** `ConnectionCredentials` and
+`RemoteIdentity` move (the original decision). `CallCredentials` does
+not move — it is removed. ADR-089 §5's move of `CallCredentials` to
+core is superseded twice over: first by the original ADR-091 (move
+`ConnectionCredentials` instead), and now by this amendment (remove
+`CallCredentials` entirely). There is no call-protocol credential
+bundle; `auth_token` is a per-request payload field, full stop.
 
 ### `TlsClientConfig::new` input framing
 
@@ -229,8 +315,8 @@ the credential dimensions.
 - **The dial is fully decoupled from the call protocol.**
   `ConnectionCredentials` carries only transport-identity dimensions;
   `alknet-client` has no call-protocol coupling in its credential type.
-  The `auth_token` (a call-protocol / hub-layer concept) stays in
-  `alknet-call` where it belongs.
+  There is no call-protocol credential bundle — `auth_token` is a
+  per-request payload field, not a credential.
 - **All three dial signatures are unified.** A caller no longer needs to
   know that iroh takes a bare key while quinn/tcp take a credential
   bundle — all take `&ConnectionCredentials`. The `node_id` parameter on
@@ -240,74 +326,99 @@ the credential dimensions.
   `auth_token` "travels with the `Connection` into the protocol
   take-over, where it is sent as the first call-protocol frame." This
   was aspirational — `Connection` carries no `auth_token`, and
-  `spawn_dispatch` takes no credentials. With `auth_token` out of the
-  dial's credential bundle entirely, the claim is no longer needed. The
-  token is a per-request field on `call.requested` payloads, set by the
-  caller or the `from_call` forwarding handler.
+  `spawn_dispatch` takes no credentials. With `CallCredentials` removed,
+  the claim is not merely unneeded; the field it described was never
+  read. `auth_token` is a per-request field on `call.requested` payloads,
+  set by browsers (in the WS payload) or resolved by the HTTP gateway at
+  its boundary (bearer → `Identity`).
 - **`dial_ssh` fits the same shape when it arrives.** The credential
   dimensions SSH needs (local key + expected host key) are exactly what
   `ConnectionCredentials` carries. No future ADR needed for the SSH dial
   signature.
-- **`CallCredentials` stays in `alknet-call` — its home.** The call
-  protocol's own credential type is not dragged into core for the dial's
-  benefit. Core gets `ConnectionCredentials` (transport-level); the call
-  crate keeps `CallCredentials` (protocol-level).
+- **A dead credential type and a dead forwarding-token path are removed
+  (amendment 2026-07-17).** `CallCredentials` is removed (its
+  `auth_token` field had no reader). `from_call`'s
+  `credentials_auth_token` is removed (always `None`, different type
+  than `CallCredentials.auth_token`, never connected). Both were future
+  hatches from the era before `IdentityProvider::resolve_from_token`
+  solved the inbound identity problem; the hatches dissolved once it
+  did. See the amended §"`CallCredentials` is removed" above for the
+  trace.
 
 **Negative:**
 
-- **`CallCredentials` loses two fields.** `tls_identity` and
-  `remote_identity` move to `ConnectionCredentials` in core;
-  `CallCredentials` becomes `{auth_token: Option<AuthToken>}` (or is
-  restructured — the call protocol may assemble it from
-  `ConnectionCredentials` + `auth_token` at the take-over site, or the
-  caller provides `auth_token` per-request). The exact restructure is a
-  two-way-door implementation detail; the one-way decision is that the
-  transport dimensions leave `CallCredentials`.
-- **The assembly layer assembles two credential bundles, not one.** Where
-  ADR-089 had the assembly layer build one `CallCredentials`, it now
-  builds `ConnectionCredentials` (for the dial) and, separately,
-  provides the `auth_token` to the call-protocol layer (for the
-  per-request payload). This is the correct layering — the dial and the
-  protocol consume different dimensions — but it is one more type at the
-  assembly site.
-- **ADR-089 §5's "CallCredentials moves to core" is superseded.** The
-  move target changes from `CallCredentials` to `ConnectionCredentials`
-  + `RemoteIdentity`. `CallCredentials` stays in `alknet-call`. This
-  affects the extraction plan's Phase 0 (the additive credentials move).
+- **`CallCredentials` is removed (a public type).** Callers that
+  constructed `CallCredentials` (the integration test; any future
+  assembly-layer code) switch to `ConnectionCredentials` for the dial.
+  `auth_token`, where needed, is a per-request payload field (browsers
+  send it in the WS payload; the HTTP gateway resolves bearer →
+  `Identity` at its boundary). This is expected — `connect()` was
+  `CallCredentials`'s only consumer and is removed in the same
+  migration. There are no external consumers (develop branch is a total
+  rewrite).
+- **The assembly layer builds one credential bundle, not two.** Where
+  ADR-089 had the assembly layer build one `CallCredentials` (and the
+  original ADR-091 reframed it as two — `ConnectionCredentials` for the
+  dial + a per-request `auth_token`), the assembly layer now builds
+  `ConnectionCredentials` for the dial only. `auth_token` is not a
+  credential the assembly layer constructs; it is a per-request payload
+  field the browser (or the HTTP gateway's bearer resolution) supplies.
+  This is fewer types at the assembly site, not more.
+- **ADR-089 §5's "CallCredentials moves to core" is superseded twice.**
+  The original ADR-091 reframed the move target as `ConnectionCredentials`
+  (not `CallCredentials`); this amendment removes `CallCredentials`
+  entirely. What moves to `alknet-core`: `ConnectionCredentials` +
+  `RemoteIdentity`. What does not move: `CallCredentials` (removed, not
+  relocated). This affects the extraction plan's Phase 0 (additive
+  credentials move) and Phase 5 (the call prune now removes
+  `CallCredentials` and the `from_call` dead path, not just `connect`
+  and the TLS helpers).
 
 ## Door type
 
 **One-way.** The dial signatures (`dial_quic` / `dial_tcp_tls` /
 `dial_iroh` all taking `&ConnectionCredentials`) are the public API
 surface of `alknet-client`. The credential-type decoupling
-(`ConnectionCredentials` in core, `CallCredentials` in call) determines
-the dep graph (`alknet-client` depends on `alknet-core` for
-`ConnectionCredentials`, not on `alknet-call` for `CallCredentials`).
-Reversing would mean re-coupling the dial to the call protocol's
-credential type and re-asymmetrizing the iroh dial. The crate is
-greenfield (Phase 3 of the extraction plan), so the door is still open
-now — this ADR records the decision before implementation.
+(`ConnectionCredentials` in core, no call-protocol credential bundle)
+determines the dep graph (`alknet-client` depends on `alknet-core` for
+`ConnectionCredentials`, not on `alknet-call`). Reversing would mean
+re-coupling the dial to the call protocol's credential type and
+re-asymmetrizing the iroh dial. The `CallCredentials` removal
+(amendment 2026-07-17) is the same door — removing a public type whose
+only consumer (`connect`) is removed in the same migration. The crate
+is greenfield (Phase 3 of the extraction plan), so the door is still
+open now — this ADR records the decisions before implementation.
 
 ## References
 
 - ADR-089 — `AlknetClient` native dial seam (§3 dial signatures amended
   — all take `&ConnectionCredentials`; §5 move amended —
   `ConnectionCredentials`/`RemoteIdentity` move to core, not
-  `CallCredentials`)
+  `CallCredentials`; §5 further amended 2026-07-17 — `CallCredentials`
+  removed, not retained in `alknet-call`)
 - ADR-087 — `TlsClientConfig` not blocked on dial (input framing
   amended — `ClientVerifierContext` derived from
   `ConnectionCredentials.remote_identity`, not `CallCredentials`)
 - ADR-034 — client-side verifier selection (the rule
   `ConnectionCredentials.remote_identity` drives — unchanged)
-- ADR-017 §7 — the three credential dimensions (the source of
-  `CallCredentials`'s three fields; this ADR splits the transport
-  dimensions from the protocol dimension)
+- ADR-017 §7 — the three credential dimensions (the historical source of
+  `CallCredentials`'s three fields; the transport dimensions moved to
+  `ConnectionCredentials`, the `auth_token` dimension is a per-request
+  payload field, and `CallCredentials` itself is removed)
 - `crates/alknet-call/src/protocol/dispatch.rs` —
   `Dispatcher::resolve_identity` reads `payload.get("auth_token")`
-  (per-request, not connection-level)
-- `crates/alknet-call/src/client/from_call.rs` —
-  `build_forwarded_payload` sets `auth_token` on outgoing payloads
-  (per-request, the hub's own token)
+  (per-request, not connection-level — the consumer of `auth_token`)
+- `crates/alknet-call/src/client/from_call.rs` — the
+  `credentials_auth_token` field on `OpSummary` and the
+  `auth_token` parameter on `build_forwarded_payload` (the removed dead
+  path; always `None`, different type than `CallCredentials.auth_token`,
+  never connected)
+- `crates/alknet-http/src/gateway/dispatch.rs` — `resolve_bearer` (the
+  HTTP path: bearer → `Identity` at the boundary; the call layer sees
+  the identity, not the token)
+- `crates/alknet-http/src/websocket/mod.rs` — the WS path:
+  `auth_token` in the browser's call payload, passed through to
+  `dispatch_requested` unchanged
 - `docs/research/references/ssh/russh/06-usage-patterns.md` — the SSH
   client usage patterns (check_server_key + authenticate_publickey)
   validating the `ConnectionCredentials` shape for a future `dial_ssh`

@@ -61,7 +61,7 @@
   4. **Session credential return** — what does the hub return on
      successful registration? A `PeerEntry`? A session token? Both?
      How does the returned credential feed into the subsequent
-     `alknet/channels` connection's `CallCredentials`?
+      `alknet/channels` connection's `ConnectionCredentials`?
   5. **Relationship to OQ-58** — the HTTP registration endpoint
      (OQ-58) and `alknet/register` share the enrollment semantics
      (create `PeerEntry`, return credential) but differ in transport

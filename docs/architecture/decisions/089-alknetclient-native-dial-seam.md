@@ -9,7 +9,10 @@ unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` parameter is
 derived from `remote_identity`; the `auth_token` stays in the
 call-protocol layer, not the dial; `CallCredentials` stays in
 `alknet-call`, only `ConnectionCredentials`/`RemoteIdentity` move to
-`alknet-core`)
+`alknet-core`; §5 further amended 2026-07-17 by ADR-091 —
+`CallCredentials` is removed entirely (its `auth_token` field had no
+reader); `auth_token` is a per-request payload field; the `from_call`
+`credentials_auth_token` dead path is removed)
 
 ## Context
 
@@ -307,6 +310,25 @@ the dep graph, and the dep graph requires it.
 > `CallCredentials`. All three dial signatures unify on
 > `&ConnectionCredentials`. See
 > [ADR-091](091-connectioncredentials-decouple-dial-from-call.md).
+>
+> **Further amendment 2026-07-17 (ADR-091):** `CallCredentials` is
+> **removed**, not retained in `alknet-call`. The "stays in
+> `alknet-call`" framing above is itself superseded: a trace of the code
+> showed `CallCredentials.auth_token` had no reader (`connect()` read
+> only `tls_identity` + `remote_identity`; `spawn_dispatch` takes no
+> credentials; the `from_call` forwarding path's `auth_token` source was
+> `OpSummary.credentials_auth_token: Option<String>`, always `None`,
+> never connected to `CallCredentials.auth_token`). The original ADR-091
+> rationale ("the `from_call` forwarding handler populates `auth_token`
+> from `CallCredentials`") cited a code path that does not exist.
+> `auth_token` is a per-request payload field — browsers send it in the
+> WebSocket call payload; the HTTP gateway resolves bearer → `Identity`
+> at its boundary (the call layer sees the identity, not the token);
+> `Dispatcher::resolve_identity` reads `payload.get("auth_token")`.
+> There is no call-protocol credential bundle. The `from_call`
+> `credentials_auth_token` dead path is removed in the same pass. See
+> [ADR-091](091-connectioncredentials-decouple-dial-from-call.md) §"`CallCredentials`
+> is removed."
 
 **Consequence: `FingerprintPinVerifier` moves to `alknet-tls`.** With
 `connect` removed and the verifier-selection logic centralized in
@@ -391,11 +413,14 @@ several possible native clients sharing the same wire protocols.
 - **`CallClient::spawn_dispatch` / `ChannelClient::from_connection`**
   — the take-over APIs are unchanged. They consume the `Connection`
   the dial produces; they do not know `AlknetClient` produced it.
-- **`CallCredentials` / `RemoteIdentity`** — **moved to `alknet-core`**
-  (see §5). The shape is unchanged; the location changes from
-  `alknet-call` to `alknet-core` so the dial does not depend on the
-  call protocol. Both the call and channels clients consume them from
-  core.
+- **`RemoteIdentity`** — **moved to `alknet-core`** (see §5, as amended
+  by ADR-091). The location changes from `alknet-call` to `alknet-core`
+  so the dial does not depend on the call protocol. The call and
+  channels clients consume it from core. (`CallCredentials` is removed
+  per ADR-091's 2026-07-17 amendment — it is not moved, it is deleted;
+  its `auth_token` field had no reader. `ConnectionCredentials` is the
+  new transport-level credential bundle in core, carrying
+  `local_identity` + `remote_identity`.)
 - **The channels substrate (ADR-071)** — unchanged. The dial produces a
   `Connection`; the channels protocol runs on it.
 - **ADR-086 (endpoint types / entry points)** — the endpoint-type model
@@ -450,14 +475,17 @@ several possible native clients sharing the same wire protocols.
 **Negative:**
 
 - **Breaking change: `CallClient::connect` / `ChannelClient::connect_quic`
-  removed; `CallCredentials` / `RemoteIdentity` / `FingerprintPinVerifier`
-  relocated; `ClientError` removed.** Call sites that used the
-  convenience constructors must switch to `AlknetClient::dial_*` +
-  `spawn_dispatch` / `from_connection`. Import paths for
-  `CallCredentials` / `RemoteIdentity` change from `alknet_call` to
-  `alknet_core`. This is expected — the develop branch is a total
-  rewrite; there are no external consumers to preserve compatibility
-  for. The migration plan handles the call-site + import updates.
+  removed; `RemoteIdentity` / `FingerprintPinVerifier` relocated;
+  `CallCredentials` removed; `ClientError` removed.** Call sites that
+  used the convenience constructors must switch to `AlknetClient::dial_*`
+  + `spawn_dispatch` / `from_connection`. Import paths for
+  `RemoteIdentity` change from `alknet_call` to `alknet_core`;
+  `CallCredentials` is removed (per ADR-091's 2026-07-17 amendment) —
+  callers pass `ConnectionCredentials` to the dial and, where needed,
+  `auth_token` as a per-request payload field. This is expected — the
+  develop branch is a total rewrite; there are no external consumers to
+  preserve compatibility for. The migration plan handles the call-site +
+  import updates.
 - **A new crate.** `alknet-client` is one more crate in the workspace.
   The cost is low (the dial is narrow), and the dependency profile
   rules out the alternatives, but it is a new entry in the crate
@@ -490,11 +518,11 @@ shared client dial crate is structural — every outbound-dialing role
 re-distributing the dial across crates, reintroducing the duplicated
 boilerplate. The three-dial API (`dial_quic` / `dial_tcp_tls` /
 `dial_iroh`) is one-way — changing the signatures after consumers exist
-is a rewrite. The internal implementation (how `CallCredentials` feeds
-`TlsClientConfig::new`, how the iroh dial maps the `Ed25519SecretKey`)
-is two-way. The `alknet/register` ALPN name is one-way (wire
-compatibility); its wire protocol is two-way until the dedicated ADR
-lands.
+is a rewrite. The internal implementation (how `ConnectionCredentials`
+feeds `TlsClientConfig::new`, how the iroh dial maps the
+`Ed25519SecretKey`) is two-way. The `alknet/register` ALPN name is
+one-way (wire compatibility); its wire protocol is two-way until the
+dedicated ADR lands.
 
 ## References
 

@@ -96,10 +96,11 @@ alknet-vault (standalone — foundational to ACL: key derivation, identity)
 ├── Substrate
 │   alknet-core        ProtocolHandler, Connection, BidiStreamSource, AuthContext,
 │   │                  IdentityProvider, StaticConfig, DynamicConfig, fingerprint,
-│   │                  CallCredentials, RemoteIdentity
+│   │                  ConnectionCredentials, RemoteIdentity
 │   │                  (endpoint extracted to alknet-endpoint; core is now lightweight
-│   │                  types+auth+config — no quinn/iroh/rcgen deps; CallCredentials
-│   │                  moved here from alknet-call per ADR-089 §5)
+│   │                  types+auth+config — no quinn/iroh/rcgen deps; ConnectionCredentials
+│   │                  + RemoteIdentity moved here from alknet-call per ADR-091;
+│   │                  CallCredentials removed per ADR-091 Am. 2026-07-17)
 │   ├── alknet-tls     TlsServerConfig + TlsClientConfig + FingerprintPinVerifier — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087; FingerprintPinVerifier moved from alknet-call per ADR-089 §5)
 │   ├── alknet-call    CallAdapter on alknet/call, CallClient (spawn_dispatch only — connect removed per ADR-089 §5), OperationRegistry, adapters (no TLS/transport deps)
 │   ├── alknet-channels

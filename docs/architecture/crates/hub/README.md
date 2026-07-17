@@ -312,7 +312,7 @@ impl Hub {
     pub async fn connect_quic_worker(
         &self,
         addr: SocketAddr,
-        credentials: CallCredentials,
+        credentials: ConnectionCredentials,
         config: FromCallConfig,
     ) -> Result<(PeerId, ChannelClient), HubError>;
 }
@@ -542,7 +542,7 @@ impl Hub {
 ```
 
 The supervision loop takes a `dial` closure rather than a `SocketAddr`
-+ `CallCredentials` pair. This keeps the loop transport-agnostic —
++ `ConnectionCredentials` pair. This keeps the loop transport-agnostic —
 the caller decides the transport by what the closure does. The
 backoff and re-discovery logic is the same regardless of transport.
 

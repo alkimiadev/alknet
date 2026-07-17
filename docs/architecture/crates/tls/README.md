@@ -696,7 +696,7 @@ alknet-core (loses TLS setup code + endpoint)
 
 alknet-call (pure protocol crate — no TLS/transport deps per ADR-089 §5)
 └── alknet-core (ProtocolHandler, Connection, types; ConnectionCredentials/
-    RemoteIdentity moved to core per ADR-091; CallCredentials stays in
+    RemoteIdentity moved to core per ADR-091; CallCredentials removed per ADR-091 Am. 2026-07-17
     alknet-call)
 
 alknet-hub (multi-transport endpoint)

@@ -130,12 +130,14 @@ impl CallClient {
     /// and to let `alknet-call` shed its TLS/transport deps entirely.
     /// Callers compose `AlknetClient::dial_quic(...).await?` +
     /// `CallClient::new(...).spawn_dispatch(conn)`. `ClientError` is
-    /// removed (it was produced only by `connect`).
+    /// removed (it was produced only by `connect`). `CallCredentials`
+    /// is removed (its `auth_token` field had no reader; `auth_token`
+    /// is a per-request payload field — ADR-091, amended 2026-07-17).
     #[cfg(feature = "quinn")]
     pub async fn connect(
         &self,
         addr: SocketAddr,
-        credentials: CallCredentials,
+        credentials: CallCredentials,  // REMOVED — CallCredentials is removed
     ) -> Result<CallConnection, ClientError>;
 }
 ```
@@ -246,7 +248,8 @@ attribution, filtered by the calling peer's authorization). See
 
 ### Credential sources for connections
 
-The credential dimensions are split across two layers (ADR-091):
+The credential dimensions are split across two layers (ADR-091, amended
+2026-07-17):
 
 - **`ConnectionCredentials`** (in `alknet-core`, moved from
   `alknet-call` per ADR-091) — the **transport-level** credential
@@ -254,16 +257,21 @@ The credential dimensions are split across two layers (ADR-091):
   transport-identity dimensions: `local_identity` (the local node's
   `TlsIdentity`) and `remote_identity` (the expected fingerprint). The
   dial does not depend on the call protocol for this type.
-- **`CallCredentials`** (stays in `alknet-call`) — the
-  **call-protocol** credential bundle. The `auth_token` dimension
-  (ADR-017 §7) is a call-protocol / hub-layer concept: a bearer token
-  correlated to an identity via `IdentityProvider::resolve_from_token`,
-  used for browsers (no raw-key support) and `alknet/register` (no
-  prior peer relationship). It is a per-request field on
-  `call.requested` payloads, not a transport credential.
+- **`auth_token`** — a **per-request payload field**, not a
+  call-protocol credential bundle. `Dispatcher::resolve_identity`
+  reads `payload.get("auth_token")` on each `call.requested` payload.
+  Browsers send it directly in the WebSocket call payload; the HTTP
+  gateway resolves the bearer token to an `Identity` at its boundary
+  (the call layer sees the identity, not the token). `CallCredentials`
+  is **removed** (its `auth_token` field had no reader — `connect()`
+  read only `tls_identity` + `remote_identity`; `spawn_dispatch` takes
+  no credentials; the `from_call` forwarding path's `auth_token` source
+  was `OpSummary.credentials_auth_token: Option<String>`, always
+  `None`, never connected to `CallCredentials.auth_token`). See
+  ADR-091 (amended 2026-07-17) for the full trace.
 
 Credentials come from `Capabilities` (ADR-014), never from environment
-variables. The three credential dimensions (ADR-017 §7):
+variables. The transport-identity dimensions (ADR-017 §7):
 
 ```rust
 // Transport-level (alknet-core, consumed by the dial — ADR-091)
@@ -272,16 +280,15 @@ pub struct ConnectionCredentials {
     pub remote_identity: Option<RemoteIdentity>, // expected fingerprint (None = CA path / fail-closed)
 }
 
-// Call-protocol-level (alknet-call — the auth_token stays here)
-// The auth_token is set per-request on call.requested payloads, not
-// carried by the dial.
+// auth_token is a per-request payload field, not a credential struct.
+// Browsers send it in the WebSocket call payload; the HTTP gateway
+// resolves bearer → Identity at its boundary.
+// Dispatcher::resolve_identity reads payload.get("auth_token").
 ```
 
-`CallCredentials` retains `auth_token` (and may assemble from
-`ConnectionCredentials` + `auth_token` at the take-over site, or the
-caller provides `auth_token` per-request via `call_with_payload`). The
-transport dimensions (`local_identity`, `remote_identity`) moved to
-`ConnectionCredentials` in `alknet-core` per ADR-091.
+There is no call-protocol credential bundle. `CallCredentials` is
+removed. The transport dimensions (`local_identity`, `remote_identity`)
+moved to `ConnectionCredentials` in `alknet-core` per ADR-091.
 
 /// Expected identity of the remote node (ADR-017 §7, extended by
 /// ADR-034 §2). Carries a fingerprint string the assembly layer
@@ -710,8 +717,10 @@ Based on the gap analysis and the downstream unblock chain:
   (mis)placed in `alknet-call` as a schema-only placeholder; ADR-066
   moved it to `alknet-http` as a real HTTP-backed adapter. See Adapter
   Location Map.
-- **No secret material on the wire.** `CallCredentials` carries vault-derived
-  material for the *outbound* connection (TLS identity, auth token); the
+- **No secret material on the wire.** `ConnectionCredentials` carries vault-derived
+  material for the *outbound* connection (TLS identity); `auth_token` is a
+  per-request payload field (browsers send it in the WebSocket call payload;
+  the HTTP gateway resolves bearer → `Identity` at its boundary). The
   call protocol's wire format carries no private keys, API keys, or decrypted
   credentials (ADR-014). The no-env-vars invariant (above) is the dispatch-side
   corollary.
@@ -748,7 +757,7 @@ Based on the gap analysis and the downstream unblock chain:
   `ServerCertVerifier` uses CA verification (`WebPkiServerVerifier`) for
   such remotes; known peers (hub with `PeerEntry`) use fingerprint
   pinning. See [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md).
-- **`CallCredentials.remote_identity: None` is load-bearing.** `None`
+- **`ConnectionCredentials.remote_identity: None` is load-bearing.** `None`
   means "no `PeerEntry` for this remote → use CA verification (X.509)
   or fail closed (Ed25519 raw key)" per the ADR-034 §3 verifier rule.
   The implementation must not default `remote_identity` to a placeholder

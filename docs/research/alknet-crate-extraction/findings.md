@@ -47,16 +47,24 @@ but the extraction unwinds that.
 
 | Lines | Concern | Destination | LOC |
 |-------|---------|-------------|-----|
-| 40-88 | `RemoteIdentity`, `CallCredentials` (struct + builder) | split: `RemoteIdentity` + new `ConnectionCredentials` → `alknet-core` (`credentials.rs`); `CallCredentials` restructured (transport dimensions leave, `auth_token` stays) → stays in `alknet-call` (ADR-091) | ~48 |
+| 40-88 | `RemoteIdentity`, `CallCredentials` (struct + builder) | split: `RemoteIdentity` + new `ConnectionCredentials` → `alknet-core` (`credentials.rs`); `CallCredentials` **removed** (its `auth_token` field had no reader — see Phase 5) | ~48 |
 | 90-100 | `ClientError` enum | **removed** (only produced by `connect`) | ~10 |
 | 102-187 | `CallClient` struct + `new` + `spawn_dispatch` | **stays** (the pure protocol take-over) | ~85 |
 | 189-320 | `build_quinn_client_config`, `build_client_auth`, `select_server_verifier`, `load_platform_root_cert_store`, `load_cert_chain`, `load_private_key`, `Ed25519SigningKey`, `RawKeyClientCertResolver`, `NoClientCertResolver`, `FingerprintPinVerifier` | `alknet-tls` | ~130 |
 | 321-640 | `CallConnection`, `Dispatcher` wiring, wire-protocol helpers | **stays** (protocol) | ~320 |
-| 640-930 | Tests (use `connect`, `CallCredentials`, TLS helpers) | rewrite to use `spawn_dispatch` directly or `AlknetClient` | ~290 |
+| 640-930 | Tests (16 total — see Phase 5 audit) | split: 10 TLS/verifier tests → `alknet-tls` (Phase 1); 4 protocol-level tests stay in `alknet-call` unchanged; 2 `CallCredentials`-field tests → `alknet-core` (testing `ConnectionCredentials`); 0 lib tests call `connect()` | ~290 |
 
-The call crate's prune is ~140 lines of implementation + ~290 lines of
-tests that need rewriting. What remains is the pure protocol: `CallClient`
-+ `CallConnection` + `Dispatcher` + the wire protocol.
+The call crate's prune is ~140 lines of implementation + `CallCredentials`
+removal + `from_call`'s `credentials_auth_token` dead-path removal. The
+test work: 10 tests move to `alknet-tls` (Phase 1), 2 `CallCredentials`
+tests move to `alknet-core` (testing `ConnectionCredentials`), 4
+protocol-level tests stay unchanged. The integration test
+(`two_node_call.rs`, 2 tests) splits: the dial+takeover composition test
+moves to `alknet-client/tests/` (Phase 3, rewritten with a minimal echo
+`ProtocolHandler`); the `from_call` test stays in `alknet-call` (Phase 5,
+rewritten to use `spawn_dispatch` + loopback `Connection`). What remains
+is the pure protocol: `CallClient` + `CallConnection` + `Dispatcher` +
+the wire protocol.
 
 ### `crates/alknet-http/src/server/adapter.rs` — the residual
 
@@ -93,14 +101,16 @@ already removed per ADR-065; tests use `from_stream` with
 `crates/alknet-core/src/credentials.rs` (~40 lines).
 `ConnectionCredentials` is the transport-level credential bundle
 (ADR-091) — it carries `local_identity` + `remote_identity` (the two
-dimensions the dial consumes). `CallCredentials` stays in
-`alknet-call` (it is the call-protocol bundle; its `auth_token` field
-is a per-request call-protocol concept, not a transport credential).
-Update `alknet-core/src/lib.rs` to `pub mod credentials` + re-export.
-Update `alknet-call` to import `ConnectionCredentials` + `RemoteIdentity`
-from core and re-export them; `CallCredentials` retains `auth_token` and
-references the core types for the transport dimensions. No other
-changes.
+dimensions the dial consumes). `CallCredentials` is **removed** (its
+`auth_token` field had no reader — `connect()` read only
+`tls_identity` + `remote_identity`; `spawn_dispatch` takes no
+credentials; the `from_call` forwarding path's `auth_token` source was
+a different, always-`None` field never connected to `CallCredentials`).
+`auth_token` is a per-request payload field, not a call-protocol
+credential. Update `alknet-core/src/lib.rs` to `pub mod credentials` +
+re-export. Update `alknet-call` to import `ConnectionCredentials` +
+`RemoteIdentity` from core and re-export them; remove `CallCredentials`
+and its builder methods. No other changes.
 
 **Why first:** It's independent of the three new crates, purely
 additive (core gains types, nothing breaks), and means `alknet-client`
@@ -115,7 +125,7 @@ continue to work via the re-export.
 
 **Done when:** `cargo test` passes, `ConnectionCredentials` +
 `RemoteIdentity` are defined in `alknet-core`, `alknet-call` imports
-them from core, `CallCredentials` stays in `alknet-call`.
+them from core, `CallCredentials` is removed from `alknet-call`.
 
 ### Phase 1: Create `alknet-tls` (greenfield, additive)
 
@@ -299,16 +309,28 @@ lightweight (~3200 LOC, no heavy transport deps).
 
 ### Phase 5: Prune `alknet-call` (subtractive, breakage confined)
 
-**What:** Delete `connect()` + all TLS helpers + `ClientError` from
-`call_client.rs`. The transport dimensions (`ConnectionCredentials`/
-`RemoteIdentity`) already moved to core in Phase 0; here we remove the
-old definitions from `call_client.rs` and update imports.
-`CallCredentials` stays in `alknet-call` (retaining `auth_token`,
-referencing the core types — ADR-091). Update `Cargo.toml` to drop
-`quinn`/`rustls`/`rustls-native-certs`/`rustls-pemfile`. Rewrite the
-tests that used `connect` to use `spawn_dispatch` directly (with
-`Connection::from_stream` mocks) or `AlknetClient::dial_quic` +
-`spawn_dispatch`.
+**What:** Delete `connect()` + all TLS helpers + `ClientError` +
+`CallCredentials` from `call_client.rs`. The transport dimensions
+(`ConnectionCredentials`/`RemoteIdentity`) already moved to core in
+Phase 0; here we remove the old definitions from `call_client.rs` and
+update imports. `CallCredentials` is **removed** (its `auth_token`
+field had no reader — `connect()` read only `tls_identity` +
+`remote_identity`; `spawn_dispatch` takes no credentials; the
+`from_call` forwarding path's `auth_token` source was
+`OpSummary.credentials_auth_token: Option<String>`, always `None`,
+never connected to `CallCredentials.auth_token`). `auth_token` is a
+per-request payload field, not a call-protocol credential. Update
+`Cargo.toml` to drop `quinn`/`rustls`/`rustls-native-certs`/
+`rustls-pemfile`. Also remove `from_call`'s `credentials_auth_token`
+dead path: the `credentials_auth_token` field on `OpSummary`, the
+`credentials_auth_token` parameters on `make_forwarding_handler` /
+`make_streaming_forwarding_handler`, and the `auth_token` parameter on
+`build_forwarded_payload` are all removed (always `None`, different
+type than `CallCredentials.auth_token`, never connected). The two
+`from_call` tests asserting the `Some` path
+(`build_forwarded_payload_sets_auth_token_when_provided`,
+`streaming_forwarding_handler_sets_auth_token_when_provided`) are
+removed — they test a code path never exercised in production.
 
 **The `call_client.rs` after prune:**
 - `CallClient` struct + `new` + `registry` + `identity_provider` +
@@ -316,13 +338,10 @@ tests that used `connect` to use `spawn_dispatch` directly (with
 - `CallConnection` + `Dispatcher` wiring (stays — protocol)
 - `RemoteIdentity` — removed from `call_client.rs` (moved to
   `alknet-core` in Phase 0; re-imported from there)
-- `CallCredentials` — restructured, stays in `alknet-call`: the
-  transport dimensions (`tls_identity`, `remote_identity`) leave for
-  `ConnectionCredentials` in `alknet-core` (Phase 0); the `auth_token`
-  field stays (it is a call-protocol concept, not a transport credential
-  — ADR-091). `CallCredentials` references the core types for the
-  transport dimensions or assembles from `ConnectionCredentials` +
-  `auth_token` at the take-over site.
+- `CallCredentials` — **removed** (its `auth_token` field had no
+  reader; `connect()` was its only consumer and is removed in this
+  phase; `auth_token` is a per-request payload field, not a credential
+  — ADR-091, amended 2026-07-17)
 - `ClientError` — removed
 - `connect` + all `build_*`/`select_*`/`load_*`/`Ed25519SigningKey`/
   `RawKeyClientCertResolver`/`NoClientCertResolver`/
@@ -337,23 +356,37 @@ any stray `#[cfg(feature = "quinn")]` the prune missed). `alknet-call`
 becomes a pure protocol crate.
 
 **Test impact (per the test audit below):** the lib tests in
-`call_client.rs` (16 tests) split into 6 that stay unchanged
-(protocol-level, use `spawn_dispatch(stub_connection())`) and 10 that
-move to `alknet-tls` in Phase 1 (TLS/verifier tests). **Zero lib tests
-need rewriting** — no test in `call_client.rs` calls `connect()`. The
-`from_call.rs` tests (27 tests) stay unchanged — they use
-`CallConnection` directly. The one integration test file
-(`tests/two_node_call.rs`, 2 tests) calls `connect()` twice — it moves
-to `alknet-client/tests/` (Phase 3) or is updated to use
-`AlknetClient::dial_quic` + `spawn_dispatch` (Phase 5).
+`call_client.rs` (16 tests) split into 4 that stay unchanged
+(protocol-level, use `spawn_dispatch(stub_connection())`), 10 that
+move to `alknet-tls` in Phase 1 (TLS/verifier tests), and 2 that move
+to `alknet-core` (testing `ConnectionCredentials` — the
+`call_credentials_builder_methods` and
+`remote_identity_none_is_load_bearing_not_defaulted` tests, which
+access `remote_identity`/`tls_identity` fields that moved to
+`ConnectionCredentials`). The `from_call.rs` tests: 25 stay unchanged
+(protocol-level, use `CallConnection` directly), 2 are removed (the
+`credentials_auth_token` `Some`-path tests — see above). The
+integration test file (`tests/two_node_call.rs`, 2 tests) splits:
+`two_node_call_round_trip` (dial + take-over composition) moves to
+`alknet-client/tests/` (Phase 3, rewritten with a minimal echo
+`ProtocolHandler` on a test ALPN — no `alknet-call` dependency);
+`from_call_discovers_and_forwards_over_quic_loopback` (call-protocol-
+specific, uses `from_call`) stays in `alknet-call` (Phase 5, rewritten
+to use `spawn_dispatch` + loopback `Connection` — **not**
+`AlknetClient::dial_quic`, which would re-create the dep the prune
+removes).
 
-The implementation prune is mechanical: delete the error enum, delete
-`connect`, delete the TLS helpers (~140 lines). The test work is: the
-10 TLS tests already moved in Phase 1, the 6 protocol tests stay, the
-integration test is handled separately.
+The implementation prune: delete `ClientError`, delete `connect`,
+delete `CallCredentials` and its builder methods, delete the TLS
+helpers (~140 lines), delete `from_call`'s `credentials_auth_token`
+dead path (~30 lines). The test work: 10 TLS tests already moved in
+Phase 1, 2 `CallCredentials` tests move to `alknet-core`, 4 protocol
+tests stay, 2 `from_call` dead-path tests removed, the integration
+test splits as above.
 
 **Compilable state:** `cargo test -p alknet-call` passes with the
-rewritten tests. The crate has no TLS/transport deps.
+rewritten tests. The crate has no TLS/transport deps, no
+`CallCredentials`, no `from_call` dead path.
 
 **Done when:** `cargo test -p alknet-call` passes, the crate is a pure
 protocol crate.
@@ -396,20 +429,21 @@ wrapper is gone.
 
 | After phase | State |
 |-------------|-------|
-| 0 (credentials) | `ConnectionCredentials`/`RemoteIdentity` in core; call imports from core; `CallCredentials` stays in call; no breakage |
+| 0 (credentials) | `ConnectionCredentials`/`RemoteIdentity` in core; call imports from core; `CallCredentials` removed; no breakage |
 | 1 (tls) | `alknet-tls` builds standalone; core/call/http unchanged (old code duplicated) |
 | 2 (endpoint) | `alknet-endpoint` builds standalone; core still has old `endpoint.rs` (duplicate) |
 | 3 (client) | `alknet-client` builds standalone; call still has old `connect` (duplicate) |
 | 4 (core prune) | core is lightweight; `endpoint.rs` gone; `ConnectionCredentials` in core |
-| 5 (call prune) | call is pure protocol; `connect` + TLS helpers gone; Category B tests already moved |
+| 5 (call prune) | call is pure protocol; `connect` + TLS helpers + `CallCredentials` + `from_call` dead path gone; Category B tests already moved; 2 `CallCredentials` tests moved to core |
 | 6 (http fix) | http has no `QuicStream` wrapper; clean `accept_bi` path |
 
 Phases 0-3 are purely additive — no existing code breaks, no tests
 break. Phases 4-5 are subtractive — the pruned code's callers don't
 exist yet (no assembly layer), so the breakage is confined to the
-crate's own tests (and per the test audit, the call prune breaks zero
-tests — the TLS tests moved in Phase 1, the protocol tests use
-`spawn_dispatch` directly). Phase 6 is a small fix.
+crate's own tests (and per the test audit, the call prune removes
+`CallCredentials` and the `from_call` dead path; the TLS tests moved in
+Phase 1, the `CallCredentials` tests moved to core, the protocol tests
+use `spawn_dispatch` directly). Phase 6 is a small fix.
 
 ## Ordering rationale
 
@@ -454,43 +488,58 @@ to clean up later.
 `ConnectionCredentials` (not `CallCredentials`) is what moves — it is
 the transport-level credential bundle (`local_identity` +
 `remote_identity`), carrying only the dimensions the dial consumes.
-`CallCredentials` stays in `alknet-call` because its `auth_token` field
-is a call-protocol / hub-layer concept (bearer-token identity
-correlation for browsers and `alknet/register`), not a transport
-credential. See ADR-091 for the full rationale.
+`CallCredentials` is **removed** (its `auth_token` field had no reader
+— `connect()` read only `tls_identity` + `remote_identity`;
+`spawn_dispatch` takes no credentials; the `from_call` forwarding
+path's `auth_token` source was `OpSummary.credentials_auth_token:
+Option<String>`, always `None`, never connected to
+`CallCredentials.auth_token`). `auth_token` is a per-request payload
+field, not a call-protocol credential. See ADR-091 (amended
+2026-07-17) for the full rationale and trace.
 
 The move is ~40 lines (struct definitions + builder impls) into a new
-`crates/alknet-core/src/credentials.rs` (or `auth.rs` — `auth.rs`
-already holds `AuthToken`, so `credentials.rs` is cleaner to keep the
-auth module from growing). `alknet-call`'s `client/mod.rs` imports
-`ConnectionCredentials` + `RemoteIdentity` from core and re-exports
-them; `CallCredentials` stays defined in `alknet-call` (retaining
-`auth_token`, referencing the core types for the transport dimensions).
-Test changes are minimal — the Category A tests that reference
-`CallCredentials` directly may need import updates depending on how
-`CallCredentials` is restructured.
+`crates/alknet-core/src/credentials.rs`. `alknet-call`'s
+`client/mod.rs` imports `ConnectionCredentials` + `RemoteIdentity`
+from core and re-exports them; `CallCredentials` is removed from
+`alknet-call`. Test changes: the two `CallCredentials`-field tests
+(`call_credentials_builder_methods`,
+`remote_identity_none_is_load_bearing_not_defaulted`) move to
+`alknet-core` testing `ConnectionCredentials`; `call_client_is_send_sync`
+drops the `CallCredentials`/`RemoteIdentity` assertions (or they move
+with the types).
 
 ### Phase 5 test audit — `call_client.rs` (16 tests)
 
 The 16 tests in `call_client.rs` split into three categories:
 
 **Category A — protocol-level, stay in `alknet-call`, no rewrite
-needed (6 tests):**
+needed (4 tests):**
 
-These tests use `spawn_dispatch(stub_connection())` or
-`CallCredentials` directly. They don't touch `connect` or any TLS
-helper. `stub_connection()` (line 582) uses
+These tests use `spawn_dispatch(stub_connection())` and don't touch
+`connect`, `CallCredentials` fields, or any TLS helper.
+`stub_connection()` (line 582) uses
 `Connection::from_stream(tokio::io::channel(...))` — already
 transport-agnostic. These survive the prune unchanged.
 
 | Test | Line | What it tests |
 |------|------|---------------|
-| `call_credentials_builder_methods` | 652 | `CallCredentials` builder |
 | `external_op_dispatches_and_populates_capabilities` | 665 | dispatch + capabilities |
 | `unknown_op_returns_not_found` | 679 | dispatch error path |
 | `spawn_dispatch_returns_live_call_connection` | 691 | `spawn_dispatch` + ALPN |
-| `call_client_is_send_sync` | 705 | trait bounds |
-| `remote_identity_none_is_load_bearing_not_defaulted` | 921 | `CallCredentials::new()` |
+| `call_client_is_send_sync` | 705 | trait bounds (import update: `RemoteIdentity` moved to core) |
+
+**Category A2 — `CallCredentials`-field tests, move to `alknet-core`
+(2 tests):**
+
+These test `CallCredentials` fields (`remote_identity`, `tls_identity`)
+that moved to `ConnectionCredentials` in `alknet-core` (ADR-091). They
+move to `alknet-core` testing `ConnectionCredentials::new()` +
+`with_remote_identity()`.
+
+| Test | Line | What it tests | Move target |
+|------|------|---------------|-------------|
+| `call_credentials_builder_methods` | 652 | `CallCredentials` builder (now `ConnectionCredentials`) | `alknet-core` |
+| `remote_identity_none_is_load_bearing_not_defaulted` | 921 | `CallCredentials::new()` (now `ConnectionCredentials`) | `alknet-core` |
 
 **Category B — TLS/verifier tests, move to `alknet-tls` (10 tests):**
 
@@ -529,28 +578,42 @@ use `spawn_dispatch(stub_connection())`.
 
 **The `from_call.rs` tests (27 tests):** these use `CallConnection`
 directly (constructed from `stub_connection()` or a mock), not
-`connect`. They're protocol-level and stay in `alknet-call` unchanged.
+`connect`. 25 are protocol-level and stay in `alknet-call` unchanged.
+2 are removed: `build_forwarded_payload_sets_auth_token_when_provided`
+and `streaming_forwarding_handler_sets_auth_token_when_provided` —
+they test the `credentials_auth_token` `Some` path, which is removed
+(the field was always `None`, never connected to `CallCredentials`).
 The one reference to `connect()` is in a doc comment (line 76:
 "the assembly layer calls `from_call` immediately after `connect()`")
 — update the comment to say "after `AlknetClient::dial_*` +
 `spawn_dispatch`".
 
-**Net Phase 5 test impact:** 6 tests stay unchanged (Category A), 10
-tests move to `alknet-tls` in Phase 1 (Category B), 0 tests need
-rewriting. The `from_call.rs` tests (27) stay unchanged. The prune
-of `call_client.rs` is mechanical: delete `ClientError`, `connect`,
-and all the TLS helpers (`build_*`, `select_*`, `load_*`,
-`Ed25519SigningKey`, `RawKeyClientCertResolver`, `NoClientCertResolver`,
-`FingerprintPinVerifier`); keep `CallClient` + `new` + `spawn_dispatch`
-unchanged; update imports. The test suite keeps the Category A tests,
-removes the Category B tests (moved in Phase 1), and updates the one
-doc comment.
+**Net Phase 5 test impact:** 4 tests stay unchanged (Category A), 2
+tests move to `alknet-core` (Category A2), 10 tests move to
+`alknet-tls` in Phase 1 (Category B), 2 `from_call` dead-path tests
+removed. The `from_call.rs` tests: 25 stay unchanged, 2 removed. The
+prune of `call_client.rs` is mechanical: delete `ClientError`,
+`connect`, `CallCredentials` and its builder methods, and all the TLS
+helpers (`build_*`, `select_*`, `load_*`, `Ed25519SigningKey`,
+`RawKeyClientCertResolver`, `NoClientCertResolver`,
+`FingerprintPinVerifier`); keep `CallClient` + `new` +
+`spawn_dispatch` unchanged; update imports. Also remove `from_call`'s
+`credentials_auth_token` dead path: the field on `OpSummary`, the
+parameters on `make_forwarding_handler` /
+`make_streaming_forwarding_handler`, and the `auth_token` parameter on
+`build_forwarded_payload`. The test suite keeps the Category A tests,
+removes the Category A2 tests (moved to core), removes the Category B
+tests (moved in Phase 1), removes the 2 `from_call` dead-path tests,
+and updates the one doc comment.
 
-This is much simpler than the initial estimate of "~290 lines of test
-restructuring." The actual test work is: move 10 tests to `alknet-tls`
-in Phase 1 (adapted to the new API), keep 6 tests unchanged, update one
-doc comment. The `connect` removal breaks zero tests because no test
-calls `connect`.
+This is a larger prune than the initial estimate of "~140 lines of
+implementation + ~290 lines of test restructuring." The actual work:
+delete `connect` + TLS helpers (~140 lines), delete `CallCredentials`
++ builder methods (~50 lines), delete `from_call`'s
+`credentials_auth_token` dead path (~30 lines), move 10 tests to
+`alknet-tls` (Phase 1), move 2 tests to `alknet-core`, keep 4 tests
+unchanged, remove 2 `from_call` dead-path tests. The `connect` removal
+breaks zero lib tests because no lib test calls `connect`.
 
 ## Resolved questions
 

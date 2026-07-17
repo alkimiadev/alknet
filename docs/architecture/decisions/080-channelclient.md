@@ -122,9 +122,16 @@ impl ChannelClient {
     /// ADR-034 verifier selection), then calls `from_connection`.
     /// Additive and two-way-door — `connect_tcp_tls`,
     /// `connect_webtransport`, etc. join it as transports are added.
+    ///
+    /// **REMOVED per ADR-089 §5.** The dial is extracted into
+    /// `AlknetClient`; `connect_quic` is deleted, not delegated.
+    /// Callers compose `AlknetClient::dial_quic` + `from_connection`.
+    /// The `CallCredentials` parameter is moot — `CallCredentials` is
+    /// removed per ADR-091 (amended 2026-07-17); the dial consumes
+    /// `ConnectionCredentials` from `alknet-core`.
     pub async fn connect_quic(
         addr: SocketAddr,
-        credentials: CallCredentials,
+        credentials: CallCredentials,  // REMOVED — CallCredentials is removed
     ) -> Result<Self, ChannelError>;
 
     /// Open a data channel with the given ALPN and params. Sends

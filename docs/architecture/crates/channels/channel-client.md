@@ -61,9 +61,12 @@ impl ChannelClient {
     /// not delegated, to avoid `alknet-channels-call` depending on
     /// `alknet-client`. Callers compose `AlknetClient::dial_quic` +
     /// `from_connection`. See "Relationship to `AlknetClient`" below.
+    /// The `CallCredentials` parameter is moot — `CallCredentials` is
+    /// removed per ADR-091 (amended 2026-07-17); the dial consumes
+    /// `ConnectionCredentials` from `alknet-core`.
     pub async fn connect_quic(
         addr: SocketAddr,
-        credentials: CallCredentials,
+        credentials: CallCredentials,  // REMOVED — CallCredentials is removed
     ) -> Result<Self, ChannelError>;
 
     /// Open a data channel with the given ALPN and params. Sends
