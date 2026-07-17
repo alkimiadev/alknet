@@ -4,6 +4,7 @@ members = [
     "crates/alknet-core",
     "crates/alknet-call",
     "crates/alknet-http",
+    "crates/alknet-tls",
     "crates/alknet-tty",
     "crates/alknet-tty-local",
 ]

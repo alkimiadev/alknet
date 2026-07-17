@@ -1,0 +1,35 @@
+[package]
+name = "alknet-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TLS setup types for alknet — server config, client config, verifiers, cert resolvers, and shared signing helpers"
+repository.workspace = true
+
+[lib]
+name = "alknet_tls"
+
+[features]
+default = ["quinn"]
+quinn = ["dep:quinn"]
+tcp = ["dep:tokio-rustls"]
+acme = ["dep:rustls-acme"]
+
+[dependencies]
+alknet-core = { path = "../alknet-core" }
+tokio = { version = "1", features = ["full"] }
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+rustls-pki-types = "1"
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+webpki-roots = "1"
+rcgen = "0.13"
+tracing = "0.1"
+thiserror = "2"
+quinn = { version = "0.11", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+rustls-acme = { version = "0.12", optional = true, features = ["aws-lc-rs"] }
+
+[dev-dependencies]
+tempfile = "3"
+hex = "0.4"
