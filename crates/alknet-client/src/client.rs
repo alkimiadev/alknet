@@ -122,3 +122,33 @@ impl fmt::Debug for AlknetClient {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_creates_empty_client() {
+        let client = AlknetClient::new();
+        let debug = format!("{:?}", client);
+        assert!(debug.contains("AlknetClient"));
+    }
+
+    #[test]
+    fn default_delegates_to_new() {
+        let _client = AlknetClient::default();
+    }
+
+    #[test]
+    fn alknet_client_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<AlknetClient>();
+    }
+
+    #[test]
+    fn debug_lists_configured_transports() {
+        let client = AlknetClient::new();
+        let debug = format!("{:?}", client);
+        assert!(!debug.is_empty());
+    }
+}

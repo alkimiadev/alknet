@@ -38,3 +38,48 @@ pub enum ClientDialError {
     #[error("SOCKS5 proxy: {0}")]
     Proxy(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_config_from_tls_error() {
+        let err = alknet_tls::TlsError::Config("test".into());
+        let dial_err: ClientDialError = err.into();
+        assert!(matches!(dial_err, ClientDialError::TlsConfig(_)));
+    }
+
+    #[test]
+    fn no_transport_displays_transport_name() {
+        let err = ClientDialError::NoTransport {
+            transport: "quinn",
+        };
+        assert!(err.to_string().contains("quinn"));
+    }
+
+    #[test]
+    fn connect_displays_message() {
+        let err = ClientDialError::Connect("connection refused".into());
+        assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[test]
+    fn handshake_displays_message() {
+        let err = ClientDialError::Handshake("certificate rejected".into());
+        assert!(err.to_string().contains("certificate rejected"));
+    }
+
+    #[cfg(feature = "socks5")]
+    #[test]
+    fn proxy_displays_message() {
+        let err = ClientDialError::Proxy("UDP ASSOCIATE rejected".into());
+        assert!(err.to_string().contains("UDP ASSOCIATE rejected"));
+    }
+
+    #[test]
+    fn client_dial_error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ClientDialError>();
+    }
+}

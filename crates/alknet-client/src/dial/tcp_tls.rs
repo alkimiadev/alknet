@@ -97,3 +97,23 @@ impl AlknetClient {
         ))
     }
 }
+
+#[cfg(all(test, feature = "tcp"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dial_tcp_tls_no_transport_error() {
+        let client = AlknetClient::new();
+        let creds = ConnectionCredentials::new();
+        let result = client
+            .dial_tcp_tls(
+                "localhost",
+                "127.0.0.1:0".parse().unwrap(),
+                b"test/alpn",
+                &creds,
+            )
+            .await;
+        assert!(matches!(result, Err(ClientDialError::Connect(_))));
+    }
+}

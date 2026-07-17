@@ -83,3 +83,45 @@ fn extract_iroh_endpoint_id(fingerprint: &str) -> Result<iroh::EndpointId, Strin
         ))
     }
 }
+
+#[cfg(all(test, feature = "iroh"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dial_iroh_no_transport_error() {
+        let client = AlknetClient::new();
+        let creds = ConnectionCredentials::new();
+        let result = client.dial_iroh(b"test/alpn", &creds).await;
+        assert!(matches!(result, Err(ClientDialError::NoTransport { .. })));
+    }
+
+    #[test]
+    fn extract_iroh_endpoint_id_valid_ed25519() {
+        let hex_key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fingerprint = format!("ed25519:{}", hex_key);
+        let result = extract_iroh_endpoint_id(&fingerprint);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn extract_iroh_endpoint_id_rejects_sha256() {
+        let fingerprint = "SHA256:abc123";
+        let result = extract_iroh_endpoint_id(fingerprint);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_iroh_endpoint_id_rejects_invalid_hex() {
+        let fingerprint = "ed25519:nothex";
+        let result = extract_iroh_endpoint_id(fingerprint);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_iroh_endpoint_id_rejects_wrong_length() {
+        let fingerprint = "ed25519:aaaa";
+        let result = extract_iroh_endpoint_id(fingerprint);
+        assert!(result.is_err());
+    }
+}

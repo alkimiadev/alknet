@@ -81,3 +81,44 @@ impl AlknetClient {
         Ok(Connection::from_quinn_with_alpn(conn, alpn.to_vec()))
     }
 }
+
+#[cfg(all(test, feature = "quinn"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dial_quic_no_transport_error() {
+        let client = AlknetClient::new();
+        let creds = ConnectionCredentials::new();
+        let result = client
+            .dial_quic(
+                "127.0.0.1:0".parse().unwrap(),
+                "localhost",
+                b"test/alpn",
+                &creds,
+            )
+            .await;
+        assert!(matches!(result, Err(ClientDialError::NoTransport { .. })));
+    }
+
+    #[tokio::test]
+    async fn dial_quic_tls_config_error_on_acme_identity() {
+        use alknet_core::config::{AcmeDirectory, TlsIdentity};
+        let creds = ConnectionCredentials::new().with_tls_identity(TlsIdentity::Acme {
+            domains: vec!["example.com".into()],
+            directory: AcmeDirectory::Staging,
+            cache_dir: std::path::PathBuf::from("/tmp"),
+            contact: vec![],
+        });
+        let client = AlknetClient::new();
+        let result = client
+            .dial_quic(
+                "127.0.0.1:0".parse().unwrap(),
+                "localhost",
+                b"test/alpn",
+                &creds,
+            )
+            .await;
+        assert!(matches!(result, Err(ClientDialError::TlsConfig(_))));
+    }
+}
