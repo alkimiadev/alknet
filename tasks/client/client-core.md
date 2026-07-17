@@ -1,7 +1,7 @@
 ---
 id: client/client-core
 name: Implement AlknetClient struct, new, and builder methods (with_quinn, with_tcp_tls, with_iroh, with_socks5_proxy)
-status: pending
+status: completed
 depends_on: [client/error-type]
 scope: moderate
 risk: medium

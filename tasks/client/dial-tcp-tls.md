@@ -1,7 +1,7 @@
 ---
 id: client/dial-tcp-tls
 name: Implement dial_tcp_tls — TCP+TLS dial via tokio-rustls, producing a Connection
-status: pending
+status: completed
 depends_on: [client/client-core]
 scope: moderate
 risk: medium

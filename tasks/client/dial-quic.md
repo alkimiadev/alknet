@@ -1,7 +1,7 @@
 ---
 id: client/dial-quic
 name: Implement dial_quic — QUIC dial via quinn, producing a Connection
-status: pending
+status: completed
 depends_on: [client/client-core]
 scope: moderate
 risk: medium

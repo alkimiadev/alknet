@@ -1,7 +1,7 @@
 ---
 id: client/review-client
 name: Review alknet-client implementation for spec conformance, API shape, and test coverage
-status: pending
+status: completed
 depends_on: [client/tests]
 scope: moderate
 risk: low

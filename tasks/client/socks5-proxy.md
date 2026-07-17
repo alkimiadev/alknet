@@ -1,7 +1,7 @@
 ---
 id: client/socks5-proxy
 name: Implement SOCKS5 proxy support — Socks5ProxyConfig, Socks5Credentials, Socks5UdpSocket, and proxy integration in dial_quic/dial_tcp_tls
-status: pending
+status: completed
 depends_on: [client/dial-quic, client/dial-tcp-tls]
 scope: broad
 risk: high

@@ -1,7 +1,7 @@
 ---
 id: client/error-type
 name: Implement ClientDialError enum with five variants
-status: pending
+status: completed
 depends_on: [client/crate-init]
 scope: narrow
 risk: low

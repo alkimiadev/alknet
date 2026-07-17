@@ -1,7 +1,7 @@
 ---
 id: client/tests
 name: Write unit tests for AlknetClient, dial methods, error type, and SOCKS5 proxy; add integration test for dial + take-over composition
-status: pending
+status: completed
 depends_on: [client/dial-quic, client/dial-tcp-tls, client/dial-iroh, client/socks5-proxy]
 scope: moderate
 risk: medium

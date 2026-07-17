@@ -1,7 +1,7 @@
 ---
 id: client/dial-iroh
 name: Implement dial_iroh — iroh dial, producing a Connection
-status: pending
+status: completed
 depends_on: [client/client-core]
 scope: moderate
 risk: medium
