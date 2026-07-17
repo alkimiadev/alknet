@@ -3,6 +3,7 @@ members = [
     "crates/alknet-vault",
     "crates/alknet-core",
     "crates/alknet-call",
+    "crates/alknet-endpoint",
     "crates/alknet-http",
     "crates/alknet-tls",
     "crates/alknet-tty",

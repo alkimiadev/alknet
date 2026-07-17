@@ -1,0 +1,27 @@
+[package]
+name = "alknet-endpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Server-side multi-transport accept-loop runner — dispatches incoming connections by ALPN"
+repository.workspace = true
+
+[lib]
+name = "alknet_endpoint"
+
+[features]
+default = []
+quinn = ["dep:quinn", "alknet-core/quinn"]
+iroh = ["dep:iroh", "alknet-core/iroh"]
+tcp = ["dep:tokio-rustls"]
+acme = []
+
+[dependencies]
+alknet-core = { path = "../alknet-core" }
+tokio = { version = "1", features = ["full"] }
+arc-swap = "1"
+tracing = "0.1"
+rustls = "0.23"
+quinn = { version = "0.11", optional = true }
+iroh = { version = "1.0", optional = true, default-features = false, features = ["tls-aws-lc-rs"] }
+tokio-rustls = { version = "0.26", optional = true }
