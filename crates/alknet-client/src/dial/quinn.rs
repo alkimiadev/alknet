@@ -100,7 +100,7 @@ mod tests {
     #[tokio::test]
     async fn dial_quic_tls_config_error_on_acme_identity() {
         use alknet_core::config::{AcmeDirectory, TlsIdentity};
-        let creds = ConnectionCredentials::new().with_tls_identity(TlsIdentity::Acme {
+        let creds = ConnectionCredentials::new().with_local_identity(TlsIdentity::Acme {
             domains: vec!["example.com".into()],
             directory: AcmeDirectory::Staging,
             cache_dir: std::path::PathBuf::from("/tmp"),

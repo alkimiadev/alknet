@@ -473,7 +473,7 @@ impl TlsClientConfig {
     /// dial's ALPN. `ConnectionCredentials` (ADR-091, in `alknet-core`)
     /// carries the two dimensions the dial consumes:
     ///
-    /// 1. `tls_identity` — the local node's `TlsIdentity` (RFC 7250
+    /// 1. `local_identity` — the local node's `TlsIdentity` (RFC 7250
     ///    raw key or X.509), presented as the client cert. `None` →
     ///    no client cert (the server gets nothing to fingerprint).
     ///    `SelfSigned` → no client cert (dev-only). `Acme` →

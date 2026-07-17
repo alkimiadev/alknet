@@ -431,7 +431,7 @@ consumes only `creds.remote_identity` (deriving the remote `NodeId`);
 the local key is not in `ConnectionCredentials` for the iroh path — it
 is on the endpoint. The dial signature is unified — all three dials
 take `&ConnectionCredentials` (ADR-091) — and the iroh dial simply
-ignores the `tls_identity` field (the key is already on the endpoint).
+ignores the `local_identity` field (the key is already on the endpoint).
 The verifier is iroh's `NodeId` match — the remote's `NodeId` (Ed25519
 public key) is verified against the expected `NodeId`, which is
 fingerprint-pinning by another name. An unknown iroh remote fails
@@ -640,7 +640,7 @@ let client = AlknetClient::new()
 
 // 3. Derive credentials from the vault (ADR-014 — no env vars).
 let creds = ConnectionCredentials::new()
-    .with_tls_identity(TlsIdentity::RawKey(local_key))
+    .with_local_identity(TlsIdentity::RawKey(local_key))
     .with_remote_identity(RemoteIdentity {
         fingerprint: hub_fingerprint,  // known peer → fingerprint pin
     });
@@ -674,7 +674,7 @@ All design decisions are documented as ADRs in
 |-----|----------|---------|
 | [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred (§3/§5 amended by ADR-091 — dial takes `ConnectionCredentials`, not `CallCredentials`) |
 | [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT, `dial_iroh` forces relay-only via an HTTP-to-SOCKS5 bridge; OQ-67 resolved; grounded in the quinn-proxy + iroh-proxy PoCs |
-| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `tls_identity` + `remote_identity`), not `CallCredentials` (call-protocol-level); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field; `CallCredentials` removed per Am. 2026-07-17 |
+| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `local_identity` + `remote_identity`), not `CallCredentials` (call-protocol-level); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field; `CallCredentials` removed per Am. 2026-07-17 |
 
 ## Open Questions
 

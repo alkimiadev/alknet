@@ -1,7 +1,7 @@
 //! Transport-level credential bundle for outbound connections (ADR-091).
 //!
 //! `ConnectionCredentials` carries the two dimensions the dial consumes:
-//! the local node's TLS identity and the expected remote identity.
+//! the local node's identity and the expected remote identity.
 //! It is transport-agnostic — consumed by `alknet-tls` (TLS setup) and
 //! `alknet-client` (dial).
 
@@ -36,9 +36,9 @@ pub struct RemoteIdentity {
 /// `docs/architecture/crates/call/client-and-adapters.md`.
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionCredentials {
-    /// The local node's TLS identity (RFC 7250 raw key or X.509), derived
+    /// The local node's identity (RFC 7250 raw key or X.509), derived
     /// from the vault at startup.
-    pub tls_identity: Option<TlsIdentity>,
+    pub local_identity: Option<TlsIdentity>,
     /// Expected fingerprint/cert of the remote node, stored as a capability.
     /// `Some` → fingerprint pin (known peer with a `PeerEntry`); `None` → CA
     /// verification for X.509 remotes, fail-closed for Ed25519 raw-key remotes
@@ -52,8 +52,8 @@ impl ConnectionCredentials {
         Self::default()
     }
 
-    pub fn with_tls_identity(mut self, tls_identity: TlsIdentity) -> Self {
-        self.tls_identity = Some(tls_identity);
+    pub fn with_local_identity(mut self, local_identity: TlsIdentity) -> Self {
+        self.local_identity = Some(local_identity);
         self
     }
 
@@ -76,7 +76,7 @@ mod tests {
             creds.remote_identity.as_ref().unwrap().fingerprint,
             "SHA256:abc"
         );
-        assert!(creds.tls_identity.is_none());
+        assert!(creds.local_identity.is_none());
     }
 
     #[test]

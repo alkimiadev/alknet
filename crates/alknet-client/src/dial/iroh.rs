@@ -2,9 +2,12 @@
 //!
 //! Feature-gated on `iroh`. The iroh path does NOT use `TlsClientConfig` —
 //! iroh has its own TLS (shares the `Ed25519SecretKey`, not the rustls config
-//! — ADR-087 §3, ADR-089 §3). The local key is extracted from
-//! `creds.local_identity`; the remote `EndpointId` is derived from
-//! `creds.remote_identity.fingerprint`.
+//! — ADR-087 §3, ADR-089 §3). The local key is set on the pre-built iroh
+//! endpoint at `with_iroh` time (the assembly layer reads it from
+//! `StaticConfig` and feeds it to `iroh::Endpoint::builder().secret_key()`);
+//! the dial consumes only `creds.remote_identity` (deriving the remote
+//! `EndpointId` from `creds.remote_identity.fingerprint`) and ignores
+//! `creds.local_identity`.
 
 use alknet_core::credentials::ConnectionCredentials;
 use alknet_core::types::Connection;
@@ -16,8 +19,11 @@ impl AlknetClient {
     /// Iroh dial. Dials on `alpn` via the iroh endpoint. The iroh path
     /// does NOT use `TlsClientConfig` — iroh has its own TLS (shares the
     /// `Ed25519SecretKey`, not the rustls config — ADR-087 §3, ADR-089
-    /// §3). The local key is extracted from `creds.local_identity`; the
-    /// remote `EndpointId` is derived from `creds.remote_identity.fingerprint`
+    /// §3). The local key is on the pre-built iroh endpoint (set at
+    /// `with_iroh` time); the dial consumes only
+    /// `creds.remote_identity` and ignores `creds.local_identity`.
+    /// The remote `EndpointId` is derived from
+    /// `creds.remote_identity.fingerprint`
     /// (`ed25519:<hex>` → `EndpointId::from_bytes`). The verifier is iroh's
     /// `EndpointId` match (fingerprint pin by another name — ADR-034 §3).
     /// An unknown iroh remote fails closed (no CA). Feature-gated on

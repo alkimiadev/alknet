@@ -23,7 +23,7 @@ impl TlsClientConfig {
     pub fn new(credentials: &ConnectionCredentials, alpn: &[u8]) -> Result<Self, TlsError> {
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
-        let client_auth = build_client_auth(&provider, &credentials.tls_identity)?;
+        let client_auth = build_client_auth(&provider, &credentials.local_identity)?;
         let verifier = select_server_verifier(&provider, &credentials.remote_identity)?;
 
         let mut config = rustls::ClientConfig::builder_with_provider(provider)
@@ -60,7 +60,7 @@ impl TlsClientConfig {
 /// identity. For `TlsIdentity::RawKey` the Ed25519 key is presented as an RFC
 /// 7250 raw public key client cert (`only_raw_public_keys() == true`) — the
 /// client-side equivalent of the server's `RawKeyCertResolver`. For X.509 the
-/// cert chain + key are loaded from disk. `None` (no `tls_identity` configured)
+/// cert chain + key are loaded from disk. `None` (no `local_identity` configured)
 /// resolves to no client cert (the server gets nothing to fingerprint).
 fn build_client_auth(
     provider: &Arc<rustls::crypto::CryptoProvider>,
@@ -193,7 +193,7 @@ impl rustls::client::ResolvesClientCert for RawKeyClientCertResolver {
     }
 }
 
-/// Client cert resolver that presents no client cert (the `tls_identity: None`
+/// Client cert resolver that presents no client cert (the `local_identity: None`
 /// or `SelfSigned` path). The server gets nothing to fingerprint — the
 /// `PeerEntry` fingerprint → `peer_id` resolution path is not activated for
 /// this connection.
@@ -496,7 +496,7 @@ mod tests {
     fn build_quinn_client_config_with_raw_key_identity_builds_without_error() {
         let sk = Ed25519SecretKey::generate();
         let credentials = ConnectionCredentials::new()
-            .with_tls_identity(TlsIdentity::RawKey(sk))
+            .with_local_identity(TlsIdentity::RawKey(sk))
             .with_remote_identity(RemoteIdentity {
                 fingerprint: "ed25519:deadbeef".to_string(),
             });
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn build_quinn_client_config_with_no_remote_identity_builds_without_error() {
         let sk = Ed25519SecretKey::generate();
-        let credentials = ConnectionCredentials::new().with_tls_identity(TlsIdentity::RawKey(sk));
+        let credentials = ConnectionCredentials::new().with_local_identity(TlsIdentity::RawKey(sk));
         let config = TlsClientConfig::new(&credentials, b"alknet/call")
             .expect("TlsClientConfig::new must build for CA-verification path");
         let quinn_config = config.for_quinn().expect("for_quinn must convert");
