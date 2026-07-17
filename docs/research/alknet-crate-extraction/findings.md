@@ -391,37 +391,60 @@ rewritten tests. The crate has no TLS/transport deps, no
 **Done when:** `cargo test -p alknet-call` passes, the crate is a pure
 protocol crate.
 
-### Phase 6: Fix `alknet-http` (small, additive)
+### Phase 6: Fix `alknet-http` (deferred — needs deeper rework)
 
-**What:** Remove the `QuicStream` wrapper from `server/adapter.rs`.
-The `HttpAdapter::handle` method does `connection.accept_bi()` →
-wraps in `QuicStream` → feeds to `serve_io`. After the fix, it does
-`connection.accept_bi()` → uses the streams directly (they're already
-`AsyncRead+AsyncWrite`) → feeds to `serve_io` via `TokioIo::new`.
+**Status: Deferred.** The original plan was to remove the `QuicStream`
+wrapper from `server/adapter.rs` on the assumption that `accept_bi()`
+returns streams that are already `AsyncRead+AsyncWrite`. This is
+incorrect.
 
-**The `QuicStream` struct** (lines 271-300) is deleted. The
-`QuicStreamDuplex` test helper (lines 456-471) is replaced with
-`Connection::from_stream` test helpers.
+**What was found (2026-07-17):** `SendStream` implements only
+`AsyncWrite` (`types.rs:296`); `RecvStream` implements only
+`AsyncRead` (`types.rs:340`). They are separate types with separate
+trait impls — neither is both `AsyncRead` and `AsyncWrite`. The
+`QuicStream` wrapper (44 lines, `adapter.rs:271-314`) is a necessary
+adapter that combines the `(SendStream, RecvStream)` pair from
+`accept_bi()` into a single `AsyncRead + AsyncWrite` type that
+`serve_io()` requires. It is not redundant.
 
-**Verification needed:** confirmed — `StreamBidiStreamSource::accept_bi`
-(`types.rs:482`) yields the underlying `(SendStream, RecvStream)` pair
-once (then `ConnectionClosed`). The `SendStream`/`RecvStream` are
-`from_stream`-wrapped adapters (lines 267/289) — already
-`AsyncRead`/`AsyncWrite`. So `accept_bi()` on a `from_bidi` connection
-returns streams directly usable as `AsyncRead+AsyncWrite` — no
-`QuicStream` wrapper needed. The `BidiStreamSource` trait has a unified
-intent (`accept_bi`/`open_bi`/`remote_addr`/`close`); all three impls
-(quinn, iroh, stream) collapse into adapters with the same shape. The
-`QuicStream` wrapper is redundant — delete it, use the streams from
-`accept_bi()` directly via `TokioIo::new`. The `QuicStreamDuplex` test
-helper is replaced with `Connection::from_stream` test helpers (the
-`stub_connection()` pattern already used in `call_client.rs` tests).
+The `QuicStreamDuplex` test helper (`adapter.rs:456-493`) is the same
+pattern for tests — combining two `DuplexStream` halves into a single
+`AsyncRead + AsyncWrite` type.
 
-**Compilable state:** `cargo test -p alknet-http` passes. The crate no
-longer has the hand-rolled `QuicStream` wrapper.
+**Why this needs deeper rework:** The `HttpAdapter::handle` method
+assumes a QUIC-style multi-stream connection (`accept_bi` returns a
+fresh bidi stream). This is the "QUIC welded to HTTP" tangle — the
+HTTP adapter was designed around quinn's stream model. Two issues
+compound:
 
-**Done when:** `cargo test -p alknet-http` passes, the `QuicStream`
-wrapper is gone.
+1. **The `QuicStream` wrapper is correct for the current design.**
+   `accept_bi()` returns `(SendStream, RecvStream)` — a write-only
+   half and a read-only half. `serve_io()` needs a single
+   `AsyncRead + AsyncWrite`. The wrapper is the minimal correct
+   adapter.
+
+2. **The `accept_bi` contract may not be right for non-QUIC transports.**
+   For a `from_bidi` connection (TCP+TLS), `accept_bi` yields the
+   single bidi stream once (ADR-070's yield-once contract). The
+   `HttpAdapter` currently calls `accept_bi()` once and serves one
+   HTTP connection — which works for QUIC (multi-stream) and TCP
+   (single-stream), but the semantics differ. A proper fix would
+   involve either a `BidiStream` type that bundles both halves
+   natively, or rethinking how the HTTP adapter consumes streams
+   from the `Connection` abstraction.
+
+**Recommendation:** Defer Phase 6. The `QuicStream` wrapper is clean,
+minimal (44 lines), and correct. Removing it would require a new
+abstraction (e.g., a `BidiStream` type in `alknet-core` that bundles
+`SendStream` + `RecvStream` into a single `AsyncRead + AsyncWrite`
+handle) or restructuring `HttpAdapter::handle` to work with split
+streams. Either approach is a design change, not a mechanical cleanup.
+The `alknet-http` crate needs broader rework to fully decouple from
+QUIC assumptions; this wrapper is the least of it.
+
+**Compilable state:** `cargo test -p alknet-http` passes (unchanged).
+
+**Done when:** N/A — deferred to a future `alknet-http` rework task.
 
 ---
 
@@ -435,7 +458,7 @@ wrapper is gone.
 | 3 (client) | `alknet-client` builds standalone; call still has old `connect` (duplicate) |
 | 4 (core prune) | core is lightweight; `endpoint.rs` gone; `ConnectionCredentials` in core |
 | 5 (call prune) | call is pure protocol; `connect` + TLS helpers + `CallCredentials` + `from_call` dead path gone; Category B tests already moved; 2 `CallCredentials` tests moved to core |
-| 6 (http fix) | http has no `QuicStream` wrapper; clean `accept_bi` path |
+| 6 (http fix) | **deferred** — `QuicStream` wrapper is necessary (SendStream is AsyncWrite-only, RecvStream is AsyncRead-only); needs deeper rework |
 
 Phases 0-3 are purely additive — no existing code breaks, no tests
 break. Phases 4-5 are subtractive — the pruned code's callers don't
@@ -469,8 +492,10 @@ The ordering is **deps before dependents, additive before subtractive**:
   functionality has a home.
 - Phase 6 (http fix) goes last because it's independent of the
   extraction — it's a residual fix that could happen at any point
-  after ADR-065 landed (which it did). Putting it last keeps the
-  extraction phases clean.
+  after ADR-065 landed (which it did). **Deferred 2026-07-17** — the
+  `QuicStream` wrapper is necessary (see Phase 6 above); the
+  `alknet-http` crate needs broader rework to fully decouple from
+  QUIC assumptions.
 
 ## Resolved decisions
 
@@ -617,13 +642,15 @@ breaks zero lib tests because no lib test calls `connect`.
 
 ## Resolved questions
 
-- **Phase 6 `accept_bi` semantics:** **Resolved.**
-  `StreamBidiStreamSource::accept_bi` yields the `(SendStream,
-  RecvStream)` pair once; the streams are already
-  `AsyncRead`/`AsyncWrite` adapters. The `QuicStream` wrapper is
-  redundant — delete it. The `BidiStreamSource` trait has a unified
-  intent; all three impls (quinn, iroh, stream) collapse into adapters
-  with the same shape. See Phase 6 above.
+- **Phase 6 `accept_bi` semantics:** **Re-evaluated 2026-07-17.**
+  The original finding was incorrect. `SendStream` implements only
+  `AsyncWrite`; `RecvStream` implements only `AsyncRead`. Neither is
+  both. The `QuicStream` wrapper (44 lines) is a necessary adapter
+  that combines the split `(SendStream, RecvStream)` pair from
+  `accept_bi()` into a single `AsyncRead + AsyncWrite` type. Phase 6
+  is deferred — removing the wrapper would require a new abstraction
+  (e.g., a `BidiStream` type in `alknet-core`) or restructuring
+  `HttpAdapter::handle`. See Phase 6 above.
 - **Integration test home:** **Resolved.** The dial + take-over
   composition test moves to `alknet-client/tests/` with a minimal echo
   `ProtocolHandler` on a test ALPN — no `alknet-call` dependency, no
