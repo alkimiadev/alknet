@@ -4,12 +4,12 @@
 
 use std::fmt;
 
+#[cfg(feature = "iroh")]
+use iroh;
 #[cfg(feature = "quinn")]
 use quinn;
 #[cfg(feature = "tcp")]
 use tokio_rustls;
-#[cfg(feature = "iroh")]
-use iroh;
 
 #[cfg(feature = "socks5")]
 use crate::socks5::Socks5ProxyConfig;

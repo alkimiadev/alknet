@@ -121,10 +121,7 @@ impl quinn::AsyncUdpSocket for Socks5UdpSocket {
 
         let sent = self.socket.send_to(&buf, self.relay_addr)?;
         if sent < buf.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "partial send",
-            ));
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "partial send"));
         }
         Ok(())
     }
@@ -174,9 +171,7 @@ impl quinn::AsyncUdpSocket for Socks5UdpSocket {
                 };
                 Poll::Ready(Ok(1))
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                Poll::Pending
-            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -207,7 +202,13 @@ impl std::fmt::Debug for UdpPollerImpl {
 impl quinn::UdpPoller for UdpPollerImpl {
     fn poll_writable(self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         if let Some(ref socket) = self.socket {
-            match socket.send_to(&[], socket.local_addr().ok().unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())) {
+            match socket.send_to(
+                &[],
+                socket
+                    .local_addr()
+                    .ok()
+                    .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap()),
+            ) {
                 Ok(_) => Poll::Ready(Ok(())),
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     *self.waker.lock().unwrap() = Some(cx.waker().clone());
@@ -307,7 +308,9 @@ async fn socks5_udp_associate(stream: &mut TcpStream) -> Result<SocketAddr, Clie
         .map_err(|e| ClientDialError::Proxy(e.to_string()))?;
 
     if resp[0] != 0x05 {
-        return Err(ClientDialError::Proxy("invalid SOCKS5 version in reply".into()));
+        return Err(ClientDialError::Proxy(
+            "invalid SOCKS5 version in reply".into(),
+        ));
     }
     if resp[1] != 0x00 {
         return Err(ClientDialError::Proxy(format!(

@@ -13,8 +13,8 @@ use alknet_core::types::Connection;
 use alknet_tls::client::TlsClientConfig;
 use tokio::net::TcpStream;
 
-use crate::error::ClientDialError;
 use crate::client::AlknetClient;
+use crate::error::ClientDialError;
 
 impl AlknetClient {
     /// TCP+TLS dial. Builds a `TlsClientConfig` from `creds`,
@@ -47,12 +47,9 @@ impl AlknetClient {
             crate::socks5::socks5_connect(&mut tcp, proxy, addr)
                 .await
                 .map_err(ClientDialError::Proxy)?;
-            let server_name: rustls::pki_types::ServerName = host
-                .to_owned()
-                .try_into()
-                .map_err(|e: rustls::pki_types::InvalidDnsNameError| {
-                    ClientDialError::Connect(e.to_string())
-                })?;
+            let server_name: rustls::pki_types::ServerName = host.to_owned().try_into().map_err(
+                |e: rustls::pki_types::InvalidDnsNameError| ClientDialError::Connect(e.to_string()),
+            )?;
             connector
                 .connect(server_name, tcp)
                 .await
@@ -61,12 +58,9 @@ impl AlknetClient {
             let tcp_stream = TcpStream::connect(addr)
                 .await
                 .map_err(|e| ClientDialError::Connect(e.to_string()))?;
-            let server_name: rustls::pki_types::ServerName = host
-                .to_owned()
-                .try_into()
-                .map_err(|e: rustls::pki_types::InvalidDnsNameError| {
-                    ClientDialError::Connect(e.to_string())
-                })?;
+            let server_name: rustls::pki_types::ServerName = host.to_owned().try_into().map_err(
+                |e: rustls::pki_types::InvalidDnsNameError| ClientDialError::Connect(e.to_string()),
+            )?;
             connector
                 .connect(server_name, tcp_stream)
                 .await
@@ -78,23 +72,16 @@ impl AlknetClient {
             let tcp_stream = TcpStream::connect(addr)
                 .await
                 .map_err(|e| ClientDialError::Connect(e.to_string()))?;
-            let server_name: rustls::pki_types::ServerName = host
-                .to_owned()
-                .try_into()
-                .map_err(|e: rustls::pki_types::InvalidDnsNameError| {
-                    ClientDialError::Connect(e.to_string())
-                })?;
+            let server_name: rustls::pki_types::ServerName = host.to_owned().try_into().map_err(
+                |e: rustls::pki_types::InvalidDnsNameError| ClientDialError::Connect(e.to_string()),
+            )?;
             connector
                 .connect(server_name, tcp_stream)
                 .await
                 .map_err(|e| ClientDialError::Handshake(e.to_string()))?
         };
 
-        Ok(Connection::from_bidi(
-            tls_stream,
-            alpn.to_vec(),
-            Some(addr),
-        ))
+        Ok(Connection::from_bidi(tls_stream, alpn.to_vec(), Some(addr)))
     }
 }
 

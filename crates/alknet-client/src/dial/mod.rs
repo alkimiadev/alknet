@@ -4,9 +4,9 @@
 //! All three are unified on `&ConnectionCredentials` (ADR-091) and return a
 //! `Connection` for protocol take-overs to consume.
 
+#[cfg(feature = "iroh")]
+pub mod iroh;
 #[cfg(feature = "quinn")]
 pub mod quinn;
 #[cfg(feature = "tcp")]
 pub mod tcp_tls;
-#[cfg(feature = "iroh")]
-pub mod iroh;

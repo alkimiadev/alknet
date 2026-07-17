@@ -52,9 +52,7 @@ mod tests {
 
     #[test]
     fn no_transport_displays_transport_name() {
-        let err = ClientDialError::NoTransport {
-            transport: "quinn",
-        };
+        let err = ClientDialError::NoTransport { transport: "quinn" };
         assert!(err.to_string().contains("quinn"));
     }
 

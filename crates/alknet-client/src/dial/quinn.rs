@@ -13,8 +13,8 @@ use alknet_core::credentials::ConnectionCredentials;
 use alknet_core::types::Connection;
 use alknet_tls::client::TlsClientConfig;
 
-use crate::error::ClientDialError;
 use crate::client::AlknetClient;
+use crate::error::ClientDialError;
 
 impl AlknetClient {
     /// QUIC dial. Builds a `TlsClientConfig` from `creds`
@@ -53,9 +53,7 @@ impl AlknetClient {
             let endpoint = self
                 .quinn
                 .as_ref()
-                .ok_or(ClientDialError::NoTransport {
-                    transport: "quinn",
-                })?;
+                .ok_or(ClientDialError::NoTransport { transport: "quinn" })?;
             endpoint
                 .connect_with(client_config, addr, server_name)
                 .map_err(|e| ClientDialError::Connect(e.to_string()))?
@@ -68,9 +66,7 @@ impl AlknetClient {
             let endpoint = self
                 .quinn
                 .as_ref()
-                .ok_or(ClientDialError::NoTransport {
-                    transport: "quinn",
-                })?;
+                .ok_or(ClientDialError::NoTransport { transport: "quinn" })?;
             endpoint
                 .connect_with(client_config, addr, server_name)
                 .map_err(|e| ClientDialError::Connect(e.to_string()))?

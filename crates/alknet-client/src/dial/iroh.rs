@@ -9,8 +9,8 @@
 use alknet_core::credentials::ConnectionCredentials;
 use alknet_core::types::Connection;
 
-use crate::error::ClientDialError;
 use crate::client::AlknetClient;
+use crate::error::ClientDialError;
 
 impl AlknetClient {
     /// Iroh dial. Dials on `alpn` via the iroh endpoint. The iroh path
@@ -28,14 +28,14 @@ impl AlknetClient {
         alpn: &[u8],
         creds: &ConnectionCredentials,
     ) -> Result<Connection, ClientDialError> {
-        let endpoint = self.iroh.as_ref().ok_or(ClientDialError::NoTransport {
-            transport: "iroh",
-        })?;
+        let endpoint = self
+            .iroh
+            .as_ref()
+            .ok_or(ClientDialError::NoTransport { transport: "iroh" })?;
 
         let node_id = match &creds.remote_identity {
-            Some(ri) => extract_iroh_endpoint_id(&ri.fingerprint).map_err(|e| {
-                ClientDialError::TlsConfig(alknet_tls::TlsError::Config(e))
-            })?,
+            Some(ri) => extract_iroh_endpoint_id(&ri.fingerprint)
+                .map_err(|e| ClientDialError::TlsConfig(alknet_tls::TlsError::Config(e)))?,
             None => {
                 return Err(ClientDialError::TlsConfig(alknet_tls::TlsError::Config(
                     "iroh requires a known remote (remote_identity must be Some); \
@@ -74,8 +74,7 @@ fn extract_iroh_endpoint_id(fingerprint: &str) -> Result<iroh::EndpointId, Strin
         let arr: [u8; 32] = bytes
             .try_into()
             .map_err(|_| "invalid ed25519 fingerprint length".to_string())?;
-        iroh::EndpointId::from_bytes(&arr)
-            .map_err(|e| format!("invalid iroh EndpointId: {e}"))
+        iroh::EndpointId::from_bytes(&arr).map_err(|e| format!("invalid iroh EndpointId: {e}"))
     } else {
         Err(format!(
             "iroh requires an ed25519: fingerprint, got: {}",
