@@ -316,3 +316,201 @@ impl rustls::client::danger::ServerCertVerifier for FingerprintPinVerifier {
         self.supported.supported_schemes()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alknet_core::config::Ed25519SecretKey;
+
+    fn build_ed25519_spki_der(raw_key: &[u8; 32]) -> Vec<u8> {
+        let spki = rustls::sign::public_key_to_spki(&rustls::pki_types::alg_id::ED25519, raw_key);
+        spki.to_vec()
+    }
+
+    fn build_x509_cert_der() -> rustls::pki_types::CertificateDer<'static> {
+        let key_pair = rcgen::KeyPair::generate().expect("key gen");
+        let params = rcgen::CertificateParams::default();
+        let cert = params.self_signed(&key_pair).expect("self-signed cert");
+        cert.der().clone()
+    }
+
+    fn aws_lc_rs_provider() -> Arc<rustls::crypto::CryptoProvider> {
+        Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+    }
+
+    fn verify_pin(
+        verifier: &FingerprintPinVerifier,
+        cert_der: rustls::pki_types::CertificateDer<'_>,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        use rustls::client::danger::ServerCertVerifier;
+        let server_name: rustls::pki_types::ServerName<'static> =
+            "alknet".try_into().expect("server name");
+        verifier.verify_server_cert(
+            &cert_der,
+            &[],
+            &server_name,
+            &[],
+            rustls::pki_types::UnixTime::now(),
+        )
+    }
+
+    #[test]
+    fn fingerprint_pin_verifier_matches_correct_ed25519_fingerprint() {
+        let sk = Ed25519SecretKey::generate();
+        let raw_key = sk.public().to_bytes();
+        let spki_der = build_ed25519_spki_der(&raw_key);
+        let fingerprint =
+            alknet_core::fingerprint::fingerprint_from_cert_der(&spki_der).expect("fingerprint");
+        let verifier = FingerprintPinVerifier::new(
+            fingerprint,
+            aws_lc_rs_provider().signature_verification_algorithms,
+        );
+        let cert = rustls::pki_types::CertificateDer::from(spki_der);
+        let result = verify_pin(&verifier, cert);
+        assert!(
+            result.is_ok(),
+            "FingerprintPinVerifier must accept a cert whose fingerprint matches the pin"
+        );
+    }
+
+    #[test]
+    fn fingerprint_pin_verifier_rejects_wrong_ed25519_fingerprint() {
+        let sk = Ed25519SecretKey::generate();
+        let raw_key = sk.public().to_bytes();
+        let spki_der = build_ed25519_spki_der(&raw_key);
+        let other_sk = Ed25519SecretKey::generate();
+        let other_fp = format!("ed25519:{}", hex::encode(other_sk.public().to_bytes()));
+        let verifier = FingerprintPinVerifier::new(
+            other_fp,
+            aws_lc_rs_provider().signature_verification_algorithms,
+        );
+        let cert = rustls::pki_types::CertificateDer::from(spki_der);
+        let result = verify_pin(&verifier, cert);
+        assert!(
+            result.is_err(),
+            "FingerprintPinVerifier must reject a cert whose fingerprint does not match the pin"
+        );
+    }
+
+    #[test]
+    fn fingerprint_pin_verifier_matches_correct_sha256_fingerprint() {
+        let cert_der = build_x509_cert_der();
+        let fingerprint = alknet_core::fingerprint::fingerprint_from_cert_der(cert_der.as_ref())
+            .expect("fingerprint");
+        let verifier = FingerprintPinVerifier::new(
+            fingerprint,
+            aws_lc_rs_provider().signature_verification_algorithms,
+        );
+        let result = verify_pin(&verifier, cert_der);
+        assert!(
+            result.is_ok(),
+            "FingerprintPinVerifier must accept an X.509 cert whose SHA256 fingerprint matches"
+        );
+    }
+
+    #[test]
+    fn fingerprint_pin_verifier_rejects_wrong_sha256_fingerprint() {
+        let cert_der = build_x509_cert_der();
+        let verifier = FingerprintPinVerifier::new(
+            "SHA256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            aws_lc_rs_provider().signature_verification_algorithms,
+        );
+        let result = verify_pin(&verifier, cert_der);
+        assert!(
+            result.is_err(),
+            "FingerprintPinVerifier must reject an X.509 cert whose SHA256 does not match"
+        );
+    }
+
+    #[test]
+    fn select_server_verifier_returns_ca_verifier_for_none() {
+        let provider = aws_lc_rs_provider();
+        let remote_identity: Option<RemoteIdentity> = None;
+        let verifier = select_server_verifier(&provider, &remote_identity);
+        assert!(
+            verifier.is_ok(),
+            "select_server_verifier must succeed for None (CA path)"
+        );
+        let debug = format!("{:?}", verifier.unwrap());
+        assert!(
+            debug.contains("WebPkiServerVerifier"),
+            "None must select WebPkiServerVerifier (CA verification), got: {debug}"
+        );
+    }
+
+    #[test]
+    fn select_server_verifier_returns_fingerprint_pin_for_some() {
+        let provider = aws_lc_rs_provider();
+        let remote_identity = Some(RemoteIdentity {
+            fingerprint: "ed25519:abc".to_string(),
+        });
+        let verifier = select_server_verifier(&provider, &remote_identity);
+        assert!(
+            verifier.is_ok(),
+            "select_server_verifier must succeed for Some (fingerprint pin path)"
+        );
+        let debug = format!("{:?}", verifier.unwrap());
+        assert!(
+            debug.contains("FingerprintPinVerifier"),
+            "Some must select FingerprintPinVerifier, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn build_client_auth_presents_ed25519_raw_key_without_error() {
+        let provider = aws_lc_rs_provider();
+        let sk = Ed25519SecretKey::generate();
+        let tls_identity = Some(TlsIdentity::RawKey(sk));
+        let resolver = build_client_auth(&provider, &tls_identity);
+        assert!(
+            resolver.is_ok(),
+            "build_client_auth must build a resolver for a RawKey identity"
+        );
+        let resolver = resolver.unwrap();
+        assert!(
+            resolver.only_raw_public_keys(),
+            "RawKey client auth resolver must present raw public keys (RFC 7250)"
+        );
+        assert!(
+            resolver.has_certs(),
+            "RawKey client auth resolver must report it has a cert to present"
+        );
+    }
+
+    #[test]
+    fn build_client_auth_none_resolves_to_no_client_cert() {
+        let provider = aws_lc_rs_provider();
+        let tls_identity: Option<TlsIdentity> = None;
+        let resolver = build_client_auth(&provider, &tls_identity)
+            .expect("build_client_auth must succeed for None");
+        assert!(
+            !resolver.has_certs(),
+            "NoClientCertResolver must report no certs (no client cert presented)"
+        );
+    }
+
+    #[test]
+    fn build_quinn_client_config_with_raw_key_identity_builds_without_error() {
+        let sk = Ed25519SecretKey::generate();
+        let credentials = ConnectionCredentials::new()
+            .with_tls_identity(TlsIdentity::RawKey(sk))
+            .with_remote_identity(RemoteIdentity {
+                fingerprint: "ed25519:deadbeef".to_string(),
+            });
+        let config = TlsClientConfig::new(&credentials, b"alknet/call")
+            .expect("TlsClientConfig::new must build");
+        let quinn_config = config.for_quinn().expect("for_quinn must convert");
+        let _ = quinn_config;
+    }
+
+    #[test]
+    fn build_quinn_client_config_with_no_remote_identity_builds_without_error() {
+        let sk = Ed25519SecretKey::generate();
+        let credentials =
+            ConnectionCredentials::new().with_tls_identity(TlsIdentity::RawKey(sk));
+        let config = TlsClientConfig::new(&credentials, b"alknet/call")
+            .expect("TlsClientConfig::new must build for CA-verification path");
+        let quinn_config = config.for_quinn().expect("for_quinn must convert");
+        let _ = quinn_config;
+    }
+}

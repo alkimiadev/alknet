@@ -334,3 +334,167 @@ impl std::fmt::Debug for RawKeyCertResolver {
         f.debug_struct("RawKeyCertResolver").finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alknet_core::config::AcmeDirectory;
+
+    #[test]
+    fn raw_key_cert_resolver_only_raw_public_keys() {
+        use rustls::server::ResolvesServerCert;
+        let sk = Ed25519SecretKey::generate();
+        let resolver = RawKeyCertResolver::new(&sk);
+        assert!(resolver.only_raw_public_keys());
+    }
+
+    #[test]
+    fn self_signed_cert_generation_produces_cert_and_key() {
+        let cert = generate_self_signed_cert().expect("self-signed cert generates");
+        assert!(!cert.cert_chain.is_empty());
+        assert!(!cert.private_key.secret_der().is_empty());
+    }
+
+    #[test]
+    fn acme_directory_production_url() {
+        let dir = AcmeDirectory::Production;
+        assert_eq!(dir.url(), "https://acme-v02.api.letsencrypt.org/directory");
+    }
+
+    #[test]
+    fn acme_directory_staging_url() {
+        let dir = AcmeDirectory::Staging;
+        assert_eq!(
+            dir.url(),
+            "https://acme-staging-v02.api.letsencrypt.org/directory"
+        );
+    }
+
+    #[test]
+    fn acme_directory_custom_url() {
+        let url = "https://custom-acme.example.com/directory";
+        let dir = AcmeDirectory::Custom(url.to_string());
+        assert_eq!(dir.url(), url);
+    }
+
+    #[tokio::test]
+    async fn tls_setup_x509_returns_no_acme_state() {
+        use rcgen::{CertificateParams, KeyPair};
+        let key_pair = KeyPair::generate().unwrap();
+        let params = CertificateParams::default();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        let tls_identity = TlsIdentity::X509 {
+            cert: cert_path,
+            key: key_path,
+        };
+        let setup = TlsServerConfig::new(&tls_identity, &[b"alknet/test".to_vec()])
+            .await
+            .expect("X509 tls setup should succeed");
+        let _ = setup.rustls_config;
+        #[cfg(feature = "acme")]
+        assert!(setup.acme_state_handle.is_none());
+    }
+
+    #[test]
+    fn build_rustls_server_config_raw_key_succeeds() {
+        let sk = Ed25519SecretKey::generate();
+        let identity = TlsIdentity::RawKey(sk);
+        let alpns = vec![b"alknet/test".to_vec(), b"alknet/call".to_vec()];
+        let config = build_rustls_server_config(&identity, &alpns).expect("raw key config builds");
+        assert_eq!(config.alpn_protocols, alpns);
+        assert_eq!(config.max_early_data_size, u32::MAX);
+    }
+
+    #[test]
+    fn build_rustls_server_config_self_signed_succeeds() {
+        let identity = TlsIdentity::SelfSigned;
+        let alpns = vec![b"alknet/test".to_vec()];
+        let config =
+            build_rustls_server_config(&identity, &alpns).expect("self-signed config builds");
+        assert_eq!(config.alpn_protocols, alpns);
+        assert_eq!(config.max_early_data_size, u32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "TlsIdentity::Acme is handled by TlsServerConfig::new_acme")]
+    fn build_rustls_server_config_acme_is_unreachable() {
+        let identity = TlsIdentity::Acme {
+            domains: vec!["example.com".to_string()],
+            cache_dir: std::path::PathBuf::from("/tmp/alknet-acme-test"),
+            directory: AcmeDirectory::Staging,
+            contact: vec!["mailto:dev@example.com".to_string()],
+        };
+        let _ = build_rustls_server_config(&identity, &[]);
+    }
+
+    #[test]
+    fn build_quinn_server_config_from_rustls_succeeds() {
+        let sk = Ed25519SecretKey::generate();
+        let rustls_config =
+            build_rustls_server_config(&TlsIdentity::RawKey(sk), &[b"alknet/test".to_vec()])
+                .expect("rustls config builds");
+        let config = TlsServerConfig {
+            rustls_config,
+            #[cfg(feature = "acme")]
+            acme_state_handle: None,
+        };
+        let quinn_config = config.for_quinn().expect("quinn config converts");
+        let _ = quinn_config;
+    }
+
+    #[test]
+    fn accept_any_cert_verifier_offers_and_does_not_require_client_auth() {
+        use rustls::server::danger::ClientCertVerifier;
+        let verifier = AcceptAnyCertVerifier;
+        assert!(verifier.offer_client_auth());
+        assert!(!verifier.client_auth_mandatory());
+        assert!(verifier.root_hint_subjects().is_empty());
+    }
+
+    #[test]
+    fn accept_any_cert_verifier_verifies_any_client_cert() {
+        use rustls::pki_types::{CertificateDer, UnixTime};
+        use rustls::server::danger::ClientCertVerifier;
+        let verifier = AcceptAnyCertVerifier;
+        let cert = CertificateDer::from(b"fake-cert-der".to_vec());
+        let result = verifier.verify_client_cert(&cert, &[], UnixTime::now());
+        assert!(
+            result.is_ok(),
+            "AcceptAnyCertVerifier must accept any client cert"
+        );
+    }
+
+    #[test]
+    fn accept_any_cert_verifier_supported_schemes_are_non_empty() {
+        use rustls::server::danger::ClientCertVerifier;
+        let verifier = AcceptAnyCertVerifier;
+        let schemes = verifier.supported_verify_schemes();
+        assert!(!schemes.is_empty(), "must advertise at least one scheme");
+        assert!(schemes.contains(&rustls::SignatureScheme::ED25519));
+        assert!(schemes.contains(&rustls::SignatureScheme::RSA_PSS_SHA256));
+    }
+
+    #[test]
+    fn accept_any_cert_verifier_debug_is_implemented() {
+        let verifier = AcceptAnyCertVerifier;
+        let s = format!("{verifier:?}");
+        assert!(s.contains("AcceptAnyCertVerifier"));
+    }
+
+    #[test]
+    fn raw_key_cert_resolver_debug_is_implemented() {
+        let sk = Ed25519SecretKey::generate();
+        let resolver = RawKeyCertResolver::new(&sk);
+        let s = format!("{resolver:?}");
+        assert!(s.contains("RawKeyCertResolver"));
+    }
+}
