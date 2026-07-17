@@ -47,7 +47,7 @@ but the extraction unwinds that.
 
 | Lines | Concern | Destination | LOC |
 |-------|---------|-------------|-----|
-| 40-88 | `RemoteIdentity`, `CallCredentials` (struct + builder) | `alknet-core` (new `credentials.rs` or `auth.rs`) | ~48 |
+| 40-88 | `RemoteIdentity`, `CallCredentials` (struct + builder) | split: `RemoteIdentity` + new `ConnectionCredentials` → `alknet-core` (`credentials.rs`); `CallCredentials` restructured (transport dimensions leave, `auth_token` stays) → stays in `alknet-call` (ADR-091) | ~48 |
 | 90-100 | `ClientError` enum | **removed** (only produced by `connect`) | ~10 |
 | 102-187 | `CallClient` struct + `new` + `spawn_dispatch` | **stays** (the pure protocol take-over) | ~85 |
 | 189-320 | `build_quinn_client_config`, `build_client_auth`, `select_server_verifier`, `load_platform_root_cert_store`, `load_cert_chain`, `load_private_key`, `Ed25519SigningKey`, `RawKeyClientCertResolver`, `NoClientCertResolver`, `FingerprintPinVerifier` | `alknet-tls` | ~130 |
@@ -314,10 +314,15 @@ tests that used `connect` to use `spawn_dispatch` directly (with
 - `CallClient` struct + `new` + `registry` + `identity_provider` +
   `spawn_dispatch` (~85 lines — unchanged)
 - `CallConnection` + `Dispatcher` wiring (stays — protocol)
-- `RemoteIdentity`/`ConnectionCredentials` — removed from
-  `call_client.rs` (now in `alknet-core`, re-imported from there).
-  `CallCredentials` stays in `alknet-call` (retaining `auth_token` —
-  ADR-091).
+- `RemoteIdentity` — removed from `call_client.rs` (moved to
+  `alknet-core` in Phase 0; re-imported from there)
+- `CallCredentials` — restructured, stays in `alknet-call`: the
+  transport dimensions (`tls_identity`, `remote_identity`) leave for
+  `ConnectionCredentials` in `alknet-core` (Phase 0); the `auth_token`
+  field stays (it is a call-protocol concept, not a transport credential
+  — ADR-091). `CallCredentials` references the core types for the
+  transport dimensions or assembles from `ConnectionCredentials` +
+  `auth_token` at the take-over site.
 - `ClientError` — removed
 - `connect` + all `build_*`/`select_*`/`load_*`/`Ed25519SigningKey`/
   `RawKeyClientCertResolver`/`NoClientCertResolver`/
