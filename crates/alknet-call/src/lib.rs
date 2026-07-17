@@ -1,4 +1,4 @@
-//! alknet-call: Structured RPC over QUIC — operations, streaming, service discovery.
+//! alknet-call: Structured RPC — operations, streaming, service discovery.
 //!
 //! Implements [`alknet_core::types::ProtocolHandler`] on ALPN `alknet/call`.
 //!

@@ -9,7 +9,7 @@
 mod call_client;
 mod from_call;
 
-pub use call_client::{CallClient, CallCredentials, ClientError, RemoteIdentity};
+pub use call_client::CallClient;
 pub use from_call::{from_call, FromCallConfig};
 
 use crate::registry::registration::HandlerRegistration;

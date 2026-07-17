@@ -73,7 +73,7 @@ impl FromCallConfig {
 /// v1 defaults (two-way doors recorded in `client-and-adapters.md`):
 /// - auto-on-reconnect: the overlay is per-connection (Layer 2, ADR-024), so
 ///   re-import on reconnect is naturally scoped; the assembly layer calls
-///   `from_call` immediately after `connect()`.
+///   `from_call` immediately after `AlknetClient::dial_*` + `spawn_dispatch`.
 /// - same-peer collision = error: two ops with the same name from the same
 ///   peer (after applying the optional prefix) → `AdapterError::SamePeerCollision`.
 ///   Cross-peer collision dissolves (ADR-029 §5).
@@ -127,13 +127,11 @@ fn build_bundles(
             OperationType::Subscription => HandlerKind::Stream(make_streaming_forwarding_handler(
                 Arc::new(op_summary.connection.clone()),
                 remote_name,
-                op_summary.credentials_auth_token.clone(),
             )),
             OperationType::Query | OperationType::Mutation => {
                 HandlerKind::Once(make_forwarding_handler(
                     Arc::new(op_summary.connection.clone()),
                     remote_name,
-                    op_summary.credentials_auth_token.clone(),
                 ))
             }
         };
@@ -155,7 +153,6 @@ struct OpSummary {
     name: String,
     schema: Value,
     connection: CallConnection,
-    credentials_auth_token: Option<String>,
 }
 
 async fn discover_operations(connection: &CallConnection) -> Result<Vec<OpSummary>, AdapterError> {
@@ -182,7 +179,6 @@ async fn discover_operations(connection: &CallConnection) -> Result<Vec<OpSummar
             name: name.to_string(),
             schema,
             connection: connection.clone(),
-            credentials_auth_token: None,
         });
     }
     Ok(summaries)
@@ -329,10 +325,8 @@ fn parse_access_control(v: &Value) -> AccessControl {
 /// Per ADR-032 §3, the handler populates `forwarded_for` on the
 /// `call.requested` payload from the hub's `OperationContext.identity` (the
 /// end user the hub authenticated). The hub authenticates as itself when
-/// forwarding — the `credentials_auth_token`, when present, is the hub's own
-/// call-protocol-level token placed in the payload's `auth_token` field. The
-/// spoke authorizes the hub (its direct caller); `forwarded_for` is metadata,
-/// never read by `AccessControl::check`.
+/// forwarding. The spoke authorizes the hub (its direct caller);
+/// `forwarded_for` is metadata, never read by `AccessControl::check`.
 ///
 /// If `context.identity` is `None` (the hub chose not to disclose, or has not
 /// authenticated an originator), `forwarded_for` is omitted — the spoke
@@ -340,16 +334,14 @@ fn parse_access_control(v: &Value) -> AccessControl {
 fn make_forwarding_handler(
     connection: Arc<CallConnection>,
     remote_name: String,
-    credentials_auth_token: Option<String>,
 ) -> Handler {
     use crate::registry::registration::make_handler;
     make_handler(move |input, context| {
         let connection = Arc::clone(&connection);
         let remote_name = remote_name.clone();
-        let auth_token = credentials_auth_token.clone();
         async move {
             let payload =
-                build_forwarded_payload(&remote_name, input, &context, auth_token.as_deref());
+                build_forwarded_payload(&remote_name, input, &context);
             // The forwarding handler invokes the remote op via the
             // CallConnection. The parent_request_id participates in the abort
             // cascade (ADR-016 §6): if the parent is aborted, the cascade
@@ -372,27 +364,25 @@ fn make_forwarding_handler(
 /// `call.aborted` drops it (ADR-049 §8). No truncation, no first-value
 /// fallback.
 ///
-/// `forwarded_for` is populated from `context.identity` (ADR-032 §3) and
-/// `auth_token` from the hub's own call-protocol token, exactly as the
-/// request/response forwarding handler does — both via `build_forwarded_payload`
-/// (no new payload-construction code). The `subscribe_with_payload` path
-/// registers the request in `PendingRequestMap`, so the abort cascade
-/// (ADR-016 §6) is already wired: a parent abort drops the
-/// `SubscriptionStream`, which sends `call.aborted` to the remote node.
+/// `forwarded_for` is populated from `context.identity` (ADR-032 §3), exactly
+/// as the request/response forwarding handler does — both via
+/// `build_forwarded_payload` (no new payload-construction code). The
+/// `subscribe_with_payload` path registers the request in
+/// `PendingRequestMap`, so the abort cascade (ADR-016 §6) is already wired:
+/// a parent abort drops the `SubscriptionStream`, which sends `call.aborted`
+/// to the remote node.
 fn make_streaming_forwarding_handler(
     connection: Arc<CallConnection>,
     remote_name: String,
-    credentials_auth_token: Option<String>,
 ) -> StreamingHandler {
     use crate::registry::registration::make_streaming_handler;
     use futures::stream::{once, StreamExt};
     make_streaming_handler(move |input, context| {
         let connection = Arc::clone(&connection);
         let remote_name = remote_name.clone();
-        let auth_token = credentials_auth_token.clone();
         once(async move {
             let payload =
-                build_forwarded_payload(&remote_name, input, &context, auth_token.as_deref());
+                build_forwarded_payload(&remote_name, input, &context);
             connection.subscribe_with_payload(payload).await
         })
         .flatten()
@@ -402,13 +392,11 @@ fn make_streaming_forwarding_handler(
 /// Build the `call.requested` payload for a forwarded call, populating
 /// `forwarded_for` from the hub's `OperationContext.identity` (ADR-032 §3).
 /// `forwarded_for` is omitted when `context.identity` is `None` (the hub
-/// chooses not to disclose the originator). The `auth_token` field is set to
-/// the hub's own call-protocol token when present.
+/// chooses not to disclose the originator).
 fn build_forwarded_payload(
     operation_id: &str,
     input: Value,
     context: &OperationContext,
-    auth_token: Option<&str>,
 ) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -420,9 +408,6 @@ fn build_forwarded_payload(
         if let Ok(value) = serde_json::to_value(originator) {
             payload.insert("forwarded_for".to_string(), value);
         }
-    }
-    if let Some(token) = auth_token {
-        payload.insert("auth_token".to_string(), Value::String(token.to_string()));
     }
     Value::Object(payload)
 }
@@ -571,7 +556,6 @@ mod tests {
         let handler = make_forwarding_handler(
             Arc::new(CallConnection::new(stub_connection())),
             "worker/echo".to_string(),
-            None,
         );
         let reg = HandlerRegistration::new(
             spec,
@@ -638,31 +622,20 @@ mod tests {
     #[test]
     fn build_forwarded_payload_populates_forwarded_for_from_context_identity() {
         let ctx = test_context(Some(alice_identity()));
-        let payload = build_forwarded_payload("fs/readFile", json!({"p": 1}), &ctx, None);
+        let payload = build_forwarded_payload("fs/readFile", json!({"p": 1}), &ctx);
         assert_eq!(payload["operationId"], "fs/readFile");
         assert_eq!(payload["input"], json!({"p": 1}));
         let forwarded_for = payload.get("forwarded_for").expect("forwarded_for present");
         assert_eq!(forwarded_for["id"], "alice");
         assert_eq!(forwarded_for["scopes"][0], "fs:read");
-        assert!(payload.get("auth_token").is_none());
     }
 
     #[test]
     fn build_forwarded_payload_omits_forwarded_for_when_context_identity_is_none() {
         let ctx = test_context(None);
-        let payload = build_forwarded_payload("fs/readFile", json!({}), &ctx, None);
+        let payload = build_forwarded_payload("fs/readFile", json!({}), &ctx);
         assert!(payload.get("forwarded_for").is_none());
-        assert!(payload.get("auth_token").is_none());
         assert_eq!(payload["operationId"], "fs/readFile");
-    }
-
-    #[test]
-    fn build_forwarded_payload_sets_auth_token_when_provided() {
-        let ctx = test_context(Some(alice_identity()));
-        let payload =
-            build_forwarded_payload("fs/readFile", json!({}), &ctx, Some("alk_hub_token"));
-        assert_eq!(payload["auth_token"], "alk_hub_token");
-        assert_eq!(payload["forwarded_for"]["id"], "alice");
     }
 
     /// Verify the forwarding handler actually populates `forwarded_for` on
@@ -687,7 +660,7 @@ mod tests {
                 let captured = Arc::clone(&captured);
                 let remote_name = "fs/readFile".to_string();
                 async move {
-                    let payload = build_forwarded_payload(&remote_name, input, &context, None);
+                    let payload = build_forwarded_payload(&remote_name, input, &context);
                     *captured.lock().unwrap() = Some(payload.clone());
                     let response = conn.call_with_payload(payload).await;
                     ResponseEnvelope {
@@ -718,7 +691,7 @@ mod tests {
                 let captured = Arc::clone(&captured);
                 let remote_name = "fs/readFile".to_string();
                 async move {
-                    let payload = build_forwarded_payload(&remote_name, input, &context, None);
+                    let payload = build_forwarded_payload(&remote_name, input, &context);
                     *captured.lock().unwrap() = Some(payload.clone());
                     let response = conn.call_with_payload(payload).await;
                     ResponseEnvelope {
@@ -745,7 +718,6 @@ mod tests {
             name: name.to_string(),
             schema: sample_schema_json(name, "query"),
             connection: conn.clone(),
-            credentials_auth_token: None,
         }
     }
 
@@ -754,7 +726,6 @@ mod tests {
             name: name.to_string(),
             schema: sample_schema_json(name, op_type),
             connection: conn.clone(),
-            credentials_auth_token: None,
         }
     }
 
@@ -949,7 +920,7 @@ mod tests {
                 let remote_name = "events/stream".to_string();
                 use futures::stream::{once, StreamExt};
                 once(async move {
-                    let payload = build_forwarded_payload(&remote_name, input, &context, None);
+                    let payload = build_forwarded_payload(&remote_name, input, &context);
                     *captured.lock().unwrap() = Some(payload.clone());
                     conn.subscribe_with_payload(payload).await
                 })
@@ -999,7 +970,7 @@ mod tests {
                 let remote_name = "events/stream".to_string();
                 use futures::stream::{once, StreamExt};
                 once(async move {
-                    let payload = build_forwarded_payload(&remote_name, input, &context, None);
+                    let payload = build_forwarded_payload(&remote_name, input, &context);
                     *captured.lock().unwrap() = Some(payload.clone());
                     conn.subscribe_with_payload(payload).await
                 })
@@ -1018,45 +989,6 @@ mod tests {
         assert_eq!(payload["operationId"], "events/stream");
     }
 
-    /// The streaming forwarding handler populates `auth_token` when the hub's
-    /// own call-protocol token is provided.
-    #[tokio::test]
-    async fn streaming_forwarding_handler_sets_auth_token_when_provided() {
-        use futures::stream::StreamExt;
-
-        let conn = Arc::new(CallConnection::new(stub_connection()));
-        let captured_payload = Arc::new(StdMutex::new(None::<Value>));
-        let captured = Arc::clone(&captured_payload);
-
-        let handler: StreamingHandler = {
-            let conn = Arc::clone(&conn);
-            make_streaming_handler(move |input, context| {
-                let conn = Arc::clone(&conn);
-                let captured = Arc::clone(&captured);
-                let remote_name = "events/stream".to_string();
-                use futures::stream::{once, StreamExt};
-                once(async move {
-                    let payload = build_forwarded_payload(
-                        &remote_name,
-                        input,
-                        &context,
-                        Some("alk_hub_token"),
-                    );
-                    *captured.lock().unwrap() = Some(payload.clone());
-                    conn.subscribe_with_payload(payload).await
-                })
-                .flatten()
-            })
-        };
-
-        let ctx = test_context(Some(alice_identity()));
-        let mut stream = handler(json!({}), ctx);
-        let _ = stream.next().await;
-        let payload = captured_payload.lock().unwrap().clone().expect("captured");
-        assert_eq!(payload["auth_token"], "alk_hub_token");
-        assert_eq!(payload["forwarded_for"]["id"], "alice");
-    }
-
     /// `make_streaming_forwarding_handler` produces a `StreamingHandler` (not a
     /// `Handler`) — verifies the helper returns the right type and that
     /// `build_bundles` wires it into `HandlerKind::Stream`.
@@ -1065,7 +997,6 @@ mod tests {
         let handler = make_streaming_forwarding_handler(
             Arc::new(CallConnection::new(stub_connection())),
             "events/stream".to_string(),
-            None,
         );
         let reg = HandlerRegistration::new(
             OperationSpec::new(
