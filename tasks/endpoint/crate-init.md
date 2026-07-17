@@ -1,7 +1,7 @@
 ---
 id: endpoint/crate-init
 name: Initialize alknet-endpoint crate with Cargo.toml, dependencies, and module skeleton
-status: pending
+status: completed
 depends_on: [tls/review-tls]
 scope: moderate
 risk: low

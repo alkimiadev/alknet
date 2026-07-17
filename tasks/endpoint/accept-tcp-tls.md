@@ -1,7 +1,7 @@
 ---
 id: endpoint/accept-tcp-tls
 name: Implement TCP+TLS accept loop and extractors in alknet-endpoint (new code)
-status: pending
+status: completed
 depends_on: [endpoint/dispatch]
 scope: narrow
 risk: medium

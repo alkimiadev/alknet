@@ -1,7 +1,7 @@
 ---
 id: endpoint/registry
 name: Extract HandlerRegistry from alknet-core/endpoint.rs into alknet-endpoint
-status: pending
+status: completed
 depends_on: [endpoint/crate-init]
 scope: narrow
 risk: low

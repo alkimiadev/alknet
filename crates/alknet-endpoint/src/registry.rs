@@ -59,3 +59,95 @@ impl std::fmt::Debug for HandlerRegistry {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alknet_core::auth::AuthContext;
+    use alknet_core::types::{Connection, HandlerError};
+    use async_trait::async_trait;
+
+    struct DummyHandler {
+        alpn: &'static [u8],
+    }
+
+    #[async_trait]
+    impl ProtocolHandler for DummyHandler {
+        fn alpn(&self) -> &'static [u8] {
+            self.alpn
+        }
+        async fn handle(
+            &self,
+            _connection: Connection,
+            _auth: &AuthContext,
+        ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+    }
+
+    fn make_handler(alpn: &'static [u8]) -> Arc<dyn ProtocolHandler> {
+        Arc::new(DummyHandler { alpn })
+    }
+
+    #[test]
+    fn handler_registry_new_is_empty() {
+        let reg = HandlerRegistry::new();
+        assert!(reg.alpn_strings().is_empty());
+        assert!(reg.get(b"alknet/test").is_none());
+    }
+
+    #[test]
+    fn handler_registry_register_then_get() {
+        let mut reg = HandlerRegistry::new();
+        reg.register(make_handler(b"alknet/test"));
+        assert_eq!(reg.alpn_strings(), vec![b"alknet/test".to_vec()]);
+        assert!(reg.get(b"alknet/test").is_some());
+        assert!(reg.get(b"alknet/other").is_none());
+    }
+
+    #[test]
+    fn handler_registry_multiple_alpns() {
+        let mut reg = HandlerRegistry::new();
+        reg.register(make_handler(b"alknet/ssh"));
+        reg.register(make_handler(b"alknet/call"));
+        let mut alpns = reg
+            .alpn_strings()
+            .into_iter()
+            .map(|a| String::from_utf8(a).unwrap())
+            .collect::<Vec<_>>();
+        alpns.sort();
+        assert_eq!(alpns, vec!["alknet/call", "alknet/ssh"]);
+        assert!(reg.get(b"alknet/ssh").is_some());
+        assert!(reg.get(b"alknet/call").is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "ALPN already registered")]
+    fn handler_registry_register_panics_on_duplicate() {
+        let mut reg = HandlerRegistry::new();
+        reg.register(make_handler(b"alknet/test"));
+        reg.register(make_handler(b"alknet/test"));
+    }
+
+    #[test]
+    fn handler_registry_debug_lists_alpns() {
+        let mut reg = HandlerRegistry::new();
+        reg.register(make_handler(b"alknet/test"));
+        let s = format!("{:?}", reg);
+        assert!(s.contains("alknet/test"));
+    }
+
+    #[test]
+    fn handler_registry_default_is_empty() {
+        let reg = HandlerRegistry::default();
+        assert!(reg.alpn_strings().is_empty());
+        assert!(reg.get(b"alknet/test").is_none());
+    }
+
+    #[test]
+    fn handler_registry_debug_lists_alpns_via_default() {
+        let reg = HandlerRegistry::default();
+        let s = format!("{reg:?}");
+        assert!(s.contains("HandlerRegistry"));
+    }
+}

@@ -176,3 +176,189 @@ impl AlknetEndpoint {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
+    use alknet_core::config::DynamicConfig;
+    #[cfg(feature = "iroh")]
+    use alknet_core::auth::AuthContext;
+    #[cfg(feature = "iroh")]
+    use alknet_core::types::{Connection, HandlerError};
+    #[cfg(feature = "iroh")]
+    use async_trait::async_trait;
+
+    #[cfg(feature = "iroh")]
+    struct DummyHandler {
+        alpn: &'static [u8],
+    }
+
+    #[cfg(feature = "iroh")]
+    #[async_trait]
+    impl alknet_core::types::ProtocolHandler for DummyHandler {
+        fn alpn(&self) -> &'static [u8] {
+            self.alpn
+        }
+        async fn handle(
+            &self,
+            _connection: Connection,
+            _auth: &AuthContext,
+        ) -> Result<(), HandlerError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "iroh")]
+    fn make_handler(alpn: &'static [u8]) -> Arc<dyn alknet_core::types::ProtocolHandler> {
+        Arc::new(DummyHandler { alpn })
+    }
+
+    struct NoProvider;
+    impl IdentityProvider for NoProvider {
+        fn resolve_from_fingerprint(&self, _: &str) -> Option<Identity> {
+            None
+        }
+        fn resolve_from_token(&self, _: &AuthToken) -> Option<Identity> {
+            None
+        }
+    }
+
+    #[test]
+    fn debug_for_alknet_endpoint_is_implemented_without_panicking() {
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+        let registry = HandlerRegistry::new();
+        let endpoint = AlknetEndpoint::new(registry, dynamic, provider, Duration::from_millis(10));
+        let s = format!("{endpoint:?}");
+        assert!(s.contains("AlknetEndpoint"));
+        assert!(s.contains("drain_timeout"));
+    }
+
+    #[cfg(feature = "iroh")]
+    #[tokio::test]
+    async fn endpoint_constructs_with_iroh_raw_key_identity() {
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+        let mut registry = HandlerRegistry::new();
+        registry.register(make_handler(b"alknet/test"));
+
+        let iroh_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::generate())
+            .alpns(vec![b"alknet/test".to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("iroh endpoint binds");
+
+        let endpoint = AlknetEndpoint::new(registry, dynamic, provider, Duration::from_millis(10))
+            .with_iroh(iroh_endpoint);
+        assert!(endpoint.shutdown_sender().send(true).is_ok());
+        endpoint.shutdown().await;
+    }
+
+    #[cfg(feature = "iroh")]
+    #[tokio::test]
+    async fn iroh_endpoint_runs_accept_loop_and_shutdown() {
+        use std::sync::Mutex;
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+
+        let connected = Arc::new(Mutex::new(false));
+        let connected_clone = connected.clone();
+        struct CountingHandler {
+            alpn: &'static [u8],
+            connected: Arc<Mutex<bool>>,
+        }
+        #[async_trait]
+        impl alknet_core::types::ProtocolHandler for CountingHandler {
+            fn alpn(&self) -> &'static [u8] {
+                self.alpn
+            }
+            async fn handle(
+                &self,
+                _conn: Connection,
+                _auth: &AuthContext,
+            ) -> Result<(), HandlerError> {
+                *self.connected.lock().unwrap() = true;
+                Ok(())
+            }
+        }
+        let mut registry = HandlerRegistry::new();
+        registry.register(Arc::new(CountingHandler {
+            alpn: b"alknet/test",
+            connected: connected_clone,
+        }));
+
+        let iroh_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::generate())
+            .alpns(vec![b"alknet/test".to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("iroh endpoint binds");
+
+        let endpoint = Arc::new(
+            AlknetEndpoint::new(registry, dynamic, provider, Duration::from_millis(20))
+                .with_iroh(iroh_endpoint),
+        );
+
+        let run_endpoint = endpoint.clone();
+        let run_task = tokio::spawn(async move {
+            run_endpoint.run().await;
+        });
+
+        let _ = endpoint.shutdown_sender().send(true);
+        endpoint.shutdown().await;
+        let _ = run_task.await;
+        assert!(!*connected.lock().unwrap());
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn with_iroh_sets_field() {
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+        let registry = HandlerRegistry::new();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let iroh_endpoint = rt.block_on(async {
+            iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .secret_key(iroh::SecretKey::generate())
+                .alpns(vec![b"alknet/test".to_vec()])
+                .relay_mode(iroh::RelayMode::Disabled)
+                .bind()
+                .await
+                .expect("iroh endpoint binds")
+        });
+
+        let endpoint = AlknetEndpoint::new(registry, dynamic, provider, Duration::from_millis(10))
+            .with_iroh(iroh_endpoint);
+        assert!(endpoint.iroh.is_some());
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn without_iroh_field_is_none() {
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+        let registry = HandlerRegistry::new();
+        let endpoint = AlknetEndpoint::new(registry, dynamic, provider, Duration::from_millis(10));
+        assert!(endpoint.iroh.is_none());
+    }
+
+    #[cfg(feature = "iroh")]
+    #[test]
+    fn endpoint_works_without_iroh() {
+        let provider: Arc<dyn IdentityProvider> = Arc::new(NoProvider);
+        let dynamic = Arc::new(ArcSwap::from_pointee(DynamicConfig::default()));
+        let mut registry = HandlerRegistry::new();
+        registry.register(make_handler(b"alknet/test"));
+        let endpoint = AlknetEndpoint::new(registry, dynamic, provider, Duration::from_millis(10));
+        assert!(endpoint.iroh.is_none());
+        assert!(endpoint.shutdown_sender().send(true).is_ok());
+    }
+}

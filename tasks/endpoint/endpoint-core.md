@@ -1,7 +1,7 @@
 ---
 id: endpoint/endpoint-core
 name: Implement AlknetEndpoint struct, new, builder methods, run, and shutdown
-status: pending
+status: completed
 depends_on: [endpoint/registry]
 scope: moderate
 risk: medium

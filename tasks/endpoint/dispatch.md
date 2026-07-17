@@ -1,7 +1,7 @@
 ---
 id: endpoint/dispatch
 name: Implement public dispatch, build_auth_context, and ACME guard
-status: pending
+status: completed
 depends_on: [endpoint/endpoint-core]
 scope: narrow
 risk: low

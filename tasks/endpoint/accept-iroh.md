@@ -1,7 +1,7 @@
 ---
 id: endpoint/accept-iroh
 name: Implement iroh accept loop and extractors in alknet-endpoint
-status: pending
+status: completed
 depends_on: [endpoint/dispatch]
 scope: narrow
 risk: low

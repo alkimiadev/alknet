@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "alknet-core",
  "arc-swap",
+ "async-trait",
  "iroh",
  "quinn",
  "rustls",

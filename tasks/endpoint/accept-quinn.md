@@ -1,7 +1,7 @@
 ---
 id: endpoint/accept-quinn
 name: Implement quinn accept loop and extractors in alknet-endpoint
-status: pending
+status: completed
 depends_on: [endpoint/dispatch]
 scope: narrow
 risk: low
