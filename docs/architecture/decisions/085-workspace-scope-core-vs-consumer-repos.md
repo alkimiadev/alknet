@@ -151,7 +151,7 @@ alknet mono-repo (the core networking toolkit)
   substrate, not part of it.
 - Foundational handlers depend on `alknet-core` (for
   `ProtocolHandler`, `Connection`) and/or `alknet-channels` (for
-  `ChannelBidiStreamSource`, `into_sub_streams`). No handler depends
+  `ChannelBidiStreamSource`). No handler depends
   on another handler — cross-handler communication goes through
   `alknet/call` on channel 0.
 - `alknet-vault` is standalone (zero alknet crate dependencies — ADR-018).

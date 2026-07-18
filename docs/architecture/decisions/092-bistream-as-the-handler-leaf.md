@@ -7,7 +7,24 @@ amends ADR-065's `from_stream` / `from_bidi` constructors; amends
 ADR-074's `ChannelBidiStreamSource::accept_bi` return type;
 resurrects ADR-007's `BiStream` trait as the handler-facing leaf type;
 supersedes the "two Phase 6 issues" framing in
-`docs/research/alknet-crate-extraction/findings.md`)
+`docs/research/alknet-crate-extraction/findings.md`; **`into_sub_streams()`
+preservation subsequently reversed by ADR-093 (2026-07-18) — see the
+note at the bottom of this ADR**)
+
+> **Note on `into_sub_streams()` (added 2026-07-18, ADR-093):** This ADR's
+> body states `into_sub_streams()` (ADR-074) is "preserved" as the
+> second accessor alongside `accept_bi`, because TTY's named
+> unidirectional sub-streams are the case that justifies keeping
+> `SendStream` / `RecvStream`. ADR-093 reverses that preservation: the
+> channels layer has no `stream_type` concept, `into_sub_streams()` is
+> removed, and TTY sub-demuxes its `BiStream` via its own 5-byte format
+> (the same code TTY runs in direct mode). `SendStream` / `RecvStream`
+> collapse to thin newtypes over `Box<dyn Async* + Send + Unpin>` as
+> this ADR specifies, but their only consumer is the channels
+> reassembly path's internal join (constructing a `BiStream` from split
+> halves), not `into_sub_streams()`. See ADR-093 for the resolution
+> rationale (the channels layer is pure channel multiplexing; the
+> handler owns its sub-stream multiplexing on the `BiStream`).
 
 ## Context
 

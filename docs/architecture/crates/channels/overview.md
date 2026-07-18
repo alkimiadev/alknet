@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-12
+last_updated: 2026-07-18
 ---
 
 # alknet-channels — Overview
@@ -9,17 +9,20 @@ last_updated: 2026-07-12
 
 `alknet-channels` is a multiplexing proxy crate. It implements
 `ProtocolHandler` for the `alknet/channels` ALPN: it receives one
-bidirectional transport stream, reads 9-byte chunk headers, and routes each
+bidirectional transport stream, reads 8-byte chunk headers, and routes each
 chunk's payload to the right logical channel. Each channel is reassembled
-into an `AsyncRead + AsyncWrite` pair and presented to its handler as a
-`Connection` — the handler doesn't know it's inside a channels connection.
+into a `BiStream` (a concrete `AsyncRead + AsyncWrite` newtype, per
+ADR-092) and presented to its handler as a `Connection` — the handler
+doesn't know it's inside a channels connection.
 
 Channel 0 is pre-negotiated as `alknet/call` (ADR-072). Every other channel
 is opened dynamically via `channel/open` on channel 0 (ADR-073) and routed
 through the same `HandlerRegistry` as top-level connections. The channels
 layer does no protocol work itself — it is a re-framing proxy that converts
 between "one transport stream carrying N channels" (the wire) and "N
-independent stream handles" (what handlers see).
+independent `BiStream` handles" (what handlers see). The channels layer has
+no `stream_type` concept (ADR-093) — the handler owns its sub-stream
+multiplexing on the `BiStream` it receives.
 
 ## Why
 
@@ -46,13 +49,13 @@ With `alknet/channels`, one connection carries everything:
 
 ```
 Browser ──WebTransport──► Hub ──QUIC──► Spoke
-          alknet/channels         alknet/channels
-          ┌─────────────┐         ┌─────────────┐
-          │ ch0: call   │         │ ch0: call   │
-          │ ch1: tty    │  relay  │ ch1: tty    │
-          │ ch2: ssh    │ ◄─────► │ ch2: ssh    │
-          │ ch3: tunnel │         │ ch3: tunnel │
-          └─────────────┘         └─────────────┘
+           alknet/channels         alknet/channels
+           ┌─────────────┐         ┌─────────────┐
+           │ ch0: call   │         │ ch0: call   │
+           │ ch1: tty    │  relay  │ ch1: tty    │
+           │ ch2: ssh    │ ◄─────► │ ch2: ssh    │
+           │ ch3: tunnel │         │ ch3: tunnel │
+           └─────────────┘         └─────────────┘
 ```
 
 The hub's relay is channel-by-channel byte forwarding (with `channel_id`
@@ -70,12 +73,35 @@ The collapse is at three levels:
    `AccessControl`, and `forwarded_for` machinery govern channel lifecycle
    with no new auth.
 
+### The separation: channels layer is pure channel multiplexing
+
+The channels layer's job is "one connection carries N channels, routed by
+`channel_id`." It does not know about TTY's sub-streams, SSH's channel
+protocol, or how call frames its JSON. Handlers own their sub-multiplexing
+on the `BiStream` the channels layer gives them (ADR-093).
+
+- **Every channel is a `BiStream`.** `accept_bi()` yields one `BiStream`
+  per channel (per ADR-092). The handler sub-multiplexes it however it
+  wants — TTY's 5-byte format, call's length-prefixed JSON, tunnel's raw
+  bytes, SSH's channel protocol.
+- **The channels layer has no `stream_type` concept.** Not in its 8-byte
+  header, not in its code, not in its mental model. `stream_type` is the
+  inner layer's framing byte, carried transparently in the payload.
+- **The control channel is handler-internal.** TTY sub-demuxes control
+  from its io `BiStream` using its 5-byte format (`STREAM_CTRL_IN` /
+  `STREAM_CTRL_OUT` — ADR-052 amended by Phase 7). The channels layer
+  doesn't carry control.
+- **Recursive composition is literal.** A channel with ALPN
+  `alknet/channels` runs another channels demux on its `BiStream`. The
+  outer layer strips its 8-byte header; the inner layer parses its own
+  8-byte header from the payload.
+
 ## Architecture
 
 The crate has two internal components (ADR-075):
 
 - **`ChannelsAdapter`** — implements `ProtocolHandler` for
-  `alknet/channels`. Its `handle()` receives one `Connection`, reads 9-byte
+  `alknet/channels`. Its `handle()` receives one `Connection`, reads 8-byte
   chunk headers, and routes chunks to the `ChannelManager`. The read/demux
   half.
 - **`ChannelManager`** — the shared state. Holds `channel_id →
@@ -84,9 +110,10 @@ The crate has two internal components (ADR-075):
   `channel/open` operation handler closes over.
 
 Each channel is presented to its handler as a `Connection` constructed via
-`Connection::from_source(ChannelBidiStreamSource, alpn)` (ADR-070/074). The
-handler calls `accept_bi()` once (yield-once per channel) and drives its
-session — identical to how it works on a top-level QUIC connection.
+`Connection::from_source(ChannelBidiStreamSource, alpn)` (ADR-070/074, as
+amended by ADR-093). The handler calls `accept_bi()` once (yield-once per
+channel) and gets a `BiStream` — identical to how it works on a top-level
+QUIC connection.
 
 See [channels-adapter.md](channels-adapter.md) for the full adapter/manager
 design.
@@ -96,7 +123,7 @@ design.
 ```
 alknet-channels-core
 ├── alknet-core (ProtocolHandler, Connection, HandlerRegistry,
-│                BidiStreamSource, SendStream, RecvStream, AuthContext)
+│                BidiStreamSource, BiStream, AuthContext)
 ├── tokio (spawn, mpsc, io)
 ├── bytes (Bytes for chunk payloads)
 ├── async-trait
@@ -159,7 +186,7 @@ stream:
 
 The same wire format, the same chunk reassembly, the same `Connection`
 abstraction. The transport is a parameter, not a design constraint.
-`Connection::from_stream` / `from_source` (ADR-065/070) handles the
+`Connection::from_bidi` / `from_source` (ADR-065/070/092) handles the
 transport-agnostic `Connection` construction.
 
 ## WASM compatibility
@@ -189,7 +216,9 @@ not an architecture concern. The sync core's WASM compatibility is validated.
 Unchanged. The call protocol remains JSON-only, `EventEnvelope`-based. It
 runs on channel 0 exactly as on a top-level `alknet/call` connection. The
 `CallAdapter` receives a `Connection` backed by channel-0 chunk reassembly
-and dispatches operations — it doesn't know it's inside channels.
+and dispatches operations — it doesn't know it's inside channels. The call
+protocol's `EventEnvelope` framing (ADR-064) is the channels payload; the
+channels layer carries it transparently.
 
 What changes: the call protocol gains a new class of operations — channel
 lifecycle (ADR-073). These are registered on the `OperationRegistry` at
@@ -198,24 +227,27 @@ assembly time and dispatched through the existing `OperationContext` /
 
 ### alknet-tty
 
-The TTY crate gains a `channels` feature (ADR-077) that enables
-inside-channels mode. In direct mode (`alknet/tty` ALPN on a top-level
-connection), the TTY adapter uses its own 5-byte wire format (ADR-052,
-unchanged). In channels mode (`channel/open` with ALPN `alknet/tty`), the
-adapter receives `ChannelSubStreams` (ADR-074) — four named
-`SendStream`/`RecvStream` pairs for stream_types 0-3 — and pumps without
-chunk parsing. The `TtyBackend` trait and `TtyHandle` are unchanged;
+The TTY crate gains a `channels` feature that enables inside-channels
+mode. In both direct mode (`alknet/tty` ALPN on a top-level connection) and
+inside-channels mode (`channel/open` with ALPN `alknet/tty`), the TTY
+adapter uses its own 5-byte wire format (ADR-052). The two modes differ
+only in *where the `BiStream` comes from* — a top-level connection vs a
+channels-backed `Connection`. The same `wire.rs` code runs in both modes
+(ADR-077, reversed by ADR-093): the channels layer strips its 8-byte
+header and hands TTY the payload bytes; TTY parses its 5-byte header from
+the payload. The `TtyBackend` trait and `TtyHandle` are unchanged;
 backends don't know which mode the adapter is in.
 
 ### alknet-ssh (future)
 
 SSH as a channel type: an `alknet/ssh` channel carries the SSH binary
-protocol over stream_types 0 and 1. The channels layer hands the
-reassembled stream to `SshAdapter`, which feeds it to russh. SSH as a
-channels transport: an SSH `direct-tcpip` channel could carry a channels
-connection (channels-over-SSH). The SSH crate doesn't need to know about
-channels — it implements `ProtocolHandler` for `alknet/ssh` and accepts a
-`Connection`.
+protocol on its `BiStream`. The channels layer hands the reassembled
+`BiStream` to `SshAdapter`, which feeds it to russh. SSH as a channels
+transport: an SSH `direct-tcpip` channel could carry a channels connection
+(channels-over-SSH). The SSH crate doesn't need to know about channels —
+it implements `ProtocolHandler` for `alknet/ssh` and accepts a
+`Connection`. SSH multiplexes internally (its own channel protocol rides
+the channels payload transparently).
 
 ### alknet-docker
 
@@ -240,16 +272,17 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [071](../../decisions/071-channels-wire-format.md) | channels Wire Format | 9-byte chunk header; unidirectional stream_types in groups of 3; one-way door |
-| [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call`, stream_types [0,1] |
+| [071](../../decisions/071-channels-wire-format.md) | channels Wire Format | 8-byte chunk header (amended by ADR-093); channels layer has no `stream_type` concept; one-way door |
+| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | The umbrella decision: 8-byte header, no `stream_type`, `into_sub_streams` removed, `BiStream`-only, TTY always 5-byte |
+| [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call` |
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations | `channel/open`/`close`/`control`/`resources/subscribe`; subscribe not poll; `direction` pinned |
-| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; `into_sub_streams()` with `SubStreamHandle` enum |
+| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; yield-once `accept_bi` (amended by ADR-093 — `into_sub_streams` removed) |
 | [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Substrate-agnostic demux loop; REQ-CH-01..04 |
 | [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Limits, ID Reuse | Bounded-buffer (1 MiB), 256-channel cap, monotonic IDs |
-| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); 5 sub-streams; control bidirectional via 3/4 |
+| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); **reversed by ADR-093 — TTY always uses its 5-byte format, carried transparently** |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract; handler-level |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5 (dial extracted to `AlknetClient`); `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
 | [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers |
 
 ## Open Questions
@@ -268,3 +301,7 @@ Key questions affecting this crate:
 - **OQ-57** (deferred(scope)): Two-pump helper extraction to alknet-core —
   the *contract* is decided (ADR-078); the *helper* is blocked on a second
   two-pump handler existing.
+- **OQ-68** (open): Add/strip API shape — whether the 8-byte header
+  add/strip is built into the channels read/write path or exposed as a
+  standalone utility. The *contract* (channels strips, handler parses
+  payload) is decided (ADR-093); the *function surface* is not.

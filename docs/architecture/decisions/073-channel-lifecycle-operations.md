@@ -2,7 +2,26 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-18 by ADR-093 — `stream_types` field removed
+from `channel/open`; `stream_type` field removed from `channel/control`;
+`channel:stream_type_unavailable` error code removed; the channels layer
+has no `stream_type` concept — see "Amendment (ADR-093, 2026-07-18)"
+below)
+
+## Amendment (ADR-093, 2026-07-18)
+
+The `stream_types` field is **removed** from `channel/open`'s input and
+output. The `stream_type` field is **removed** from `channel/control`'s
+input. The `channel:stream_type_unavailable` error code is **removed**.
+The channels layer has no `stream_type` concept (ADR-093) — the handler
+owns its sub-stream multiplexing on the `BiStream` it receives. The
+handler's sub-stream set is implicit in its ALPN's wire format (e.g.,
+TTY's 5-byte format declares its own `stream_type` set internally; the
+channels layer carries the bytes transparently).
+
+The body below describes the **original** (with `stream_types`) shape;
+the amendment above is the operative decision. See ADR-093 for the
+resolution rationale and the cross-ADR impacts.
 
 ## Context
 
@@ -292,7 +311,11 @@ the underlying one-way commitment.
 
 ## References
 
-- ADR-071: channels wire format
+- ADR-071: channels wire format (amended by ADR-093 — 8-byte header, no
+  `stream_type`)
+- ADR-093: channels pure channel multiplexing (amends this ADR —
+  `stream_types` field removed from `channel/open`; `stream_type` field
+  removed from `channel/control`; handler owns sub-stream multiplexing)
 - ADR-072: channel 0 is pre-negotiated `alknet/call`
 - ADR-049: StreamingHandler for subscriptions (the machinery
   `channel/resources/subscribe` uses — implemented and tested)

@@ -2,7 +2,26 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-18 by ADR-093 — demux reads 8-byte headers, not
+9-byte; one reassembly buffer per `channel_id` (not per
+`(channel_id, stream_type)`); `ChannelState.stream_types` removed; the
+channels layer has no `stream_type` concept — see "Amendment (ADR-093,
+2026-07-18)" below)
+
+## Amendment (ADR-093, 2026-07-18)
+
+The demux loop reads **8-byte headers** (not 9-byte). `ChannelState` has
+**one reassembly buffer per `channel_id`** (not per
+`(channel_id, stream_type)`), yielding a `BiStream` to the handler. The
+`stream_types: Vec<u8>` field on `ChannelState` is **removed**. The
+`ChannelManager` has no `stream_type` concept — it routes by `channel_id`
+only, and the handler owns its sub-stream multiplexing on the `BiStream`
+it receives (per ADR-093, the channels-layer consequence of ADR-092's
+`BiStream` handler leaf).
+
+The body below describes the **original** (9-byte, per-stream_type) shape;
+the amendment above is the operative decision. See ADR-093 for the
+resolution rationale and the cross-ADR impacts.
 
 ## Context
 
@@ -224,11 +243,14 @@ contract.
 
 ## References
 
-- ADR-071: channels wire format (the chunks the demux reads)
+- ADR-071: channels wire format (the chunks the demux reads, as amended
+  by ADR-093 — 8-byte header)
+- ADR-093: channels pure channel multiplexing (amends this ADR — 8-byte
+  header, one reassembly buffer per channel, no `stream_type` concept)
 - ADR-072: channel 0 pre-negotiated (the `preinstall_channel_0` step)
 - ADR-073: channel lifecycle operations (the ops registered on `call_ops`)
 - ADR-074: ChannelBidiStreamSource (the per-channel source the manager
-  constructs)
+  constructs, as amended by ADR-093 — `accept_bi` yields a `BiStream`)
 - ADR-076: backpressure, channel limits, ID reuse (the `buffer_cap` /
   `max_channels` / reuse invariants)
 - `docs/research/alknet-channels/poc-summary.md` §Issues Surfaced #4-#6

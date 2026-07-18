@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-12
+last_updated: 2026-07-18
 ---
 
 # channel-client.md — ChannelClient
@@ -33,18 +33,18 @@ impl ChannelClient {
     /// `Connection` on ALPN `alknet/channels`. This is the
     /// transport-agnostic primary constructor: the caller (or a
     /// transport-specific dial helper) produces the `Connection` —
-    /// via `Connection::from_stream`/`from_bidi` (TCP+TLS,
-    /// WebTransport, SSH `direct-tcpip`), a quinn connection, or any
-    /// other `AsyncRead + AsyncWrite` source — and this method takes
-    /// over: installs channel 0 (`alknet/call`), spawns the demux/mux,
-    /// and returns the client. Mirrors the server side's
-    /// transport-agnostic `ChannelsAdapter::handle(Connection)` and
+    /// via `Connection::from_bidi` (TCP+TLS, WebTransport, SSH
+    /// `direct-tcpip`), a quinn connection, or any other `AsyncRead +
+    /// AsyncWrite` source — and this method takes over: installs
+    /// channel 0 (`alknet/call`), spawns the demux/mux, and returns
+    /// the client. Mirrors the server side's transport-agnostic
+    /// `ChannelsAdapter::handle(Connection)` and
     /// `CallClient::spawn_dispatch(Connection)`.
     ///
     /// This is the one-way-door API surface (ADR-080). It must not be
     /// coupled to a transport — the channels protocol is
-    /// transport-agnostic (ADR-071, ADR-065), and the client side is
-    /// half of that protocol.
+    /// transport-agnostic (ADR-071, as amended by ADR-093; ADR-065,
+    /// ADR-092), and the client side is half of that protocol.
     pub async fn from_connection(connection: Connection)
         -> Result<Self, ChannelError>;
 
@@ -75,7 +75,6 @@ impl ChannelClient {
     pub async fn open_channel(
         &self,
         alpn: &str,
-        stream_types: &[u8],
         params: Value,
         direction: ChannelDirection,
     ) -> Result<Channel, ChannelError>;
@@ -99,9 +98,8 @@ pub enum ChannelDirection {
 
 pub struct Channel {
     pub channel_id: u32,
-    pub stream_types: Vec<u8>,
-    /// The sub-streams, accessible via accept_bi() (ADR-074 generic path)
-    /// or into_sub_streams() (ADR-074 typed path).
+    /// The channel's BiStream, accessible via the BidiStreamSource
+    /// (accept_bi — ADR-074 as amended by ADR-093).
     pub source: ChannelBidiStreamSource,
 }
 
@@ -121,11 +119,17 @@ pub struct ResourceEntry {
 }
 ```
 
+> **Amendment (ADR-093, 2026-07-18):** the `stream_types` field is
+> **removed** from `open_channel`'s signature and from `Channel`. The
+> channels layer has no `stream_type` concept (ADR-093) — the handler
+> owns its sub-stream multiplexing on the `BiStream` it receives. The
+> handler's sub-stream set is implicit in its ALPN's wire format.
+
 ## Transport-agnostic by construction
 
 `ChannelClient` is the client side of the channels protocol. The channels
-protocol is transport-agnostic (ADR-071 substrate modes;
-`Connection::from_stream`/`from_bidi`/`from_source` from ADR-065/070 take
+protocol is transport-agnostic (ADR-071 substrate modes, as amended by
+ADR-093; `Connection::from_bidi`/`from_source` from ADR-065/070/092 take
 any `AsyncRead + AsyncWrite`). The client side must not be welded to a
 transport — that would repeat the server-side welding ADR-065 explicitly
 unwound.
@@ -135,7 +139,7 @@ the one-way-door API surface. It takes a pre-established `Connection` and
 takes over channels establishment. The transport is the caller's concern:
 `Connection::from_bidi(tls_stream, ...)` for TCP+TLS, a quinn `Connection`,
 a WebTransport `BiStream`, an SSH `direct-tcpip` channel wrapped via
-`from_stream`, a WebSocket carrying `alknet/channels` (the browser path per
+`from_bidi`, a WebSocket carrying `alknet/channels` (the browser path per
 ADR-044) — all produce a `Connection` that `from_connection` accepts
 unchanged. This mirrors the server side's `ChannelsAdapter::handle(Connection)`, which is substrate-agnostic by the same mechanism.
 
@@ -194,6 +198,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | ADR | Decision | Summary |
 |-----|----------|---------|
 | [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` convenience **removed** per ADR-089 §5 (dial extracted to `AlknetClient`); `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
+| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | `stream_types` removed from `open_channel` and `Channel`; handler owns sub-stream multiplexing |
 
 ## Open Questions
 
@@ -206,8 +211,10 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 ## References
 
 - ADR-080: ChannelClient (the decision)
+- ADR-093: channels pure channel multiplexing (`stream_types` removed)
 - ADR-073: channel lifecycle operations (`open_channel` sends `channel/open`)
-- ADR-074: ChannelBidiStreamSource (what `Channel.source` wraps)
+- ADR-074: ChannelBidiStreamSource (what `Channel.source` wraps, as
+  amended by ADR-093 — `accept_bi` yields a `BiStream`)
 - ADR-075: ChannelManager (the shared state `ChannelClient` holds)
 - OQ-55: AlknetClient / client establishment extraction
 - `docs/architecture/crates/call/client-and-adapters.md` — `CallClient` (the

@@ -113,11 +113,13 @@ do the protocol work.
 
 This ADR defines the relay *contract* (translate channel 0, byte-forward
 data channels with ID rewrite) so the channels crate's `ChannelManager`
-exposes the interface the relay needs (`open_channel_stream(channel_id,
-stream_type) -> (SendStream, RecvStream)` for the byte-forward pumps). The
-relay *implementation* lives in `alknet-hub` (or a downstream hub like
-alkapi), not in `alknet-channels`. The channels crate is ALPN-blind and
-does not know it is being relayed.
+exposes the interface the relay needs (`open_channel_stream(channel_id)
+-> BiStream` for the byte-forward pumps). The relay *implementation*
+lives in `alknet-hub` (or a downstream hub like alkapi), not in
+`alknet-channels`. The channels crate is ALPN-blind and does not know it
+is being relayed. The `channel_id` rewrite is a 4-byte field rewrite
+within the 8-byte header (per ADR-093); the relay does not parse the
+payload.
 
 ## Consequences
 
@@ -170,6 +172,9 @@ auth path. The `channel_id` mapping strategy (`HashMap` per pair) is two-way
   terminates on each leg)
 - ADR-073: channel lifecycle operations (what the hub translates)
 - ADR-075: ChannelsAdapter and ChannelManager (the interface the relay uses)
+- ADR-093: channels pure channel multiplexing (the 8-byte header the relay
+  reads/writes; the 4-byte `channel_id` rewrite; the `BiStream`-yielding
+  `open_channel_stream` interface)
 - `docs/research/alknet-channels/phase-0-findings.md` §Hub Motivation,
   §The hub relay, §OQ-CH-11
 - `docs/architecture/crates/hub/README.md` — the hub crate (the relay

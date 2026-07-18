@@ -814,11 +814,16 @@ See [open-questions.md](../../open-questions.md) for full details.
   ALPN would serve the same role over QUIC/TCP without HTTP.
 - **OQ-65** (open): WebSocket carrying channels — whether the browser
   path extends from call-protocol-only (ADR-048) to full channels
-  (the 9-byte chunk format over WebSocket binary frames). If chosen,
+  (the 8-byte chunk format over WebSocket binary frames). If chosen,
   the browser is a first-class channels participant and the hub relay
   works unchanged for browser legs. The web endpoint advertises
   `alknet/channels` by default (ADR-086 §3 — the advertisement is
   settled; OQ-65 governs whether the browser path uses it).
+- **OQ-68** (open): Channels add/strip API shape — whether the 8-byte
+  header add/strip is built into the channels read/write path or
+  exposed as a standalone utility. The *contract* is decided (ADR-093);
+  the *function surface* is not. Does not block the hub (the hub uses
+  the `ChannelManager` interface either way).
 - **OQ-52** (open): `CallConnection::wait_for_close()` — the
   supervision loop needs a way to await connection close. The
   committed interim is polling `connection().accept_bi()` until

@@ -280,7 +280,11 @@ the args are optional for their transport.
 
 - ADR-002: ProtocolHandler trait (unchanged by this ADR)
 - ADR-007: BiStream type definition (amended by ADR-065; this ADR does not
-  touch `BiStream`)
+  touch `BiStream`; amended by ADR-092 — `BiStream` is the concrete handler
+  leaf, not a bare trait)
+- ADR-092: `BiStream` as the handler leaf (amends this ADR's `accept_bi`
+  return type — `(SendStream, RecvStream)` → `BiStream`; the trait shape
+  and the `from_source` extension point are preserved)
 - ADR-009: One-way door decision framework (why `ProtocolHandler` is not
   changed — this ADR is additive to `Connection`, not a trait revision)
 - ADR-010: ALPN router and endpoint (the endpoint constructs `Connection`s

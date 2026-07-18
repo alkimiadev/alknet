@@ -2,7 +2,27 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-18 by ADR-093 — channel 0's `stream_types`
+field is removed; the channels layer has no `stream_type` concept; the
+call protocol's `EventEnvelope` framing is the channels payload, carried
+transparently — see "Amendment (ADR-093, 2026-07-18)" below)
+
+## Amendment (ADR-093, 2026-07-18)
+
+Channel 0's `stream_types` field (the `[0, 1]` active set) is **removed**.
+The channels layer has no `stream_type` concept (ADR-093) — it carries the
+call protocol's `EventEnvelope` framing (ADR-064) transparently in the
+8-byte header's payload. The call protocol's bidirectionality (client
+writes requests, server writes responses) is a call-protocol concern,
+not a channels-layer concern; the channels layer routes by `channel_id`
+only and yields a `BiStream` to the `CallAdapter`. The `CallAdapter`'s
+`accept_bi()` returns one `BiStream` (per ADR-092); the call protocol
+reads/writes `EventEnvelope` frames on it, exactly as on a top-level
+`alknet/call` connection.
+
+The body below describes the **original** (with `stream_types`) shape;
+the amendment above is the operative decision. See ADR-093 for the
+resolution rationale and the cross-ADR impacts.
 
 ## Context
 
@@ -121,7 +141,11 @@ unused; assigning them is additive).
 
 ## References
 
-- ADR-071: channels wire format (the 9-byte chunk header channel 0 uses)
+- ADR-071: channels wire format (the 8-byte chunk header channel 0 uses,
+  as amended by ADR-093)
+- ADR-093: channels pure channel multiplexing (amends this ADR —
+  channel 0's `stream_types` field removed; the call protocol's framing
+  is the channels payload, carried transparently)
 - ADR-073: channel lifecycle operations (registered on channel 0's
   `OperationRegistry`)
 - ADR-064: irpc never integrated — hand-rolled EventEnvelope framing (the

@@ -1,9 +1,39 @@
-# ADR-071: alknet-channels Wire Format — 9-Byte Chunk Header
+# ADR-071: alknet-channels Wire Format — 8-Byte Chunk Header
 
 ## Status
 
 Accepted (revised 2026-07-12: substrate simplification + stream_type
-decomposition)
+decomposition; **amended 2026-07-18 by ADR-093: wire format is 8 bytes,
+not 9; `stream_type` removed from the channels header — see "Amendment
+(ADR-093, 2026-07-18)" below**)
+
+## Amendment (ADR-093, 2026-07-18)
+
+The 9-byte chunk header is **amended to 8 bytes**:
+`[channel_id:u32 BE][length:u32 BE][payload]`. The `stream_type` byte is
+**removed** from the channels header — the channels layer has no
+`stream_type` concept, not in its header, not in its code, not in its
+mental model. The handler owns its sub-stream multiplexing on the
+`BiStream` the channels layer gives it (per ADR-093, the channels-layer
+consequence of ADR-092's `BiStream` handler leaf). What was the channels
+header's `stream_type` byte is now the first byte of the payload, owned
+by the handler's framing (TTY's 5-byte format, call's length-prefixed
+JSON, tunnel's raw bytes, SSH's channel protocol).
+
+The stream_type decomposition (unidirectional halves, mod 3 formula, 85
+groups) is **removed from the channels layer**. The stream_type concept
+survives in TTY's 5-byte format (ADR-052, amended by Phase 7), which the
+channels layer carries transparently in its payload. The total header
+for a TTY chunk inside channels is 13 bytes (8 channels + 5 TTY), not
+9; the two length fields are close but not identical
+(`ch_len = tty_len + 5`). This is the documented cost of clean
+separation of concerns — see ADR-093 §"Consequences" for the full
+cost/benefit.
+
+The body below describes the **current** (9-byte) shape; the amendment
+above is the operative decision. The 9-byte description is kept as the
+historical context for the amendment. See ADR-093 for the resolution
+rationale and the cross-ADR impacts.
 
 ## Context
 
@@ -239,17 +269,29 @@ tokio-dependent shell.
 ## Door type
 
 **One-way.** The chunk header layout (`channel_id:u32 + stream_type:u8 +
-length:u32`) and the stream_type group assignments (0/1/2 = data, 3/4/5 =
+length:u32`, 9 bytes) and the stream_type group assignments (0/1/2 = data, 3/4/5 =
 control, `% 3` formula) are wire-format commitments. Changing them after
 deployments exist requires a version migration.
+
+**Amended by ADR-093 (2026-07-18):** the header layout is now
+`channel_id:u32 + length:u32` (8 bytes); the `stream_type` byte and its
+decomposition are removed from the channels layer. The one-way door is
+re-cast (the channels crate is not yet implemented, so this is the right
+time to cast it). See ADR-093 for the amended door-type discussion.
 
 The `MAX_CHUNK_LEN` value (16 MiB) is a two-way-door implementation detail
 within the one-way format.
 
 ## References
 
+- **ADR-093**: channels pure channel multiplexing (amends this ADR —
+  wire format is 8 bytes, not 9; `stream_type` removed from the channels
+  header; the stream_type decomposition is removed from the channels
+  layer; the handler owns its sub-stream multiplexing on the `BiStream`)
 - ADR-052: alknet-tty wire format (the 5-byte format this generalizes;
-  amended by ADR-077 — scoped to direct TTY)
+  amended by ADR-077 — scoped to direct TTY; **re-amended by ADR-093 —
+  TTY always uses its 5-byte format, carried transparently in the
+  channels payload**)
 - ADR-065: `Connection::from_stream` (the transport-agnostic Connection)
 - ADR-070: `BidiStreamSource` trait (the extension point the channels
   connection implements; its docstring already anticipated per-channel

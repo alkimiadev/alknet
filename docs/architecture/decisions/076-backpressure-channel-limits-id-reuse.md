@@ -2,7 +2,26 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-18 by ADR-093 — backpressure is per-`channel_id`,
+not per-`(channel_id, stream_type)`; the channels layer has one reassembly
+buffer per channel, yielding a `BiStream` — see "Amendment (ADR-093,
+2026-07-18)" below)
+
+## Amendment (ADR-093, 2026-07-18)
+
+The bounded-buffer backpressure is per-`channel_id` (not per
+`(channel_id, stream_type)`). The channels layer has one reassembly
+buffer per channel (yielding a `BiStream`), not one per
+`(channel_id, stream_type)`. The 1 MiB default and the 256-channel cap are
+unchanged; the per-channel memory ceiling is 1 MiB (was up to 5 MiB for a
+TTY channel with 5 active stream_types under the per-stream_type model).
+This is a net improvement (lower memory ceiling per channel), not a
+regression. The bounded-buffer *approach* is unchanged; only the
+buffer granularity changes (per-channel, not per-stream_type).
+
+The body below describes the **original** (per-stream_type) shape; the
+amendment above is the operative decision. See ADR-093 for the resolution
+rationale.
 
 ## Context
 
@@ -134,7 +153,10 @@ doesn't change the wire format, so even that reversal is feasible.
 
 ## References
 
-- ADR-071: channels wire format (the chunks the buffers hold)
+- ADR-071: channels wire format (the chunks the buffers hold, as amended
+  by ADR-093)
+- ADR-093: channels pure channel multiplexing (amends this ADR —
+  per-channel reassembly buffer, not per-`(channel_id, stream_type)`)
 - ADR-073: channel lifecycle operations (`channel:too_many_channels` error)
 - ADR-075: ChannelManager (`buffer_cap`, `max_channels`, `next_id` fields)
 - `docs/research/alknet-channels/poc-summary.md` §POC Target 1 (backpressure

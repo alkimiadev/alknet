@@ -47,11 +47,12 @@
   can't keep up; no unbounded buffer breaks the chain.
 
   The two-way-door reversal — a per-stream window-update control message
-  on stream_type 3 — is an additive extension to the control channel
-  (a new `ControlMessage` variant), not a wire-format header change. It
-  is not the expected path; it is noted in ADR-052's consequences as the
-  cheap reversal if a flow-control problem ever surfaces that QUIC's
-  defaults cannot handle (e.g., a pathological stream that needs
+  on TTY's `STREAM_CTRL_IN` (stream_type 3) — is an additive extension
+  to the control channel (a new `ControlMessage` variant), not a
+  wire-format header change. It is not the expected path; it is noted
+  in ADR-052's consequences as the cheap reversal if a flow-control
+  problem ever surfaces that QUIC's defaults cannot handle (e.g., a
+  pathological stream that needs
   sub-QUIC-window backpressure signaling). Tuning concerns (read buffer
   size, channel depth) are implementation-level, not architectural, and
   don't warrant an ADR.

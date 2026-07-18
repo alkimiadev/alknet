@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-12
+last_updated: 2026-07-18
 ---
 
 # channel-operations.md — Channel Lifecycle on the Call Protocol
@@ -22,7 +22,6 @@ Request (on channel 0):
   "operation": "channel/open",
   "input": {
     "alpn": "alknet/tty",
-    "stream_types": [0, 1, 2, 3],
     "params": { "backend": "docker", "cmd": ["bash"], "container": "abc123" },
     "direction": "initiator-to-responder"
   }
@@ -32,7 +31,6 @@ Request (on channel 0):
 | field | type | meaning |
 |-------|------|---------|
 | `alpn` | string | The ALPN the channel will carry. Responder looks this up in its `HandlerRegistry`. |
-| `stream_types` | `[u8]` | Which sub-stream types this channel will use. E.g. `[0,1,2,3,4]` for TTY (data in/out/err + control in/out), `[0,1]` for a tunnel, `[0,1]` for channel 0. See ADR-071 §stream_type decomposition. |
 | `params` | object | ALPN-specific parameters. For `alknet/tty` this is `NegotiateRequest`. For `alknet/tunnel` this is the target resource. The channels layer does not interpret `params`. |
 | `direction` | string | `initiator-to-responder` or `responder-to-initiator`. See "Direction semantics" below. |
 
@@ -41,8 +39,7 @@ Response:
 ```json
 {
   "output": {
-    "channel_id": 7,
-    "stream_types": [0, 1, 2, 3]
+    "channel_id": 7
   }
 }
 ```
@@ -50,12 +47,21 @@ Response:
 | field | type | meaning |
 |-------|------|---------|
 | `channel_id` | u32 | Server-assigned (DP-1). The responder allocates via monotonic `AtomicU32`. |
-| `stream_types` | `[u8]` | The negotiated set — the responder may narrow the initiator's requested set. |
 
 **Channel ID allocation: server-assigned (DP-1).** One round-trip before
 data flows — the same round-trip the call protocol makes for every
 operation. All current channel types (TTY, tunnel, SSH) already require a
 negotiation round-trip, so the open round-trip is not additive latency.
+
+> **Amendment (ADR-093, 2026-07-18):** the `stream_types` field is **removed**
+> from `channel/open`'s input and output. The channels layer has no
+> `stream_type` concept (ADR-093) — the handler owns its sub-stream
+> multiplexing on the `BiStream` it receives. The handler's sub-stream set
+> is implicit in its ALPN's wire format (e.g., TTY's 5-byte format
+> declares its own `stream_type` set internally; the channels layer carries
+> the bytes transparently). The `channel:stream_type_unavailable` error
+> code is removed (the channels layer can't refuse a `stream_type` it
+> doesn't know about).
 
 **Error codes** (new `CallError.code` strings, not new framing):
 
@@ -66,7 +72,6 @@ negotiation round-trip, so the open round-trip is not additive latency.
 | `channel:allocation_failed` | Handler allocate failed | true (often transient) |
 | `channel:invalid_params` | `params` JSON didn't satisfy the ALPN's expectations | false |
 | `channel:too_many_channels` | Per-connection channel limit hit (ADR-076) | false |
-| `channel:stream_type_unavailable` | Responder can't provide a requested `stream_type` | false |
 
 ### `channel/close` — tear down a channel
 
@@ -78,7 +83,7 @@ negotiation round-trip, so the open round-trip is not additive latency.
 ```
 
 The responder (the side that didn't send the close) drains its reassembled
-streams for `channel_id`, signals EOF to the handler, and returns
+stream for `channel_id`, signals EOF to the handler, and returns
 `{ "closed": true }`. The `channel_id` is eligible for reuse after the drain
 completes (ADR-076 — monotonic IDs with wrap-around, not a free-list).
 `reason` is free-form for observability — not semantically required.
@@ -87,9 +92,11 @@ completes (ADR-076 — monotonic IDs with wrap-around, not a free-list).
 MUST be written and flushed before the `channel/close` operation is sent on
 channel 0. The side closing must observe the data-channel pump complete
 before issuing the call operation. For TTY this is the exit-chunk-is-last
-invariant (ADR-055) carried forward; for tunnels it is the last data byte
-before close. This invariant crosses two channels (the data channel and
-channel 0), so the channels layer owns the ordering guarantee.
+invariant (ADR-055) carried forward — the exit control message rides on
+TTY's `STREAM_CTRL_OUT` (stream_type 4, inside TTY's 5-byte payload
+format); for tunnels it is the last data byte before close. This invariant
+crosses two channels (the data channel and channel 0), so the channels
+layer owns the ordering guarantee.
 
 ### `channel/control` — out-of-band control on channel 0
 
@@ -101,7 +108,6 @@ keepalive):
   "operation": "channel/control",
   "input": {
     "channel_id": 7,
-    "stream_type": 3,
     "message": { "type": "resize", "cols": 80, "rows": 24 }
   }
 }
@@ -111,9 +117,16 @@ The channels layer routes `message` to the handler's control handle for
 `channel_id`. The `message` JSON is ALPN-specific; the channels layer does
 not interpret it.
 
+> **Amendment (ADR-093, 2026-07-18):** the `stream_type` field is **removed**
+> from `channel/control`'s input. Under ADR-093, the channels layer has no
+> `stream_type` concept — the control message is routed to the handler's
+> control handle (an ALPN-specific concept the handler owns), not to a
+> channels-layer `(channel_id, stream_type)` reassembly buffer. The
+> handler decides what to do with the message.
+
 ### `channel/resources/subscribe` — live resource discovery
 
-**This is a `Subscription` operation (ADR-049), not a polled `Query`.** The
+**This is a `Subscription` operation (ADR-049), not a polled Query.** The
 call protocol has `StreamingHandler` / `invoke_streaming` (implemented and
 tested). The first consumer (the hub aggregating worker resources) needs
 live updates when workers connect/disconnect or containers start/stop.
@@ -192,14 +205,26 @@ collision-prone client-assigned alternative.
 | Control path | When | Examples |
 |--------------|------|----------|
 | Call operations on channel 0 (`channel/control`, `channel/close`) | Control that doesn't need ordering relative to data, or lifecycle events | resize, signal, keepalive, close |
-| `stream_type 3` chunks on the data channel | Control that MUST be ordered relative to data | EOF before exit, flush before close |
+| Data-ordered bytes on the data channel's `BiStream` (handler-internal framing) | Control that MUST be ordered relative to data | EOF before exit, flush before close |
 
 The TTY crate's exit-chunk-is-last invariant (ADR-055) is the canonical
-example of data-ordered control — it rides on `stream_type 3` because it
-must arrive after the last stdin chunk, guaranteed by chunk ordering within
-`(channel_id, stream_type)`, not by a call-protocol round-trip. The
-`channel/close` operation that follows is on channel 0 and is ordered after
-the data pump completes (REQ-CH-06).
+example of data-ordered control — it rides on TTY's `STREAM_CTRL_OUT`
+(stream_type 4, inside TTY's 5-byte payload format) because it must arrive
+after the last data on TTY's stdout stream_type, guaranteed by TTY's
+per-stream_type chunk ordering within its own 5-byte format, not by a
+call-protocol round-trip. The `channel/close` operation that follows is
+on channel 0 and is ordered after the data pump completes (REQ-CH-06).
+
+**The control-message division is handler-internal.** Under ADR-093, the
+channels layer has no `stream_type` concept — it carries the handler's
+framing transparently in the payload. TTY's `STREAM_CTRL_IN` (stream_type
+3) and `STREAM_CTRL_OUT` (stream_type 4) are stream_types in TTY's 5-byte
+format (ADR-052, amended by Phase 7), not channels-layer concepts. The
+channels layer routes by `channel_id` only; the handler owns its
+sub-stream multiplexing on the `BiStream` it receives. The
+"bidirectional control channel" property is a TTY-layer concern, fixed
+at the TTY layer by Phase 7's split — the channels layer doesn't know
+about it.
 
 ## ACL flow (end-to-end)
 
@@ -259,6 +284,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations | The four ops; `direction` pinned; subscribe not poll |
 | [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call` |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels |
+| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | `stream_types` field removed from `channel/open`; `stream_type` removed from `channel/control`; handler owns sub-stream multiplexing |
 | [049](../../decisions/049-streaming-handler-for-subscriptions.md) | StreamingHandler | The machinery `channel/resources/subscribe` uses |
 | [032](../../decisions/032-forwarded-for-identity.md) | Forwarded-For Identity | The auth chain for hub-relayed opens |
 | [050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership | The ownership store the spoke queries |

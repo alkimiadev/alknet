@@ -439,7 +439,8 @@ closed (no CA to fall back to — ADR-034 §3, Assumption 1).
 
 ### Non-Rust native clients (out of scope)
 
-The wire protocols (channels 9-byte chunk format — ADR-071; call
+The wire protocols (channels 8-byte chunk format — ADR-071, as amended
+by ADR-093; call
 `EventEnvelope` — ADR-012/064) are language-agnostic. When the endpoint
 uses X.509 (the web endpoint type, or a native endpoint with X.509
 instead of raw keys), non-Rust native clients (Node/Deno/Bun, Python,

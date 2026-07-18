@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-17
+last_updated: 2026-07-18
 ---
 
 # Open Questions
@@ -193,7 +193,8 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | OQ | Title | Status | Door | Pri |
 |----|-------|--------|------|-----|
 | [OQ-56](questions/056-full-channel-level-flow-control-windowing.md) | Full Channel-Level Flow-Control Windowing | deferred(scope) | two | low |
-| [OQ-57](questions/057-two-pump-helper-extraction.md) | Two-Pump Helper Extraction to alknet-core | deferred(scope) | two | low |
+| [OQ-57](questions/057-two-pump-helper-extraction.md) | Two-Pump Helper Extraction to alknet-Core | deferred(scope) | two | low |
+| [OQ-68](questions/068-channels-add-strip-api-shape.md) | Channels Add/Strip API Shape (Built-In vs. Utility) | open | two | low |
 
 ### alknet-tls
 

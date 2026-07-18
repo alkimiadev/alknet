@@ -4,7 +4,28 @@
 
 Accepted (amended 2026-07-12 — see "Amendment: transport-agnostic API"
 below; amended 2026-07-16 — `connect_quic` removed per ADR-089 §5, see
-"Amendment: `connect_quic` removed" below)
+"Amendment: `connect_quic` removed" below; **amended 2026-07-18 by
+ADR-093 — `stream_types` field removed from `open_channel` and `Channel`;
+the channels layer has no `stream_type` concept, see "Amendment
+(ADR-093, 2026-07-18)" below**)
+
+## Amendment (ADR-093, 2026-07-18)
+
+The `stream_types: &[u8]` field is **removed** from `open_channel`'s
+signature, and `pub stream_types: Vec<u8>` is **removed** from the
+`Channel` struct. The channels layer has no `stream_type` concept
+(ADR-093) — the handler owns its sub-stream multiplexing on the
+`BiStream` it receives via `Channel.source` (a `ChannelBidiStreamSource`
+whose `accept_bi` yields a `BiStream` per ADR-092). The handler's
+sub-stream set is implicit in its ALPN's wire format (e.g., TTY's 5-byte
+format declares its own `stream_type` set internally; the channels
+layer carries the bytes transparently). The `into_sub_streams()` reference
+in the `Channel.source` doc comment is moot — `into_sub_streams()` is
+removed by ADR-093 (amending ADR-074).
+
+The body below describes the **original** (with `stream_types`) shape;
+the amendment above is the operative decision. See ADR-093 for the
+resolution rationale and the cross-ADR impacts.
 
 ## Amendment: `connect_quic` removed (2026-07-16, per ADR-089 §5)
 
@@ -265,7 +286,11 @@ decided now.
 ## References
 
 - ADR-073: channel lifecycle operations (`open_channel` sends `channel/open`)
-- ADR-074: ChannelBidiStreamSource (what `Channel.source` wraps)
+- ADR-074: ChannelBidiStreamSource (what `Channel.source` wraps, as
+  amended by ADR-093 — `accept_bi` yields a `BiStream`)
+- ADR-093: channels pure channel multiplexing (`stream_types` field
+  removed from `open_channel` and `Channel`; handler owns sub-stream
+  multiplexing)
 - ADR-075: ChannelManager (the shared state `ChannelClient` holds)
 - OQ-55: AlknetClient / client establishment extraction (the deferred core
   concern this ADR does NOT block on)

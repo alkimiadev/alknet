@@ -2,7 +2,40 @@
 
 ## Status
 
-Accepted
+Accepted (**reversed 2026-07-18 by ADR-093: TTY always uses its 5-byte
+format; the channels layer carries it transparently in the payload —
+see "Reversal (ADR-093, 2026-07-18)" below**)
+
+## Reversal (ADR-093, 2026-07-18)
+
+The two-mode TTY design (direct vs inside-channels, with different
+sub-stream access paths) is **reversed**. TTY's 5-byte format
+(`[stream_type:u8][length:u32][payload]`, ADR-052) is TTY's internal
+format, used in **both** direct mode and inside-channels mode. The two
+modes differ only in *where the `BiStream` comes from* (a top-level
+`alknet/tty` connection vs a `channel/open` with ALPN `alknet/tty`), not
+in *how TTY parses it*. The same `wire.rs` code runs in both modes.
+
+When TTY is inside channels, the channels layer strips its 8-byte header
+(ADR-093) and hands TTY the payload bytes. TTY parses its 5-byte header
+from the payload. The channels layer carries TTY's 5-byte chunks
+transparently in its payload — no shared fields, no leaked abstraction,
+no double-chunking concern (the 13-byte total header is 8 channels + 5
+TTY, not 8 + 9; the channels `length` is always `tty_len + 5`).
+
+The `channels` feature on `alknet-tty` becomes "run TTY's sub-demux on a
+channels-backed `BiStream`" — the same code as direct mode, different
+`BiStream` source. The control channel split (`STREAM_CTRL_IN` /
+`STREAM_CTRL_OUT`, Phase 7) is TTY-internal; the channels layer doesn't
+know about it. ADR-074's `into_sub_streams()` (the accessor this ADR's
+two-mode design relied on) is removed by ADR-093; TTY sub-demuxes its
+`BiStream` via its own 5-byte format instead.
+
+The body below describes the **original** (two-mode) shape; the reversal
+above is the operative decision. The two-mode description is kept as
+the historical context for the reversal. See ADR-093 for the resolution
+rationale (the channels layer has no `stream_type` concept; the handler
+owns its sub-stream multiplexing) and the cross-ADR impacts.
 
 ## Context
 
@@ -178,16 +211,32 @@ re-merging the formats would require unifying 5-byte and 9-byte chunk
 handling, which is a rewrite. The `channels` feature gate is two-way — it
 can be removed if channels integration is no longer needed.
 
+**Reversed by ADR-093 (2026-07-18):** the two-mode design is reversed —
+TTY always uses its 5-byte format, carried transparently in the channels
+payload. The one-way door is re-cast (the channels crate is not yet
+implemented, so this is the right time). See ADR-093 for the amended
+door-type discussion.
+
 ## References
 
-- ADR-052: alknet-tty wire format (amended — scoped to direct connections)
+- **ADR-093**: channels pure channel multiplexing (reverses this ADR —
+  TTY always uses its 5-byte format; the channels layer carries it
+  transparently; the two-mode design is preserved but differs only in
+  `BiStream` source, not in parsing)
+- ADR-052: alknet-tty wire format (amended — scoped to direct connections
+  by this ADR; **re-amended by ADR-093 — TTY always uses its 5-byte
+  format, in both direct and inside-channels modes**)
 - ADR-053: TtyBackend trait and TtyHandle (unchanged by this ADR)
 - ADR-055: exit-chunk-is-last (generalized by this ADR + ADR-073)
 - ADR-057: alknet-tty does not depend on alknet-call (preserved — the
   channels feature is on alknet-channels, not alknet-call)
-- ADR-071: channels wire format (the 9-byte format the channels path uses)
+- ADR-071: channels wire format (the 9-byte format the channels path
+  uses; **amended by ADR-093 — 8-byte format, no `stream_type`**)
 - ADR-074: ChannelBidiStreamSource / `into_sub_streams` (the accessor the
-  channels path uses)
+  channels path uses; **amended by ADR-093 — `into_sub_streams()`
+  removed**)
+- ADR-092: `BiStream` as the handler leaf (the transport-leaf decision
+  that enables the reversal — `accept_bi` returns `BiStream`)
 - ADR-061: DockerTtyBackend in alknet-docker (the feature-gated dependency
   pattern this ADR mirrors)
 - `docs/research/alknet-channels/phase-0-findings.md` §DP-3, §OQ-CH-02,

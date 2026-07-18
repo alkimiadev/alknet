@@ -2,7 +2,25 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-18 by ADR-093 — the 9-byte wire format is now
+8-byte; `ChannelSubStreams` / `SubStreamHandle` removed; the channels
+layer has no `stream_type` concept — see "Amendment (ADR-093, 2026-07-18)"
+below)
+
+## Amendment (ADR-093, 2026-07-18)
+
+The wire format in `channels-core` is now **8-byte** (not 9-byte); the
+`ChannelSubStreams` / `SubStreamHandle` typed destructure accessor is
+**removed** (the channels layer has no `stream_type` concept —
+`accept_bi` yields a `BiStream`, and the handler owns its sub-stream
+multiplexing). The channel 0 pre-negotiation in `channels-call` no
+longer constructs "reassembly buffers with `stream_types` [0, 1]" — it
+constructs one reassembly buffer for `channel_id = 0`, yielding a
+`BiStream` to the `CallAdapter`. The "What moves where" table's "9-byte
+wire format" row is now "8-byte wire format"; the `ChannelSubStreams`
+row is removed. The two-crate split (`channels-core` /
+`channels-call`), the dep graph, and the "hub and worker are consumers"
+principle are unchanged. See ADR-093 for the resolution rationale.
 
 ## Context
 
@@ -212,10 +230,15 @@ the dependency direction (hub/worker → channels, not channels → hub/worker).
 - ADR-003: crate decomposition (no-handler-depends-on-another-handler —
   preserved; the channels sub-crates depend on core/call, not on handlers)
 - ADR-071: channels wire format (revised — substrate simplification; the
-  wire format is in `channels-core`)
+  wire format is in `channels-core`; **amended by ADR-093 — 8-byte header,
+  no `stream_type`**)
+- ADR-093: channels pure channel multiplexing (amends this ADR — 8-byte
+  wire format; `ChannelSubStreams` / `SubStreamHandle` removed; the
+  channels layer has no `stream_type` concept)
 - ADR-072: channel 0 pre-negotiated (moves to `channels-call`)
 - ADR-073: channel lifecycle operations (move to `channels-call`)
-- ADR-074: ChannelBidiStreamSource (in `channels-core`)
+- ADR-074: ChannelBidiStreamSource (in `channels-core`; **amended by
+  ADR-093 — `into_sub_streams` removed, `accept_bi` yields `BiStream`**)
 - ADR-075: ChannelsAdapter and ChannelManager (split: core demux in
   `channels-core`, call coupling in `channels-call`)
 - ADR-079: hub relay (in `alknet-hub` — the hub crate consumes

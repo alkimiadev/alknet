@@ -128,8 +128,13 @@ existing, so shape convergence is observable).
 
 ## References
 
-- ADR-074: ChannelBidiStreamSource (the `accept_bi` that yields the stream
-  pair the pumps operate on)
+- ADR-074: ChannelBidiStreamSource (the `accept_bi` that yields the
+  `BiStream` the pumps operate on, as amended by ADR-093)
+- ADR-093: channels pure channel multiplexing (the `BiStream`-only
+  accessor decision this ADR's two-pump pattern builds on)
+- ADR-092: `BiStream` as the handler leaf (the transport-leaf decision —
+  `accept_bi` returns `BiStream`; the two-pump pattern calls
+  `tokio::io::split(bidi)` for its halves)
 - ADR-055: exit-chunk-is-last (the three-pump TTY invariant — the pattern
   this ADR does NOT touch)
 - `docs/research/alknet-channels/poc-summary.md` §Issues Surfaced #7 (the

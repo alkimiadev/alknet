@@ -371,7 +371,8 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [027](decisions/027-tls-identity-redesign-acme-rawkey-decoupling.md) | TLS Identity Redesign — ACME + RawKey Decoupling | `TlsIdentity::Acme` variant + two-phase server config; `RawKey` uses `ed25519-dalek` (not `iroh::SecretKey`); `acme` feature gate |
 | [065](decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | Generic single-stream connections — unblocks TCP+TLS, SSH channels, WebTransport, wasm |
 | [070](decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | Open `Connection` for extension — downstream crates add connection shapes without editing core |
-| [071](decisions/071-channels-wire-format.md) | alknet-channels Wire Format | 9-byte chunk header; N channels over one transport stream |
+| [071](decisions/071-channels-wire-format.md) | alknet-channels Wire Format | 8-byte chunk header (amended by ADR-093); N channels over one transport stream; channels layer has no `stream_type` concept |
+| [093](decisions/093-channels-pure-channel-multiplexing.md) | alknet-channels Pure Channel Multiplexing | 8-byte header, no `stream_type`, `into_sub_streams` removed, `BiStream`-only, TTY always 5-byte; amends ADR-071/074/077 |
 | [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate `channel/open`, byte-forward data channels; the hub never runs protocol-specific handlers |
 | [082](decisions/082-alknet-tls-extraction.md) | alknet-tls Crate Extraction | Shared `TlsServerConfig` across quinn + TCP+TLS + iroh; one ACME state machine |
 | [083](decisions/083-endpoint-as-accept-loop-runner.md) | Endpoint as Multi-Transport Accept-Loop Runner | Endpoint takes no TLS config; TCP+TLS is an owned transport; public `dispatch` for SSH/WT; endpoint extracted from `alknet-core` into `alknet-endpoint` (Am. 2026-07-15) |

@@ -41,13 +41,13 @@
 
   **Option B — WebSocket carries channels (extends/supersedes
   ADR-048).** The browser opens a WebSocket and gets a channels
-  connection — the 9-byte chunk format (ADR-071) over WebSocket binary
-  frames, with channel 0 as `alknet/call` and data channels opened via
-  `channel/open`. The browser is a full channels participant: it can
-  open TTY channels, tunnels, etc. through the same WebSocket. The
-  hub relay (ADR-079) works unchanged — the browser leg is a channels
-  connection, same as a native leg. This is the "browser as
-  channels client" path.
+  connection — the 8-byte chunk format (ADR-071, as amended by ADR-093)
+  over WebSocket binary frames, with channel 0 as `alknet/call` and
+  data channels opened via `channel/open`. The browser is a full
+  channels participant: it can open TTY channels, tunnels, etc. through
+  the same WebSocket. The hub relay (ADR-079) works unchanged — the
+  browser leg is a channels connection, same as a native leg. This is
+  the "browser as channels client" path.
 
   The trade-off: Option B commits to the channels-over-WebSocket
   framing as a browser wire format (one-way door), but makes the
@@ -73,8 +73,10 @@
   format (ADR-071); only the transport differs.
 - **Cross-references**: ADR-048 (WebSocket carries the native
   call-protocol session — the current decision this OQ may supersede
-  or extend), ADR-071 (channels wire format — the 9-byte chunk format
-  that would ride over WebSocket binary frames), ADR-079 (hub relay —
-  unchanged if the browser is a channels client), ADR-086 §3 (the web
-  config advertises `alknet/channels` for this path), ADR-044
-  (WebTransport deferred; WebSocket is the v1 browser path)
+  or extend), ADR-071 (channels wire format — the 8-byte chunk format
+  that would ride over WebSocket binary frames, as amended by ADR-093),
+  ADR-093 (channels pure channel multiplexing — the umbrella decision),
+  ADR-079 (hub relay — unchanged if the browser is a channels client),
+  ADR-086 §3 (the web config advertises `alknet/channels` for this
+  path), ADR-044 (WebTransport deferred; WebSocket is the v1 browser
+  path)

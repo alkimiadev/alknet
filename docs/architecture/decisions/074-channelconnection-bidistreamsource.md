@@ -2,7 +2,29 @@
 
 ## Status
 
-Accepted
+Accepted (**amended 2026-07-18 by ADR-093: `into_sub_streams()` removed;
+`accept_bi` is the only accessor, yields one `BiStream` per channel —
+see "Amendment (ADR-093, 2026-07-18)" below**)
+
+## Amendment (ADR-093, 2026-07-18)
+
+`into_sub_streams()`, `ChannelSubStreams`, and `SubStreamHandle` are
+**removed**. The channels layer exposes one accessor: `accept_bi()`,
+which yields one `BiStream` per channel (per ADR-092, already landed).
+Every handler — TTY, tunnel, SSH, call — receives a `Connection`, calls
+`accept_bi()` once, gets a `BiStream`, and sub-multiplexes it however it
+wants. The "typed handler path" (this ADR's motivating case for TTY) is
+replaced by TTY sub-demuxing its `BiStream` via its own 5-byte format
+(ADR-052) — the same code TTY runs in direct mode. The two-accessor
+design (`accept_bi` for generic handlers, `into_sub_streams` for typed
+handlers) collapses to one accessor.
+
+The body below describes the **original** (two-accessor) shape; the
+amendment above is the operative decision. The two-accessor description
+is kept as the historical context for the amendment. See ADR-093 for
+the resolution rationale (the channels layer has no `stream_type`
+concept; the handler owns its sub-stream multiplexing) and the
+cross-ADR impacts.
 
 ## Context
 
@@ -194,6 +216,11 @@ rewrite of those handlers' integration code. The trait impl is in the
 channels crate (not core), so the one-way door is the channels crate's API,
 not a core type.
 
+**Amended by ADR-093 (2026-07-18):** `into_sub_streams()` is removed;
+`accept_bi` is the only accessor. The one-way door is re-cast (the
+channels crate is not yet implemented, so this is the right time). See
+ADR-093 for the amended door-type discussion.
+
 The choice of `into_sub_streams()` returning `Vec<(u8, SendStream,
 RecvStream)>` (vs a typed struct, vs a map) is a two-way-door implementation
 detail — the return type can change without breaking the contract as long
@@ -201,6 +228,12 @@ as the handler crate's destructure code updates.
 
 ## References
 
+- **ADR-093**: channels pure channel multiplexing (amends this ADR —
+  `into_sub_streams()` removed; `accept_bi` is the only accessor, yields
+  one `BiStream` per channel; the handler owns its sub-stream
+  multiplexing)
+- ADR-092: `BiStream` as the handler leaf (the transport-leaf decision
+  this ADR's amendment builds on — `accept_bi` returns `BiStream`)
 - ADR-070: BidiStreamSource trait (the extension point this implements)
 - ADR-065: Connection::from_stream (the yield-once path this generalizes for
   channels)
