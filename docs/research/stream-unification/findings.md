@@ -3,20 +3,55 @@ status: draft
 last_updated: 2026-07-18
 ---
 
-# stream-unification — Findings: the stream_type convention and the TTY/channels convergence
+# stream-unification — Findings: channels as pure channel multiplexing
 
 **Status:** Draft findings, iterating. Per the research-then-sync
 pattern, this doc iterates in `docs/research/`; we fix inter-document
 drift here, then sync to `docs/architecture/` and the ADRs only after
 it settles.
 
-**Scope:** The multiplexing layer — the `stream_type` space within a
-channel. This is *above* the transport leaf (ADR-092, settled) and
-*below* the channel-protocol layer (ADR-072/073). The transport leaf
-(`BiStream` as the handler-facing duplex type) is settled in ADR-092
-and is not re-litigated here.
+**Scope:** The multiplexing layer — how channels, TTY, and other
+handlers compose their framing. This is *above* the transport leaf
+(ADR-092, settled) and *below* the channel-protocol layer (ADR-072/
+073, settled). The transport leaf (`BiStream` as the handler-facing
+duplex type) is settled in ADR-092 and is not re-litigated here.
 
 **Date:** 2026-07-18
+
+---
+
+## TL;DR
+
+The previous framing — "mod 2 vs mod 3 vs mod 4 for the `stream_type`
+space within a channel" — was a symptom. The actual question is the
+separation of concerns between the channels layer and the handler,
+and the resolution is **layered framing via strip/add**: the channels
+layer routes by `channel_id` only; handlers own their sub-multiplexing
+on the `BiStream` the channels layer gives them. Every channel is a
+`BiStream`. The "pass a stream to/from any ALPN" objective becomes
+universal, not qualified.
+
+The channels wire format composes with TTY's wire format by
+construction: the 9-byte channels header is the 5-byte TTY header with
+`channel_id:u32` prepended (`[channel_id][stream_type][length][payload]`
+= `[channel_id]` + TTY's `[stream_type][length][payload]`). The
+channels layer adds `channel_id` on write, strips it on read, hands
+the inner 5 bytes to the TTY handler. TTY's `wire.rs` works as-is.
+The "double-chunking" objection (ADR-077's reason for rejecting
+sub-multiplex inside channels) was about a 14-byte double-header; the
+actual composition is 9 bytes total, shared across both layers.
+
+This dissolves the mod 2/3/4 question at the channels layer (the
+channels layer has no `stream_type` concept), fixes the "control
+isn't actually bidirectional" TTY flaw at the TTY layer (TTY owns
+its sub-streams), and makes recursive composition literal (each
+layer strips its header, the inner layer adds its own).
+
+**No production/backward-compat constraint.** The develop branch is a
+rewrite; no one is using this version yet. If TTY's `wire.rs` needs
+rework, it needs rework — no time constraint, no duct tape. If it
+doesn't need rework, no need to spend the resource. The decision is
+purely "what's cleanest," not "what's least disruptive."
 
 ---
 
@@ -25,276 +60,209 @@ and is not re-litigated here.
 | Layer | Question | Status |
 |-------|----------|--------|
 | Transport leaf | What type does `accept_bi` return? How does a handler get a duplex byte stream? | **Settled — ADR-092** (drafted, pushed). `accept_bi` returns `BiStream`; `from_bidi` is the only public stream constructor; the split never crosses a crate boundary as part of a constructor. |
-| Multiplexing (this doc) | How are `stream_type` values assigned within a channel? What's the addressing convention? | **In progress.** ADR-071's mod-3 group framing vs the proposed mod-2/mod-4 instance framing. |
+| Multiplexing (this doc) | How do channels, TTY, and other handlers compose their framing? Who owns sub-stream multiplexing? | **In progress — this resolution.** Channels layer routes by `channel_id`; handlers own their sub-multiplexing on the `BiStream` they receive. |
 | Channel protocol | How are channels opened/closed? What's channel 0? | **Settled — ADR-072/073.** Channel 0 = `alknet/call` (hardcoded); channels 1..N opened via `channel/open`. Not re-litigated here. |
 
-The two findings-doc questions that got conflated in the previous
-draft, separated:
+---
 
-- **Transport-leaf split/recombine** ("can `tokio::io::join`/`split`
-  recombine halves from different sources?") — ADR-092's layer.
-  Answer: yes, stdlib `tokio::io::join`/`split` is a pure type
-  combinator; the halves don't need to come from the same source.
-  Settled; not this doc's concern.
-- **Stream_type split/recombine** ("if stderr is its own instance
-  with an unused write half, does the unused half cause problems?")
-  — this doc's layer. Answer (verified in the existing POC code,
-  `alknet-channels-poc/src/demux.rs:91-109, 161-181` and
-  `mux.rs:58-63, 152-177`): the demux/mux is per-`stream_type`
-  independent — there is **no pairing assumption** in the mechanism.
-  An unused `stream_type` is an idle mpsc channel, not a wart. The
-  mod-2 framing is trivially clean. **No POC needed** — the
-  load-bearing property is already proven by the 28-test POC.
+## The structural question (the actual tangle)
+
+The channels layer has two objectives in tension:
+
+1. **"Pass a stream to/from any ALPN"** — every channel is a `BiStream`;
+   any handler gets `accept_bi()` and treats the channel as a duplex
+   stream. Uniform, transport-agnostic, recursive-composition-friendly.
+2. **"Channels carry N sub-streams"** — a TTY channel carries
+   stdin/stdout/stderr/control; the handler destructs via
+   `into_sub_streams()`. Carries what the source produces.
+
+The tension is real when a sub-stream is *unidirectional* (stderr).
+You can't represent stderr as a `BiStream` without wasting the write
+half; you can't make it a "third half" (mod 3) without breaking pair
+symmetry; you can't make the channel a single `BiStream` without
+losing the stdout/stderr distinction.
+
+ADR-074's current design resolves this with two access paths
+(`accept_bi` for clean-pair channels, `into_sub_streams` for
+multi-stream channels), making the "pass a stream to/from any ALPN"
+objective *qualified* — it applies to single-stream channels, not
+multi-stream channels. The mod 2/mod 3/mod 4 question was a numbering
+symptom of this qualified design.
+
+### The resolution: channels layer is pure channel multiplexing
+
+The channels layer's job is "one connection carries N channels,
+routed by `channel_id`." It does not know about TTY's sub-streams,
+SSH's channel protocol, or how call frames its JSON. Handlers own
+their sub-multiplexing on the `BiStream` the channels layer gives
+them.
+
+- **Every channel is a `BiStream`.** `accept_bi()` yields one
+  `BiStream` per channel. No `into_sub_streams()`, no second-class
+  accessor.
+- **Handlers sub-multiplex their `BiStream` however they want.** TTY
+  sub-demuxes `stream_type` from its `BiStream` (5-byte format).
+  Tunnel uses the `BiStream` as raw bytes. Call length-prefixes JSON.
+  SSH runs its own channel protocol. The channels layer carries the
+  bytes transparently.
+- **The mod 2/mod 3/mod 4 question dissolves at the channels layer.**
+  The channels layer has no `stream_type` concept. `stream_type` is
+  the inner layer's framing byte, carried transparently.
+- **The control channel is handler-internal.** TTY sub-demuxes
+  control from its io `BiStream` using its 5-byte format. The channels
+  layer doesn't carry control. The "control isn't actually
+  bidirectional" flaw is fixed at the TTY layer (stream_type 3 =
+  ctrl_in, 4 = ctrl_out), not the channels layer.
+- **Recursive composition is literal.** A channel with ALPN
+  `alknet/channels` runs another channels demux on its `BiStream`.
+  The outer layer strips its `channel_id`; the inner layer adds its
+  own. Each level is the same shape — `BiStream → accept_bi → N
+  BiStreams`.
 
 ---
 
-## The core question: stream_type assignment convention
+## How the wire formats compose (the add/strip insight)
 
-The mechanism (per-`stream_type` independent demux/mux, validated by
-the channels POC) routes by `(channel_id, stream_type)` regardless of
-convention. The convention choice — *how stream_type values are
-assigned to roles* — is a documentation/ergonomics choice, not a
-mechanism choice. Both conventions work; the question is which is
-cleaner.
+The channels wire format and TTY's wire format compose by construction:
 
-### ADR-071's current convention: mod-3 groups
-
-| Group | stream_type | direction | purpose |
-|-------|-------------|-----------|---------|
-| Data | 0 | write | in (stdin) |
-| | 1 | read | out (stdout) |
-| | 2 | read | err (stderr) |
-| Control | 3 | write | ctrl_in |
-| | 4 | read | ctrl_out |
-| | 5 | read | ctrl_err (optional) |
-| Future | 6/7/8, 9/10/11, ... | write/read/read | next groups |
-
-Formula: `stream_type % 3 == 0` → write, `% 3 == 1` → read,
-`% 3 == 2` → diagnostic read (err).
-
-**The flaw: stderr is structural.** The `+2 = err` slot bakes a
-*unidirectional* role (stderr is server→client only) into a
-*bidirectional* group structure (in/out/err). Every group either
-allocates an err slot it may not use (tunnel has no err) or skips the
-group structure. The group concept (data vs control) is real, but the
-3-slot shape is asymmetric — bidirectional things are two halves, but
-the group has three slots, one of which is a unidirectional leaf.
-
-### Proposed convention: mod-2/mod-4 by instance
-
-An **instance** is a self-contained bidirectional unit, addressed as
-a contiguous block of `stream_type` values within a channel.
-
-**No control channel** — mod 2:
-
-| Instance | in (write) | out (read) |
-|----------|-----------|-----------|
-| 0 | 0 | 1 |
-| 1 | 2 | 3 |
-| 2 | 4 | 5 |
-| ... | | |
-| 127 | 254 | 255 |
-
-128 instances per channel. Instance K uses `stream_type = 2K` (in)
-and `2K+1` (out).
-
-**With control channel** — mod 4:
-
-| Instance | in (write) | out (read) | ctrl_in (write) | ctrl_out (read) |
-|----------|-----------|-----------|-----------------|-----------------|
-| 0 | 0 | 1 | 2 | 3 |
-| 1 | 4 | 5 | 6 | 7 |
-| 2 | 8 | 9 | 10 | 11 |
-| ... | | | | |
-| 63 | 252 | 253 | 254 | 255 |
-
-64 instances per channel. Instance K uses `4K` (in), `4K+1` (out),
-`4K+2` (ctrl_in), `4K+3` (ctrl_out).
-
-**The `stream_type` space is the instance address space, not a role
-space.** A handler talks about "instance K of my channel" as a
-contiguous block of stream_types. This is richer than ADR-071's
-"data group / control group" framing — the instance is the addressing
-unit, and a handler can have N independent bidirectional sub-streams
-on one channel, each with or without its own control.
-
-**Combined address space:** `channel_id × instance`. Channel 0 is
-hardcoded `alknet/call` (ADR-072), so channels 1..255 are dynamic —
-~255 × 128 (no control) or ~255 × 64 (with control) logical
-sub-streams per channels connection. Huge; the load-bearing count
-for the recursive-multiplexing property below.
-
-### Why mod 2 wins
-
-1. **Uniformity.** Every bidirectional thing is exactly two
-   stream_types (write, read). Control is a pair; io is a pair;
-   future sub-streams are pairs. No "err is a third half" asymmetry.
-2. **The "unused write half" wart is trivially clean** (verified in
-   the existing POC code — see "Stream_type split/recombine" above).
-   An unused `stream_type` is an idle mpsc channel: no dangling
-   sender, no premature EOF (EOF fires on sender drop or zero-length
-   sentinel), no flow-control weirdness (independent bounded
-   buffers). The lenient unknown-`stream_type` path
-   (`demux.rs:161-174`) means even a stray write to an unallocated
-   `stream_type` is dropped with a counter bump, not a panic.
-3. **Stderr is just another instance.** PTY mode (stderr merged into
-   stdout server-side) declares instance 0 only. Pipe mode (separate
-   stderr) declares instance 0 (io) + instance 1 (stderr-as-bidirectional,
-   write half unused). The unused write half costs one idle mpsc
-   channel; cheap. No structural asymmetry.
-4. **The demux/mux doesn't care.** The convention is documentation;
-   the mechanism routes by `(channel_id, stream_type)` regardless.
-   Both conventions work; mod 2 is the cleaner documentation.
-
-**The mod-2-vs-mod-3 question is settled by the existing POC
-evidence.** No new POC needed. The mechanism supports both; mod 2
-wins on uniformity, and the "unused write half" property that made
-mod 2 look like a wart is trivially clean in the actual code.
-
----
-
-## The TTY control channel flaw (separate, already specified)
-
-`crates/alknet-tty/src/wire.rs:13,32-33`:
 ```
-STREAM_CONTROL: u8 = 3   // "bidirectional, JSON control message"
-InvalidStreamType > 3
+channels:  [channel_id:u32 BE][stream_type:u8][length:u32 BE][payload]
+                        = [channel_id]  +  TTY's [stream_type][length][payload]
+                            4 bytes             5 bytes
 ```
 
-One `stream_type` both sides write to — the "control isn't actually
-bidirectional" flaw. ADR-071 §stream_type decomposition already fixes
-this at the wire-format level (stream_types 3 = ctrl_in, 4 = ctrl_out);
-ADR-077 amends ADR-052 to add stream_type 4. The TTY code hasn't been
-updated — it still has the old "bidirectional 3" comment and the `> 3`
-bound.
+The 9-byte channels header is the 5-byte TTY header with `channel_id`
+prepended. The channels layer adds `channel_id` on write, strips it
+on read, hands the inner 5 bytes to the TTY handler. TTY's `wire.rs`
+parses those 5 bytes exactly as it does today. No double-chunking;
+the 9 bytes serve both layers because the `length` prefix is shared
+(both layers use it to frame the payload).
 
-**This is an implementation-lag, not a design question.** The fix is
-specified; the code needs to catch up. The mod-2/mod-4 instance
-framing subsumes this fix: control becomes instance 0's ctrl_in/ctrl_out
-pair (types 2/3 under mod 4), not a standalone "bidirectional" stream_type.
+### The add/strip utility
 
----
+Each layer has its own add/strip pair:
 
-## TTY/channels convergence
+- **Channels layer**: `add_channel_id(channel_id, inner_chunk) -> chunk`
+  on write; `strip_channel_id(chunk) -> (channel_id, inner_chunk)` on
+  read.
+- **TTY layer** (inside the handler): parses the inner 5-byte chunk
+  per its existing `wire.rs`. Doesn't know or care that a `channel_id`
+  was stripped before it saw the bytes.
 
-Channels was written after TTY as a natural extension: TTY's 5-byte
-header + `channel_id:u32` prefix = the 9-byte channels header. The
-convergence has two parts.
+The composition is uniform — the same shape at every level. This is
+SSH's model (layered headers, each layer strips its own at its
+boundary), applied to channels. A `alknet/channels`-inside-
+`alknet/channels` recursive composition is the outer layer stripping
+its `channel_id`, the inner layer adding its own — same code, same
+shape, each level.
 
-### Semantic convergence (independent of format)
+### What this means for ADR-077's rejection
 
-Regardless of format choice, TTY and channels present the same shape
-to handlers: a set of unidirectional sub-streams declared per-channel
-at `channel/open` time, paired into bidirectional instances where the
-handler wants a joined `BiStream`. `into_sub_streams()` (ADR-074)
-returns the declared stream_types as `Vec<(u8, SubStreamHandle)>` with
-`SubStreamHandle::Send` (write half) or `Recv` (read half). The
-handler joins the pairs it wants via `tokio::io::join`. The channels
-layer exposes the leaves; the handler composes them.
+ADR-077 rejected sub-multiplex inside channels on the grounds of
+"double-chunking (5-byte inside 9-byte)." The actual composition is
+not 14 bytes — it's 9 bytes, shared. The 5-byte TTY format is the
+*inner* format; the 9-byte channels format is the *outer* format; the
+outer format's `stream_type`/`length` fields ARE the inner format's
+header. There is no double-header, only a prefix.
 
-ADR-074's two paths (`accept_bi` for the joined 0/1 pair,
-`into_sub_streams` for the typed leaves) become the same data,
-presented differently. `accept_bi` is a convenience that joins 0/1 for
-the common case (tunnel, SSH, echo, HTTP); `into_sub_streams` is the
-primary accessor (the unidirectional leaves).
-
-### Format convergence (the open question)
-
-**Option A (current, ADR-077): two formats coexist.** TTY-direct keeps
-the 5-byte format; TTY-inside-channels uses 9-byte. The 4-byte
-`channel_id` overhead is paid only inside channels.
-
-**Option B (retire the 5-byte format): TTY-direct uses 9-byte.** One
-demux implementation, one set of stream_type semantics, one crate.
-Sub-options for the `channel_id`:
-- **B1:** TTY-direct is a channels connection with `channel_id = 0` =
-  `alknet/tty` (breaks ADR-072's "channel 0 is call" rule).
-- **B2:** TTY-direct is a channels connection with `channel_id = 0` =
-  `alknet/call` (unused, no `channel/open` issued) + `channel_id = 1` =
-  `alknet/tty` (pre-allocated). Pays one unused channel for rule
-  consistency. Channel 0 is *always* call, even when unused.
-
-**Option B is the bigger call.** It's a wire-format change with
-backward-compat implications. It's the one open question that benefits
-from a POC — see below.
+ADR-077's rejection was based on a misunderstanding of how the layers
+compose. The add/strip composition makes the 9-byte channels header
+carry TTY's 5-byte header transparently — no waste, no double-chunk.
+The rejection is reversed by this resolution.
 
 ---
 
-## The recursive multiplexing property
+## The "merge and split" trap (what was conflated in earlier rounds)
 
-A channels connection with N channels, each with up to 128 (or 64)
-instances, has N×128 (or N×64) logical sub-streams. An instance can
-itself be a channels connection (recursive composition, ADR-074 — a
-channel with ALPN `alknet/channels` inside `alknet/channels`). The
-"channel within a channel within a channel" shape is unbounded, and
-the mod-2/mod-4 instance framing makes each level uniform — every
-level is "pairs of stream_types (or 4-tuples with control), declared
-per-channel, addressed by instance."
+Earlier rounds of this discussion got confused by "can we merge and
+split stderr." The vocabulary is now clear:
 
-This is a property, not a feature. The primary use case is one level
-of multiplexing. Recorded here because the instance framing makes it
-cleaner than ADR-071's group framing did — the instance is the
-recursive unit; the group was not.
+- **Untagged interleave** (`StreamExt::merge(stdout, stderr)`) — bytes
+  arrive interleaved, no way to tell which came from where. The
+  distinction is lost. This is "true merge" — what PTY mode does, what
+  Docker `Tty: true` does. Once merged this way, stderr is
+  unrecoverable. No amount of "interleaved reading" recovers it
+  without a tag.
+- **Tagged interleave** — each chunk carries a tag (stream_type), so
+  the receiver demuxes. This is what the channels layer already is
+  (for `channel_id`) and what TTY's sub-multiplex is (for `stream_type`).
+  The tag IS the framing.
+
+"Interleaved reading" doesn't avoid stream_type; it IS stream_type.
+The channels layer is tagged interleave by construction. The design
+question is not "how to avoid stream_type" but "which layer owns
+which tag" — and the resolution is "channels layer owns `channel_id`,
+handler owns `stream_type`."
 
 ---
 
-## POC candidates
+## Stderr under this resolution
 
-### POC 1: stderr split/recombine — **already answered, no POC needed**
+Stderr is a handler concern, not a channels concern. Two cases:
 
-**Original framing:** "If stderr is its own instance (mod 2, write
-half unused), does the unused write half cause problems — dangling
-sender, premature EOF, flow-control weirdness?"
+- **PTY mode** (Docker `Tty: true`): the PTY merges stdout and stderr
+  into one output stream. The TTY handler sees one output stream,
+  sub-demuxes nothing for stderr (there is no stderr). One channel,
+  one `BiStream`, no stderr stream_type. Mod 2 at the TTY sub-stream
+  level (one pair: in/out). Clean.
+- **Pipe mode** (Docker `Tty: false`): the OS gives the handler two
+  distinct streams (child.stdout, child.stderr). The TTY handler
+  sub-demuxes these onto its 5-byte format's stream_types (0 = in,
+  1 = out, 2 = err). The channels layer carries the resulting chunks
+  transparently. The "stderr as a unidirectional read" asymmetry is
+  inside TTY's sub-stream space, not the channels layer's.
 
-**Answer (verified in existing POC code):** No. The demux/mux is
-per-`stream_type` independent — there is no pairing assumption in the
-mechanism. An unused `stream_type` is an idle mpsc channel. The
-lenient unknown-`stream_type` path drops stray writes with a counter
-bump. The 28-test channels POC already validated per-`stream_type`
-independence (`demux_three_concurrent_channels_no_cross_contamination`,
-`demux_unknown_channel_drops_lenient`, `recv_dropped_sender_is_eof`).
+The channels layer never sees stderr. It sees bytes. The TTY handler
+owns the stdout/stderr distinction entirely.
 
-**Status:** Confirmatory, not exploratory. The load-bearing property
-is already proven. The mod-2 framing is trivially clean. No new POC.
+---
 
-### POC 2: TTY-direct-as-channels — the one open question
+## The one open question: 8 bytes vs 9 bytes
 
-**Question:** Is Option B1 (TTY-direct = channels with `channel_id = 0`
-= `alknet/tty`, breaking ADR-072) or Option B2 (channel 0 = call
-unused, channel 1 = TTY) feasible and clean? Or is the 4-byte
-`channel_id` overhead per chunk in TTY-direct mode a real concern
-for terminal I/O? And is backward-compat with existing TTY-direct
-deployments a real constraint, or are there no existing deployments
-to break?
+The channels wire format can be either:
 
-**Why it matters:** If Option B is clean and backward-compat is
-non-binding, the 5-byte format retires, the demux implementation
-unifies, and the TTY crate's direct mode becomes a thin wrapper. If
-backward-compat is binding or the overhead is a concern, Option A
-(two formats coexist per ADR-077) stands.
+- **9 bytes** (`[channel_id:u32][stream_type:u8][length:u32][payload]`):
+  preserves TTY's 5-byte format exactly (strip 4 bytes → TTY's native
+  format). The `stream_type` byte is the inner layer's framing,
+  carried transparently by the channels layer. Non-TTY inner layers
+  (tunnel, call) carry a `stream_type` byte they don't use (set to 0,
+  ignored by the inner layer, or simply not parsed). 1 byte of
+  overhead per chunk for non-TTY inner layers.
+- **8 bytes** (`[channel_id:u32][length:u32][payload]`): the channels
+  layer carries only `channel_id` + `length`. The inner layer's
+  framing is entirely within the payload. No unused byte for non-TTY
+  inner layers. But TTY's `wire.rs` doesn't compose by stripping —
+  TTY's 5-byte format would need rewriting to fit inside the 8-byte
+  payload (the length prefix position changes).
 
-**Scope:** ~200 lines. A POC that runs the TTY adapter over a
-channels-format demux with `channel_id = 0` (B1) and `channel_id = 1`
-(B2), using the existing TTY `TtyBackend` (the local pipe backend).
-Verify the `pty.rs` / `pipe.rs` tests still pass in shape. Measure
-chunk overhead if relevant.
+**The 9-byte composition is elegant because the strip is literal** —
+the channels layer reads 9 bytes, hands the inner 5 to TTY, TTY parses
+them as its native format. TTY's `wire.rs` works unchanged.
 
-**Output:** A `docs/research/alknet-channels/poc-tty-direct-as-channels.md`
-summary. Recommends Option A, B1, or B2. If B, becomes the input to
-ADR-094 (retire the 5-byte format). If A, ADR-077 stands and the
-5-byte format is kept.
+**The 8-byte composition is more uniform across inner layers** — the
+channels layer doesn't carry a `stream_type` byte it doesn't know
+about. But TTY's format needs rewriting, and the layered composition
+is no longer "strip a prefix" but "parse the inner framing from the
+payload."
 
-### POC 3: recursive composition — low leverage, deferred
+**The decision is "what's cleanest," not "what's least disruptive"**
+(no production constraint, no backward-compat). Considerations:
 
-**Question:** Does `alknet/channels` inside `alknet/channels` work
-end-to-end? The abstraction permits it (ADR-074); the POC didn't
-validate it (`poc-summary.md` §"What the POC Does NOT Validate" #5).
+- 9 bytes: preserves TTY's `wire.rs` as-is. The strip/add is literal.
+  The cost is 1 byte per chunk for non-TTY inner layers (tunnel,
+  call), where the `stream_type` byte is unused.
+- 8 bytes: the channels layer is uniform — it carries only
+  `channel_id` + `length`, nothing else. The cost is TTY's `wire.rs`
+  needs rewriting (the length prefix position changes; TTY's 5-byte
+  format doesn't compose by stripping).
 
-**Why it matters:** Low leverage — the instance framing makes it
-cleaner, but the primary use case is one level. Recursive composition
-is a property, not a feature.
-
-**Status:** Deferred. Not a POC for this round.
+My read: 9 bytes. The 1-byte overhead for non-TTY is noise (chunks
+are not tiny for tunnel/call). The literal strip/add is the elegant
+property that makes the layered composition uniform — every layer's
+header is a prefix, strip the prefix → inner layer's format. The 8-
+byte option breaks the strip-prefix property and forces TTY to
+re-derive its framing from the payload. But this is your call —
+you know the use cases and the chunk-size tradeoffs.
 
 ---
 
@@ -303,24 +271,97 @@ is a property, not a feature.
 | ADR | Scope | Status |
 |-----|-------|--------|
 | **ADR-092** | Transport leaf: `BiStream` as the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public stream constructor. | **Drafted, pushed** (`f8d4650`, `528cfa0`). Load-bearing, separable. |
-| **ADR-093** | Multiplexing: mod-2/mod-4 instance framing; per-channel stream_type declaration; `into_sub_streams()` as the primary accessor; demux convention-agnostic. Amends ADR-071 (stream_type decomposition), ADR-074 (`into_sub_streams`), ADR-077 (TTY uses mod 2; control channel fixed). | **Ready to draft.** The mod-2-vs-mod-3 question is settled by existing POC evidence; the control channel fix is already specified in ADR-077; the instance framing is the cleaner documentation. |
-| **ADR-094** | Format convergence: retire the 5-byte TTY-direct format in favor of 9-byte channels format. Option A (keep 5-byte), B1 (channel 0 = TTY), or B2 (channel 0 = call unused, channel 1 = TTY). Backward-compat analysis. | **Pre-ADR**, drafting after POC 2 recommends an Option. |
+| **ADR-093** | Channels layer as pure channel multiplexing: routes by `channel_id` only; handlers own sub-multiplexing on the `BiStream` they receive; `into_sub_streams()` removed; every channel is a `BiStream`. The add/strip composition. Amends ADR-071 (channels layer has no `stream_type` concept), ADR-074 (`into_sub_streams` removed, `accept_bi` is the only accessor), ADR-077 (reversed — TTY always uses its 5-byte format, the channels layer carries it transparently). | **Ready to draft.** The structural question is resolved; the one open sub-question is 8 vs 9 bytes (below). |
+| **ADR-094** | (Optional) The 8-vs-9-byte decision, if it warrants a separate ADR. Or folded into ADR-093 if the decision is straightforward. | **Pre-ADR**, drafting with or after ADR-093. |
+
+---
+
+## What changes in each crate
+
+### `alknet-core` (ADR-092's changes, plus this resolution's implications)
+
+- ADR-092's changes: `accept_bi` returns `BiStream`; `from_stream`
+  removed; `from_bidi` is the only public stream constructor;
+  `SendStream`/`RecvStream` collapse to thin newtypes.
+- This resolution doesn't change core beyond ADR-092. `BiStream` is
+  the handler leaf; the channels layer yields `BiStream`s; handlers
+  parse them per their ALPN. Core is not aware of the layered framing.
+
+### `alknet-channels` (the bulk of this resolution)
+
+- The channels layer routes by `channel_id` only. `stream_type` is
+  the inner layer's framing, carried transparently. The channels
+  layer has no `stream_type` concept.
+- `into_sub_streams()` is removed. `accept_bi` is the only accessor;
+  it yields one `BiStream` per channel.
+- The wire format is `[channel_id][...inner layer's framing...]
+  [payload]`. The inner layer's framing is whatever the handler
+  expects (TTY's 5-byte, call's length-prefix, tunnel's raw bytes).
+- The add/strip utility: `add_channel_id` on write,
+  `strip_channel_id` on read.
+- Recursive composition is literal: an `alknet/channels` channel
+  runs another channels demux on its `BiStream`. The outer layer
+  strips its `channel_id`; the inner layer adds its own.
+
+### `alknet-tty`
+
+- TTY always uses its 5-byte format — direct mode and inside-channels
+  mode. The `channels` feature on `alknet-tty` becomes "run TTY's
+  sub-demux on a channels-backed `BiStream`" — the same code as
+  direct mode, different `BiStream` source.
+- The control channel is sub-demuxed by TTY, not the channels layer.
+  The "control isn't actually bidirectional" flaw is fixed at the TTY
+  layer: stream_type 3 = ctrl_in (write), 4 = ctrl_out (read). TTY's
+  `wire.rs` needs updating (the `STREAM_CONTROL = 3` "bidirectional"
+  comment and the `InvalidStreamType > 3` bound are the implementation
+  lag ADR-077 already specified).
+- The 5-byte format is the inner format. The channels layer (when
+  TTY is inside channels) strips its `channel_id` and hands TTY the
+  inner 5 bytes. TTY's `wire.rs` parses them as its native format.
+- ADR-077 is reversed: the 5-byte format is NOT scoped to direct —
+  it's TTY's internal format, carried transparently by the channels
+  layer. The two-mode TTY design (direct vs inside-channels) is
+  preserved, but the modes differ only in *where the `BiStream` comes
+  from*, not in *how TTY parses it*. The same `wire.rs` code runs in
+  both modes.
+
+### `alknet-call`, `alknet-ssh`, etc.
+
+- The call protocol's `EventEnvelope` framing is the inner layer's
+  format. The channels layer carries it transparently. No change to
+  the call protocol itself.
+- SSH runs its own channel protocol on the `BiStream` the channels
+  layer gives it. No change to SSH.
+- Tunnel uses the `BiStream` as raw bytes. No sub-multiplexing.
+
+---
+
+## The recursive multiplexing property (made cleaner)
+
+A channels connection carries N channels, each a `BiStream`. A
+channel with ALPN `alknet/channels` runs another channels demux on
+its `BiStream` — the outer layer strips its `channel_id`, the inner
+layer adds its own. Each level is the same shape: `BiStream →
+accept_bi → N BiStreams`. The recursion is unbounded and uniform at
+every level.
+
+This is a property, not a feature. The primary use case is one level
+of multiplexing. But the add/strip composition makes it cleaner than
+ADR-071's group framing did — the recursion is the same operation
+(strip a prefix) at every level, not a different framing per level.
 
 ---
 
 ## Open questions
 
-- **5-byte format retirement.** POC 2 resolves. Default assumption:
-  Option A (two formats coexist, ADR-077 stands) is safer; Option B
-  (retire 5-byte) is cleaner but a wire-format change. POC validates
-  feasibility and overhead.
-- **`channel 0 is always call` (ADR-072) under TTY-direct-as-channels.**
-  If POC 2 recommends B1 (TTY-direct channel 0 = `alknet/tty`),
-  ADR-072 needs an exception or amendment. If B2 (channel 0 = call
-  unused, channel 1 = TTY), ADR-072 stands. If A (keep 5-byte), no
-  change.
-- **Recursive composition.** Deferred. The instance framing makes it
-  cleaner, but it's not a goal. POC 3 is low leverage.
+- **8 bytes vs 9 bytes.** The one open sub-question. 9 bytes
+  preserves TTY's `wire.rs` via literal strip/add; 8 bytes is more
+  uniform across inner layers but requires rewriting TTY's format.
+  Default assumption: 9 bytes (the strip/add property is the elegant
+  one). Decision is "what's cleanest" — no production constraint.
+- **Recursive composition.** Deferred. The add/strip composition
+  makes it cleaner, but it's not a goal. Low-leverage POC if ever
+  needed.
 
 ---
 
@@ -328,26 +369,31 @@ is a property, not a feature.
 
 - ADR-092: `BiStream` as the handler leaf (the transport-leaf layer,
   settled; this doc is the layer above it)
-- ADR-071: channels wire format (the mod-3 stream_type decomposition
-  ADR-093 amends)
-- ADR-074: `ChannelBidiStreamSource` / `into_sub_streams` (the
-  per-channel sub-stream accessor ADR-093 amends)
-- ADR-077: TTY inside channels (the two-mode TTY design ADR-093
-  amends; the 5-byte format scoping ADR-094 may retire)
+- ADR-071: channels wire format (amended by this resolution — the
+  channels layer routes by `channel_id` only; `stream_type` is the
+  inner layer's framing, carried transparently)
+- ADR-074: `ChannelBidiStreamSource` / `into_sub_streams` (amended —
+  `into_sub_streams` removed; `accept_bi` is the only accessor, yields
+  one `BiStream` per channel)
+- ADR-077: TTY inside channels (reversed — TTY always uses its 5-byte
+  format; the channels layer carries it transparently; the two-mode
+  design is preserved but differs only in `BiStream` source, not in
+  parsing)
 - ADR-072: channel 0 pre-negotiated as `alknet/call` (the hardcoded
-  channel_id constraint)
-- ADR-073: channel lifecycle operations (the `stream_types` field
-  declared at `channel/open` time — the per-channel declaration that
-  makes the demux convention-agnostic)
-- `docs/research/alknet-channels/poc-summary.md` — the channels POC
-  (28 tests) that validated per-`stream_type` independence
-- `/workspace/alknet-channels-poc/src/demux.rs:91-109, 161-181` —
-  the demux's per-`stream_type` routing (no pairing assumption)
-- `/workspace/alknet-channels-poc/src/mux.rs:58-63, 152-177` — the
-  mux's per-`(channel_id, stream_type)` independent pumps
-- `crates/alknet-tty/src/wire.rs:13,32-33` — the `STREAM_CONTROL = 3`
-  "bidirectional" flaw (implementation lag; fix specified in ADR-077,
-  subsumed by the mod-4 instance framing)
+  `channel_id` constraint)
+- ADR-073: channel lifecycle operations (the `channel/open` operation
+  that allocates `channel_id`s)
+- `crates/alknet-tty/src/wire.rs:13,32-33,150-151` — the `STREAM_CONTROL
+  = 3` "bidirectional" flaw and the `InvalidStreamType > 3` bound
+  (implementation lag; fix specified in ADR-077, subsumed by this
+  resolution's "TTY owns its sub-streams")
+- `/workspace/alknet-channels-poc/src/demux.rs:91-109, 161-181` — the
+  demux's per-`stream_type` routing (no pairing assumption; the
+  mechanism supports any convention; this resolution says the channels
+  layer doesn't have a convention, the handler does)
 - `crates/alknet-tty-local/tests/pipe.rs:363 separate_stderr` — the
-  test that proves separate stderr is a real feature, not vestigial
-  (resolves under mod 2 as instance 1 with unused write half)
+  test that proves separate stderr is a real feature (resolves as a
+  TTY-layer concern, not a channels-layer concern)
+- `docs/research/alknet-channels/poc-summary.md` — the channels POC
+  (28 tests) that validated the per-`channel_id`/`stream_type`
+  routing mechanism the channels layer uses
