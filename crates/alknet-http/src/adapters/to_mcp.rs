@@ -432,7 +432,8 @@ mod tests {
         services_list_handler, services_list_spec, services_schema_handler, services_schema_spec,
     };
     use alknet_call::registry::registration::{
-        make_handler, HandlerKind, HandlerRegistration, OperationProvenance, OperationRegistry,
+        make_handler, make_streaming_handler, HandlerKind, HandlerRegistration,
+        OperationProvenance, OperationRegistry,
     };
     use alknet_call::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
@@ -498,6 +499,36 @@ mod tests {
         )
     }
 
+    /// A streaming echo handler: yields the input back as a single
+    /// `call.responded` frame, then the stream ends. Used for
+    /// `OperationType::Subscription` ops in `full_registry_with_ops` —
+    /// the registry's kind validation (ADR-049) requires
+    /// `HandlerKind::Stream` for `Subscription` ops; using
+    /// `HandlerKind::Once` is rejected with `"handler kind mismatch:
+    /// Subscription requires HandlerKind::Stream (got HandlerKind::Once)"`.
+    /// The test only verifies that the MCP `search` tool *excludes*
+    /// Subscription ops from its listing — it never invokes the handler —
+    /// so a single-frame echo is sufficient.
+    fn make_echo_streaming_handler() -> alknet_call::registry::registration::StreamingHandler {
+        make_streaming_handler(|input, context| {
+            futures::stream::iter(vec![ResponseEnvelope::ok(context.request_id, input)])
+        })
+    }
+
+    /// Build a `HandlerKind` matching the op's `OperationType`: `Once` for
+    /// Query/Mutation, `Stream` for Subscription. The registry's kind
+    /// validation (ADR-049) rejects a mismatch, so the helper must branch
+    /// — using `HandlerKind::Once` for a `Subscription` op panics in
+    /// `register().unwrap()`.
+    fn handler_kind_for(op_type: OperationType) -> HandlerKind {
+        match op_type {
+            OperationType::Subscription => HandlerKind::Stream(make_echo_streaming_handler()),
+            OperationType::Query | OperationType::Mutation => {
+                HandlerKind::Once(make_echo_handler())
+            }
+        }
+    }
+
     fn full_registry_with_ops(
         specs: Vec<(String, OperationType, AccessControl)>,
     ) -> Arc<OperationRegistry> {
@@ -506,7 +537,7 @@ mod tests {
             inner
                 .register(HandlerRegistration::new(
                     external_spec(&name, op_type, acl),
-                    HandlerKind::Once(make_echo_handler()),
+                    handler_kind_for(op_type),
                     OperationProvenance::Local,
                     None,
                     None,
@@ -521,7 +552,7 @@ mod tests {
             dispatch_registry
                 .register(HandlerRegistration::new(
                     external_spec(&op.name, op.op_type, op.access_control.clone()),
-                    HandlerKind::Once(make_echo_handler()),
+                    handler_kind_for(op.op_type),
                     OperationProvenance::Local,
                     None,
                     None,

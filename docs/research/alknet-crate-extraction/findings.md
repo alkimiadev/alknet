@@ -572,26 +572,26 @@ because `SendStream` is `AsyncWrite`-only and `RecvStream` is
 them. After Phase 6, `BiStream` bundles both halves natively. The
 wrapper becomes dead code.
 
-**Pre-existing test failure to fix in a follow-up:** Phase 9's "Done
-when" criterion was "`cargo test -p alknet-http` passes." One
-`alknet-http` test fails on the `develop` baseline (before, during,
-and after Phase 6 — verified by stashing Phase 6 and re-running):
+**Pre-existing test failure — fixed:** Phase 9's "Done when" criterion
+was "`cargo test -p alknet-http` passes." One `alknet-http` test failed
+on the `develop` baseline (before, during, and after Phase 6 — verified
+by stashing Phase 6 and re-running):
 `adapters::to_mcp::tests::search_returns_access_control_filtered_ops_excluding_subscriptions`
-panics with `"handler kind mismatch: Subscription requires
-HandlerKind::Stream (got HandlerKind::Once)"`. The bug is in the test
+panicked with `"handler kind mismatch: Subscription requires
+HandlerKind::Stream (got HandlerKind::Once)"`. The bug was in the test
 helper `full_registry_with_ops` (`to_mcp.rs:501-516`), which always
-registers with `HandlerKind::Once(make_echo_handler())` regardless of
-`op_type` — when the test passes `OperationType::Subscription` for
+registered with `HandlerKind::Once(make_echo_handler())` regardless of
+`op_type` — when the test passed `OperationType::Subscription` for
 `"events/stream"`, the registry's kind validation (tightened in commit
 `9c81129 feat(call): introduce StreamingHandler, HandlerKind,
-ResponseStream + INVALID_OPERATION_TYPE (ADR-049)`) rejects it. The
-fix is in the test helper: branch on `op_type` and use
-`HandlerKind::Stream(make_streaming_handler(...))` for `Subscription`
-ops (mirror the pattern in `dispatch.rs`'s
-`registry_with_subscription`). This is unrelated to Phase 6/9 — it's a
-test-helper bug that predates the stream-unification work — but it
-blocks Phase 9's "Done when" criterion and should be fixed in a small
-follow-up commit before Phase 9 is considered fully closed.
+ResponseStream + INVALID_OPERATION_TYPE (ADR-049)`) rejected it. The
+fix: added a `handler_kind_for(op_type)` helper that branches on
+`op_type` (`HandlerKind::Stream(make_echo_streaming_handler())` for
+`Subscription`, `HandlerKind::Once(make_echo_handler())` for
+Query/Mutation) and used it in both register loops of
+`full_registry_with_ops`. The test now passes; `cargo test
+--workspace --all-features` is fully green (1008 tests, 0 failures).
+Phase 9 is fully closed.
 
 ---
 
@@ -608,7 +608,7 @@ follow-up commit before Phase 9 is considered fully closed.
 | 6 (stream unification) | **Done** (`b60a584`). `BiStream` is the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public constructor; `SendStream`/`RecvStream` are thin internal newtypes. Subsumed Phase 9's `QuicStream`/`QuicStreamDuplex` removal. |
 | 7 (TTY control fix) | TTY control channel is properly bidirectional (`STREAM_CTRL_IN = 3`, `STREAM_CTRL_OUT = 4`); `InvalidStreamType` bound updated. **Unchanged by Phase 6** — Phase 7's work is in `wire.rs` and `control.rs`, neither of which Phase 6 touched. |
 | 8 (channels spec) | Channels spec updated to 8-byte wire format; no `stream_type` concept; `into_sub_streams` removed; ADRs 071/074/077 amended. **Unchanged by Phase 6** — docs-only, no code. |
-| 9 (http fix) | **Done — subsumed by Phase 6** (`b60a584`). `QuicStream` wrapper removed from `alknet-http`; `BiStream` used directly; `QuicStreamDuplex` test helper removed. One pre-existing `alknet-http` test failure remains (test-helper bug in `to_mcp.rs::full_registry_with_ops`, unrelated to Phase 6/9) — see Phase 9's "Pre-existing test failure to fix in a follow-up" note. |
+| 9 (http fix) | **Done — subsumed by Phase 6** (`b60a584`) + test-helper fix (`<this commit>`). `QuicStream` wrapper removed from `alknet-http`; `BiStream` used directly; `QuicStreamDuplex` test helper removed. Pre-existing `to_mcp` test-helper bug (`full_registry_with_ops` used `HandlerKind::Once` for `Subscription` ops, rejected by the registry's kind validation since ADR-049) fixed — `cargo test --workspace --all-features` is fully green (1008 tests, 0 failures). |
 
 Phases 0-3 are purely additive — no existing code breaks, no tests
 break. Phases 4-5 are subtractive — the pruned code's callers don't
