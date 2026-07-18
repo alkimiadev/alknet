@@ -31,27 +31,34 @@ on the `BiStream` the channels layer gives them. Every channel is a
 `BiStream`. The "pass a stream to/from any ALPN" objective becomes
 universal, not qualified.
 
-The channels wire format composes with TTY's wire format by
-construction: the 9-byte channels header is the 5-byte TTY header with
-`channel_id:u32` prepended (`[channel_id][stream_type][length][payload]`
-= `[channel_id]` + TTY's `[stream_type][length][payload]`). The
-channels layer adds `channel_id` on write, strips it on read, hands
-the inner 5 bytes to the TTY handler. TTY's `wire.rs` works as-is.
-The "double-chunking" objection (ADR-077's reason for rejecting
-sub-multiplex inside channels) was about a 14-byte double-header; the
-actual composition is 9 bytes total, shared across both layers.
+The channels wire format is **8 bytes**: `[channel_id:u32 BE][length:u32 BE]`
+followed by an opaque payload. The channels layer owns `channel_id`
+and `length`; the payload is the handler's framing, carried
+transparently. The channels layer strips its 8-byte header on read,
+hands the payload to the handler. The handler parses its own framing
+from the payload — TTY's `[stream_type:u8][length:u32 BE][payload]`,
+call's length-prefixed JSON, tunnel's raw bytes.
+
+This means the total wire format for a TTY chunk inside channels is:
+`[channel_id:u32][ch_len:u32][stream_type:u8][tty_len:u32][payload]`
+(13 bytes of header: 8 channels + 5 TTY). The two length fields are
+close but not identical (`ch_len = tty_len + 5`). This is a small
+amount of waste per chunk, but the trade-off is clean separation:
+the channels layer has no `stream_type` concept — not in its header,
+not in its code, not in its mental model. The handler owns its
+framing entirely. For extreme multiplexing scenarios this clean
+separation is worth the few extra bytes.
 
 This dissolves the mod 2/3/4 question at the channels layer (the
 channels layer has no `stream_type` concept), fixes the "control
 isn't actually bidirectional" TTY flaw at the TTY layer (TTY owns
 its sub-streams), and makes recursive composition literal (each
-layer strips its header, the inner layer adds its own).
+layer strips its header, the inner layer parses its own framing
+from the payload).
 
 **No production/backward-compat constraint.** The develop branch is a
-rewrite; no one is using this version yet. If TTY's `wire.rs` needs
-rework, it needs rework — no time constraint, no duct tape. If it
-doesn't need rework, no need to spend the resource. The decision is
-purely "what's cleanest," not "what's least disruptive."
+rewrite of main (which is labeled pre-alpha). The decision is purely
+"what's cleanest," not "what's least disruptive."
 
 ---
 
@@ -115,60 +122,73 @@ them.
   ctrl_in, 4 = ctrl_out), not the channels layer.
 - **Recursive composition is literal.** A channel with ALPN
   `alknet/channels` runs another channels demux on its `BiStream`.
-  The outer layer strips its `channel_id`; the inner layer adds its
-  own. Each level is the same shape — `BiStream → accept_bi → N
-  BiStreams`.
+  The outer layer strips its 8-byte header; the inner layer parses
+  its own 8-byte header from the payload. Each level is the same
+  shape — `BiStream → accept_bi → N BiStreams`.
 
 ---
 
 ## How the wire formats compose (the add/strip insight)
 
-The channels wire format and TTY's wire format compose by construction:
+The channels wire format and TTY's wire format compose by layering:
 
 ```
-channels:  [channel_id:u32 BE][stream_type:u8][length:u32 BE][payload]
-                        = [channel_id]  +  TTY's [stream_type][length][payload]
-                            4 bytes             5 bytes
+channels:  [channel_id:u32 BE][length:u32 BE][payload]
+                        = 8-byte header + opaque payload
+                            8 bytes
+
+TTY inside channels:
+  [channel_id:u32][ch_len:u32][stream_type:u8][tty_len:u32][payload]
+      4 bytes      4 bytes       1 byte        4 bytes     N bytes
+      \_________  __________/    \_________  _____________/
+                |                           |
+         channels header              TTY chunk (5+N bytes)
+           (8 bytes)              carried as channels payload
 ```
 
-The 9-byte channels header is the 5-byte TTY header with `channel_id`
-prepended. The channels layer adds `channel_id` on write, strips it
-on read, hands the inner 5 bytes to the TTY handler. TTY's `wire.rs`
-parses those 5 bytes exactly as it does today. No double-chunking;
-the 9 bytes serve both layers because the `length` prefix is shared
-(both layers use it to frame the payload).
+The channels layer reads its 8-byte header (`channel_id` + `length`),
+reads `length` bytes of payload, and hands the payload to the handler.
+The handler parses its own framing from the payload — TTY reads its
+5-byte header (`stream_type` + `length`) from the payload bytes.
+
+The two length fields are close but not identical: `ch_len = tty_len + 5`.
+This is a small amount of waste per chunk (the channels `length` is
+always 5 bytes more than TTY's `length`), but the trade-off is clean
+separation of concerns. The channels layer has no `stream_type` concept
+— not in its header, not in its code, not in its mental model.
 
 ### The add/strip utility
 
 Each layer has its own add/strip pair:
 
-- **Channels layer**: `add_channel_id(channel_id, inner_chunk) -> chunk`
-  on write; `strip_channel_id(chunk) -> (channel_id, inner_chunk)` on
-  read.
-- **TTY layer** (inside the handler): parses the inner 5-byte chunk
-  per its existing `wire.rs`. Doesn't know or care that a `channel_id`
-  was stripped before it saw the bytes.
+- **Channels layer**: `add_channel_id(channel_id, payload_bytes) -> chunk`
+  on write (prepends `[channel_id:u32][len(payload_bytes):u32]`);
+  `strip_channel_id(chunk) -> (channel_id, payload_bytes)` on read.
+- **TTY layer** (inside the handler): parses its 5-byte header from
+  the payload bytes per its existing `wire.rs`. Doesn't know or care
+  that a `channel_id` was stripped before it saw the bytes.
 
 The composition is uniform — the same shape at every level. This is
 SSH's model (layered headers, each layer strips its own at its
 boundary), applied to channels. A `alknet/channels`-inside-
 `alknet/channels` recursive composition is the outer layer stripping
-its `channel_id`, the inner layer adding its own — same code, same
-shape, each level.
+its 8-byte header, the inner layer parsing its own 8-byte header from
+the payload — same code, same shape, each level.
 
 ### What this means for ADR-077's rejection
 
 ADR-077 rejected sub-multiplex inside channels on the grounds of
-"double-chunking (5-byte inside 9-byte)." The actual composition is
-not 14 bytes — it's 9 bytes, shared. The 5-byte TTY format is the
-*inner* format; the 9-byte channels format is the *outer* format; the
-outer format's `stream_type`/`length` fields ARE the inner format's
-header. There is no double-header, only a prefix.
+"double-chunking (5-byte inside 9-byte)." The actual composition under
+this resolution is 13 bytes total (8 channels + 5 TTY), not 14. The
+two length fields are close but not identical — the channels `length`
+is always `tty_len + 5`. This is a small amount of waste per chunk,
+but the trade-off is clean separation: the channels layer has no
+`stream_type` concept, and the handler owns its framing entirely.
 
 ADR-077's rejection was based on a misunderstanding of how the layers
-compose. The add/strip composition makes the 9-byte channels header
-carry TTY's 5-byte header transparently — no waste, no double-chunk.
-The rejection is reversed by this resolution.
+compose. The add/strip composition makes the channels layer carry the
+handler's framing transparently in the payload — no shared fields, no
+leaked abstraction. The rejection is reversed by this resolution.
 
 ---
 
@@ -217,52 +237,47 @@ owns the stdout/stderr distinction entirely.
 
 ---
 
-## The one open question: 8 bytes vs 9 bytes
+## The wire format decision: 8 bytes
 
-The channels wire format can be either:
+The channels wire format is **8 bytes**: `[channel_id:u32 BE][length:u32 BE]`
+followed by an opaque payload. The channels layer owns `channel_id`
+and `length`; the payload is the handler's framing, carried
+transparently.
 
-- **9 bytes** (`[channel_id:u32][stream_type:u8][length:u32][payload]`):
-  preserves TTY's 5-byte format exactly (strip 4 bytes → TTY's native
-  format). The `stream_type` byte is the inner layer's framing,
-  carried transparently by the channels layer. Non-TTY inner layers
-  (tunnel, call) carry a `stream_type` byte they don't use (set to 0,
-  ignored by the inner layer, or simply not parsed). 1 byte of
-  overhead per chunk for non-TTY inner layers.
-- **8 bytes** (`[channel_id:u32][length:u32][payload]`): the channels
-  layer carries only `channel_id` + `length`. The inner layer's
-  framing is entirely within the payload. No unused byte for non-TTY
-  inner layers. But TTY's `wire.rs` doesn't compose by stripping —
-  TTY's 5-byte format would need rewriting to fit inside the 8-byte
-  payload (the length prefix position changes).
+The 9-byte alternative (`[channel_id:u32][stream_type:u8][length:u32]`)
+was considered and rejected. The 9-byte format puts `stream_type` in
+the channels header, which means the channels layer carries a concept
+it doesn't own. For TTY this composes cleanly (the 9-byte header is
+TTY's 5-byte header with `channel_id` prepended), but for non-TTY
+handlers (tunnel, call, SSH) the `stream_type` byte is dead weight —
+the channels layer carries a byte it doesn't understand, and the
+handler ignores a byte in a header it doesn't control.
 
-**The 9-byte composition is elegant because the strip is literal** —
-the channels layer reads 9 bytes, hands the inner 5 to TTY, TTY parses
-them as its native format. TTY's `wire.rs` works unchanged.
+The 8-byte format is uniform across all handlers: the channels layer
+carries `channel_id` + `length` + opaque payload. Every handler
+parses its own framing from the payload. The cost is that TTY's
+`wire.rs` needs to be called from a payload buffer rather than
+directly from the wire, and the total header for a TTY chunk is
+13 bytes (8 channels + 5 TTY) instead of 9. The two length fields
+are close but not identical (`ch_len = tty_len + 5`).
 
-**The 8-byte composition is more uniform across inner layers** — the
-channels layer doesn't carry a `stream_type` byte it doesn't know
-about. But TTY's format needs rewriting, and the layered composition
-is no longer "strip a prefix" but "parse the inner framing from the
-payload."
+**Why 8 bytes wins:**
 
-**The decision is "what's cleanest," not "what's least disruptive"**
-(no production constraint, no backward-compat). Considerations:
-
-- 9 bytes: preserves TTY's `wire.rs` as-is. The strip/add is literal.
-  The cost is 1 byte per chunk for non-TTY inner layers (tunnel,
-  call), where the `stream_type` byte is unused.
-- 8 bytes: the channels layer is uniform — it carries only
-  `channel_id` + `length`, nothing else. The cost is TTY's `wire.rs`
-  needs rewriting (the length prefix position changes; TTY's 5-byte
-  format doesn't compose by stripping).
-
-My read: 9 bytes. The 1-byte overhead for non-TTY is noise (chunks
-are not tiny for tunnel/call). The literal strip/add is the elegant
-property that makes the layered composition uniform — every layer's
-header is a prefix, strip the prefix → inner layer's format. The 8-
-byte option breaks the strip-prefix property and forces TTY to
-re-derive its framing from the payload. But this is your call —
-you know the use cases and the chunk-size tradeoffs.
+- **Clean separation of concerns.** The channels layer has no
+  `stream_type` concept — not in its header, not in its code, not in
+  its mental model. The handler owns its framing entirely.
+- **Uniform across all handlers.** Tunnel, call, SSH, and TTY all
+  receive the same shape: a payload buffer. No handler gets a
+  `stream_type` byte it doesn't use.
+- **The waste is small.** 5 extra bytes per TTY chunk (the channels
+  `length` field is always `tty_len + 5`). For typical TTY chunks
+  (4 KiB+), this is ~0.1% overhead. For extreme multiplexing
+  scenarios, the clean separation is worth the trade-off.
+- **TTY's `wire.rs` rework is bounded.** TTY already has a `ChunkReader`
+  that reads from an `AsyncRead`. Adapting it to read from a `&[u8]`
+  payload buffer (or a `Cursor<Bytes>`) is a small, well-scoped change.
+  The framing logic (stream_type constants, length validation, control
+  message parsing) is unchanged.
 
 ---
 
@@ -271,8 +286,7 @@ you know the use cases and the chunk-size tradeoffs.
 | ADR | Scope | Status |
 |-----|-------|--------|
 | **ADR-092** | Transport leaf: `BiStream` as the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public stream constructor. | **Drafted, pushed** (`f8d4650`, `528cfa0`). Load-bearing, separable. |
-| **ADR-093** | Channels layer as pure channel multiplexing: routes by `channel_id` only; handlers own sub-multiplexing on the `BiStream` they receive; `into_sub_streams()` removed; every channel is a `BiStream`. The add/strip composition. Amends ADR-071 (channels layer has no `stream_type` concept), ADR-074 (`into_sub_streams` removed, `accept_bi` is the only accessor), ADR-077 (reversed — TTY always uses its 5-byte format, the channels layer carries it transparently). | **Ready to draft.** The structural question is resolved; the one open sub-question is 8 vs 9 bytes (below). |
-| **ADR-094** | (Optional) The 8-vs-9-byte decision, if it warrants a separate ADR. Or folded into ADR-093 if the decision is straightforward. | **Pre-ADR**, drafting with or after ADR-093. |
+| **ADR-093** | Channels layer as pure channel multiplexing: routes by `channel_id` only; handlers own sub-multiplexing on the `BiStream` they receive; `into_sub_streams()` removed; every channel is a `BiStream`. The 8-byte wire format (`[channel_id:u32][length:u32][payload]`). The add/strip composition. Amends ADR-071 (channels layer has no `stream_type` concept; wire format is 8 bytes, not 9), ADR-074 (`into_sub_streams` removed, `accept_bi` is the only accessor), ADR-077 (reversed — TTY always uses its 5-byte format; the channels layer carries it transparently in the payload). | **Ready to draft.** |
 
 ---
 
@@ -289,19 +303,20 @@ you know the use cases and the chunk-size tradeoffs.
 
 ### `alknet-channels` (the bulk of this resolution)
 
-- The channels layer routes by `channel_id` only. `stream_type` is
-  the inner layer's framing, carried transparently. The channels
-  layer has no `stream_type` concept.
+- The channels layer routes by `channel_id` only. It has no
+  `stream_type` concept — not in its header, not in its code.
 - `into_sub_streams()` is removed. `accept_bi` is the only accessor;
   it yields one `BiStream` per channel.
-- The wire format is `[channel_id][...inner layer's framing...]
-  [payload]`. The inner layer's framing is whatever the handler
-  expects (TTY's 5-byte, call's length-prefix, tunnel's raw bytes).
-- The add/strip utility: `add_channel_id` on write,
-  `strip_channel_id` on read.
+- The wire format is `[channel_id:u32 BE][length:u32 BE][payload]`
+  (8-byte header). The payload is opaque to the channels layer; the
+  handler parses its own framing from the payload.
+- The add/strip utility: `add_channel_id(channel_id, payload_bytes) -> chunk`
+  on write (prepends 8-byte header); `strip_channel_id(chunk) -> (channel_id, payload_bytes)`
+  on read (strips 8-byte header, returns payload).
 - Recursive composition is literal: an `alknet/channels` channel
   runs another channels demux on its `BiStream`. The outer layer
-  strips its `channel_id`; the inner layer adds its own.
+  strips its 8-byte header; the inner layer parses its own 8-byte
+  header from the payload.
 
 ### `alknet-tty`
 
@@ -315,12 +330,16 @@ you know the use cases and the chunk-size tradeoffs.
   `wire.rs` needs updating (the `STREAM_CONTROL = 3` "bidirectional"
   comment and the `InvalidStreamType > 3` bound are the implementation
   lag ADR-077 already specified).
-- The 5-byte format is the inner format. The channels layer (when
-  TTY is inside channels) strips its `channel_id` and hands TTY the
-  inner 5 bytes. TTY's `wire.rs` parses them as its native format.
+- The 5-byte format is TTY's internal format. When TTY is inside
+  channels, the channels layer strips its 8-byte header and hands TTY
+  the payload bytes. TTY parses its 5-byte header from the payload.
+  TTY's `wire.rs` needs a small adaptation to read from a payload
+  buffer (`&[u8]` or `Cursor<Bytes>`) rather than directly from the
+  wire, but the framing logic (stream_type constants, length
+  validation, control message parsing) is unchanged.
 - ADR-077 is reversed: the 5-byte format is NOT scoped to direct —
-  it's TTY's internal format, carried transparently by the channels
-  layer. The two-mode TTY design (direct vs inside-channels) is
+  it's TTY's internal format, carried transparently in the channels
+  payload. The two-mode TTY design (direct vs inside-channels) is
   preserved, but the modes differ only in *where the `BiStream` comes
   from*, not in *how TTY parses it*. The same `wire.rs` code runs in
   both modes.
@@ -340,25 +359,21 @@ you know the use cases and the chunk-size tradeoffs.
 
 A channels connection carries N channels, each a `BiStream`. A
 channel with ALPN `alknet/channels` runs another channels demux on
-its `BiStream` — the outer layer strips its `channel_id`, the inner
-layer adds its own. Each level is the same shape: `BiStream →
-accept_bi → N BiStreams`. The recursion is unbounded and uniform at
-every level.
+its `BiStream` — the outer layer strips its 8-byte header, the inner
+layer parses its own 8-byte header from the payload. Each level is
+the same shape: `BiStream → accept_bi → N BiStreams`. The recursion
+is unbounded and uniform at every level.
 
 This is a property, not a feature. The primary use case is one level
 of multiplexing. But the add/strip composition makes it cleaner than
 ADR-071's group framing did — the recursion is the same operation
-(strip a prefix) at every level, not a different framing per level.
+(strip an 8-byte header) at every level, not a different framing per
+level.
 
 ---
 
 ## Open questions
 
-- **8 bytes vs 9 bytes.** The one open sub-question. 9 bytes
-  preserves TTY's `wire.rs` via literal strip/add; 8 bytes is more
-  uniform across inner layers but requires rewriting TTY's format.
-  Default assumption: 9 bytes (the strip/add property is the elegant
-  one). Decision is "what's cleanest" — no production constraint.
 - **Recursive composition.** Deferred. The add/strip composition
   makes it cleaner, but it's not a goal. Low-leverage POC if ever
   needed.
@@ -370,8 +385,9 @@ ADR-071's group framing did — the recursion is the same operation
 - ADR-092: `BiStream` as the handler leaf (the transport-leaf layer,
   settled; this doc is the layer above it)
 - ADR-071: channels wire format (amended by this resolution — the
-  channels layer routes by `channel_id` only; `stream_type` is the
-  inner layer's framing, carried transparently)
+  channels layer routes by `channel_id` only; wire format is 8 bytes
+  (`[channel_id:u32][length:u32][payload]`), not 9; `stream_type` is
+  the inner layer's framing, carried transparently in the payload)
 - ADR-074: `ChannelBidiStreamSource` / `into_sub_streams` (amended —
   `into_sub_streams` removed; `accept_bi` is the only accessor, yields
   one `BiStream` per channel)
