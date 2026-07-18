@@ -3,12 +3,14 @@
 **Status:** Findings in progress — mapping the existing code to the
 target shape, phase by phase, so the migration can be ordered to keep
 the tree compilable at each step.
-**Date:** 2026-07-16
+**Date:** 2026-07-18
 **Scope:** The three new crates (`alknet-tls`, `alknet-endpoint`,
 `alknet-client`) + the prune of `alknet-core` and `alknet-call` + the
-`alknet-http` residual fix. The specs are confirmed tight (reviewed +
-amended); this doc is the *how* — what code moves where, in what order,
-with what intermediate states.
+core stream unification (`BiStream` as the handler leaf) + the TTY
+control-channel fix + the channels spec cleanup + the `alknet-http`
+residual fix. The specs are confirmed tight (reviewed + amended); this
+doc is the *how* — what code moves where, in what order, with what
+intermediate states.
 
 ---
 
@@ -16,10 +18,13 @@ with what intermediate states.
 
 The migration is **additive-then-subtractive**: build all three new
 crates first (no breakage), then prune the old code from core and call
-(breakage confined to a single phase), then fix the http residual. Seven
-phases (0-6), each leaving the workspace compilable. The heaviest single file
-(`endpoint.rs`, 1606 lines) is not a monolith — it's three concerns
-welded together, each going to a different destination.
+(breakage confined to a single phase), then fix the core stream model
+(`BiStream` as the handler leaf), then fix the TTY control-channel
+bidirectionality, then clean up the channels spec, then fix the http
+residual. Ten phases (0-9), each leaving the workspace compilable. The
+heaviest single file (`endpoint.rs`, 1606 lines) is not a monolith —
+it's three concerns welded together, each going to a different
+destination.
 
 ---
 
@@ -391,60 +396,129 @@ rewritten tests. The crate has no TLS/transport deps, no
 **Done when:** `cargo test -p alknet-call` passes, the crate is a pure
 protocol crate.
 
-### Phase 6: Fix `alknet-http` (deferred — needs deeper rework)
+### Phase 6: Core stream unification — `BiStream` as the handler leaf
 
-**Status: Deferred.** The original plan was to remove the `QuicStream`
-wrapper from `server/adapter.rs` on the assumption that `accept_bi()`
-returns streams that are already `AsyncRead+AsyncWrite`. This is
-incorrect.
+**What:** Implement ADR-092 (drafted, pushed) and the stream-unification
+resolution from `docs/research/stream-unification/findings.md`. The
+changes to `alknet-core`:
 
-**What was found (2026-07-17):** `SendStream` implements only
-`AsyncWrite` (`types.rs:296`); `RecvStream` implements only
-`AsyncRead` (`types.rs:340`). They are separate types with separate
-trait impls — neither is both `AsyncRead` and `AsyncWrite`. The
-`QuicStream` wrapper (44 lines, `adapter.rs:271-314`) is a necessary
-adapter that combines the `(SendStream, RecvStream)` pair from
-`accept_bi()` into a single `AsyncRead + AsyncWrite` type that
-`serve_io()` requires. It is not redundant.
+- `accept_bi()` returns `BiStream` (a concrete `AsyncRead + AsyncWrite`
+  newtype wrapping the inner transport), not a split `(SendStream,
+  RecvStream)` pair.
+- `Connection::from_stream` is removed. `from_bidi` is the only public
+  stream constructor.
+- `SendStream`/`RecvStream` collapse to thin newtypes used only
+  internally by `BiStream` (they never cross a crate boundary as part
+  of a constructor).
+- `BiStream` implements `AsyncRead + AsyncWrite` directly — no
+  hand-rolled adapter needed at call sites.
 
-The `QuicStreamDuplex` test helper (`adapter.rs:456-493`) is the same
-pattern for tests — combining two `DuplexStream` halves into a single
-`AsyncRead + AsyncWrite` type.
+**Impact on call sites:** Every handler that currently calls
+`accept_bi()` and gets a `(SendStream, RecvStream)` pair gets a
+`BiStream` instead. The `QuicStream` wrapper in `alknet-http`
+(`server/adapter.rs:271-314`) becomes unnecessary — `BiStream` is
+already `AsyncRead + AsyncWrite`. The `QuicStreamDuplex` test helper
+(`adapter.rs:456-493`) is similarly replaceable.
 
-**Why this needs deeper rework:** The `HttpAdapter::handle` method
-assumes a QUIC-style multi-stream connection (`accept_bi` returns a
-fresh bidi stream). This is the "QUIC welded to HTTP" tangle — the
-HTTP adapter was designed around quinn's stream model. Two issues
-compound:
+**Compilable state:** `cargo test -p alknet-core` passes. Handler
+crates (`alknet-tty`, `alknet-call`, `alknet-http`) may need import
+updates but no logic changes — they already treat the result of
+`accept_bi()` as an `AsyncRead + AsyncWrite` pair.
 
-1. **The `QuicStream` wrapper is correct for the current design.**
-   `accept_bi()` returns `(SendStream, RecvStream)` — a write-only
-   half and a read-only half. `serve_io()` needs a single
-   `AsyncRead + AsyncWrite`. The wrapper is the minimal correct
-   adapter.
+**Done when:** `cargo test` passes workspace-wide, `BiStream` is the
+only type returned by `accept_bi()`, `from_stream` is removed,
+`from_bidi` is the only public constructor.
 
-2. **The `accept_bi` contract may not be right for non-QUIC transports.**
-   For a `from_bidi` connection (TCP+TLS), `accept_bi` yields the
-   single bidi stream once (ADR-070's yield-once contract). The
-   `HttpAdapter` currently calls `accept_bi()` once and serves one
-   HTTP connection — which works for QUIC (multi-stream) and TCP
-   (single-stream), but the semantics differ. A proper fix would
-   involve either a `BidiStream` type that bundles both halves
-   natively, or rethinking how the HTTP adapter consumes streams
-   from the `Connection` abstraction.
+### Phase 7: TTY control-channel bidirectionality fix
 
-**Recommendation:** Defer Phase 6. The `QuicStream` wrapper is clean,
-minimal (44 lines), and correct. Removing it would require a new
-abstraction (e.g., a `BidiStream` type in `alknet-core` that bundles
-`SendStream` + `RecvStream` into a single `AsyncRead + AsyncWrite`
-handle) or restructuring `HttpAdapter::handle` to work with split
-streams. Either approach is a design change, not a mechanical cleanup.
-The `alknet-http` crate needs broader rework to fully decouple from
-QUIC assumptions; this wrapper is the least of it.
+**What:** Fix the "control isn't actually bidirectional" flaw in
+`alknet-tty`. The current `STREAM_CONTROL = 3` is documented as
+"bidirectional" but the adapter ignores `Exit` from the client
+(`adapter.rs:462-463`). The fix:
 
-**Compilable state:** `cargo test -p alknet-http` passes (unchanged).
+- Split `STREAM_CONTROL = 3` into `STREAM_CTRL_IN = 3` (client→server,
+  write half) and `STREAM_CTRL_OUT = 4` (server→client, read half).
+- Update `InvalidStreamType` bound from `> 3` to `> 4`.
+- Update `ChunkReader`/`ChunkWriter` to handle the new stream types.
+- Update the adapter to properly route control messages on both halves.
+- Update `control.rs` to reflect the split (resize/signal/eof on
+  ctrl_in, exit on ctrl_out).
 
-**Done when:** N/A — deferred to a future `alknet-http` rework task.
+This is a TTY-layer fix — the channels layer has no `stream_type`
+concept and is unaffected.
+
+**Compilable state:** `cargo test -p alknet-tty` passes. The control
+channel is properly bidirectional.
+
+**Done when:** `cargo test -p alknet-tty` passes, `STREAM_CONTROL` is
+replaced with `STREAM_CTRL_IN`/`STREAM_CTRL_OUT`, the adapter handles
+both directions correctly.
+
+### Phase 8: Channels spec cleanup — 8-byte wire format, no `stream_type`
+
+**What:** Update the channels crate specs (`docs/architecture/crates/
+channels/`) and ADRs to reflect the stream-unification resolution:
+
+- Wire format is **8 bytes**: `[channel_id:u32 BE][length:u32 BE]`
+  followed by an opaque payload. The channels layer owns `channel_id`
+  and `length`; the payload is the handler's framing, carried
+  transparently.
+- The channels layer has no `stream_type` concept — not in its header,
+  not in its code, not in its mental model.
+- `into_sub_streams()` is removed. `accept_bi` is the only accessor;
+  it yields one `BiStream` per channel.
+- Every channel is a `BiStream`. Handlers sub-multiplex their
+  `BiStream` however they want (TTY's 5-byte format, call's
+  length-prefixed JSON, tunnel's raw bytes, SSH's channel protocol).
+- The add/strip utility: `add_channel_id(channel_id, payload_bytes) ->
+  chunk` on write; `strip_channel_id(chunk) -> (channel_id,
+  payload_bytes)` on read.
+
+**ADRs amended:**
+- ADR-071: wire format is 8 bytes, not 9; no `stream_type` in the
+  channels header.
+- ADR-074: `into_sub_streams` removed; `accept_bi` is the only
+  accessor.
+- ADR-077: reversed — TTY always uses its 5-byte format; the channels
+  layer carries it transparently in the payload.
+
+**This is a spec/docs phase** — the channels crate doesn't exist yet
+(per ADR-081, it's planned as `alknet-channels-core` +
+`alknet-channels-call`). The POC at `/workspace/alknet-channels-poc/`
+validated the 9-byte format; the spec update changes it to 8 bytes
+before implementation begins.
+
+**Compilable state:** No code changes — spec/docs only. `cargo test`
+passes workspace-wide (unchanged).
+
+**Done when:** ADRs 071/074/077 are amended, channels spec docs are
+updated, the POC's wire format notes are updated.
+
+### Phase 9: Fix `alknet-http` — drop `QuicStream` wrapper
+
+**What:** Remove the `QuicStream` wrapper from `server/adapter.rs`
+(lines 271-314) and the `QuicStreamDuplex` test helper (lines
+456-493). After Phase 6, `accept_bi()` returns `BiStream` which is
+already `AsyncRead + AsyncWrite` — the hand-rolled adapter is
+unnecessary.
+
+**The change:** `HttpAdapter::handle` calls `connection.accept_bi()`,
+gets a `BiStream`, and passes it directly to `serve_io()` (or via
+`TokioIo::new` if the `hyper` adapter needs it). The 44-line
+`QuicStream` wrapper is deleted. The test helper is replaced with
+`BiStream`-based test utilities.
+
+**Why this is now a light pruning:** The original Phase 6 was deferred
+because `SendStream` is `AsyncWrite`-only and `RecvStream` is
+`AsyncRead`-only — the `QuicStream` wrapper was necessary to combine
+them. After Phase 6, `BiStream` bundles both halves natively. The
+wrapper becomes dead code.
+
+**Compilable state:** `cargo test -p alknet-http` passes. The
+`QuicStream` wrapper and `QuicStreamDuplex` test helper are removed.
+
+**Done when:** `cargo test -p alknet-http` passes, no `QuicStream` or
+`QuicStreamDuplex` in the codebase.
 
 ---
 
@@ -458,7 +532,10 @@ QUIC assumptions; this wrapper is the least of it.
 | 3 (client) | `alknet-client` builds standalone; call still has old `connect` (duplicate) |
 | 4 (core prune) | core is lightweight; `endpoint.rs` gone; `ConnectionCredentials` in core |
 | 5 (call prune) | call is pure protocol; `connect` + TLS helpers + `CallCredentials` + `from_call` dead path gone; Category B tests already moved; 2 `CallCredentials` tests moved to core |
-| 6 (http fix) | **deferred** — `QuicStream` wrapper is necessary (SendStream is AsyncWrite-only, RecvStream is AsyncRead-only); needs deeper rework |
+| 6 (stream unification) | `BiStream` is the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public constructor; `SendStream`/`RecvStream` are thin internal newtypes |
+| 7 (TTY control fix) | TTY control channel is properly bidirectional (`STREAM_CTRL_IN = 3`, `STREAM_CTRL_OUT = 4`); `InvalidStreamType` bound updated |
+| 8 (channels spec) | Channels spec updated to 8-byte wire format; no `stream_type` concept; `into_sub_streams` removed; ADRs 071/074/077 amended |
+| 9 (http fix) | `QuicStream` wrapper removed from `alknet-http`; `BiStream` used directly; `QuicStreamDuplex` test helper removed |
 
 Phases 0-3 are purely additive — no existing code breaks, no tests
 break. Phases 4-5 are subtractive — the pruned code's callers don't
@@ -466,7 +543,11 @@ exist yet (no assembly layer), so the breakage is confined to the
 crate's own tests (and per the test audit, the call prune removes
 `CallCredentials` and the `from_call` dead path; the TLS tests moved in
 Phase 1, the `CallCredentials` tests moved to core, the protocol tests
-use `spawn_dispatch` directly). Phase 6 is a small fix.
+use `spawn_dispatch` directly). Phase 6 (stream unification) is a core
+refactor that touches all handler crates but is mechanical — handlers
+already treat `accept_bi()` results as `AsyncRead + AsyncWrite`. Phase
+7 (TTY control fix) is scoped to `alknet-tty`. Phase 8 (channels spec)
+is docs-only. Phase 9 (http fix) is a light pruning enabled by Phase 6.
 
 ## Ordering rationale
 
@@ -487,15 +568,23 @@ The ordering is **deps before dependents, additive before subtractive**:
 - `alknet-client` (Phase 3) depends on `alknet-tls`
   (`TlsClientConfig`) + `alknet-core` (`ConnectionCredentials` — moved
   in Phase 0, so the dep is clean from the start).
-- Phases 4-5 (the prunes) go last because they're subtractive. The
-  new crates (0-3) must exist first so the pruned code's
-  functionality has a home.
-- Phase 6 (http fix) goes last because it's independent of the
-  extraction — it's a residual fix that could happen at any point
-  after ADR-065 landed (which it did). **Deferred 2026-07-17** — the
-  `QuicStream` wrapper is necessary (see Phase 6 above); the
-  `alknet-http` crate needs broader rework to fully decouple from
-  QUIC assumptions.
+- Phases 4-5 (the prunes) go after the new crates because they're
+  subtractive. The new crates (0-3) must exist first so the pruned
+  code's functionality has a home.
+- Phase 6 (stream unification) goes after the prunes because it
+  touches all handler crates — the prunes reduce the surface area
+  first, making the `BiStream` refactor simpler.
+- Phase 7 (TTY control fix) goes after stream unification because
+  TTY's `wire.rs` already needs updating for the `BiStream` change
+  (the `ChunkReader` reads from an `AsyncRead`; after Phase 6 it
+  reads from a `BiStream` which is the same trait). The control
+  channel split is a small additional change on top.
+- Phase 8 (channels spec) is docs-only and can happen anytime after
+  the stream-unification research settles. Placed after Phase 7
+  because the TTY fix validates the "handler owns its sub-streams"
+  model before the channels spec is finalized.
+- Phase 9 (http fix) goes last because it depends on Phase 6
+  (`BiStream` makes the `QuicStream` wrapper unnecessary).
 
 ## Resolved decisions
 
@@ -642,15 +731,21 @@ breaks zero lib tests because no lib test calls `connect`.
 
 ## Resolved questions
 
-- **Phase 6 `accept_bi` semantics:** **Re-evaluated 2026-07-17.**
-  The original finding was incorrect. `SendStream` implements only
-  `AsyncWrite`; `RecvStream` implements only `AsyncRead`. Neither is
-  both. The `QuicStream` wrapper (44 lines) is a necessary adapter
-  that combines the split `(SendStream, RecvStream)` pair from
-  `accept_bi()` into a single `AsyncRead + AsyncWrite` type. Phase 6
-  is deferred — removing the wrapper would require a new abstraction
-  (e.g., a `BidiStream` type in `alknet-core`) or restructuring
-  `HttpAdapter::handle`. See Phase 6 above.
+- **Phase 9 `accept_bi` semantics:** **Resolved 2026-07-18.** After
+  Phase 6 (stream unification), `accept_bi()` returns `BiStream` which
+  is already `AsyncRead + AsyncWrite`. The `QuicStream` wrapper (44
+  lines) becomes unnecessary — `BiStream` bundles both halves
+  natively. Phase 9 is a light pruning: delete the wrapper, pass
+  `BiStream` directly to `serve_io()`. The original deferral
+  (2026-07-17) was correct at the time (`SendStream` was
+  `AsyncWrite`-only, `RecvStream` was `AsyncRead`-only) but is
+  obsoleted by the `BiStream` refactor.
+- **Phase 6-8 ordering:** **Resolved 2026-07-18.** Stream unification
+  (Phase 6) goes before TTY control fix (Phase 7) because TTY's
+  `wire.rs` already needs updating for `BiStream`. Channels spec
+  cleanup (Phase 8) is docs-only and goes after the TTY fix validates
+  the "handler owns its sub-streams" model. HTTP fix (Phase 9) depends
+  on Phase 6.
 - **Integration test home:** **Resolved.** The dial + take-over
   composition test moves to `alknet-client/tests/` with a minimal echo
   `ProtocolHandler` on a test ALPN — no `alknet-call` dependency, no
