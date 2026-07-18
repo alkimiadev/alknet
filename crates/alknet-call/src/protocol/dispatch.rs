@@ -285,9 +285,13 @@ impl Dispatcher {
     pub(crate) async fn handle_stream(
         &self,
         connection: Arc<CallConnection>,
-        send: alknet_core::types::SendStream,
-        recv: alknet_core::types::RecvStream,
+        stream: alknet_core::types::BiStream,
     ) {
+        // `stream` is a `BiStream` (ADR-092) — `AsyncRead + AsyncWrite + Send
+        // + Unpin`. Split into the read and write halves the call protocol's
+        // frame reader/writer consume. The split is the stdlib idiom; no
+        // per-handler wrapper.
+        let (recv, send) = tokio::io::split(stream);
         let mut reader = FrameFramedReader::new(recv);
         let mut writer = FrameFramedWriter::new(send);
 
@@ -404,11 +408,11 @@ impl Dispatcher {
 
         loop {
             match quic.accept_bi().await {
-                Ok((send, recv)) => {
+                Ok(stream) => {
                     let conn = Arc::clone(&connection);
                     let dispatcher = self.clone();
                     tokio::spawn(async move {
-                        dispatcher.handle_stream(conn, send, recv).await;
+                        dispatcher.handle_stream(conn, stream).await;
                     });
                 }
                 Err(StreamError::ConnectionClosed) => break,
@@ -458,17 +462,9 @@ mod tests {
     use alknet_core::auth::{AuthToken, Identity, IdentityProvider};
     use alknet_core::types::Capabilities;
     use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Mutex as StdMutex;
 
-    fn stub_connection() -> alknet_core::types::Connection {
-        alknet_core::types::Connection::from_stream(
-            tokio::io::sink(),
-            tokio::io::empty(),
-            b"alknet/call".to_vec(),
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-        )
-    }
+    use crate::protocol::sink_empty_connection as stub_connection;
 
     struct StaticIdentityProvider {
         tokens: StdMutex<HashMap<String, Identity>>,
@@ -1180,10 +1176,9 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
-        dp.handle_stream(conn, send, recv).await;
+        dp.handle_stream(conn, stream).await;
 
         let frames = read_all_frames(&mut sink).await;
         assert_eq!(frames.len(), 4, "3 responded + 1 completed");
@@ -1219,10 +1214,9 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
-        dp.handle_stream(conn, send, recv).await;
+        dp.handle_stream(conn, stream).await;
 
         let frames = read_all_frames(&mut sink).await;
         assert_eq!(frames.len(), 2, "1 responded + 1 error, no completed");
@@ -1255,10 +1249,9 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
-        dp.handle_stream(conn, send, recv).await;
+        dp.handle_stream(conn, stream).await;
 
         let frames = read_all_frames(&mut sink).await;
         assert_eq!(frames.len(), 1, "query: exactly one frame, no completed");
@@ -1286,10 +1279,9 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, mut sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
-        dp.handle_stream(conn, send, recv).await;
+        dp.handle_stream(conn, stream).await;
 
         let frames = read_all_frames(&mut sink).await;
         assert_eq!(frames.len(), 1, "unknown op: single error, no completed");
@@ -1346,13 +1338,12 @@ mod tests {
         );
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(encode_frame(&request)));
         let (send, _sink) = tokio::io::duplex(8 * 1024);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
         let conn_clone = Arc::clone(&conn);
         let dp_clone = dp.clone();
         let handle = tokio::spawn(async move {
-            dp_clone.handle_stream(conn_clone, send, recv).await;
+            dp_clone.handle_stream(conn_clone, stream).await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

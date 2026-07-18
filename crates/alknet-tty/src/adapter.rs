@@ -118,8 +118,8 @@ impl ProtocolHandler for TtyAdapter {
             let _ = connection.set_identity(identity);
         }
         loop {
-            let (send, recv) = match connection.accept_bi().await {
-                Ok(pair) => pair,
+            let stream = match connection.accept_bi().await {
+                Ok(stream) => stream,
                 Err(StreamError::ConnectionClosed) => break,
                 Err(StreamError::StreamClosed) => break,
                 Err(e) => return Err(HandlerError::from(e)),
@@ -128,7 +128,14 @@ impl ProtocolHandler for TtyAdapter {
             let ownership = self.ownership.clone();
             let identity = auth.identity.clone();
             tokio::spawn(async move {
-                let _ = drive_session(send, recv, backends, ownership, identity).await;
+                // `stream` is a `BiStream` (ADR-092) — `AsyncRead + AsyncWrite
+                // + Send + Unpin`. Split into halves for `drive_session`
+                // (which takes separate `AsyncWrite` + `AsyncRead` args). The
+                // split is the stdlib idiom for `TcpStream`-style duplex
+                // streams; no per-handler wrapper.
+                let (client_read, client_write) = tokio::io::split(stream);
+                let _ =
+                    drive_session(client_write, client_read, backends, ownership, identity).await;
             });
         }
         Ok(())
@@ -164,10 +171,10 @@ async fn send_negotiation_error<W: AsyncWrite + Unpin>(
 
 /// Drive a `alknet/tty` session end-to-end over a bidi stream.
 ///
-/// `client_send` / `client_recv` are the two halves of the bidi stream (QUIC
-/// `SendStream` / `RecvStream`). Returns when the session is complete (exit
-/// chunk sent, stream closed) or when the stream is reset (cancel-cleanup
-/// path — no exit chunk sent).
+/// `client_send` / `client_recv` are the two halves of the bidi stream
+/// (split from the `BiStream` yielded by `accept_bi` via `tokio::io::split`).
+/// Returns when the session is complete (exit chunk sent, stream closed) or
+/// when the stream is reset (cancel-cleanup path — no exit chunk sent).
 ///
 /// This is the per-stream session driver — the counterpart to the POC's
 /// `session::drive_session` (`/workspace/alknet-tty-poc/src/session.rs`),

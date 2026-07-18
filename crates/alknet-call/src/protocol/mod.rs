@@ -10,3 +10,9 @@ pub mod connection;
 pub mod dispatch;
 pub mod pending;
 pub mod wire;
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+pub(crate) use test_support::sink_empty_connection;

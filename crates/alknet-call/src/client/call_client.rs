@@ -85,16 +85,8 @@ mod tests {
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::auth::Identity;
     use alknet_core::types::Capabilities;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    fn stub_connection() -> Connection {
-        Connection::from_stream(
-            tokio::io::sink(),
-            tokio::io::empty(),
-            b"alknet/call".to_vec(),
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-        )
-    }
+    use crate::protocol::sink_empty_connection as stub_connection;
 
     fn external_spec(name: &str) -> OperationSpec {
         OperationSpec::new(

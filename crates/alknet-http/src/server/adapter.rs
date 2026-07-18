@@ -8,9 +8,7 @@
 //! from `gateway_routes`; `/openapi.json` serves the `to_openapi` projection
 //! of the registry.
 
-use std::io;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -229,12 +227,14 @@ impl ProtocolHandler for HttpAdapter {
             let _ = connection.set_identity(identity);
         }
 
-        let (send, recv) = connection
+        // `accept_bi` returns a `BiStream` (ADR-092) — already
+        // `AsyncRead + AsyncWrite + Send + Unpin`. No wrapper needed; pass
+        // it directly to `serve_io` via `TokioIo::new`.
+        let stream = connection
             .accept_bi()
             .await
             .map_err(stream_error_to_handler)?;
-        let io = QuicStream::new(send, recv);
-        self.serve_io(io).await
+        self.serve_io(stream).await
     }
 }
 
@@ -266,51 +266,6 @@ impl HttpAdapter {
 
 fn stream_error_to_handler(e: StreamError) -> HandlerError {
     HandlerError::from(e)
-}
-
-struct QuicStream {
-    send: alknet_core::types::SendStream,
-    recv: alknet_core::types::RecvStream,
-}
-
-impl QuicStream {
-    fn new(send: alknet_core::types::SendStream, recv: alknet_core::types::RecvStream) -> Self {
-        Self { send, recv }
-    }
-}
-
-impl AsyncRead for QuicStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        Pin::new(&mut self.recv).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for QuicStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<io::Result<usize>> {
-        Pin::new(&mut self.send).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        Pin::new(&mut self.send).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        Pin::new(&mut self.send).poll_shutdown(cx)
-    }
 }
 
 #[cfg(test)]
@@ -418,29 +373,26 @@ mod tests {
     async fn send_request_and_read_response(
         request: &[u8],
     ) -> (String, tokio::task::JoinHandle<()>) {
-        let (mut client_send, server_recv) = duplex(8 * 1024);
-        let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex {
-            read: server_recv,
-            write: server_send,
-        };
+        // One duplex: `server_io` is the server's end (passed to `serve_io`);
+        // `client_io` is the client's end (writes requests, reads responses).
+        // `tokio::io::duplex` yields two `DuplexStream`s, each
+        // `AsyncRead + AsyncWrite + Send + Unpin` — the same bounds `BiStream`
+        // exposes (ADR-092), so no wrapper is needed.
+        let (server_io, mut client_io) = duplex(8 * 1024);
 
         let adapter = HttpAdapter::new(provider(), empty_registry());
         let handle = tokio::spawn(async move {
             adapter.serve_io(server_io).await.ok();
         });
 
-        client_send.write_all(request).await.unwrap();
-        client_send.flush().await.unwrap();
+        client_io.write_all(request).await.unwrap();
+        client_io.flush().await.unwrap();
 
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                client_recv.read(&mut buf),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client_io.read(&mut buf))
+                .await
             {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
@@ -451,45 +403,6 @@ mod tests {
 
         let response_str = String::from_utf8_lossy(&response).to_string();
         (response_str, handle)
-    }
-
-    struct QuicStreamDuplex {
-        read: tokio::io::DuplexStream,
-        write: tokio::io::DuplexStream,
-    }
-
-    impl AsyncRead for QuicStreamDuplex {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            Pin::new(&mut self.read).poll_read(cx, buf)
-        }
-    }
-
-    impl AsyncWrite for QuicStreamDuplex {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            Pin::new(&mut self.write).poll_write(cx, buf)
-        }
-
-        fn poll_flush(
-            mut self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            Pin::new(&mut self.write).poll_flush(cx)
-        }
-
-        fn poll_shutdown(
-            mut self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            Pin::new(&mut self.write).poll_shutdown(cx)
-        }
     }
 
     #[tokio::test]
@@ -509,29 +422,21 @@ mod tests {
         let extra = Router::new().route("/v1/foo", get(|| async { (StatusCode::OK, "foo-body") }));
         let adapter = HttpAdapter::new(provider(), empty_registry()).with_extra_routes(extra);
 
-        let (mut client_send, server_recv) = duplex(8 * 1024);
-        let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex {
-            read: server_recv,
-            write: server_send,
-        };
+        let (server_io, mut client_io) = duplex(8 * 1024);
 
         let handle = tokio::spawn(async move {
             adapter.serve_io(server_io).await.ok();
         });
 
         let request = b"GET /v1/foo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        client_send.write_all(request).await.unwrap();
-        client_send.flush().await.unwrap();
+        client_io.write_all(request).await.unwrap();
+        client_io.flush().await.unwrap();
 
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                client_recv.read(&mut buf),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client_io.read(&mut buf))
+                .await
             {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
@@ -556,29 +461,21 @@ mod tests {
         );
         let adapter = HttpAdapter::new(provider(), empty_registry()).with_extra_routes(extra);
 
-        let (mut client_send, server_recv) = duplex(8 * 1024);
-        let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex {
-            read: server_recv,
-            write: server_send,
-        };
+        let (server_io, mut client_io) = duplex(8 * 1024);
 
         let handle = tokio::spawn(async move {
             adapter.serve_io(server_io).await.ok();
         });
 
         let request = b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        client_send.write_all(request).await.unwrap();
-        client_send.flush().await.unwrap();
+        client_io.write_all(request).await.unwrap();
+        client_io.flush().await.unwrap();
 
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                client_recv.read(&mut buf),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client_io.read(&mut buf))
+                .await
             {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),
@@ -597,25 +494,17 @@ mod tests {
     }
 
     async fn serve_and_read(adapter: HttpAdapter, request: &[u8]) -> String {
-        let (mut client_send, server_recv) = duplex(8 * 1024);
-        let (server_send, mut client_recv) = duplex(8 * 1024);
-        let server_io = QuicStreamDuplex {
-            read: server_recv,
-            write: server_send,
-        };
+        let (server_io, mut client_io) = duplex(8 * 1024);
         let handle = tokio::spawn(async move {
             adapter.serve_io(server_io).await.ok();
         });
-        client_send.write_all(request).await.unwrap();
-        client_send.flush().await.unwrap();
+        client_io.write_all(request).await.unwrap();
+        client_io.flush().await.unwrap();
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                client_recv.read(&mut buf),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(5), client_io.read(&mut buf))
+                .await
             {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => response.extend_from_slice(&buf[..n]),

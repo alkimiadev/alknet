@@ -140,10 +140,9 @@ impl CallAdapter {
     pub(crate) async fn handle_stream(
         &self,
         connection: Arc<CallConnection>,
-        send: alknet_core::types::SendStream,
-        recv: alknet_core::types::RecvStream,
+        stream: alknet_core::types::BiStream,
     ) {
-        self.dispatcher.handle_stream(connection, send, recv).await;
+        self.dispatcher.handle_stream(connection, stream).await;
     }
 }
 
@@ -179,9 +178,10 @@ mod tests {
     use alknet_core::auth::AuthToken;
     use alknet_core::types::Capabilities;
     use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Mutex as StdMutex;
     use std::time::{Duration, Instant};
+
+    use crate::protocol::sink_empty_connection as stub_connection;
 
     struct StaticIdentityProvider {
         tokens: StdMutex<HashMap<String, Identity>>,
@@ -288,15 +288,6 @@ mod tests {
             let id = context.identity.as_ref().map(|i| i.id.clone());
             ResponseEnvelope::ok(context.request_id, serde_json::json!({ "identity_id": id }))
         })
-    }
-
-    fn stub_connection() -> Connection {
-        Connection::from_stream(
-            tokio::io::sink(),
-            tokio::io::empty(),
-            b"alknet/call".to_vec(),
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-        )
     }
 
     #[test]
@@ -1193,10 +1184,9 @@ mod tests {
         let frame = encode_frame(&EventEnvelope::aborted("parent-1"));
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(frame));
         let (send, _recv_sink) = tokio::io::duplex(64);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
-        adapter.handle_stream(conn.clone(), send, recv).await;
+        adapter.handle_stream(conn.clone(), stream).await;
 
         let pending = conn.pending().lock();
         assert!(
@@ -1233,10 +1223,9 @@ mod tests {
         let frame = encode_frame(&EventEnvelope::aborted("does-not-exist"));
         let recv = tokio::io::BufReader::new(std::io::Cursor::new(frame));
         let (send, _recv_sink) = tokio::io::duplex(64);
-        let send = alknet_core::types::SendStream::from_stream(send);
-        let recv = alknet_core::types::RecvStream::from_stream(recv);
+        let stream = alknet_core::types::BiStream::from_joined(recv, send);
 
-        adapter.handle_stream(conn.clone(), send, recv).await;
+        adapter.handle_stream(conn.clone(), stream).await;
 
         let pending = conn.pending().lock();
         assert!(

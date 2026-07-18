@@ -128,12 +128,9 @@ fn build_bundles(
                 Arc::new(op_summary.connection.clone()),
                 remote_name,
             )),
-            OperationType::Query | OperationType::Mutation => {
-                HandlerKind::Once(make_forwarding_handler(
-                    Arc::new(op_summary.connection.clone()),
-                    remote_name,
-                ))
-            }
+            OperationType::Query | OperationType::Mutation => HandlerKind::Once(
+                make_forwarding_handler(Arc::new(op_summary.connection.clone()), remote_name),
+            ),
         };
         bundles.push(HandlerRegistration::new(
             spec,
@@ -331,17 +328,13 @@ fn parse_access_control(v: &Value) -> AccessControl {
 /// If `context.identity` is `None` (the hub chose not to disclose, or has not
 /// authenticated an originator), `forwarded_for` is omitted — the spoke
 /// receives only the hub's identity.
-fn make_forwarding_handler(
-    connection: Arc<CallConnection>,
-    remote_name: String,
-) -> Handler {
+fn make_forwarding_handler(connection: Arc<CallConnection>, remote_name: String) -> Handler {
     use crate::registry::registration::make_handler;
     make_handler(move |input, context| {
         let connection = Arc::clone(&connection);
         let remote_name = remote_name.clone();
         async move {
-            let payload =
-                build_forwarded_payload(&remote_name, input, &context);
+            let payload = build_forwarded_payload(&remote_name, input, &context);
             // The forwarding handler invokes the remote op via the
             // CallConnection. The parent_request_id participates in the abort
             // cascade (ADR-016 §6): if the parent is aborted, the cascade
@@ -381,8 +374,7 @@ fn make_streaming_forwarding_handler(
         let connection = Arc::clone(&connection);
         let remote_name = remote_name.clone();
         once(async move {
-            let payload =
-                build_forwarded_payload(&remote_name, input, &context);
+            let payload = build_forwarded_payload(&remote_name, input, &context);
             connection.subscribe_with_payload(payload).await
         })
         .flatten()
@@ -393,11 +385,7 @@ fn make_streaming_forwarding_handler(
 /// `forwarded_for` from the hub's `OperationContext.identity` (ADR-032 §3).
 /// `forwarded_for` is omitted when `context.identity` is `None` (the hub
 /// chooses not to disclose the originator).
-fn build_forwarded_payload(
-    operation_id: &str,
-    input: Value,
-    context: &OperationContext,
-) -> Value {
+fn build_forwarded_payload(operation_id: &str, input: Value, context: &OperationContext) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
         "operationId".to_string(),
@@ -421,17 +409,9 @@ mod tests {
     use alknet_core::auth::Identity;
     use alknet_core::types::Capabilities;
     use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Mutex as StdMutex;
 
-    fn stub_connection() -> alknet_core::types::Connection {
-        alknet_core::types::Connection::from_stream(
-            tokio::io::sink(),
-            tokio::io::empty(),
-            b"alknet/call".to_vec(),
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-        )
-    }
+    use crate::protocol::sink_empty_connection as stub_connection;
 
     fn sample_schema_json(name: &str, op_type: &str) -> Value {
         json!({

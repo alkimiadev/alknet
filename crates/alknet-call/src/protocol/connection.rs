@@ -16,6 +16,7 @@ use alknet_core::types::Connection;
 use futures::stream::Stream;
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use super::pending::PendingRequestMap;
@@ -126,13 +127,17 @@ impl CallConnection {
             }
         };
 
-        let (send, recv) = match connection.open_bi().await {
-            Ok(pair) => pair,
+        // `open_bi` returns a `BiStream` (ADR-092); split it into halves for
+        // the call protocol's separate write (request) and read (response)
+        // pumps. The split is the stdlib idiom; no per-handler wrapper.
+        let stream = match connection.open_bi().await {
+            Ok(s) => s,
             Err(err) => {
                 let call_error = CallError::internal(format!("failed to open stream: {err}"));
                 return ResponseEnvelope::error(request_id, call_error);
             }
         };
+        let (recv, send) = tokio::io::split(stream);
 
         let receiver = {
             let mut pending = self.pending.lock();
@@ -197,13 +202,16 @@ impl CallConnection {
             }
         };
 
-        let (send, recv) = match connection.open_bi().await {
-            Ok(pair) => pair,
+        // `open_bi` returns a `BiStream` (ADR-092); split for the separate
+        // write (request) and read (subscription events) pumps.
+        let stream = match connection.open_bi().await {
+            Ok(s) => s,
             Err(err) => {
                 let call_error = CallError::internal(format!("failed to open stream: {err}"));
                 return SubscriptionStream::closed(request_id, call_error);
             }
         };
+        let (recv, send) = tokio::io::split(stream);
 
         let receiver = {
             let mut pending = self.pending.lock();
@@ -235,12 +243,15 @@ impl CallConnection {
         self.pending.lock().handle_aborted(request_id);
     }
 
-    async fn write_request(
+    async fn write_request<W>(
         &self,
-        send: alknet_core::types::SendStream,
+        send: W,
         request_id: &str,
         payload: Value,
-    ) -> Result<(), String> {
+    ) -> Result<(), String>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let envelope = EventEnvelope::requested(request_id, payload);
         let mut writer = FrameFramedWriter::new(send);
         writer
@@ -254,10 +265,13 @@ impl CallConnection {
             .connection
             .as_ref()
             .ok_or_else(|| "no underlying connection (overlay-only)".to_string())?;
-        let (send, _recv) = connection
+        // `open_bi` returns a `BiStream` (ADR-092). We only need the write
+        // half to send the envelope; split and drop the read half.
+        let stream = connection
             .open_bi()
             .await
             .map_err(|e| format!("failed to open stream: {e}"))?;
+        let (_recv, send) = tokio::io::split(stream);
         let mut writer = FrameFramedWriter::new(send);
         writer
             .write_frame(envelope)
@@ -266,10 +280,10 @@ impl CallConnection {
     }
 }
 
-async fn read_stream_until_closed(
-    recv: alknet_core::types::RecvStream,
-    pending: &Arc<Mutex<PendingRequestMap>>,
-) {
+async fn read_stream_until_closed<R>(recv: R, pending: &Arc<Mutex<PendingRequestMap>>)
+where
+    R: AsyncRead + Unpin,
+{
     let mut reader = FrameFramedReader::new(recv);
     while let Ok(envelope) = reader.read_frame().await {
         dispatch_envelope(pending, envelope);
@@ -458,17 +472,9 @@ mod tests {
     use crate::registry::spec::{AccessControl, OperationSpec, OperationType, Visibility};
     use alknet_core::types::Capabilities;
     use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
 
-    fn stub_connection() -> Connection {
-        Connection::from_stream(
-            tokio::io::sink(),
-            tokio::io::empty(),
-            b"alknet/call".to_vec(),
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321)),
-        )
-    }
+    use crate::protocol::sink_empty_connection as stub_connection;
 
     fn external_spec(name: &str) -> OperationSpec {
         OperationSpec::new(

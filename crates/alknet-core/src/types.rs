@@ -223,143 +223,193 @@ pub trait ProtocolHandler: Send + Sync + 'static {
     async fn handle(&self, connection: Connection, auth: &AuthContext) -> Result<(), HandlerError>;
 }
 
-pub trait BiStream: AsyncRead + AsyncWrite + Send + Unpin {}
+// --- BiStream: the handler leaf (ADR-092) ---------------------------------
+//
+// `accept_bi`/`open_bi` yield `BiStream`, a concrete newtype that boxes the
+// joined inner transport. The join happens once in the `BidiStreamSource`
+// impl (quinn/iroh via `tokio::io::join`, single-stream via the input
+// `AsyncRead + AsyncWrite` boxed directly). The split never crosses a crate
+// boundary as part of a constructor: `Connection::from_bidi` is the only
+// public stream constructor; `Connection::from_stream` is removed.
 
-enum SendStreamKind {
-    #[cfg(feature = "quinn")]
-    Quinn(quinn::SendStream),
-    #[cfg(feature = "iroh")]
-    Iroh(iroh::endpoint::SendStream),
-    Stream(Box<dyn AsyncWrite + Send + Unpin>),
+/// Internal helper trait — the union of `AsyncRead + AsyncWrite + Send +
+/// Unpin`. Not public; exists only to give `BiStream` a single boxed field.
+trait AsyncReadWrite: AsyncRead + AsyncWrite + Send {}
+impl<T: AsyncRead + AsyncWrite + Send> AsyncReadWrite for T {}
+
+/// The handler leaf — a bidirectional byte stream (ADR-092).
+///
+/// `accept_bi`/`open_bi` return a `BiStream`, not a split
+/// `(SendStream, RecvStream)` pair. Handlers that want the split halves call
+/// `tokio::io::split(&mut *stream)` (the stdlib idiom `tokio::io::split`
+/// already provides for `TcpStream` and `TlsStream<TcpStream>`). The
+/// split is a stdlib call at the handler boundary, not a per-handler trait
+/// wrapper.
+///
+/// `BiStream: AsyncRead + AsyncWrite + Send + Unpin` by construction. The
+/// old `pub trait BiStream: AsyncRead + AsyncWrite + Send + Unpin {}`
+/// (ADR-007) is removed — the trait was never consumed, and the concrete
+/// struct carries the same trait bounds forward as implied bounds, not a
+/// marker trait. The name and the bounds survive; the shape becomes a
+/// concrete leaf.
+pub struct BiStream {
+    inner: Box<dyn AsyncReadWrite + Unpin>,
 }
 
-enum RecvStreamKind {
-    #[cfg(feature = "quinn")]
-    Quinn(quinn::RecvStream),
-    #[cfg(feature = "iroh")]
-    Iroh(iroh::endpoint::RecvStream),
-    Stream(Box<dyn AsyncRead + Send + Unpin>),
+impl BiStream {
+    /// Join a read half and a write half into a single `BiStream`. The join
+    /// happens once, in the `BidiStreamSource` impl — handlers receive the
+    /// joined `BiStream` and never see the pair.
+    ///
+    /// Public so that downstream crates (the channels reassembly path, tests
+    /// that construct a `BiStream` from independent halves) can join their
+    /// own halves. The rule this normalizes: **the split never crosses a
+    /// crate boundary as part of a constructor** — `Connection::from_bidi`
+    /// takes a joined `BiStream`, and `BiStream::from_joined` is the join.
+    /// A crate that produces split halves naturally (channels reassembly)
+    /// joins them itself via this constructor, then hands the `BiStream` to
+    /// `Connection::from_bidi` (or yields it from its own
+    /// `BidiStreamSource::accept_bi` impl).
+    pub fn from_joined<R, W>(reader: R, writer: W) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        Self {
+            inner: Box::new(tokio::io::join(reader, writer)),
+        }
+    }
+
+    /// Wrap a single value that is already `AsyncRead + AsyncWrite` (e.g.
+    /// `tokio::io::DuplexStream`, `TlsStream<TcpStream>`,
+    /// `russh::Channel::into_stream()`). Used by the single-stream
+    /// `BidiStreamSource` impl and by `Connection::from_bidi`.
+    pub(crate) fn from_bidi<S>(stream: S) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        Self {
+            inner: Box::new(stream),
+        }
+    }
 }
+
+impl AsyncRead for BiStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(self.inner.as_mut()).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for BiStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(self.inner.as_mut()).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(self.inner.as_mut()).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(self.inner.as_mut()).poll_shutdown(cx)
+    }
+}
+
+// --- SendStream / RecvStream: thin newtypes (ADR-092) ---------------------
+//
+// These remain as the typed-sub-stream leaves for `into_sub_streams()`
+// (ADR-074) and the channels reassembly path's `SubStreamHandle` leaves
+// (future). They never cross a crate boundary as part of a `Connection`
+// constructor — `Connection::from_bidi` is the only public constructor and
+// takes a joined `BiStream`. The quinn-welded `SendStreamKind` /
+// `RecvStreamKind` enums are gone; the quinn/iroh dispatch moves into the
+// `BidiStreamSource` impls (the join happens once, there).
 
 pub struct SendStream {
-    kind: SendStreamKind,
+    inner: Box<dyn AsyncWrite + Send + Unpin>,
 }
 
 pub struct RecvStream {
-    kind: RecvStreamKind,
+    inner: Box<dyn AsyncRead + Send + Unpin>,
 }
 
 impl SendStream {
-    #[cfg(feature = "quinn")]
-    fn from_quinn(stream: quinn::SendStream) -> Self {
-        Self {
-            kind: SendStreamKind::Quinn(stream),
-        }
-    }
-
-    #[cfg(feature = "iroh")]
-    fn from_iroh(stream: iroh::endpoint::SendStream) -> Self {
-        Self {
-            kind: SendStreamKind::Iroh(stream),
-        }
-    }
-
+    /// Box a write half into the thin `SendStream` newtype. Used by
+    /// `into_sub_streams()` (ADR-074) and the channels reassembly path.
+    /// Not a constructor that feeds `Connection` — the split never crosses
+    /// a crate boundary as part of a constructor (ADR-092).
     pub fn from_stream(stream: impl AsyncWrite + Send + Unpin + 'static) -> Self {
         Self {
-            kind: SendStreamKind::Stream(Box::new(stream)),
+            inner: Box::new(stream),
         }
     }
 }
 
 impl RecvStream {
-    #[cfg(feature = "quinn")]
-    fn from_quinn(stream: quinn::RecvStream) -> Self {
-        Self {
-            kind: RecvStreamKind::Quinn(stream),
-        }
-    }
-
-    #[cfg(feature = "iroh")]
-    fn from_iroh(stream: iroh::endpoint::RecvStream) -> Self {
-        Self {
-            kind: RecvStreamKind::Iroh(stream),
-        }
-    }
-
+    /// Box a read half into the thin `RecvStream` newtype. Used by
+    /// `into_sub_streams()` (ADR-074) and the channels reassembly path.
+    /// Not a constructor that feeds `Connection` — the split never crosses
+    /// a crate boundary as part of a constructor (ADR-092).
     pub fn from_stream(stream: impl AsyncRead + Send + Unpin + 'static) -> Self {
         Self {
-            kind: RecvStreamKind::Stream(Box::new(stream)),
+            inner: Box::new(stream),
         }
     }
 }
 
 impl AsyncWrite for SendStream {
     fn poll_write(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<io::Result<usize>> {
-        match &mut self.get_mut().kind {
-            #[cfg(feature = "quinn")]
-            SendStreamKind::Quinn(s) => AsyncWrite::poll_write(std::pin::Pin::new(s), cx, buf),
-            #[cfg(feature = "iroh")]
-            SendStreamKind::Iroh(s) => AsyncWrite::poll_write(std::pin::Pin::new(s), cx, buf),
-            SendStreamKind::Stream(s) => {
-                AsyncWrite::poll_write(std::pin::Pin::new(s.as_mut()), cx, buf)
-            }
-        }
+        std::pin::Pin::new(self.inner.as_mut()).poll_write(cx, buf)
     }
 
     fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        match &mut self.get_mut().kind {
-            #[cfg(feature = "quinn")]
-            SendStreamKind::Quinn(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s), cx),
-            #[cfg(feature = "iroh")]
-            SendStreamKind::Iroh(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s), cx),
-            SendStreamKind::Stream(s) => AsyncWrite::poll_flush(std::pin::Pin::new(s.as_mut()), cx),
-        }
+        std::pin::Pin::new(self.inner.as_mut()).poll_flush(cx)
     }
 
     fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        match &mut self.get_mut().kind {
-            #[cfg(feature = "quinn")]
-            SendStreamKind::Quinn(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
-            #[cfg(feature = "iroh")]
-            SendStreamKind::Iroh(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
-            SendStreamKind::Stream(s) => AsyncWrite::poll_shutdown(std::pin::Pin::new(s), cx),
-        }
+        std::pin::Pin::new(self.inner.as_mut()).poll_shutdown(cx)
     }
 }
 
 impl AsyncRead for RecvStream {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        match &mut self.get_mut().kind {
-            #[cfg(feature = "quinn")]
-            RecvStreamKind::Quinn(s) => AsyncRead::poll_read(std::pin::Pin::new(s), cx, buf),
-            #[cfg(feature = "iroh")]
-            RecvStreamKind::Iroh(s) => AsyncRead::poll_read(std::pin::Pin::new(s), cx, buf),
-            RecvStreamKind::Stream(s) => {
-                AsyncRead::poll_read(std::pin::Pin::new(s.as_mut()), cx, buf)
-            }
-        }
+        std::pin::Pin::new(self.inner.as_mut()).poll_read(cx, buf)
     }
 }
 
 /// Yield bidirectional streams to a `Connection`. Downstream crates implement
 /// this trait to add connection shapes (channels, a future transport, a test
-/// double beyond the `from_stream` case) without editing `alknet-core`. See
+/// double beyond the single-stream case) without editing `alknet-core`. See
 /// ADR-070 for the full rationale and ADR-065 for the yield-once contract the
-/// `StreamBidiStreamSource` impl preserves.
+/// `StreamBidiStreamSource` impl preserves. The return type is `BiStream`
+/// (ADR-092) — the join happens once, in the impl, not per-handler.
 #[async_trait]
 pub trait BidiStreamSource: Send + Sync + 'static {
     /// Yield the next bidirectional stream this connection provides.
@@ -372,14 +422,14 @@ pub trait BidiStreamSource: Send + Sync + 'static {
     ///   `ConnectionClosed` on all subsequent calls.
     /// - Channels: yields one bidi stream per channel, `ConnectionClosed`
     ///   when the channels connection closes.
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+    async fn accept_bi(&self) -> Result<BiStream, StreamError>;
 
     /// Open a bidirectional stream to the peer.
     ///
     /// Single-stream sources return `StreamClosed` (a single stream cannot
     /// open new application streams — ADR-065). QUIC and channels sources
     /// open new streams.
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError>;
+    async fn open_bi(&self) -> Result<BiStream, StreamError>;
 
     /// The peer's address, if available. Informational (NAT/proxy).
     fn remote_addr(&self) -> Option<SocketAddr>;
@@ -401,22 +451,22 @@ struct QuinnBidiStreamSource {
 #[cfg(feature = "quinn")]
 #[async_trait]
 impl BidiStreamSource for QuinnBidiStreamSource {
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    async fn accept_bi(&self) -> Result<BiStream, StreamError> {
         let (send, recv) = self
             .conn
             .accept_bi()
             .await
             .map_err(map_quinn_connection_error)?;
-        Ok((SendStream::from_quinn(send), RecvStream::from_quinn(recv)))
+        Ok(BiStream::from_joined(recv, send))
     }
 
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    async fn open_bi(&self) -> Result<BiStream, StreamError> {
         let (send, recv) = self
             .conn
             .open_bi()
             .await
             .map_err(map_quinn_connection_error)?;
-        Ok((SendStream::from_quinn(send), RecvStream::from_quinn(recv)))
+        Ok(BiStream::from_joined(recv, send))
     }
 
     fn remote_addr(&self) -> Option<SocketAddr> {
@@ -439,22 +489,22 @@ struct IrohBidiStreamSource {
 #[cfg(feature = "iroh")]
 #[async_trait]
 impl BidiStreamSource for IrohBidiStreamSource {
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    async fn accept_bi(&self) -> Result<BiStream, StreamError> {
         let (send, recv) = self
             .conn
             .accept_bi()
             .await
             .map_err(map_iroh_connection_error)?;
-        Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
+        Ok(BiStream::from_joined(recv, send))
     }
 
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    async fn open_bi(&self) -> Result<BiStream, StreamError> {
         let (send, recv) = self
             .conn
             .open_bi()
             .await
             .map_err(map_iroh_connection_error)?;
-        Ok((SendStream::from_iroh(send), RecvStream::from_iroh(recv)))
+        Ok(BiStream::from_joined(recv, send))
     }
 
     fn remote_addr(&self) -> Option<SocketAddr> {
@@ -469,25 +519,25 @@ impl BidiStreamSource for IrohBidiStreamSource {
 
 /// Single-stream `BidiStreamSource` (TCP+TLS, SSH channel, WebTransport
 /// stream, wasm stream — ADR-065). Crate-private; constructed via
-/// `Connection::from_stream` / `from_bidi` (no feature gate). `accept_bi`
-/// yields the underlying stream once, then `ConnectionClosed`; `open_bi`
-/// returns `StreamClosed`.
+/// `Connection::from_bidi` (no feature gate). `accept_bi` yields the
+/// underlying `BiStream` once, then `ConnectionClosed`; `open_bi` returns
+/// `StreamClosed`.
 struct StreamBidiStreamSource {
-    stream: Mutex<Option<(SendStream, RecvStream)>>,
+    stream: Mutex<Option<BiStream>>,
     remote_addr: Option<SocketAddr>,
 }
 
 #[async_trait]
 impl BidiStreamSource for StreamBidiStreamSource {
-    async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    async fn accept_bi(&self) -> Result<BiStream, StreamError> {
         let mut guard = self.stream.lock().expect("stream mutex poisoned");
         match guard.take() {
-            Some(pair) => Ok(pair),
+            Some(stream) => Ok(stream),
             None => Err(StreamError::ConnectionClosed),
         }
     }
 
-    async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    async fn open_bi(&self) -> Result<BiStream, StreamError> {
         Err(StreamError::StreamClosed)
     }
 
@@ -535,37 +585,30 @@ impl Connection {
         }
     }
 
-    /// Construct a `Connection` from a pre-split read/write pair.
-    /// `accept_bi()` yields this pair once, then returns `ConnectionClosed`.
-    /// `open_bi()` returns `StreamClosed` (a single stream can't open new streams).
-    pub fn from_stream(
-        send: impl AsyncWrite + Send + Unpin + 'static,
-        recv: impl AsyncRead + Send + Unpin + 'static,
-        alpn: Vec<u8>,
-        remote_addr: Option<SocketAddr>,
-    ) -> Self {
-        Self {
-            source: Box::new(StreamBidiStreamSource {
-                stream: Mutex::new(Some((
-                    SendStream::from_stream(send),
-                    RecvStream::from_stream(recv),
-                ))),
-                remote_addr,
-            }),
-            alpn,
-            identity: OnceLock::new(),
-        }
-    }
-
-    /// Convenience for a single bidirectional stream (e.g. `TlsStream<TcpStream>`).
-    /// Splits internally via `tokio::io::split`.
+    /// Construct a `Connection` from a single bidirectional stream (e.g.
+    /// `tokio::io::DuplexStream`, `TlsStream<TcpStream>`,
+    /// `russh::Channel::into_stream()`). The stream is wrapped in a
+    /// `BiStream` (ADR-092) and yielded by `accept_bi` once, then
+    /// `ConnectionClosed`. `open_bi` returns `StreamClosed` (a single
+    /// stream can't open new application streams — ADR-065).
+    ///
+    /// This is the only public stream constructor (ADR-092): the split
+    /// never crosses a crate boundary as part of a constructor. Handlers
+    /// that want the split halves call `tokio::io::split(&mut *stream)` on
+    /// the `BiStream` they receive from `accept_bi`.
     pub fn from_bidi(
         stream: impl AsyncRead + AsyncWrite + Send + Unpin + 'static,
         alpn: Vec<u8>,
         remote_addr: Option<SocketAddr>,
     ) -> Self {
-        let (recv, send) = tokio::io::split(stream);
-        Self::from_stream(send, recv, alpn, remote_addr)
+        Self {
+            source: Box::new(StreamBidiStreamSource {
+                stream: Mutex::new(Some(BiStream::from_bidi(stream))),
+                remote_addr,
+            }),
+            alpn,
+            identity: OnceLock::new(),
+        }
     }
 
     /// Construct from a caller-supplied `BidiStreamSource` impl. The
@@ -591,12 +634,14 @@ impl Connection {
     ///
     /// Handlers that loop `accept_bi` (e.g. `TtyAdapter`) get one session
     /// per single-stream connection; handlers that call once (e.g.
-    /// `HttpAdapter`) get the stream directly. Both are correct.
-    pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    /// `HttpAdapter`) get the stream directly. Both are correct. The
+    /// return type is `BiStream` (ADR-092); handlers that want the split
+    /// halves call `tokio::io::split` on the `BiStream`.
+    pub async fn accept_bi(&self) -> Result<BiStream, StreamError> {
         self.source.accept_bi().await
     }
 
-    pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+    pub async fn open_bi(&self) -> Result<BiStream, StreamError> {
         self.source.open_bi().await
     }
 
@@ -657,21 +702,21 @@ mod from_source_tests {
     /// delegates to a caller-supplied impl. Not a built-in — the whole
     /// point of `from_source` is that a non-core type can drive `Connection`.
     struct RecordingSource {
-        stream: Mutex<Option<(SendStream, RecvStream)>>,
+        stream: Mutex<Option<BiStream>>,
         addr: Option<SocketAddr>,
         closed: Arc<Mutex<Option<(u32, String)>>>,
     }
 
     #[async_trait]
     impl BidiStreamSource for RecordingSource {
-        async fn accept_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        async fn accept_bi(&self) -> Result<BiStream, StreamError> {
             match self.stream.lock().expect("mock mutex poisoned").take() {
-                Some(pair) => Ok(pair),
+                Some(stream) => Ok(stream),
                 None => Err(StreamError::ConnectionClosed),
             }
         }
 
-        async fn open_bi(&self) -> Result<(SendStream, RecvStream), StreamError> {
+        async fn open_bi(&self) -> Result<BiStream, StreamError> {
             Err(StreamError::StreamClosed)
         }
 
@@ -693,19 +738,16 @@ mod from_source_tests {
         use tokio::io::AsyncReadExt;
         use tokio::io::AsyncWriteExt;
 
-        // One duplex: the mock holds end `a` (split into send_a/recv_a); the
-        // test driver holds end `b` (split into send_b/recv_b) to echo back.
+        // One duplex: the mock holds end `a`; the test driver holds end `b`
+        // (split into send_b/recv_b) to echo back. The mock's `accept_bi`
+        // yields end `a` as a `BiStream`; the driver reads/writes end `b`.
         let (a, b) = tokio::io::duplex(64);
-        let (recv_a, send_a) = tokio::io::split(a);
         let (mut recv_b, mut send_b) = tokio::io::split(b);
         let addr = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777));
         let recorded = Arc::new(Mutex::new(None));
         let conn = Connection::from_source(
             RecordingSource {
-                stream: Mutex::new(Some((
-                    SendStream::from_stream(send_a),
-                    RecvStream::from_stream(recv_a),
-                ))),
+                stream: Mutex::new(Some(BiStream::from_bidi(a))),
                 addr,
                 closed: Arc::clone(&recorded),
             },
@@ -718,22 +760,22 @@ mod from_source_tests {
         // remote_addr delegates to RecordingSource::remote_addr.
         assert_eq!(conn.remote_addr(), addr);
 
-        // accept_bi delegates to RecordingSource::accept_bi and yields the pair.
-        let (mut send, mut recv) = conn.accept_bi().await.expect("first accept_bi yields");
+        // accept_bi delegates to RecordingSource::accept_bi and yields a BiStream.
+        let mut stream = conn.accept_bi().await.expect("first accept_bi yields");
 
-        // Write via the mock's SendStream -> arrives at the driver's recv_b.
-        send.write_all(b"hello").await.expect("write round-trips");
+        // Write via the mock's BiStream -> arrives at the driver's recv_b.
+        stream.write_all(b"hello").await.expect("write round-trips");
         let mut buf = [0u8; 5];
         recv_b.read_exact(&mut buf).await.expect("driver reads");
         assert_eq!(&buf, b"hello");
 
-        // Driver writes back -> arrives at the mock's RecvStream.
+        // Driver writes back -> arrives at the mock's BiStream.
         send_b
             .write_all(b"world")
             .await
             .expect("driver writes back");
         let mut buf = [0u8; 5];
-        recv.read_exact(&mut buf).await.expect("read round-trips");
+        stream.read_exact(&mut buf).await.expect("read round-trips");
         assert_eq!(&buf, b"world");
 
         // Second accept_bi delegates to RecordingSource::accept_bi -> ConnectionClosed.
@@ -763,11 +805,52 @@ mod from_source_tests {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A test-only `AsyncRead + AsyncWrite` pair equivalent to
+    /// `tokio::io::sink()` + `tokio::io::empty()`: reads yield EOF
+    /// immediately (zero bytes), writes discard. Exists because
+    /// `Connection::from_bidi` requires a single value that implements
+    /// both traits (ADR-092 — the split-pair `from_stream` constructor is
+    /// removed). Used only to construct a `Connection` for tests that
+    /// exercise `Connection`-level state (alpn, addr, identity) without
+    /// ever reading or writing the stream.
+    struct SinkEmpty;
+
+    impl AsyncRead for SinkEmpty {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            // EOF immediately — mirrors `tokio::io::empty()`.
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for SinkEmpty {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            // Discard — mirrors `tokio::io::sink()`.
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     fn test_connection() -> Connection {
-        Connection::from_stream(
-            tokio::io::sink(),
-            tokio::io::empty(),
+        Connection::from_bidi(
+            SinkEmpty,
             b"alknet/test".to_vec(),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234)),
         )
@@ -863,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn connection_remote_alpn_and_addr_from_stream() {
+    fn connection_remote_alpn_and_addr_from_bidi() {
         let conn = test_connection();
         assert_eq!(conn.remote_alpn(), b"alknet/test");
         assert_eq!(
