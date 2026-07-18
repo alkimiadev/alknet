@@ -22,18 +22,33 @@
 //!      (stream_type 2) when `TtyHandle.stderr` is `Some`. On backend stdout
 //!      EOF, emit a zero-length stdout sentinel.
 //!    - **B. client → backend**: stdin chunks (stream_type 0) →
-//!      `TtyHandle.stdin`; control chunks (stream_type 3) →
-//!      `ControlMessage` dispatch (`Resize`, `Signal`, `Eof`; `Exit` is
-//!      server→client only and ignored). Zero-length stdin chunk or
-//!      read-half close → EOF to backend stdin.
+//!      `TtyHandle.stdin`; client→server control chunks (stream_type 3,
+//!      `STREAM_CTRL_IN`) → `ControlMessage` dispatch (`Resize`, `Signal`,
+//!      `Eof`). `STREAM_CTRL_OUT` (stream_type 4) from the client is a
+//!      protocol violation (it's the server→client half) and is ignored;
+//!      `Exit` arriving on `STREAM_CTRL_IN` is likewise a protocol
+//!      violation and ignored. Zero-length stdin chunk or read-half close
+//!      → EOF to backend stdin.
 //!    - **C. exit → exit chunk**: await `TtyHandle.exit_code`; on resolve,
-//!      enqueue `{"type":"exit","code":N}` as a control chunk (stream_type
-//!      3). On `TtyError` → `{"type":"exit","code":-1}`.
+//!      enqueue `{"type":"exit","code":N}` as a server→client control
+//!      chunk (stream_type 4, `STREAM_CTRL_OUT`). On `TtyError` →
+//!      `{"type":"exit","code":-1}`.
 //!
 //! The adapter enforces the **exit-chunk-is-last** invariant (ADR-055):
 //! it waits for BOTH the stdout/stderr pumps to complete AND `exit_code`
 //! to resolve before enqueueing the exit chunk. A drainer task writes
 //! chunks to the client in arrival order; the exit chunk is last.
+//!
+//! # Bidirectional control channel (Phase 7)
+//!
+//! The control channel is split into two halves so it is genuinely
+//! bidirectional on the wire: `STREAM_CTRL_IN = 3` carries client→server
+//! control (`Resize`, `Signal`, `Eof`); `STREAM_CTRL_OUT = 4` carries
+//! server→client control (`Exit`). The previous single `STREAM_CONTROL =
+//! 3` was documented as "bidirectional" but the adapter ignored `Exit`
+//! from the client because the two directions were indistinguishable on
+//! the same stream_type. The split makes the bidirectionality explicit
+//! — see `docs/research/alknet-crate-extraction/findings.md` Phase 7.
 //!
 //! # Cancel cleanup (ADR-056)
 //!
@@ -63,7 +78,7 @@ use crate::control::ControlMessage;
 use crate::negotiation::{
     error_response_bytes, NegotiateRequest, NegotiationError, NegotiationReader, NegotiationWriter,
 };
-use crate::wire::{Chunk, ChunkReader, ChunkWriter, RawError, STREAM_CONTROL, STREAM_STDIN};
+use crate::wire::{Chunk, ChunkReader, ChunkWriter, RawError, STREAM_CTRL_IN, STREAM_STDIN};
 
 /// The scope required to open a `alknet/tty` session (ADR-050). A two-way-door
 /// choice (reversible: a deployment-configured scope, not a wire-format
@@ -378,7 +393,7 @@ async fn send_exit_chunk(writer_tx: &mpsc::Sender<Chunk>, code: i32) {
     let exit_msg = ControlMessage::Exit { code };
     match exit_msg.to_json() {
         Ok(json) => {
-            let chunk = Chunk::control(json);
+            let chunk = Chunk::ctrl_out(json);
             if writer_tx.send(chunk).await.is_err() {
                 debug!("tty: writer channel closed before exit chunk");
             }
@@ -423,9 +438,25 @@ async fn pump_stderr(
     debug!("tty: stderr pump done");
 }
 
-/// Pump client chunks → backend: stdin chunks → `TtyHandle.stdin`, control
-/// chunks → `ControlMessage` dispatch. On client read-half close or a
-/// zero-length stdin chunk, signal EOF to the backend's stdin.
+/// Pump client chunks → backend: stdin chunks → `TtyHandle.stdin`,
+/// client→server control chunks (`STREAM_CTRL_IN`, stream_type 3) →
+/// `ControlMessage` dispatch. On client read-half close or a zero-length
+/// stdin chunk, signal EOF to the backend's stdin.
+///
+/// # Direction enforcement (Phase 7)
+///
+/// The control channel is split into two halves. This pump reads from
+/// the client, so it dispatches only `STREAM_CTRL_IN` (client→server):
+///
+/// - `Resize` / `Signal` / `Eof` → forward to the backend's control
+///   handle (`TtyControlHandle::resize` / `signal` / `stdin.shutdown`).
+/// - `Exit` arriving on `STREAM_CTRL_IN` is a protocol violation
+///   (`Exit` is server→client only, belongs on `STREAM_CTRL_OUT`); the
+///   adapter ignores it. (The previous single `STREAM_CONTROL = 3`
+///   couldn't distinguish the two directions, so `Exit` from the client
+///   was always ignored — the split makes the rejection explicit.)
+/// - `STREAM_CTRL_OUT` (stream_type 4) from the client is a protocol
+///   violation (it's the server→client half); the adapter ignores it.
 async fn pump_client_to_backend<R>(
     client_read: R,
     mut stdin: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
@@ -446,7 +477,7 @@ async fn pump_client_to_backend<R>(
                         break;
                     }
                 }
-                STREAM_CONTROL => match ControlMessage::from_slice(&chunk.bytes) {
+                STREAM_CTRL_IN => match ControlMessage::from_slice(&chunk.bytes) {
                     Ok(ControlMessage::Resize {
                         cols,
                         rows,
@@ -467,12 +498,21 @@ async fn pump_client_to_backend<R>(
                         debug!("tty: client stdin EOF (eof control)");
                     }
                     Ok(ControlMessage::Exit { .. }) => {
-                        debug!("tty: ignoring Exit control from client (server→client only)");
+                        debug!(
+                            "tty: ignoring Exit control on STREAM_CTRL_IN \
+                             (server→client only; belongs on STREAM_CTRL_OUT)"
+                        );
                     }
                     Err(e) => {
                         debug!("tty: ignoring unknown control type: {e}");
                     }
                 },
+                crate::wire::STREAM_CTRL_OUT => {
+                    debug!(
+                        "tty: ignoring STREAM_CTRL_OUT (stream_type 4) from client \
+                         (server→client half; client should not write on it)"
+                    );
+                }
                 other => {
                     debug!("tty: ignoring stream_type {other} from client");
                 }
@@ -868,7 +908,7 @@ mod tests {
         assert!(bytes.is_empty());
 
         let (st, bytes) = client.read_chunk().await;
-        assert_eq!(st, crate::wire::STREAM_CONTROL);
+        assert_eq!(st, crate::wire::STREAM_CTRL_OUT);
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["type"], "exit");
         assert_eq!(v["code"], 0);
@@ -899,7 +939,7 @@ mod tests {
 
         loop {
             let (st, bytes) = client.read_chunk().await;
-            if st == crate::wire::STREAM_CONTROL {
+            if st == crate::wire::STREAM_CTRL_OUT {
                 let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                 if v["type"] == "exit" {
                     assert_eq!(v["code"], 7);
@@ -959,13 +999,13 @@ mod tests {
 
         client
             .write_chunk(
-                crate::wire::STREAM_CONTROL,
+                crate::wire::STREAM_CTRL_IN,
                 br#"{"type":"resize","cols":100,"rows":50}"#,
             )
             .await;
         client
             .write_chunk(
-                crate::wire::STREAM_CONTROL,
+                crate::wire::STREAM_CTRL_IN,
                 br#"{"type":"signal","name":"INT"}"#,
             )
             .await;
@@ -1003,7 +1043,7 @@ mod tests {
         client.write_negotiation(TEST_NEG).await;
 
         client
-            .write_chunk(crate::wire::STREAM_CONTROL, br#"{"type":"unknown"}"#)
+            .write_chunk(crate::wire::STREAM_CTRL_IN, br#"{"type":"unknown"}"#)
             .await;
 
         let stdout_tx = backend.take_stdout_tx().await.expect("stdout tx");
@@ -1025,6 +1065,9 @@ mod tests {
 
     #[tokio::test]
     async fn exit_control_from_client_ignored() {
+        // `Exit` is server→client only (belongs on `STREAM_CTRL_OUT`).
+        // Sending it on `STREAM_CTRL_IN` (client→server) is a protocol
+        // violation; the adapter ignores it and keeps pumping stdout.
         let (backend, _control, _cancel) = TestBackend::builder().build();
         let backends = make_backends(backend.clone());
         let (mut client, server) = make_client_and_server();
@@ -1037,7 +1080,7 @@ mod tests {
         client.write_negotiation(TEST_NEG).await;
 
         client
-            .write_chunk(crate::wire::STREAM_CONTROL, br#"{"type":"exit","code":99}"#)
+            .write_chunk(crate::wire::STREAM_CTRL_IN, br#"{"type":"exit","code":99}"#)
             .await;
 
         let stdout_tx = backend.take_stdout_tx().await.expect("stdout tx");
@@ -1053,6 +1096,87 @@ mod tests {
         let (st, bytes) = client.read_chunk().await;
         assert_eq!(st, STREAM_STDOUT);
         assert_eq!(bytes.as_ref(), b"still-pumping");
+
+        let _ = session.await;
+    }
+
+    #[tokio::test]
+    async fn ctrl_out_from_client_ignored() {
+        // `STREAM_CTRL_OUT` (stream_type 4) is the server→client half.
+        // The client writing on it is a protocol violation; the adapter
+        // ignores the chunk and keeps pumping stdout (Phase 7).
+        let (backend, _control, _cancel) = TestBackend::builder().build();
+        let backends = make_backends(backend.clone());
+        let (mut client, server) = make_client_and_server();
+
+        let identity = identity_with_scope(TTY_OPEN_SCOPE);
+        let session = tokio::spawn(async move {
+            drive_session_server(server, backends, None, identity).await;
+        });
+
+        client.write_negotiation(TEST_NEG).await;
+
+        // Bogus: a client writing on the server→client control half.
+        client
+            .write_chunk(
+                crate::wire::STREAM_CTRL_OUT,
+                br#"{"type":"exit","code":99}"#,
+            )
+            .await;
+
+        let stdout_tx = backend.take_stdout_tx().await.expect("stdout tx");
+        let _ = backend.take_stderr_tx().await;
+        stdout_tx
+            .send(Bytes::from_static(b"after-bogus-ctrl-out"))
+            .await
+            .unwrap();
+        drop(stdout_tx);
+        let exit_tx = backend.take_exit_tx().await.expect("exit tx");
+        exit_tx.send(Ok(0)).unwrap();
+
+        let (st, bytes) = client.read_chunk().await;
+        assert_eq!(st, STREAM_STDOUT);
+        assert_eq!(bytes.as_ref(), b"after-bogus-ctrl-out");
+
+        let _ = session.await;
+    }
+
+    #[tokio::test]
+    async fn exit_chunk_arrives_on_ctrl_out_not_ctrl_in() {
+        // Verifies the adapter emits `Exit` on `STREAM_CTRL_OUT` (4), not
+        // `STREAM_CTRL_IN` (3) — the Phase 7 bidirectionality fix. A client
+        // distinguishing the two halves can route exit vs. control
+        // without parsing the JSON tag first.
+        let (backend, _control, _cancel) = TestBackend::builder().build();
+        let backends = make_backends(backend.clone());
+        let (mut client, server) = make_client_and_server();
+
+        let identity = identity_with_scope(TTY_OPEN_SCOPE);
+        let session = tokio::spawn(async move {
+            drive_session_server(server, backends, None, identity).await;
+        });
+
+        client.write_negotiation(TEST_NEG).await;
+
+        let stdout_tx = backend.take_stdout_tx().await.expect("stdout tx");
+        let _ = backend.take_stderr_tx().await;
+        drop(stdout_tx);
+        let exit_tx = backend.take_exit_tx().await.expect("exit tx");
+        exit_tx.send(Ok(42)).unwrap();
+
+        let (st, bytes) = client.read_chunk().await;
+        assert_eq!(st, STREAM_STDOUT);
+        assert!(bytes.is_empty());
+
+        let (st, bytes) = client.read_chunk().await;
+        assert_eq!(
+            st,
+            crate::wire::STREAM_CTRL_OUT,
+            "exit chunk must arrive on STREAM_CTRL_OUT (4), not STREAM_CTRL_IN (3)"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["type"], "exit");
+        assert_eq!(v["code"], 42);
 
         let _ = session.await;
     }
@@ -1184,7 +1308,7 @@ mod tests {
 
         loop {
             let (st, bytes) = client.read_chunk().await;
-            if st == crate::wire::STREAM_CONTROL {
+            if st == crate::wire::STREAM_CTRL_OUT {
                 let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(v["type"], "exit");
                 assert_eq!(v["code"], -1);
@@ -1294,7 +1418,7 @@ mod tests {
 
         loop {
             let (st, bytes) = client.read_chunk().await;
-            if st == crate::wire::STREAM_CONTROL {
+            if st == crate::wire::STREAM_CTRL_OUT {
                 let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(v["type"], "exit");
                 assert_eq!(v["code"], 0);
@@ -1346,7 +1470,7 @@ mod tests {
                     assert_eq!(bytes.as_ref(), b"err");
                     saw_stderr = true;
                 }
-                crate::wire::STREAM_CONTROL => {
+                crate::wire::STREAM_CTRL_OUT => {
                     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                     assert_eq!(v["type"], "exit");
                     saw_exit = true;
@@ -1379,7 +1503,7 @@ mod tests {
 
         client.write_chunk(STREAM_STDIN, b"first").await;
         client
-            .write_chunk(crate::wire::STREAM_CONTROL, br#"{"type":"eof"}"#)
+            .write_chunk(crate::wire::STREAM_CTRL_IN, br#"{"type":"eof"}"#)
             .await;
 
         let mut received = Vec::new();

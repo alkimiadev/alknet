@@ -480,8 +480,22 @@ only type returned by `accept_bi()`, `from_stream` is removed,
 
 ### Phase 7: TTY control-channel bidirectionality fix
 
-**What:** Fix the "control isn't actually bidirectional" flaw in
-`alknet-tty`. The current `STREAM_CONTROL = 3` is documented as
+**Status:** **Done** (this commit, 2026-07-18). All "Done when"
+criteria met: `STREAM_CONTROL` is replaced with `STREAM_CTRL_IN = 3` /
+`STREAM_CTRL_OUT = 4`; `InvalidStreamType` bound is `> 4`; the adapter
+dispatches `Resize`/`Signal`/`Eof` on `STREAM_CTRL_IN` and emits `Exit`
+on `STREAM_CTRL_OUT`; protocol violations in both directions (`Exit` on
+ctrl_in, anything on ctrl_out from the client) are ignored;
+`cargo test -p alknet-tty` passes (65 tests, was 61 — 4 new tests for
+the split); `cargo test -p alknet-tty-local` passes (19 tests); the
+full workspace `cargo test --workspace --all-features` is fully green
+(1017 tests, 0 failures). ADR-052 is amended (§4a "Control channel
+split"); `tty-wire.md` and `tty-adapter.md` are updated; the
+`negotiation.rs` framing-disambiguation doc is updated (server-sent
+stream_type set is now `{1, 2, 4}`).
+
+**What was planned:** Fix the "control isn't actually bidirectional" flaw
+in `alknet-tty`. The current `STREAM_CONTROL = 3` is documented as
 "bidirectional" but the adapter ignores `Exit` from the client
 (`adapter.rs:462-463`). The fix:
 
@@ -495,6 +509,84 @@ only type returned by `accept_bi()`, `from_stream` is removed,
 
 This is a TTY-layer fix — the channels layer has no `stream_type`
 concept and is unaffected.
+
+**What was done (`crates/alknet-tty`, +~110/-~60 lines net +~50):**
+
+- **`wire.rs`**: split `pub const STREAM_CONTROL: u8 = 3` into
+  `STREAM_CTRL_IN: u8 = 3` (client→server) and `STREAM_CTRL_OUT: u8 =
+  4` (server→client); updated the module doc to describe the split;
+  updated `RawError::InvalidStreamType` doc comment (`> 4`); updated
+  `ChunkReader::read_chunk` bound check (`> 3` → `> 4`); replaced
+  `Chunk::control` with `Chunk::ctrl_in` + `Chunk::ctrl_out`
+  constructors; replaced `ChunkWriter::write_control_json` with
+  `write_ctrl_in_json` + `write_ctrl_out_json` helpers; split the
+  `round_trip_control` test into `round_trip_ctrl_in` +
+  `round_trip_ctrl_out`; split `round_trip_write_control_json_helper`
+  into `round_trip_write_ctrl_in_json_helper` +
+  `round_trip_write_ctrl_out_json_helper`; updated the
+  `invalid_stream_type` test (the boundary byte is now 5, not 4).
+- **`control.rs`**: updated the module doc and the `ControlMessage`
+  enum doc (direction table now includes the `stream_type` column —
+  `STREAM_CTRL_IN` for `Resize`/`Signal`/`Eof`, `STREAM_CTRL_OUT` for
+  `Exit`; notes the adapter enforces the direction; explains the
+  half-duplex-in-disguise flaw the split fixes). The JSON shape is
+  unchanged — the `ControlMessage` enum, the `to_json`/`from_slice`
+  methods, and the `signal_from_name` helper are byte-for-byte
+  unchanged. The 9 unit tests in `control.rs` are unchanged.
+- **`adapter.rs`**: updated the module doc (session lifecycle +
+  "Bidirectional control channel (Phase 7)" section); updated the
+  `STREAM_CONTROL` import to `STREAM_CTRL_IN`; `send_exit_chunk` now
+  emits `Chunk::ctrl_out(json)` (was `Chunk::control(json)`); the
+  `pump_client_to_backend` doc explains the direction enforcement;
+  the `STREAM_CTRL_IN` match arm dispatches `Resize`/`Signal`/`Eof`
+  and ignores `Exit` (with a debug log explaining the protocol
+  violation); a new `STREAM_CTRL_OUT` match arm logs and ignores the
+  protocol violation (the client writing on the server→client half);
+  updated all 10 test references to use the correct half —
+  `STREAM_CTRL_OUT` for reading the exit chunk from the server (4
+  sites), `STREAM_CTRL_IN` for writing control from the client (6
+  sites). Added 3 new tests: `ctrl_out_from_client_ignored`,
+  `exit_chunk_arrives_on_ctrl_out_not_ctrl_in`, and updated
+  `exit_control_from_client_ignored` (which now documents the protocol
+  violation explicitly).
+- **`negotiation.rs`**: updated the framing-disambiguation doc
+  comment (the server-sent stream_type set is now `{1, 2, 4}` — the
+  server never sends `0` (stdin, client→server) or `3`
+  (`STREAM_CTRL_IN`, client→server); `0x00` is unambiguous as the
+  error-frame length-prefix high byte).
+- **`crates/alknet-tty-local/tests/`**: updated `common/mod.rs`
+  (replaced `STREAM_CONTROL` import with `STREAM_CTRL_IN` +
+  `STREAM_CTRL_OUT`; `write_control` writes on `STREAM_CTRL_IN`; the
+  `read_until_exit` + `read_until_exit_timeout` match arms for the
+  exit chunk use `STREAM_CTRL_OUT`); updated `pty.rs` and `pipe.rs`
+  to use `STREAM_CTRL_OUT` for the exit-chunk reads. No production
+  code changes in `alknet-tty-local` (the backend doesn't write to
+  the wire — it produces handles; the adapter pumps).
+
+**Spec updates:**
+
+- **ADR-052** (`docs/architecture/decisions/052-...md`): Status changed
+  to "Accepted (amended 2026-07-18 — Phase 7: the control channel is
+  split into `STREAM_CTRL_IN = 3` (client→server) and
+  `STREAM_CTRL_OUT = 4` (server→client) halves; see §"Control channel
+  split" below)". §3's stream_type table gains a 5th row (`4 = ctrl_out,
+  server→client`); the bound becomes `> 4`. New §4a "Control channel
+  split (Phase 7 amendment)" documents the why, the door-type, and
+  the spec deltas.
+- **`docs/architecture/crates/tty/tty-wire.md`**: updated `last_updated`
+  to 2026-07-18; the Phase 2 Raw Chunk Format stream_type table gains
+  the `ctrl_in`/`ctrl_out` rows; the "Bidirectional control channel
+  (Phase 7)" paragraph explains the split; the Control Channel
+  section now uses the two halves; the Constraints section reflects
+  the new bound (`> 4`) and the new framing-disambiguation
+  (`{1, 2, 4}` server-sent); the Design Decisions table gains a
+  "Bidirectional control channel split" row.
+- **`docs/architecture/crates/tty/tty-adapter.md`**: updated
+  `last_updated` to 2026-07-18; the Session Lifecycle bullet B
+  references `STREAM_CTRL_IN`; bullet C references `STREAM_CTRL_OUT`;
+  new "Bidirectional Control Channel (Phase 7)" section documents the
+  direction enforcement; the Framing Disambiguation paragraph
+  references the new server-sent set `{1, 2, 4}`.
 
 **Compilable state:** `cargo test -p alknet-tty` passes. The control
 channel is properly bidirectional.
@@ -606,7 +698,7 @@ Phase 9 is fully closed.
 | 4 (core prune) | core is lightweight; `endpoint.rs` gone; `ConnectionCredentials` in core |
 | 5 (call prune) | call is pure protocol; `connect` + TLS helpers + `CallCredentials` + `from_call` dead path gone; Category B tests already moved; 2 `CallCredentials` tests moved to core |
 | 6 (stream unification) | **Done** (`b60a584`). `BiStream` is the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public constructor; `SendStream`/`RecvStream` are thin internal newtypes. Subsumed Phase 9's `QuicStream`/`QuicStreamDuplex` removal. |
-| 7 (TTY control fix) | TTY control channel is properly bidirectional (`STREAM_CTRL_IN = 3`, `STREAM_CTRL_OUT = 4`); `InvalidStreamType` bound updated. **Unchanged by Phase 6** — Phase 7's work is in `wire.rs` and `control.rs`, neither of which Phase 6 touched. |
+| 7 (TTY control fix) | **Done** (this commit). TTY control channel is properly bidirectional (`STREAM_CTRL_IN = 3`, `STREAM_CTRL_OUT = 4`); `InvalidStreamType` bound is `> 4`; the adapter dispatches on `STREAM_CTRL_IN` and emits on `STREAM_CTRL_OUT`; protocol violations in both directions are ignored. ADR-052 amended (§4a); `tty-wire.md` + `tty-adapter.md` + `negotiation.rs` framing-disambiguation doc updated. 4 new tests in `adapter.rs`; 1017 tests pass workspace-wide. |
 | 8 (channels spec) | Channels spec updated to 8-byte wire format; no `stream_type` concept; `into_sub_streams` removed; ADRs 071/074/077 amended. **Unchanged by Phase 6** — docs-only, no code. |
 | 9 (http fix) | **Done — subsumed by Phase 6** (`b60a584`) + test-helper fix (`<this commit>`). `QuicStream` wrapper removed from `alknet-http`; `BiStream` used directly; `QuicStreamDuplex` test helper removed. Pre-existing `to_mcp` test-helper bug (`full_registry_with_ops` used `HandlerKind::Once` for `Subscription` ops, rejected by the registry's kind validation since ADR-049) fixed — `cargo test --workspace --all-features` is fully green (1008 tests, 0 failures). |
 

@@ -1,4 +1,14 @@
-//! Control messages carried in `stream_type 3` chunks (ADR-052).
+//! Control messages carried in `stream_type 3` (`ctrl_in`) and
+//! `stream_type 4` (`ctrl_out`) chunks (ADR-052, amended Phase 7).
+//!
+//! The control channel is split into two halves so it is genuinely
+//! bidirectional on the wire: `STREAM_CTRL_IN = 3` carries client→server
+//! control (`Resize`, `Signal`, `Eof`); `STREAM_CTRL_OUT = 4` carries
+//! server→client control (`Exit`). The previous single
+//! `STREAM_CONTROL = 3` was documented as "bidirectional" but the adapter
+//! ignored `Exit` from the client because it had no way to distinguish
+//! the two directions on the same stream_type — see
+//! `docs/research/alknet-crate-extraction/findings.md` Phase 7.
 //!
 //! Control chunks carry a JSON payload tagged by `type`. The schema is the
 //! POC's `ControlMessage` (`/workspace/alknet-tty-poc/src/control.rs`):
@@ -23,20 +33,30 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A control message riding on `stream_type 3`.
+/// A control message riding on `STREAM_CTRL_IN` (stream_type 3,
+/// client→server) or `STREAM_CTRL_OUT` (stream_type 4, server→client).
 ///
 /// Direction and mapping (per `tty-wire.md` §"Control Channel"):
 ///
-/// | direction      | variant  | maps to                                            |
-/// |----------------|----------|----------------------------------------------------|
-/// | client→server  | `Resize` | SSH `window-change`, docker exec resize, `ioctl`   |
-/// | client→server  | `Signal` | SSH `signal`, docker exec signal, `kill(-pgid, n)` |
-/// | client→server  | `Eof`    | SSH channel EOF, docker stdin close, `ChildStdin`  |
-/// | server→client  | `Exit`   | the completion signal (ADR-055)                    |
+/// | direction      | stream_type     | variant  | maps to                                            |
+/// |----------------|-----------------|----------|----------------------------------------------------|
+/// | client→server  | `STREAM_CTRL_IN` (3)  | `Resize` | SSH `window-change`, docker exec resize, `ioctl`   |
+/// | client→server  | `STREAM_CTRL_IN` (3)  | `Signal` | SSH `signal`, docker exec signal, `kill(-pgid, n)` |
+/// | client→server  | `STREAM_CTRL_IN` (3)  | `Eof`    | SSH channel EOF, docker stdin close, `ChildStdin`  |
+/// | server→client  | `STREAM_CTRL_OUT` (4) | `Exit`   | the completion signal (ADR-055)                    |
+///
+/// The direction is enforced by the adapter, not by this enum: a `Resize`
+/// arriving on `STREAM_CTRL_OUT` is a protocol violation (the adapter
+/// ignores it), and an `Exit` arriving on `STREAM_CTRL_IN` is likewise a
+/// protocol violation (the adapter ignores it). The split is what makes
+/// the control channel genuinely bidirectional — the previous single
+/// `STREAM_CONTROL = 3` was documented as "bidirectional" but the
+/// adapter had to ignore `Exit` from the client because the two
+/// directions were indistinguishable on the same stream_type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlMessage {
-    /// Terminal window resize (client→server).
+    /// Terminal window resize (client→server, `STREAM_CTRL_IN`).
     ///
     /// `pixel_width`/`pixel_height` default to 0 (most terminals don't
     /// report pixel dimensions; SSH's `pty_request` carries them for
@@ -49,23 +69,24 @@ pub enum ControlMessage {
         #[serde(default)]
         pixel_height: u16,
     },
-    /// Forward a signal to the child process group (client→server).
+    /// Forward a signal to the child process group (client→server,
+    /// `STREAM_CTRL_IN`).
     ///
     /// `name` is an uppercase string from the supported set (see
     /// [`signal_from_name`]). Unknown names fall back to the backend's
     /// default kill in the adapter (tty-local.md REQ-TTY-02).
     Signal { name: String },
-    /// Client stdin is done (client→server). The server closes the
-    /// backend's stdin (`ChildStdin::drop` / PTY writer close) but keeps
-    /// pumping stdout + the exit chunk. See `tty-wire.md` §"Stdin
-    /// Closure".
+    /// Client stdin is done (client→server, `STREAM_CTRL_IN`). The
+    /// server closes the backend's stdin (`ChildStdin::drop` / PTY writer
+    /// close) but keeps pumping stdout + the exit chunk. See
+    /// `tty-wire.md` §"Stdin Closure".
     Eof,
-    /// Process exit code (server→client). The exit chunk is the last
-    /// control chunk before stream close (ADR-055). `code` is `i32`
-    /// matching `std::process::ExitStatus::code()`; negative values are
-    /// signal-terminated (e.g., `-9` for SIGKILL on Unix). `-1` is the
-    /// adapter's best-effort "backend could not determine the exit code"
-    /// sentinel (ADR-055 §4).
+    /// Process exit code (server→client, `STREAM_CTRL_OUT`). The exit
+    /// chunk is the last control chunk before stream close (ADR-055).
+    /// `code` is `i32` matching `std::process::ExitStatus::code()`;
+    /// negative values are signal-terminated (e.g., `-9` for SIGKILL on
+    /// Unix). `-1` is the adapter's best-effort "backend could not
+    /// determine the exit code" sentinel (ADR-055 §4).
     Exit { code: i32 },
 }
 

@@ -7,10 +7,20 @@
 //! ```
 //!
 //! `stream_type`:
-//!   - 0 = stdin  (client→server, raw bytes)
-//!   - 1 = stdout (server→client, raw bytes)
-//!   - 2 = stderr (server→client, raw bytes)
-//!   - 3 = control (bidirectional, JSON control message — see [`crate::control`])
+//!   - 0 = stdin     (client→server, raw bytes)
+//!   - 1 = stdout    (server→client, raw bytes)
+//!   - 2 = stderr    (server→client, raw bytes)
+//!   - 3 = ctrl_in   (client→server, JSON control message — see [`crate::control`])
+//!   - 4 = ctrl_out  (server→client, JSON control message — see [`crate::control`])
+//!
+//! The control channel is split into two halves so it is genuinely
+//! bidirectional on the wire: `STREAM_CTRL_IN = 3` carries client→server
+//! control (resize, signal, eof); `STREAM_CTRL_OUT = 4` carries
+//! server→client control (exit). The previous single `STREAM_CONTROL = 3`
+//! was documented as "bidirectional" but the adapter ignored `Exit` from
+//! the client because it had no way to distinguish the two directions on
+//! the same stream_type — see `docs/research/alknet-crate-extraction/
+//! findings.md` Phase 7.
 //!
 //! Zero-length data chunks are sentinels: a zero-length stdin chunk is EOF
 //! from the client; a zero-length stdout chunk is "drained" from the
@@ -29,8 +39,11 @@ pub const STREAM_STDIN: u8 = 0;
 pub const STREAM_STDOUT: u8 = 1;
 /// stderr channel (server→client, raw bytes).
 pub const STREAM_STDERR: u8 = 2;
-/// control channel (bidirectional, JSON control message).
-pub const STREAM_CONTROL: u8 = 3;
+/// Control channel, client→server half (JSON control message —
+/// `Resize`, `Signal`, `Eof`).
+pub const STREAM_CTRL_IN: u8 = 3;
+/// Control channel, server→client half (JSON control message — `Exit`).
+pub const STREAM_CTRL_OUT: u8 = 4;
 
 /// Chunk header length in bytes: 1 byte `stream_type` + 4 bytes `length`.
 pub const CHUNK_HEADER_LEN: usize = 5;
@@ -54,7 +67,7 @@ pub enum RawError {
     /// The peer closed the stream cleanly (unexpected EOF on header or payload).
     #[error("connection closed")]
     ConnectionClosed,
-    /// The chunk header's `stream_type` byte was > 3.
+    /// The chunk header's `stream_type` byte was > 4.
     #[error("invalid chunk header: stream type {0}")]
     InvalidStreamType(u8),
     /// The chunk payload length exceeded `MAX_CHUNK_LEN`.
@@ -66,11 +79,12 @@ pub enum RawError {
 /// payload bytes.
 ///
 /// Construct with [`Chunk::stdin`], [`Chunk::stdout`], [`Chunk::stderr`],
-/// or [`Chunk::control`] for the four fixed channels.
+/// [`Chunk::ctrl_in`], or [`Chunk::ctrl_out`] for the five fixed
+/// channels.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// The channel: one of [`STREAM_STDIN`], [`STREAM_STDOUT`],
-    /// [`STREAM_STDERR`], [`STREAM_CONTROL`].
+    /// [`STREAM_STDERR`], [`STREAM_CTRL_IN`], [`STREAM_CTRL_OUT`].
     pub stream_type: u8,
     /// The payload bytes (raw for data channels, UTF-8 JSON for control).
     pub bytes: bytes::Bytes,
@@ -101,10 +115,19 @@ impl Chunk {
         }
     }
 
-    /// A control chunk (stream_type 3).
-    pub fn control(bytes: bytes::Bytes) -> Self {
+    /// A client→server control chunk (stream_type 3) — `Resize`, `Signal`,
+    /// or `Eof`.
+    pub fn ctrl_in(bytes: bytes::Bytes) -> Self {
         Self {
-            stream_type: STREAM_CONTROL,
+            stream_type: STREAM_CTRL_IN,
+            bytes,
+        }
+    }
+
+    /// A server→client control chunk (stream_type 4) — `Exit`.
+    pub fn ctrl_out(bytes: bytes::Bytes) -> Self {
+        Self {
+            stream_type: STREAM_CTRL_OUT,
             bytes,
         }
     }
@@ -113,7 +136,7 @@ impl Chunk {
 /// Reads raw chunks from an [`AsyncRead`] transport.
 ///
 /// [`ChunkReader::read_chunk`] reads the 5-byte header, validates the
-/// `stream_type` (≤ 3, else [`RawError::InvalidStreamType`]) and the
+/// `stream_type` (≤ 4, else [`RawError::InvalidStreamType`]) and the
 /// payload length (≤ [`MAX_CHUNK_LEN`], else [`RawError::ChunkTooLarge`]),
 /// then reads the payload. On a clean `UnexpectedEof` reading either the
 /// header or the payload, it returns [`RawError::ConnectionClosed`] — the
@@ -148,7 +171,7 @@ impl<R: AsyncRead + Unpin> ChunkReader<R> {
         }
 
         let stream_type = self.header[0];
-        if stream_type > 3 {
+        if stream_type > 4 {
             return Err(RawError::InvalidStreamType(stream_type));
         }
 
@@ -183,9 +206,10 @@ impl<R: AsyncRead + Unpin> ChunkReader<R> {
 /// Writes raw chunks to an [`AsyncWrite`] transport.
 ///
 /// [`ChunkWriter::write_chunk`] writes the 5-byte header then the payload
-/// (if non-empty), then flushes. [`ChunkWriter::write_stdin`] and
-/// [`ChunkWriter::write_control_json`] are convenience helpers for the
-/// two most common write paths.
+/// (if non-empty), then flushes. [`ChunkWriter::write_stdin`],
+/// [`ChunkWriter::write_ctrl_in_json`], and
+/// [`ChunkWriter::write_ctrl_out_json`] are convenience helpers for the
+/// most common write paths.
 pub struct ChunkWriter<W: AsyncWrite + Unpin> {
     writer: W,
 }
@@ -229,10 +253,24 @@ impl<W: AsyncWrite + Unpin> ChunkWriter<W> {
         Ok(())
     }
 
-    /// Write a control chunk (stream_type 3) carrying a JSON payload.
-    pub async fn write_control_json(&mut self, json: &[u8]) -> Result<(), RawError> {
+    /// Write a client→server control chunk (stream_type 3) carrying a JSON
+    /// payload (`Resize`, `Signal`, or `Eof`).
+    pub async fn write_ctrl_in_json(&mut self, json: &[u8]) -> Result<(), RawError> {
         let mut header = [0u8; CHUNK_HEADER_LEN];
-        header[0] = STREAM_CONTROL;
+        header[0] = STREAM_CTRL_IN;
+        let len = json.len() as u32;
+        header[1..].copy_from_slice(&len.to_be_bytes());
+        self.writer.write_all(&header).await?;
+        self.writer.write_all(json).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    /// Write a server→client control chunk (stream_type 4) carrying a JSON
+    /// payload (`Exit`).
+    pub async fn write_ctrl_out_json(&mut self, json: &[u8]) -> Result<(), RawError> {
+        let mut header = [0u8; CHUNK_HEADER_LEN];
+        header[0] = STREAM_CTRL_OUT;
         let len = json.len() as u32;
         header[1..].copy_from_slice(&len.to_be_bytes());
         self.writer.write_all(&header).await?;
@@ -281,8 +319,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_trip_control() {
-        round_trip(STREAM_CONTROL, br#"{"type":"eof"}"#).await;
+    async fn round_trip_ctrl_in() {
+        round_trip(STREAM_CTRL_IN, br#"{"type":"eof"}"#).await;
+    }
+
+    #[tokio::test]
+    async fn round_trip_ctrl_out() {
+        round_trip(STREAM_CTRL_OUT, br#"{"type":"exit","code":0}"#).await;
     }
 
     #[tokio::test]
@@ -303,27 +346,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_trip_write_control_json_helper() {
+    async fn round_trip_write_ctrl_in_json_helper() {
         let (mut a, mut b) = duplex(8 * 1024);
         let mut writer = ChunkWriter::new(&mut a);
         let mut reader = ChunkReader::new(&mut b);
 
         let json = br#"{"type":"resize","cols":80,"rows":24}"#;
-        writer.write_control_json(json).await.unwrap();
+        writer.write_ctrl_in_json(json).await.unwrap();
         let read = reader.read_chunk().await.unwrap();
-        assert_eq!(read.stream_type, STREAM_CONTROL);
+        assert_eq!(read.stream_type, STREAM_CTRL_IN);
+        assert_eq!(read.bytes.as_ref(), json);
+    }
+
+    #[tokio::test]
+    async fn round_trip_write_ctrl_out_json_helper() {
+        let (mut a, mut b) = duplex(8 * 1024);
+        let mut writer = ChunkWriter::new(&mut a);
+        let mut reader = ChunkReader::new(&mut b);
+
+        let json = br#"{"type":"exit","code":0}"#;
+        writer.write_ctrl_out_json(json).await.unwrap();
+        let read = reader.read_chunk().await.unwrap();
+        assert_eq!(read.stream_type, STREAM_CTRL_OUT);
         assert_eq!(read.bytes.as_ref(), json);
     }
 
     #[tokio::test]
     async fn invalid_stream_type() {
         let (mut a, mut b) = duplex(8 * 1024);
-        a.write_all(&[4u8, 0, 0, 0, 0]).await.unwrap();
+        // 5 is one past the highest valid stream_type (4 = STREAM_CTRL_OUT).
+        a.write_all(&[5u8, 0, 0, 0, 0]).await.unwrap();
         a.flush().await.unwrap();
 
         let mut reader = ChunkReader::new(&mut b);
         let err = reader.read_chunk().await.unwrap_err();
-        assert!(matches!(err, RawError::InvalidStreamType(4)));
+        assert!(matches!(err, RawError::InvalidStreamType(5)));
     }
 
     #[tokio::test]

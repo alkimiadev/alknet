@@ -199,7 +199,7 @@ async fn pipe_echo_emits_stdout_chunk_then_sentinel() {
         if st == STREAM_STDOUT && !bytes.is_empty() {
             saw_nonempty_stdout = true;
         }
-        if st == alknet_tty::wire::STREAM_CONTROL {
+        if st == alknet_tty::wire::STREAM_CTRL_OUT {
             let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             if v["type"] == "exit" {
                 break;

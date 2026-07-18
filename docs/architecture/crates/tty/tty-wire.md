@@ -1,13 +1,14 @@
 ---
 status: draft
-last_updated: 2026-07-07
+last_updated: 2026-07-18
 ---
 
 # alknet-tty — Wire Format
 
 The wire protocol for `alknet/tty`: the negotiation frame (JSON
-carriage), the raw chunk codec, the control channel, and the sentinels.
-The two-carriage model is decided in
+carriage), the raw chunk codec, the control channel (split into
+`STREAM_CTRL_IN` / `STREAM_CTRL_OUT` halves — Phase 7), and the
+sentinels. The two-carriage model is decided in
 [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md);
 this document specifies what an implementer builds.
 
@@ -164,18 +165,33 @@ no `call.responded`/`call.completed` — this is not the call protocol.
 
 - **`stream_type`** (1 byte) — the channel:
 
-  | stream_type | channel | direction | payload |
-  |---|---|---|---|
-  | 0 | data-in (stdin) | client→server | raw bytes |
-  | 1 | data-out (stdout) | server→client | raw bytes |
-  | 2 | data-err (stderr) | server→client | raw bytes |
-  | 3 | control | bidirectional | JSON control message |
+  | stream_type | channel     | direction      | payload             |
+  |-------------|-------------|----------------|---------------------|
+  | 0           | data-in (stdin)  | client→server | raw bytes       |
+  | 1           | data-out (stdout) | server→client | raw bytes      |
+  | 2           | data-err (stderr) | server→client | raw bytes      |
+  | 3           | ctrl-in     | client→server  | JSON control message (`Resize`, `Signal`, `Eof`) |
+  | 4           | ctrl-out    | server→client  | JSON control message (`Exit`) |
 
-  `stream_type > 3` is a protocol error (`InvalidStreamType`). There is
-  no extension escape hatch in the byte — a 5th channel is a wire-format
+  `stream_type > 4` is a protocol error (`InvalidStreamType`). There is
+  no extension escape hatch in the byte — a 6th channel is a wire-format
   change requiring a new ALPN (`alknet/tty/v2` per ADR-006), not a
   negotiated addition to this format. See ADR-052 §"Fixed channel set,
   not extensible."
+
+  **Bidirectional control channel (Phase 7).** The control channel is
+  split into two halves so it is genuinely bidirectional on the wire:
+  `STREAM_CTRL_IN = 3` carries client→server control (`Resize`,
+  `Signal`, `Eof`); `STREAM_CTRL_OUT = 4` carries server→client control
+  (`Exit`). The previous single `STREAM_CONTROL = 3` was documented as
+  "bidirectional" but the adapter ignored `Exit` from the client
+  because the two directions were indistinguishable on the same
+  stream_type — see `docs/research/alknet-crate-extraction/findings.md`
+  Phase 7. The split makes the bidirectionality explicit: each
+  direction has its own stream_type, and the adapter enforces the
+  direction (an `Exit` arriving on `STREAM_CTRL_IN` is a protocol
+  violation and is ignored; a `Resize` arriving on `STREAM_CTRL_OUT` is
+  likewise a protocol violation and is ignored).
 
 - **`length`** (4 bytes, big-endian) — payload length in bytes. Max
   16 MiB (`MAX_CHUNK_LEN = 16 * 1024 * 1024`). A chunk larger than 16 MiB
@@ -208,9 +224,14 @@ Zero-length data chunks are sentinels:
 Control chunks are never zero-length (the JSON payload is at least
 `{}`).
 
-### Control Channel (stream_type 3)
+### Control Channel
 
-Control chunks carry a JSON payload tagged by `type`. The schema is the
+The control channel is split into two halves (Phase 7):
+
+- **`STREAM_CTRL_IN` (stream_type 3)** — client→server control.
+- **`STREAM_CTRL_OUT` (stream_type 4)** — server→client control.
+
+Each half carries JSON payloads tagged by `type`. The schema is the
 POC's `ControlMessage` (`/workspace/alknet-tty-poc/src/control.rs`):
 
 ```rust
@@ -231,12 +252,22 @@ pub enum ControlMessage {
 }
 ```
 
-| Direction | Message | Shape | Maps to |
-|---|---|---|---|
-| client→server | resize | `{"type":"resize","cols":80,"rows":24,"pixel_width":0,"pixel_height":0}` | SSH `window-change`, docker exec resize, `ioctl(TIOCSWINSZ)` |
-| client→server | signal | `{"type":"signal","name":"INT"}` | SSH `signal`, docker exec signal, `kill(-pgid, sig)` (REQ-TTY-02) |
-| client→server | eof | `{"type":"eof"}` | SSH channel EOF, docker stdin close, `ChildStdin::drop` |
-| server→client | exit | `{"type":"exit","code":0}` | the terminal/completion signal (ADR-055) |
+| stream_type | direction      | Message | Shape | Maps to |
+|-------------|----------------|---------|-------|---------|
+| 3 (ctrl_in)  | client→server | resize  | `{"type":"resize","cols":80,"rows":24,"pixel_width":0,"pixel_height":0}` | SSH `window-change`, docker exec resize, `ioctl(TIOCSWINSZ)` |
+| 3 (ctrl_in)  | client→server | signal  | `{"type":"signal","name":"INT"}` | SSH `signal`, docker exec signal, `kill(-pgid, sig)` (REQ-TTY-02) |
+| 3 (ctrl_in)  | client→server | eof     | `{"type":"eof"}` | SSH channel EOF, docker stdin close, `ChildStdin::drop` |
+| 4 (ctrl_out) | server→client | exit    | `{"type":"exit","code":0}` | the terminal/completion signal (ADR-055) |
+
+The adapter enforces the direction: an `Exit` arriving on
+`STREAM_CTRL_IN` is a protocol violation (the adapter ignores it); a
+`Resize`/`Signal`/`Eof` arriving on `STREAM_CTRL_OUT` is likewise a
+protocol violation (the adapter ignores it). The split makes the
+control channel genuinely bidirectional on the wire — the previous
+single `STREAM_CONTROL = 3` was documented as "bidirectional" but the
+adapter had to ignore `Exit` from the client because the two directions
+were indistinguishable on the same stream_type. See
+`docs/research/alknet-crate-extraction/findings.md` Phase 7.
 
 **Signal names.** `name` is an uppercase string. The supported set (per
 the POC's `signal_from_name`): `HUP`, `INT`, `QUIT`, `TERM`, `KILL`,
@@ -261,12 +292,12 @@ type is not.
 
 Two signals both close the client's stdin:
 
-1. **`{"type":"eof"}` control chunk** (stream_type 3) — explicit,
-   recommended. Tells the server to close the backend's stdin
-   (`ChildStdin::drop` / PTY writer close). The client may still want to
-   receive remaining stdout + the exit code, so the server does not tear
-   down the session on eof — it just closes stdin and keeps pumping
-   output.
+1. **`{"type":"eof"}` control chunk** (stream_type 3, `STREAM_CTRL_IN`)
+   — explicit, recommended. Tells the server to close the backend's
+   stdin (`ChildStdin::drop` / PTY writer close). The client may still
+   want to receive remaining stdout + the exit code, so the server does
+   not tear down the session on eof — it just closes stdin and keeps
+   pumping output.
 2. **Zero-length stdin chunk** (stream_type 0, length 0) — the docker
    POC's sentinel. Accepted for compatibility with that pattern.
 
@@ -288,17 +319,26 @@ a session — see [tty-adapter.md](tty-adapter.md).
 ## Constraints
 
 - **The wire format is one-way (ADR-052).** The 5-byte header, the fixed
-  stream_type set (0-3), and the two-carriage sequence are bytes clients
-  and servers parse. A 5th channel type requires a new ALPN
+  stream_type set (0-4), and the two-carriage sequence are bytes clients
+  and servers parse. A 6th channel type requires a new ALPN
   (`alknet/tty/v2` per ADR-006), not a negotiated addition.
+- **The control channel is split into two halves (Phase 7).**
+  `STREAM_CTRL_IN = 3` is client→server (`Resize`, `Signal`, `Eof`);
+  `STREAM_CTRL_OUT = 4` is server→client (`Exit`). The adapter enforces
+  the direction: an `Exit` on `STREAM_CTRL_IN` is ignored; a `Resize` on
+  `STREAM_CTRL_OUT` is ignored. The split is what makes the control
+  channel genuinely bidirectional on the wire — the previous single
+  `STREAM_CONTROL = 3` was documented as "bidirectional" but the adapter
+  had to ignore `Exit` from the client because the two directions were
+  indistinguishable on the same stream_type.
 - **No windowing.** The chunk format has no flow-control window; QUIC's
   per-stream flow control is the backpressure mechanism (OQ-45 resolved:
   the backpressure chain is complete by construction — QUIC flow control
   → bounded drainer channel → bounded stdout channel → OS pipe/PTY
   buffer → process `write()` blocks; no unbounded buffer breaks the
   chain). The reversal path, if ever needed, is an additive
-  `ControlMessage` variant on stream_type 3, not a wire-format header
-  change.
+  `ControlMessage` variant on `STREAM_CTRL_IN`/`STREAM_CTRL_OUT`, not a
+  wire-format header change.
 - **No negotiation round-trip.** The client writes the negotiation frame
   and starts sending chunks; the server reads the frame and starts
   pumping. There is no "the server acknowledges the negotiation before
@@ -312,18 +352,21 @@ a session — see [tty-adapter.md](tty-adapter.md).
   without entering raw mode. The error response MUST be under 16 MiB
   (`MAX_CHUNK_LEN`) so the 4-byte big-endian length prefix's high byte
   is `0x00` — this is what makes the framing-disambiguation trick
-  (first byte `0x00` = error frame, first byte `1`/`2`/`3` = raw chunk)
-  sound; it is a wire-format invariant, not an empirical observation.
-  See [tty-adapter.md](tty-adapter.md) §"Negotiation errors".
+  (first byte `0x00` = error frame, first byte `1`/`2`/`4` = raw chunk;
+  the server never sends `0` (stdin, client→server) or `3`
+  (`STREAM_CTRL_IN`, client→server), so `0x00` is unambiguous) sound; it
+  is a wire-format invariant, not an empirical observation. See
+  [tty-adapter.md](tty-adapter.md) §"Negotiation errors".
 
 ## Design Decisions
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| Wire format and two-carriage model | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | `alknet/tty` ALPN; JSON negotiation frame then raw chunks; fixed channel set 0-3; control as JSON |
+| Wire format and two-carriage model | [ADR-052](../../decisions/052-alknet-tty-wire-format-and-two-carriage.md) | `alknet/tty` ALPN; JSON negotiation frame then raw chunks; fixed channel set 0-4; control as JSON |
+| Bidirectional control channel split | Phase 7 (this doc, amended) | `STREAM_CTRL_IN = 3` (client→server) and `STREAM_CTRL_OUT = 4` (server→client) replace the single `STREAM_CONTROL = 3`; the adapter enforces the direction |
 | No alknet-call dependency (self-contained framing) | [ADR-057](../../decisions/057-alknet-tty-no-alknet-call-dep.md) | alknet-tty implements its own length-prefixed framing; format coincides with alknet-call's by convention, not by code reuse |
-| Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | `{"type":"exit","code":N}` on stream_type 3; "exit chunk is last" invariant |
-| Stdin closure canonical signal | OQ-47 | Either `eof` control chunk or zero-length stdin chunk; `eof` recommended |
+| Exit code on a control chunk | [ADR-055](../../decisions/055-exit-code-on-control-chunk.md) | `{"type":"exit","code":N}` on `STREAM_CTRL_OUT` (stream_type 4); "exit chunk is last" invariant |
+| Stdin closure canonical signal | OQ-47 | Either `eof` control chunk (`STREAM_CTRL_IN`) or zero-length stdin chunk; `eof` recommended |
 
 ## Open Questions
 

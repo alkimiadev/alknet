@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-18 — Phase 7: the control channel is split
+into `STREAM_CTRL_IN = 3` (client→server) and `STREAM_CTRL_OUT = 4`
+(server→client) halves; see §"Control channel split" below)
 
 ## Context
 
@@ -123,12 +125,15 @@ The bidi stream has two phases:
   | 0 | data-in (stdin) | client→server | raw bytes |
   | 1 | data-out (stdout) | server→client | raw bytes |
   | 2 | data-err (stderr) | server→client | raw bytes |
-  | 3 | control | bidirectional | JSON control message |
+  | 3 | ctrl-in | client→server | JSON control message (`Resize`, `Signal`, `Eof` — see §4a) |
+  | 4 | ctrl-out | server→client | JSON control message (`Exit` — see §4a) |
 
-  `stream_type > 3` is a protocol error (`InvalidStreamType`). There is
-  no extension escape hatch in the byte — a 5th channel is a wire-format
-  change requiring a new ALPN (`alknet/tty/v2` per ADR-006), not a
-  negotiated addition to this format.
+  `stream_type > 4` is a protocol error (`InvalidStreamType`). (Phase 7
+  amendment, §4a: the original `3 = control (bidirectional)` is split
+  into `3 = ctrl-in` and `4 = ctrl-out`; the original bound was
+  `> 3`.) There is no extension escape hatch in the byte — a 6th
+  channel is a wire-format change requiring a new ALPN (`alknet/tty/v2`
+  per ADR-006), not a negotiated addition to this format.
 
 - `length` — payload length in bytes, u32 big-endian, max 16 MiB. A
   chunk larger than 16 MiB is a protocol error (`ChunkTooLarge`). The
@@ -175,6 +180,53 @@ an older server doesn't recognize degrades gracefully rather than
 tearing down the session. This is a two-way-door extension point within
 the one-way-door wire format — adding a control message type is
 additive; changing the chunk header is not.
+
+### 4a. Control channel split (Phase 7 amendment, 2026-07-18)
+
+The single `stream_type 3 = control (bidirectional)` in §3 and §4 above
+is **split into two halves** so the control channel is genuinely
+bidirectional on the wire:
+
+| stream_type | channel     | direction      | payload                                              |
+|-------------|-------------|----------------|------------------------------------------------------|
+| 3           | `STREAM_CTRL_IN`  | client→server | JSON control message (`Resize`, `Signal`, `Eof`) |
+| 4           | `STREAM_CTRL_OUT` | server→client | JSON control message (`Exit`)                       |
+
+The `stream_type > 3` protocol-error bound becomes `stream_type > 4`.
+The chunk header is otherwise unchanged (5 bytes: 1 type + 4 length).
+
+**Why the split.** The original §4 documented stream_type 3 as
+"bidirectional" and listed the four control messages with their
+directions. But the adapter had no way to distinguish the two
+directions on the same stream_type — `Exit` from the client was always
+ignored (the adapter's `pump_client_to_backend` matched `Exit` and
+logged "ignoring Exit control from client (server→client only)"). The
+spec said "bidirectional"; the code was half-duplex. The split makes
+the bidirectionality literal: each direction has its own stream_type,
+the adapter enforces the direction (an `Exit` arriving on
+`STREAM_CTRL_IN` is a protocol violation; a `Resize` arriving on
+`STREAM_CTRL_OUT` is a protocol violation), and a client can route
+exit vs. control without parsing the JSON `type` tag first.
+
+**Door type.** One-way, same as the original §3 / §4. The stream_type
+set is bytes clients and servers parse. A client written against the
+old single-`STREAM_CONTROL` shape will misread `STREAM_CTRL_OUT = 4` as
+`InvalidStreamType (> 3)` and tear down the session — the split is a
+wire-format change, not an additive extension. The reversal path is
+the same as the original: a new ALPN (`alknet/tty/v2`), which coexists
+rather than replaces. The trade is one new stream_type byte now vs.
+the half-duplex-in-disguise flaw forever.
+
+**What changes in the spec.** §3's stream_type table gains a 5th row
+(`4 = ctrl_out, server→client`); the bound becomes `> 4`. §4's
+direction table is unchanged in content (the four messages keep their
+directions and shapes) but the direction is now encoded in the
+stream_type, not just in the adapter's behavior. ADR-055's "exit chunk
+is last" invariant is unchanged — the exit chunk still rides the
+control channel, just on `STREAM_CTRL_OUT` (stream_type 4) instead of
+the old single `STREAM_CONTROL` (stream_type 3). See
+`docs/research/alknet-crate-extraction/findings.md` Phase 7 for the
+full migration notes.
 
 ### 5. Negotiation errors use the JSON framing, not the raw chunk format
 

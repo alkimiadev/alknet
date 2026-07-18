@@ -17,7 +17,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alknet_tty::wire::{STREAM_CONTROL, STREAM_STDIN};
+use alknet_tty::wire::{STREAM_CTRL_OUT, STREAM_STDIN};
 use alknet_tty_local::LocalTtyBackend;
 use common::{negotiate_pty_json, spawn_session};
 
@@ -245,7 +245,7 @@ async fn pty_exit_chunk_is_last() {
         if saw_exit {
             panic!("chunk arrived after exit: stream_type={st}, bytes={bytes:?} (ADR-055)");
         }
-        if st == STREAM_CONTROL {
+        if st == STREAM_CTRL_OUT {
             let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             if v["type"] == "exit" {
                 assert_eq!(v["code"], 0);

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-07
+last_updated: 2026-07-18
 ---
 
 # alknet-tty — TtyAdapter and Session Lifecycle
@@ -100,14 +100,18 @@ A `alknet/tty` session on one bidi stream proceeds in three phases:
      `Some`, a concurrent stderr pump emits stderr chunks (stream_type 2).
      On backend stdout EOF, emit a zero-length stdout sentinel.
    - **B. client → backend**: client chunks → backend. stdin chunks
-     (stream_type 0) → `TtyHandle.stdin` (via `AsyncWrite`). Control
-     chunks (stream_type 3) → `ControlMessage` dispatch: `Resize` →
-     `TtyControl::resize`, `Signal` → `TtyControl::signal`, `Eof` →
-     close stdin. `Exit` from the client is ignored (server→client only).
+     (stream_type 0) → `TtyHandle.stdin` (via `AsyncWrite`).
+     Client→server control chunks (`STREAM_CTRL_IN`, stream_type 3) →
+     `ControlMessage` dispatch: `Resize` → `TtyControl::resize`, `Signal`
+     → `TtyControl::signal`, `Eof` → close stdin. `Exit` on
+     `STREAM_CTRL_IN` is a protocol violation (it's server→client only)
+     and is ignored. `STREAM_CTRL_OUT` (stream_type 4) from the client is
+     a protocol violation (it's the server→client half) and is ignored.
      On client read-half close or a zero-length stdin chunk, signal EOF
      to the backend's stdin.
    - **C. exit → exit chunk**: await `TtyHandle.exit_code`; on resolve,
-     enqueue `{"type":"exit","code":N}` as a control chunk (stream_type 3).
+     enqueue `{"type":"exit","code":N}` as a server→client control
+     chunk (`STREAM_CTRL_OUT`, stream_type 4).
 
    A drainer task writes chunks to the client in arrival order. After the
    exit chunk is written (task C resolves and the exit chunk drains),
@@ -117,6 +121,36 @@ This is the POC's `session::drive_session` pattern, generalized: the POC
 hardcoded the local PTY backend; the adapter dispatches to any
 `TtyBackend`. See `/workspace/alknet-tty-poc/src/session.rs` for the
 reference implementation of the three-pump driver.
+
+### Bidirectional Control Channel (Phase 7)
+
+The control channel is split into two halves so it is genuinely
+bidirectional on the wire:
+
+- **`STREAM_CTRL_IN = 3`** — client→server control (`Resize`, `Signal`,
+  `Eof`).
+- **`STREAM_CTRL_OUT = 4`** — server→client control (`Exit`).
+
+The adapter enforces the direction:
+
+- An `Exit` arriving on `STREAM_CTRL_IN` is a protocol violation
+  (server→client message on the client→server half) — the adapter
+  ignores it (the previous single `STREAM_CONTROL = 3` could not
+  distinguish the two directions, so `Exit` from the client was always
+  ignored; the split makes the rejection explicit).
+- A `Resize`/`Signal`/`Eof` arriving on `STREAM_CTRL_OUT` is a protocol
+  violation (client→server message on the server→client half) — the
+  adapter ignores it (the server never dispatches control messages it
+  receives on the server→client half).
+- `STREAM_CTRL_OUT` (stream_type 4) chunks written by the client are a
+  protocol violation (the client should not write on the server→client
+  half) — the adapter ignores them.
+
+The exit chunk (`Exit`) is emitted on `STREAM_CTRL_OUT` (stream_type
+4), not on the previous `STREAM_CONTROL = 3`. A client distinguishing
+the two halves can route exit vs. control without parsing the JSON
+`type` tag first. See `docs/research/alknet-crate-extraction/findings.md`
+Phase 7 and `tty-wire.md` §"Control Channel".
 
 ### Negotiation Errors
 
@@ -146,17 +180,18 @@ The disambiguation is by the first byte: a JSON error frame's 4-byte
 big-endian length prefix always starts with `0x00` (error frames MUST
 be under 16 MiB — `MAX_CHUNK_LEN` — so the high byte is zero; this is
 a wire-format invariant, not an assumption), while a raw chunk's first
-byte is a `stream_type` in `{0, 1, 2, 3}`. A stream_type of `0` (stdin
-from server) is invalid — the server never sends stdin chunks — so the
-client distinguishes: read the first byte; if it is `0x00`, interpret
-the next 4 bytes as a big-endian length prefix and read that many bytes
-as a JSON error frame; otherwise interpret it as a `stream_type` byte
-and continue reading the raw chunk header. This is a one-way-door
-wire-format invariant (ADR-052): error frames use the negotiation
-framing (length prefix) and MUST be under 16 MiB; success uses the raw
-chunk framing (stream_type byte first); the `0x00`-as-length-prefix vs
-`0x00`-as-invalid-stream_type disambiguation is what makes the two
-distinguishable on the wire.
+byte is a `stream_type`. The server never sends `0` (stdin —
+client→server only) or `3` (`STREAM_CTRL_IN` — client→server only), so
+the server-sent set is `{1, 2, 4}` (stdout, stderr, `STREAM_CTRL_OUT`);
+`0x00` is unambiguous. The client distinguishes: read the first byte; if
+it is `0x00`, interpret the next 4 bytes as a big-endian length prefix
+and read that many bytes as a JSON error frame; otherwise interpret it
+as a `stream_type` byte and continue reading the raw chunk header. This
+is a one-way-door wire-format invariant (ADR-052): error frames use the
+negotiation framing (length prefix) and MUST be under 16 MiB; success
+uses the raw chunk framing (stream_type byte first); the
+`0x00`-as-length-prefix vs `0x00`-as-invalid-stream_type disambiguation
+is what makes the two distinguishable on the wire.
 
 ### Exit-Chunk Ordering (ADR-055)
 

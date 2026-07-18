@@ -21,8 +21,10 @@
 //! - An error frame's 4-byte big-endian length prefix starts with `0x00`
 //!   because error frames MUST be under 16 MiB ([`MAX_CHUNK_LEN`]) so the
 //!   high byte is zero (a wire-format invariant, not an assumption).
-//! - A raw chunk's first byte is a `stream_type` in `{1, 2, 3}` —
-//!   `0` (stdin from server) is invalid, so `0x00` is unambiguous.
+//! - A raw chunk's first byte is a `stream_type`. The server never sends
+//!   `0` (stdin — client→server only) or `3` (`STREAM_CTRL_IN` —
+//!   client→server only), so the server-sent set is `{1, 2, 4}`
+//!   (stdout, stderr, `STREAM_CTRL_OUT`); `0x00` is unambiguous.
 //!
 //! See ADR-052 §5 and `tty-wire.md` §"Constraints".
 

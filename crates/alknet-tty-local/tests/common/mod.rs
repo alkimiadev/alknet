@@ -21,7 +21,9 @@ use std::sync::Arc;
 use alknet_core::auth::Identity;
 use alknet_tty::adapter::drive_session;
 use alknet_tty::backend::TtyBackend;
-use alknet_tty::wire::{ChunkReader, STREAM_CONTROL, STREAM_STDERR, STREAM_STDOUT};
+use alknet_tty::wire::{
+    ChunkReader, STREAM_CTRL_IN, STREAM_CTRL_OUT, STREAM_STDERR, STREAM_STDOUT,
+};
 use bytes::Bytes;
 use tokio::io::duplex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -70,10 +72,11 @@ impl ClientSide {
         self.write.flush().await.unwrap();
     }
 
-    /// Write a control chunk (stream_type 3) carrying a serialized
-    /// `ControlMessage` JSON payload.
+    /// Write a client→server control chunk (`STREAM_CTRL_IN`, stream_type
+    /// 3) carrying a serialized `ControlMessage` JSON payload (`Resize`,
+    /// `Signal`, or `Eof`).
     pub async fn write_control(&mut self, json: &[u8]) {
-        self.write_chunk(STREAM_CONTROL, json).await;
+        self.write_chunk(STREAM_CTRL_IN, json).await;
     }
 
     /// Read one raw chunk from the server. Returns the `stream_type`
@@ -145,7 +148,7 @@ impl ClientSide {
                         stderr.extend_from_slice(&bytes);
                     }
                 }
-                STREAM_CONTROL => {
+                STREAM_CTRL_OUT => {
                     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                     if v["type"] == "exit" {
                         return Some((stdout, stderr, v["code"].as_i64().unwrap() as i32));
@@ -177,7 +180,7 @@ impl ClientSide {
                         stderr.extend_from_slice(&bytes);
                     }
                 }
-                STREAM_CONTROL => {
+                STREAM_CTRL_OUT => {
                     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                     if v["type"] == "exit" {
                         return Some((stdout, stderr, v["code"].as_i64().unwrap() as i32));
