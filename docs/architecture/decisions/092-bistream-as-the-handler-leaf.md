@@ -188,19 +188,54 @@ The `QuicStream` wrapper (`adapter.rs:271-314`, 44 lines) becomes
 `BiStream::from_joined(send, recv)` — one line, in core, invisible to
 handlers. The same applies to iroh. The join is no longer per-handler.
 
-### `Connection::from_bidi` becomes the universal constructor
+### `Connection::from_bidi` is the only public stream constructor;
+`from_stream` is removed
 
 Today `from_bidi` is a convenience wrapper that calls
-`tokio::io::split(stream)` then `from_stream(send, recv)`. With
-`BiStream` as the leaf, `from_bidi` is the natural constructor — the
-underlying `StreamBidiStreamSource::accept_bi` yields the `BiStream`
-once. `from_stream(send, recv)` is retained as the escape hatch for
-transports that arrive already split (e.g. the channels reassembly
-path, which produces separate `MpscSendStream` / `MpscRecvStream` and
-wants to join them at construction time); it internally does
-`tokio::io::join(send, recv)` then routes through `from_bidi`. Both
-constructors are retained; `from_bidi` is the primary, `from_stream`
-the escape hatch.
+`tokio::io::split(stream)` then `from_stream(send, recv)`, and
+`from_stream` bakes the split into the constructor API — the same
+split-leaf shape pushed one step earlier. With `BiStream` as the leaf,
+`from_bidi` is the only public constructor that takes a joined stream.
+`Connection::from_stream(send, recv, ...)` is **removed**.
+
+The rule this normalizes: **the split never crosses a crate boundary
+as part of a constructor.** A crate that produces split halves
+naturally (the channels reassembly path, which produces
+`MpscSendStream` / `MpscRecvStream` as distinct async types) joins
+them *itself* via `tokio::io::join(send, recv)` (one line) and calls
+`from_bidi`. A crate that has a joined stream (`TcpStream`,
+`TlsStream<TcpStream>`, `russh::Channel::into_stream()`,
+`WsBidiStream`, even a test `DuplexStream`) calls `from_bidi` directly.
+`Connection` only ever holds a `BiStream`. The split is a crate-internal
+concern of wherever it naturally arises.
+
+The existing `from_stream` call sites update mechanically:
+
+- `crates/alknet-client/src/dial/tcp_tls.rs` already uses `from_bidi`
+  (no change).
+- `crates/alknet-endpoint/src/accept/tcp_tls.rs` already uses
+  `from_bidi` (no change).
+- The call crate's test stubs
+  (`call_client.rs:91`, `protocol/connection.rs:465`,
+  `protocol/dispatch.rs:465`, `protocol/adapter.rs:294`,
+  `client/from_call.rs:428`) today do
+  `tokio::io::split(x)` then `from_stream(send, recv, ...)` — they
+  become `from_bidi(x, ...)` directly, one call, no split.
+- The channels reassembly path (per ADR-074, the future
+  `ChannelBidiStreamSource::accept_bi` impl) joins its
+  `MpscSendStream` / `MpscRecvStream` via `tokio::io::join` and calls
+  `from_bidi` — the join is in the channels crate (where the split
+  exists), not in the core constructor API.
+- The core test at `types.rs:768` and the `from_source_tests` helper
+  become `from_bidi` calls (or construct `BiStream` directly via
+  `BiStream::from_joined`).
+
+`SendStream::from_stream` / `RecvStream::from_stream` (the per-half
+constructors, `types.rs:267` / `types.rs:289`) are **retained** — they
+are the per-half boxing for `into_sub_streams()` (ADR-074) and the
+channels reassembly path's `SubStreamHandle` leaves, not constructors
+that feed `Connection`. The split lives where it is natural (channels
+reassembly → `SubStreamHandle`), doesn't leak into `Connection`'s API.
 
 ### `SendStream` / `RecvStream` collapse to thin newtypes
 
@@ -364,6 +399,13 @@ redesign.
 - **`Connection::from_quinn` / `from_iroh`** — preserved as
   convenience wrappers; internally wrap the `QuinnBidiStreamSource` /
   `IrohBidiStreamSource` whose `accept_bi` does the join.
+- **`Connection::from_bidi`** — promoted to the only public stream
+  constructor. `Connection::from_stream` is removed (the split no
+  longer crosses a crate boundary as part of a constructor).
+- **`SendStream::from_stream` / `RecvStream::from_stream`** (per-half
+  constructors) — retained, but only as the boxing for
+  `into_sub_streams()` and the channels reassembly path's
+  `SubStreamHandle` leaves. Not constructors that feed `Connection`.
 - **The endpoint's accept loops** (quinn/iroh) — unchanged.
 
 ## Consequences
@@ -407,6 +449,13 @@ redesign.
   send) = tokio::io::split(bidi)`), but it touches every handler. This
   is the one-time cost of the unification; the alternative is
   per-handler wrappers forever.
+- Every `Connection::from_stream(send, recv, ...)` call site is
+  removed. The call crate's test stubs (5 sites) become `from_bidi`
+  calls. The channels reassembly path gains a one-line
+  `tokio::io::join` before `from_bidi`. No caller outside core and
+  the channels reassembly path was ever doing anything other than
+  `tokio::io::split` then `from_stream` — the split was always
+  gratuitous at the call site.
 - ADR-070's `accept_bi` return shape is amended. ADR-070 explicitly
   preserved the split-pair shape to keep the `Connection` API verbatim;
   this ADR reverses that preservation. The trade is: one type change
@@ -458,16 +507,22 @@ compilable:
    constructor. Change `BidiStreamSource::accept_bi` / `open_bi` return
    types to `BiStream`. Update `QuinnBidiStreamSource` /
    `IrohBidiStreamSource` / `StreamBidiStreamSource` impls to do the
-   join. `Connection::accept_bi` / `open_bi` delegate verbatim. This
-   is a single-crate change; every `accept_bi` caller breaks
-   mechanically.
-2. **Update every handler's call sites.** `HttpAdapter::handle`
-   becomes 4 lines (drop `QuicStream`). `TtyAdapter::handle` calls
+   join. `Connection::accept_bi` / `open_bi` delegate verbatim. Remove
+   `Connection::from_stream` (the split-pair constructor); promote
+   `Connection::from_bidi` to the only public stream constructor.
+   This is a single-crate change; every `accept_bi` and `from_stream`
+   caller breaks mechanically.
+2. **Update every handler's `accept_bi` call sites and every
+   `from_stream` call site.** `HttpAdapter::handle` becomes 4 lines
+   (drop `QuicStream`). `TtyAdapter::handle` calls
    `tokio::io::split(bidi)` for its pump halves (or uses
    `into_sub_streams()` in channels mode — unchanged). The channels
    POC's `TunnelHandler` and `EchoHandler` get the same
    `tokio::io::split` treatment. `CallAdapter::handle` (wherever it
-   consumes `accept_bi`) gets the same.
+   consumes `accept_bi`) gets the same. The call crate's test stubs
+   (5 `from_stream` sites) become `from_bidi` calls (drop the
+   `tokio::io::split` they were doing immediately before). The channels
+   reassembly path gains a one-line `tokio::io::join` before `from_bidi`.
 3. **Collapse `SendStream` / `RecvStream` to thin newtypes.** Remove
    `SendStreamKind` / `RecvStreamKind` enums; the quinn/iroh
    constructors become thin-boxing. Used only by the channels
@@ -479,10 +534,10 @@ compilable:
    largest single change and can land after (1)-(3) — the WS path is
    independent of the handler call-site updates.
 5. **Update ADR-065, ADR-070, ADR-074, ADR-077** to reflect the
-   `BiStream` return shape. ADR-065's `from_stream` /
-   `from_bidi` constructors are amended (`from_bidi` primary,
-   `from_stream` escape hatch with internal join). ADR-070's
-   `accept_bi` return type is amended. ADR-074's
+   `BiStream` return shape. ADR-065's `from_stream` constructor is
+   removed; `from_bidi` is the only public stream constructor (the
+   rule: the split never crosses a crate boundary as part of a
+   constructor). ADR-070's `accept_bi` return type is amended. ADR-074's
    `ChannelBidiStreamSource::accept_bi` return type is amended;
    `into_sub_streams()` is unchanged. ADR-077's two-mode TTY design is
    unchanged (the modes differ in *how* the adapter gets sub-streams,
@@ -515,13 +570,6 @@ fix (unify the leaf so the wrapper moves into core).
   `into_sub_streams()`). Default: stay in `alknet-core` for now (the
   channels crate is not yet extracted); revisit at the channels
   extraction.
-- **`from_stream` vs `from_bidi` primacy.** `from_bidi` is the
-  primary constructor (matches the ecosystem convention); `from_stream`
-  is the escape hatch for already-split transports (channels
-  reassembly). The naming is slightly asymmetric (`from_bidi` is
-  primary but `from_stream` sounds more general). Default: keep both
-  names; `from_bidi` is the documented primary, `from_stream` carries
-  the "already split" doc note. Renaming is a two-way door.
 
 ## References
 
@@ -529,8 +577,9 @@ fix (unify the leaf so the wrapper moves into core).
   trait is removed, the bounds survive as implied bounds on the
   concrete struct)
 - ADR-065: `Connection::from_stream` / `from_bidi` (amended —
-  `from_bidi` is the primary constructor, `from_stream` is the
-  escape hatch with an internal join)
+  `from_stream` is removed; `from_bidi` is the only public stream
+  constructor; the split never crosses a crate boundary as part of a
+  constructor)
 - ADR-070: `BidiStreamSource` trait (amended — `accept_bi` / `open_bi`
   return `BiStream`, not the split pair; the trait shape and the
   `from_source` extension point are preserved)
