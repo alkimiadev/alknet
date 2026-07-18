@@ -398,9 +398,21 @@ protocol crate.
 
 ### Phase 6: Core stream unification — `BiStream` as the handler leaf
 
-**What:** Implement ADR-092 (drafted, pushed) and the stream-unification
-resolution from `docs/research/stream-unification/findings.md`. The
-changes to `alknet-core`:
+**Status:** **Done** (commit `b60a584`, 2026-07-18). All "Done when"
+criteria met: `BiStream` is the only type returned by `accept_bi` /
+`open_bi`; `Connection::from_stream` is removed; `from_bidi` is the
+only public stream constructor; `cargo test` passes workspace-wide
+(one pre-existing `alknet-http` failure remains — see Phase 9's
+"Pre-existing test failure to fix in a follow-up" note; unrelated to
+Phase 6, verified by stashing). The `QuicStream` wrapper and
+`QuicStreamDuplex` test helper removals that Phase 9 called for were
+done as part of this phase's call-site updates (Phase 9 is now marked
+done — subsumed).
+
+**What was planned:** Implement ADR-092 (drafted, pushed) and the
+stream-unification resolution from
+`docs/research/stream-unification/findings.md`. The changes to
+`alknet-core`:
 
 - `accept_bi()` returns `BiStream` (a concrete `AsyncRead + AsyncWrite`
   newtype wrapping the inner transport), not a split `(SendStream,
@@ -419,6 +431,43 @@ changes to `alknet-core`:
 (`server/adapter.rs:271-314`) becomes unnecessary — `BiStream` is
 already `AsyncRead + AsyncWrite`. The `QuicStreamDuplex` test helper
 (`adapter.rs:456-493`) is similarly replaceable.
+
+**What was done (cross-crate, +408/-399 lines net -57):**
+- **alknet-core** (`types.rs`): added concrete `BiStream` struct boxing
+  `Box<dyn AsyncReadWrite + Unpin>` with `from_joined` (pub — downstream
+  crates that produce split halves naturally, e.g. the future channels
+  reassembly path and tests, call this) and `from_bidi` (pub(crate))
+  constructors; changed `BidiStreamSource::accept_bi`/`open_bi` return
+  types to `BiStream`; the join happens once in the
+  `QuinnBidiStreamSource` / `IrohBidiStreamSource` /
+  `StreamBidiStreamSource` impls via `tokio::io::join`; collapsed
+  `SendStream`/`RecvStream` to thin newtypes over
+  `Box<dyn Async* + Send + Unpin>` (removed `SendStreamKind` /
+  `RecvStreamKind` enums and the quinn/iroh per-call dispatch — the
+  join is in the `BidiStreamSource` impl now); removed
+  `Connection::from_stream`; promoted `Connection::from_bidi` to the
+  only public stream constructor; updated tests (`from_source_tests`,
+  `tests`) to use `from_bidi` + `BiStream`, added a `SinkEmpty` test
+  helper for `Connection`-level-only test connections.
+- **alknet-http** (`server/adapter.rs`): dropped the 44-line `QuicStream`
+  wrapper and the 38-line `QuicStreamDuplex` test helper; tests use a
+  single `tokio::io::duplex` whose ends are each `AsyncRead + AsyncWrite`
+  natively.
+- **alknet-tty** (`adapter.rs`): `TtyAdapter::handle` splits the
+  `BiStream` from `accept_bi` via `tokio::io::split` for
+  `drive_session`'s separate `AsyncWrite`/`AsyncRead` args (the stdlib
+  idiom for `TcpStream`-style duplex streams).
+- **alknet-call** (`protocol/*`, `client/*`): `Dispatcher::handle_stream`
+  takes `BiStream` and splits internally; `CallConnection::call_with_payload`/
+  `subscribe_with_payload`/`write_envelope` split the `open_bi` result
+  via `tokio::io::split` at the call site; `write_request` /
+  `read_stream_until_closed` are now generic over `AsyncWrite` /
+  `AsyncRead` (were: concrete `SendStream`/`RecvStream`); added
+  `protocol/test_support.rs` with a shared `sink_empty_connection()`
+  helper replacing the 5 duplicated `stub_connection()` fns; updated all
+  test `handle_stream` call sites to build
+  `BiStream::from_joined(recv, send)` from the existing
+  `BufReader<Cursor>` + duplex pair.
 
 **Compilable state:** `cargo test -p alknet-core` passes. Handler
 crates (`alknet-tty`, `alknet-call`, `alknet-http`) may need import
@@ -496,10 +545,19 @@ updated, the POC's wire format notes are updated.
 
 ### Phase 9: Fix `alknet-http` — drop `QuicStream` wrapper
 
-**What:** Remove the `QuicStream` wrapper from `server/adapter.rs`
-(lines 271-314) and the `QuicStreamDuplex` test helper (lines
-456-493). After Phase 6, `accept_bi()` returns `BiStream` which is
-already `AsyncRead + AsyncWrite` — the hand-rolled adapter is
+**Status:** **Done — subsumed by Phase 6** (commit `b60a584`,
+2026-07-18). The `QuicStream` wrapper (44 lines) and the
+`QuicStreamDuplex` test helper (38 lines) were removed as part of
+Phase 6's call-site updates (per ADR-092 migration step 2 — the wrapper
+removal is the `alknet-http` call-site update). `grep -r QuicStream
+crates/` returns no matches; `HttpAdapter::handle` is 4 lines; the
+test helpers use a single `tokio::io::duplex` whose ends are each
+`AsyncRead + AsyncWrite` natively.
+
+**What was planned:** Remove the `QuicStream` wrapper from
+`server/adapter.rs` (lines 271-314) and the `QuicStreamDuplex` test
+helper (lines 456-493). After Phase 6, `accept_bi()` returns `BiStream`
+which is already `AsyncRead + AsyncWrite` — the hand-rolled adapter is
 unnecessary.
 
 **The change:** `HttpAdapter::handle` calls `connection.accept_bi()`,
@@ -508,17 +566,32 @@ gets a `BiStream`, and passes it directly to `serve_io()` (or via
 `QuicStream` wrapper is deleted. The test helper is replaced with
 `BiStream`-based test utilities.
 
-**Why this is now a light pruning:** The original Phase 6 was deferred
+**Why this was a light pruning:** The original Phase 6 was deferred
 because `SendStream` is `AsyncWrite`-only and `RecvStream` is
 `AsyncRead`-only — the `QuicStream` wrapper was necessary to combine
 them. After Phase 6, `BiStream` bundles both halves natively. The
 wrapper becomes dead code.
 
-**Compilable state:** `cargo test -p alknet-http` passes. The
-`QuicStream` wrapper and `QuicStreamDuplex` test helper are removed.
-
-**Done when:** `cargo test -p alknet-http` passes, no `QuicStream` or
-`QuicStreamDuplex` in the codebase.
+**Pre-existing test failure to fix in a follow-up:** Phase 9's "Done
+when" criterion was "`cargo test -p alknet-http` passes." One
+`alknet-http` test fails on the `develop` baseline (before, during,
+and after Phase 6 — verified by stashing Phase 6 and re-running):
+`adapters::to_mcp::tests::search_returns_access_control_filtered_ops_excluding_subscriptions`
+panics with `"handler kind mismatch: Subscription requires
+HandlerKind::Stream (got HandlerKind::Once)"`. The bug is in the test
+helper `full_registry_with_ops` (`to_mcp.rs:501-516`), which always
+registers with `HandlerKind::Once(make_echo_handler())` regardless of
+`op_type` — when the test passes `OperationType::Subscription` for
+`"events/stream"`, the registry's kind validation (tightened in commit
+`9c81129 feat(call): introduce StreamingHandler, HandlerKind,
+ResponseStream + INVALID_OPERATION_TYPE (ADR-049)`) rejects it. The
+fix is in the test helper: branch on `op_type` and use
+`HandlerKind::Stream(make_streaming_handler(...))` for `Subscription`
+ops (mirror the pattern in `dispatch.rs`'s
+`registry_with_subscription`). This is unrelated to Phase 6/9 — it's a
+test-helper bug that predates the stream-unification work — but it
+blocks Phase 9's "Done when" criterion and should be fixed in a small
+follow-up commit before Phase 9 is considered fully closed.
 
 ---
 
@@ -532,10 +605,10 @@ wrapper becomes dead code.
 | 3 (client) | `alknet-client` builds standalone; call still has old `connect` (duplicate) |
 | 4 (core prune) | core is lightweight; `endpoint.rs` gone; `ConnectionCredentials` in core |
 | 5 (call prune) | call is pure protocol; `connect` + TLS helpers + `CallCredentials` + `from_call` dead path gone; Category B tests already moved; 2 `CallCredentials` tests moved to core |
-| 6 (stream unification) | `BiStream` is the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public constructor; `SendStream`/`RecvStream` are thin internal newtypes |
-| 7 (TTY control fix) | TTY control channel is properly bidirectional (`STREAM_CTRL_IN = 3`, `STREAM_CTRL_OUT = 4`); `InvalidStreamType` bound updated |
-| 8 (channels spec) | Channels spec updated to 8-byte wire format; no `stream_type` concept; `into_sub_streams` removed; ADRs 071/074/077 amended |
-| 9 (http fix) | `QuicStream` wrapper removed from `alknet-http`; `BiStream` used directly; `QuicStreamDuplex` test helper removed |
+| 6 (stream unification) | **Done** (`b60a584`). `BiStream` is the handler leaf; `accept_bi` returns `BiStream`; `from_stream` removed; `from_bidi` is the only public constructor; `SendStream`/`RecvStream` are thin internal newtypes. Subsumed Phase 9's `QuicStream`/`QuicStreamDuplex` removal. |
+| 7 (TTY control fix) | TTY control channel is properly bidirectional (`STREAM_CTRL_IN = 3`, `STREAM_CTRL_OUT = 4`); `InvalidStreamType` bound updated. **Unchanged by Phase 6** — Phase 7's work is in `wire.rs` and `control.rs`, neither of which Phase 6 touched. |
+| 8 (channels spec) | Channels spec updated to 8-byte wire format; no `stream_type` concept; `into_sub_streams` removed; ADRs 071/074/077 amended. **Unchanged by Phase 6** — docs-only, no code. |
+| 9 (http fix) | **Done — subsumed by Phase 6** (`b60a584`). `QuicStream` wrapper removed from `alknet-http`; `BiStream` used directly; `QuicStreamDuplex` test helper removed. One pre-existing `alknet-http` test failure remains (test-helper bug in `to_mcp.rs::full_registry_with_ops`, unrelated to Phase 6/9) — see Phase 9's "Pre-existing test failure to fix in a follow-up" note. |
 
 Phases 0-3 are purely additive — no existing code breaks, no tests
 break. Phases 4-5 are subtractive — the pruned code's callers don't
