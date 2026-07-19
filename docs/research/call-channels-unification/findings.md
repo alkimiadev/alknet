@@ -515,35 +515,33 @@ lives in the ALPN crate.
 ## The ALPN three-category reframe (ADR-086 amendment)
 
 ADR-086 §4 split the foundational handlers into two categories. Under
-the unified model, the first category is reframed. The three categories
-become:
+the unified model, the "channels data-channel ALPNs" category
+dissolves — they're just call apps. The categories become:
 
 | Category | TLS-layer? | Identity at TLS? | How they're reached | Examples |
 |----------|-----------|------------------|---------------------|----------|
 | **Entry points** | yes | no | TLS ALPN negotiation | `h2`, `http/1.1`, `alknet/register` |
 | **Endpoints** | yes | yes | TLS ALPN negotiation | `alknet/channels`, `alknet/call`, `alknet/ssh` |
-| **Binary-stream call apps** (was "channels data-channel ALPNs") | no | n/a (inside channels) | `channels/<alpn>/open` / `expose` op on channel 0 | `alknet/tty`, `alknet/tunnel`, `alknet/socks5`, `alknet/fs`, `alknet/sftp` |
 
-The third category changes description. Previously "ALPNs gated by
-channels" (implying they're a separate kind of thing that channels
-happens to gate, and each re-implements auth in a flat ALPN list).
-Now "call apps with binary-stream ops" (they *are* call apps; they
-inherit call's auth/composition/identity by construction; the
-binary-stream part is the `channel_open` marker). The gating is a
-consequence, not the definition.
+Call apps (docker, tty, tunnel, socks5, fs, sftp, agent, etc.) are
+composed inside endpoints — they're not a separate TLS-layer category.
+They register ops on the call `OperationRegistry`. Some ops return
+JSON; some ops carry the `channel_open` marker and produce a binary
+stream. The endpoint (channels or bare call) determines the framing,
+not the app.
 
-**Direct registration remains possible.** The category table says
-binary-stream call apps are not TLS-layer ALPNs, but the
-`ProtocolHandler` is still usable by both direct connections
-(`HandlerRegistry` → `ProtocolHandler` → `BiStream`) and
-channels-opened sessions. ADR-077's two-mode survives at the mechanism
-level; the canonical composition is through the call protocol. The
-table describes the canonical path, not a prohibition on direct use.
+Previously "ALPNs gated by channels" implied they're a separate kind of
+thing that channels happens to gate, and each re-implements auth in a
+flat ALPN list. Now they're call apps — they inherit call's
+auth/composition/identity by construction. The gating is a consequence,
+not the definition.
 
-**Naming.** "Binary-stream call apps" is the working name.
-"Channels-served ALPNs" is descriptive. The final naming is a separate
-(cosmetic) decision tracked as an OQ; this doc uses "binary-stream
-call apps" as the working name.
+**Direct registration remains possible.** The `ProtocolHandler` is
+still usable by both direct connections (`HandlerRegistry` →
+`ProtocolHandler` → `BiStream`) and channels-opened sessions.
+ADR-077's two-mode survives at the mechanism level; the canonical
+composition is through the call protocol. The table describes the
+canonical path, not a prohibition on direct use.
 
 ### What this means for the ALPN crates (the lineage)
 
@@ -730,7 +728,7 @@ is always by the responder" invariant.
 | **ADR-095 (new)** | "Openable ALPNs are operations" — channels is call with a binary data plane. The mental model, the `channel_open` marker on `OperationSpec`, the `ChannelCore` seam (wrapper shape, POC-flagged), the two-verb split, the subscription-based expose/open matching, the discovery split, the three-category ALPN reframe. The unifying ADR. | **Ready to draft.** |
 | **ADR-073 amendment** | `channel/open` dissolves into per-ALPN ops in `channels/<alpn>/open` and `channels/<alpn>/expose`. `channel/close`, `channel/control`, `channel/resources/subscribe` stay generic (keyed by `channel_id`). The `direction` field is removed (becomes the verb). Error codes: `channel:unknown_alpn` becomes "operation not found"; `channel:invalid_params` becomes ordinary schema rejection. | **Ready to draft.** |
 | **ADR-094 amendment (Gap 2)** | The per-connection opener ledger in `channels-call`. The decrement is keyed by the opener (from the ledger), not the closer. The decrement is called from every teardown path (close received, close sent, handler exit, connection drop), not just `channel/close`. The trait shape (`check_open`, `on_close`) survives. The teardown hooks (connection-drop, handler-exit) are new structural requirements on `channels-call`. | **Ready to draft.** |
-| **ADR-086 §4 amendment** | "Channels data-channel ALPNs" → "binary-stream call apps" (or whatever the naming OQ settles). The category distinction holds (them vs SSH); the description changes from "gated by channels" to "call apps with binary-stream ops." | **Ready to draft.** |
+| **ADR-086 §4 amendment** | "Channels data-channel ALPNs" → call apps (the third category dissolves — they're just call apps, some with binary-stream ops). The category distinction holds (them vs SSH); the description changes from "gated by channels" to "call apps." | **Ready to draft.** |
 | **ADR-048 amendment + OQ-65 resolution** | WebSocket may carry either `alknet/call` (bare, for call-only clients) or `alknet/channels` (8-byte chunk framing, call on channel 0 inside). Channels framing required for binary-stream clients. OQ-65 resolved. "Native session, not gateway" survives (the decision). | **Ready to draft.** |
 | **ADR-057 amendment** | TTY data plane stays call-free; control plane (open/expose ops) depends on call. "Self-contained negotiation framing" becomes the data-plane negotiation (the 5-byte format's negotiation frame); the control-plane negotiation is the call op. | **Ready to draft.** |
 | **ADR-058 clarification** | The boundary criterion (EventEnvelope-compatible → call op; incompatible → binary stream with call control plane) is preserved and sharpened. Probably a note, not a full amendment. | **Ready to draft.** |
@@ -775,7 +773,7 @@ is always by the responder" invariant.
   design and stays that way. The per-connection opener ledger lives
   in `channels-call`, not `channels-core`.
 
-### `alknet-tty` (the first binary-stream call app)
+### `alknet-tty` (the first call app with binary-stream ops)
 
 - Data plane (the `TtyAdapter`, the 5-byte wire format, the
   `TtyBackend` trait) is unchanged. Used by both direct connections
@@ -810,7 +808,7 @@ is always by the responder" invariant.
   plane (open/expose ops) new. Each registers its open ops on the
   call registry at assembly time.
 - These crates are not yet specced (per ADR-085). When specced, they
-  follow the binary-stream call app pattern from the start.
+  follow the same pattern from the start.
 
 ### `alknet-hub`
 
@@ -887,11 +885,6 @@ is always by the responder" invariant.
   is a POC-worthy detail. The architectural point is that the data
   source lives in the ALPN crate.
 
-- **Naming the third category.** "Binary-stream call apps" (the
-  working name) vs "channels-served ALPNs" (descriptive) vs
-  "data-channel call apps." Cosmetic but in a lot of tables. Tracked
-  as an OQ.
-
 - **Op naming vs OQ-13.** `channels/tty/open` implies the ops belong
   to the channels service, but the *TTY crate* registers them — the
   docker precedent (`docker/container/list`) suggests `tty/open`.
@@ -949,7 +942,7 @@ is always by the responder" invariant.
 - ADR-029: peer-graph routing (the existing `AccessControl::check`
   path this resolution preserves)
 - ADR-086: endpoint types and entry points (§4 amended — the
-  "channels data-channel ALPNs" category reframed to "binary-stream call apps")
+  "channels data-channel ALPNs" category dissolves — they're call apps)
 - ADR-048: WebSocket native session (amended — WebSocket may carry
   either `alknet/call` or `alknet/channels`; channels framing required
   for binary-stream clients; OQ-65 resolved)
