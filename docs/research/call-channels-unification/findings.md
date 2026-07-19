@@ -24,8 +24,7 @@ ADR-093 and is not re-litigated here.
 
 **Date:** 2026-07-19
 
-**Origin:** An outside review (Anthropic model, MIT-licensed peer
-project) surfaced three high-value gaps in the channels control plane
+**Origin:** An outside review surfaced three high-value gaps in the channels control plane
 after ADR-094 (per-identity channel cap) landed. Working through the
 first gap — `channel/open` ACL granularity — surfaced a larger
 unification: channels is "call + data channels" ("call++"), and the
