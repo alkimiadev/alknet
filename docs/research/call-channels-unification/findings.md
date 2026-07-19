@@ -116,6 +116,34 @@ This is the cheapest moment to amend.
 
 ---
 
+## Terminology (three axes, not one)
+
+The doc uses three independent role axes. They overlap in common cases
+but are not the same thing — a hub can be a responder on one leg and
+an initiator on another, a producer on one channel and a consumer on
+another.
+
+| Axis | Roles | What it means |
+|------|-------|---------------|
+| **Deployment** | hub, worker (spoke), browser | Where the code runs. Hub relays; worker/spoke hosts resources; browser is the end-user client. |
+| **Call protocol** | initiator, responder | Who sends the call op. The initiator calls `channels/tty/open`; the responder receives it. |
+| **Data plane** | producer, consumer | Who runs the `ProtocolHandler` (produces the data stream) vs who receives it. The producer is the side that spawns the handler on the `BiStream`. |
+
+The old "ALPN-server"/"ALPN-client" vocabulary is retired. Call++ apps
+are not TLS-layer ALPNs; "producer"/"consumer" describes the data-plane
+role without implying a TLS ALPN. The `ChannelDirection` enum uses
+`Open` (initiator is consumer, responder is producer — the common case)
+and `Expose` (initiator is producer, responder is consumer — deferred).
+
+**Assembly layer** is the CLI binary that wires crates together at
+startup (ADR-019, ADR-024). It constructs backends, injects
+capabilities, registers ops, and builds the ALPN lists. It is the trust
+boundary — handlers never hold vault references or construct their own
+transports. In this doc, "assembly time" means "at startup, in the CLI
+binary, before any connections exist."
+
+---
+
 ## Layering (to keep the questions separate)
 
 The outsider's layer map, plus the ALPN-category layer this doc
@@ -296,12 +324,13 @@ pub struct ChannelOpenSpec {
 
 pub enum ChannelDirection {
     /// Initiator wants to consume a resource the responder will produce.
-    /// Responder is the ALPN-server (runs the data-plane handler).
-    /// Common case: "open me a TTY on your docker container."
+    /// Initiator is the consumer; responder is the producer (runs the
+    /// data-plane handler). Common case: "open me a TTY on your docker
+    /// container."
     Open,
-    /// Initiator wants to produce a resource for the responder to consume.
-    /// Initiator is the ALPN-server (runs the data-plane handler).
-    /// The worker-expose case: "I'm exposing a TTY for you to consume."
+    /// Initiator is the producer (runs the data-plane handler);
+    /// responder is the consumer. The worker-expose case: "I'm exposing
+    /// a TTY for you to consume."
     Expose,
 }
 ```
@@ -346,11 +375,11 @@ request/response export.
 `direction` becomes two verbs, not a field:
 
 - `channels/<alpn>/open` — the initiator wants to consume a resource
-  the responder will produce. Responder is the ALPN-server. The common
+  the responder will produce. Responder is the producer. The common
   case: "open me a TTY on your docker container." Browser → hub →
   spoke: both legs are `channels/tty/open`. **Specced.**
 - `channels/<alpn>/expose` — the initiator wants to produce a resource
-  for the responder to consume. Initiator is the ALPN-server. The
+  for the responder to consume. Initiator is the producer. The
   worker-expose case: worker → hub, worker is making a TTY available
   for the hub's clients to consume. **Reserved in the
   `ChannelDirection` enum; deferred until a concrete push use case
@@ -549,7 +578,7 @@ to verify it holds.
    `OperationRegistry` checks the op's `access_control` against the
    browser's identity. The op's spec has
    `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty", direction: Open })`.
-   Browser is the initiator / ALPN-client.
+   Browser is the initiator / consumer.
 3. Hub's `CallAdapter` recognizes the `channel_open` marker. The hub
    does NOT run a local `TtyAdapter` — the hub never runs
    protocol-specific handlers (ADR-079). It forwards to the spoke via
@@ -592,7 +621,7 @@ checks `access_control` against the worker's identity (separate ACL
 from `channels/tty/open`). Hub recognizes the `channel_open` marker
 and must relay to a connected browser that wants to consume. The hub
 initiates `channels/tty/expose` on the browser leg (hub is
-ALPN-server transparently — it forwards the data plane to the worker).
+producer transparently — it forwards the data plane to the worker).
 Hub allocates `channel_id` on both legs, records the mapping, and
 byte-forwards with `channel_id` rewrite.
 
