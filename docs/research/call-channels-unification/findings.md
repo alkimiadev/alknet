@@ -55,9 +55,11 @@ before the handler runs, like every other op), makes the
 is per-op, not per-ALPN-branch-of-a-single-op), and lets the two
 `direction` values (initiator-to-responder vs responder-to-initiator)
 become two verbs (`channels/<alpn>/open` and
-`channels/<alpn>/expose`) with separate ACLs — a peer that may
-consume worker-exposed SSH is not the same grant as a peer that may
-open a TTY on a container.
+`channels/<alpn>/expose`) with separate ACLs. `open` is specced;
+`expose` is reserved in the enum and deferred until a concrete push
+use case forces the design. The verb split's real win is enabling
+`open`-only shipping: the old `direction` field forced both semantics
+into the v1 wire contract.
 
 The ALPN crates served under channels (tty, tunnel, socks5, fs, sftp)
 stop being "just ALPNs" and become **call-consuming apps with a
@@ -203,7 +205,10 @@ operation and tie it to channel-state deallocation on the side that
 counted. `channels-call` keeps its own `channel_id → opener PeerId`
 ledger per connection (keeping `channels-core` auth-blind) and
 decrements on any teardown path — close received, close sent locally,
-handler exit, or connection drop.
+handler exit, or connection drop. The ledger entry must be removed
+atomically with its decrement: handler-exit, close-received,
+close-sent-locally, and connection-drop can race, and a
+double-decrement under-counts and weakens the cap.
 
 ### Gap 3 — Connection-count DoS is an unowned layer
 
@@ -232,9 +237,13 @@ This also touches the HTTP/ WebSocket path: ADR-048 says "WebSocket
 carries the native call-protocol session." Under "call++," a browser
 that wants to open a TTY channel needs to call `channels/tty/open`,
 which lives on channel 0 inside a *channels* connection. So WebSocket
-must carry channels (8-byte chunk framing), with call on channel 0
-inside that. OQ-65 ("WebSocket carrying channels, not just call?") is
-resolved by "call++": yes, WebSocket carries channels.
+may carry either `alknet/call` (bare, for call-only clients) or
+`alknet/channels` (8-byte chunk framing, with call on channel 0
+inside). Channels framing is required for data-channel clients; a
+call-only client (e.g. a dashboard doing docker JSON ops) can use
+bare `alknet/call` over WebSocket. OQ-65 ("WebSocket carrying
+channels, not just call?") is resolved by "call++": WebSocket may
+carry either; channels required for data channels.
 
 ---
 
@@ -270,17 +279,13 @@ pub struct OperationSpec {
     // ... existing fields ...
     pub access_control: AccessControl,
     pub resource_id_path: Option<String>,
-    /// Marker: this op opens a channels data channel. The channels-call
-    /// wrapper recognizes this and runs the channel machinery (allocate
-    /// channel_id, get BiStream, record opener in the ledger, consult
-    /// ChannelLifecyclePolicy, spawn the data-plane handler) around the
-    /// ALPN-specific handler. None for ordinary call ops.
-    ///
-    /// This is registry metadata, not auth machinery — it's how
-    /// channels-call knows an op is a channel-open op, parallel to how
-    /// `resource_id_path` is how ADR-050 knows where to find the
-    /// resource id. The op's `access_control` is the ACL (unchanged);
-    /// the marker is the dispatch hint.
+    /// Marker consumed by layers that manage data channels. When set,
+    /// the op produces a data channel alongside (or instead of) the JSON
+    /// response. The marker is registry metadata, not auth machinery —
+    /// it's how layers like channels-call know an op is a channel-open
+    /// op, parallel to how `resource_id_path` is how ADR-050 knows where
+    /// to find the resource id. The op's `access_control` is the ACL
+    /// (unchanged); the marker is the dispatch hint.
     pub channel_open: Option<ChannelOpenSpec>,
 }
 
@@ -308,6 +313,34 @@ violate ADR-073's "no new auth machinery" promise. The op's
 the dispatch hint that tells channels-call to wrap the handler with
 the channel machinery.
 
+**The marker is wire-visible.** `channel_open` must survive discovery
+serialization — it is part of the `services/schema` payload, not just
+the in-process struct. Otherwise the hub (and any `from_call` importer)
+can't see it. The `services/schema` handler already serializes the full
+`OperationSpec` to JSON; `channel_open` is included in that
+serialization.
+
+**`from_call` relay wrapper.** A `FromCall`-imported marked op cannot
+be the standard forwarding stub. The hub's version must do *forward +
+allocate local-leg channel + record id mapping + start the byte-forward
+pumps*. When `from_call` imports a marked op on a channels-backed
+connection, it wraps it with relay machinery instead of the plain
+forwarding stub. ADR-022's provenance table (leaves are forwarding
+stubs, no composition authority) gets a note for this case: a
+`FromCall`-imported marked op is a leaf for composition purposes but
+carries relay machinery that allocates channels and spawns byte-forward
+tasks. This is the load-bearing piece of the relay under call++.
+
+**Marked ops invoked outside a channels session.** `channels/tty/open`
+is registered on the call registry — which means it's also
+visible/invocable on a bare top-level `alknet/call` connection, where
+there is no `ChannelManager` and no data plane. The wrapper resolves
+`OperationEnv::channel_manager()` at invocation time; if it returns
+`None`, the wrapper returns `channel:no_channels_session`. Relatedly,
+the HTTP-side adapters (`to_openapi`, `to_mcp`) must exclude marked
+ops — "produces a data channel" is not expressible over a
+request/response export.
+
 ### Two verbs: `open` and `expose`
 
 `direction` becomes two verbs, not a field:
@@ -315,16 +348,22 @@ the channel machinery.
 - `channels/<alpn>/open` — the initiator wants to consume a resource
   the responder will produce. Responder is the ALPN-server. The common
   case: "open me a TTY on your docker container." Browser → hub →
-  spoke: both legs are `channels/tty/open`.
+  spoke: both legs are `channels/tty/open`. **Specced.**
 - `channels/<alpn>/expose` — the initiator wants to produce a resource
   for the responder to consume. Initiator is the ALPN-server. The
   worker-expose case: worker → hub, worker is making a TTY available
-  for the hub's clients to consume.
+  for the hub's clients to consume. **Reserved in the
+  `ChannelDirection` enum; deferred until a concrete push use case
+  forces the design.**
 
-Separate verbs → separate ACLs. A peer that's willing to consume
-worker-exposed SSH registers the `expose` op; one that isn't, doesn't.
-This is the one place "call++" wins biggest — ADR-073 squeezed two
-wildly different trust decisions under one op.
+Separate verbs → separate ACLs. The verb split's real win is enabling
+`open`-only shipping: the old `direction` field forced both semantics
+into the v1 wire contract. `Expose` is reserved so the shape is
+available when needed, but the op + hold semantics are deferred
+(`deferred(scope)`, blocked on a concrete consumer — the repo's own
+pattern from OQ-56, OQ-57). Half-specifying "hold until consumer
+connects" now would produce exactly the kind of hedge this doc
+criticizes ADR-073 for.
 
 ### The `ChannelCore` seam (wrapper shape — flag for POC)
 
@@ -365,16 +404,39 @@ POC-worthy** — flag this as the thing to pressure-test in a small POC
 (one ALPN crate, one open op, one channels connection, prove the
 wrapper allocates the channel and spawns the handler).
 
+**Per-connection state plumbing (POC-critical).** `register_openable`
+registers ops "at assembly time" (Layer 0, curated, static per
+ADR-024). But the wrapper needs the **per-connection** `ChannelManager`
+— the op arrives on channel 0 of one specific channels connection, and
+the channel must be allocated on *that* connection's manager. A
+globally-registered handler closing over a static `ChannelCore` has no
+way to know which channels connection invoked it.
+
+The resolution: the `OperationEnv` trait (already on
+`OperationContext.env`) gains an optional
+`fn channel_manager(&self) -> Option<&ChannelManager>`. The wrapper
+handler resolves it at invocation time — static registration, dynamic
+resolution. This also handles the "no channels session" case (Issue 3):
+if `channel_manager()` returns `None`, the wrapper returns
+`channel:no_channels_session`. The `OperationEnv` is already the
+integration point for per-connection state (ADR-024); adding a
+`ChannelManager` accessor is the natural extension.
+
+This also affects recursive channels (inner connection needs its own
+binding): each channels connection's `OperationEnv` overlay carries its
+own `ChannelManager` reference, so nested connections resolve
+correctly.
+
 ### The discovery split
 
 Under "call++", the discovery question splits cleanly:
 
 - **"What may I open"** (static, per-op): `services/list` (visibility-
-  filtered) + `services/schema` (per-op `access_control`). The client
-  filters locally using its identity + the spec's ACL. No per-caller
-  server-side evaluation needed — the spec is the authority.
-  `channel:forbidden` on the open op is the real check; the preview
-  is "here's what the spec says, you can fail fast."
+  filtered + `AccessControl::check(calling_peer_identity)` server-side,
+  per ADR-029 §6) + `services/schema` (per-op `access_control`). The
+  existing server-side ACL-filtered discovery is preserved; the spec is
+  the authority. `channel:forbidden` on the open op is the real check;
+  the preview is "here's what the spec says, you can fail fast."
 - **"What is currently there"** (dynamic, ALPN-level):
   `channel/resources/subscribe`. Each ALPN crate that registers open
   ops also provides a resource enumerator (which containers are
@@ -415,6 +477,14 @@ Now "call apps that produce data channels" (they *are* call apps;
 they inherit call's auth/composition/identity by construction; the
 data-channel part is the `channel_open` marker). The gating is a
 consequence, not the definition.
+
+**Direct registration remains possible.** The category table says
+call++ apps are not TLS-layer ALPNs, but the `ProtocolHandler` is
+still usable by both direct connections (`HandlerRegistry` →
+`ProtocolHandler` → `BiStream`) and channels-opened sessions. ADR-077's
+two-mode survives at the mechanism level; the canonical composition is
+call++. The table describes the canonical path, not a prohibition on
+direct use.
 
 **Naming.** "Call++ apps" is the mental model. "Channels-served
 ALPNs" is descriptive. The final naming is a separate (cosmetic)
@@ -508,45 +578,28 @@ data-plane work. It ran `channels/tty/open`'s `access_control`
 ADR-079 holds unchanged in shape; only the op name changed (from
 generic `channel/open` to per-ALPN `channels/tty/open`).
 
-### Worker → hub → browser, "worker exposes a TTY" (the push case)
+### Worker → hub → browser, "worker exposes a TTY" (the push case — deferred)
 
-1. Worker sends `channels/tty/expose` with
-   `{params: {backend: docker, container: "abc123"}}` on its channel
-   0 (call op on the worker→hub leg). Worker is the initiator /
-   ALPN-server. Op spec has
-   `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty", direction: Expose })`.
-2. Hub's `CallAdapter` receives `channels/tty/expose`.
-   `OperationRegistry` checks the op's `access_control` against the
-   worker's identity. The hub may or may not accept exposed TTYs
-   from this worker — a separate ACL from `channels/tty/open`.
-3. Hub recognizes the `channel_open` marker. The hub itself is the
-   ALPN-client for the worker-exposed TTY but does not consume it
-   (ADR-079 — the hub never runs protocol-specific handlers). The
-   hub must relay to a connected browser that wants to consume.
-4. Hub initiates `channels/tty/expose` on the browser leg (hub is
-   initiator, browser is responder, hub is ALPN-server transparently
-   — it forwards the data plane to the worker, which is the real
-   ALPN-server). Browser's `CallAdapter` checks `access_control`
-   against the hub's identity.
-5. Hub allocates `channel_id` on both legs, records the mapping
-   `worker_id ↔ browser_id`, byte-forwards with `channel_id` rewrite.
+The `expose` verb is reserved in the `ChannelDirection` enum but
+deferred. The walk-through below is a sketch of the shape, not a spec.
+The open case (consumer initiates on demand) is the common case and is
+specced; the expose case is for push scenarios (a worker pushes a log
+stream to a monitoring browser that's already connected) and will be
+specced when a concrete consumer forces the design.
 
-**Subtlety to spec carefully in the ADR:** the `direction` field is
-per-leg, not end-to-end. On the worker→hub leg, the worker is the
-ALPN-server. On the hub→browser leg, the hub is the ALPN-server
-(transparently — it forwards to the worker). The relay passes the
-verb through (`expose` → `expose`), same as in the open case
-(`open` → `open`).
+Sketch: worker sends `channels/tty/expose` on its channel 0. Hub
+checks `access_control` against the worker's identity (separate ACL
+from `channels/tty/open`). Hub recognizes the `channel_open` marker
+and must relay to a connected browser that wants to consume. The hub
+initiates `channels/tty/expose` on the browser leg (hub is
+ALPN-server transparently — it forwards the data plane to the worker).
+Hub allocates `channel_id` on both legs, records the mapping, and
+byte-forwards with `channel_id` rewrite.
 
-**Constraint:** the expose case requires the consumer (browser) to
-be connected before the producer (worker) exposes. The hub must
-either reject (no browser connected) or hold the channel until a
-browser connects. The open case (consumer initiates on demand) is
-more natural for most use cases; the expose case is for push
-scenarios (a worker pushes a log stream to a monitoring browser
-that's already connected). Both cases are valid; the open case is
-common, the expose case is rare. **Flag: the expose-case "hold until
-consumer connects" semantics need spec work in the ADR.**
+The hard question — "hold until consumer connects" vs "reject if no
+consumer" — is deferred with the verb. The `direction` field is
+per-leg, not end-to-end; the relay passes the verb through
+(`expose` → `expose`), same as in the open case (`open` → `open`).
 
 ### The `channel_id` allocation symmetry
 
@@ -568,7 +621,7 @@ the responder" invariant.
 | **ADR-073 amendment** | `channel/open` dissolves into per-ALPN ops in `channels/<alpn>/open` and `channels/<alpn>/expose`. `channel/close`, `channel/control`, `channel/resources/subscribe` stay generic (keyed by `channel_id`). The `direction` field is removed (becomes the verb). Error codes: `channel:unknown_alpn` becomes "operation not found"; `channel:invalid_params` becomes ordinary schema rejection. | **Ready to draft.** |
 | **ADR-094 amendment (Gap 2)** | The per-connection opener ledger in `channels-call`. The decrement is keyed by the opener (from the ledger), not the closer. The decrement is called from every teardown path (close received, close sent, handler exit, connection drop), not just `channel/close`. The trait shape (`check_open`, `on_close`) survives. The teardown hooks (connection-drop, handler-exit) are new structural requirements on `channels-call`. | **Ready to draft.** |
 | **ADR-086 §4 amendment** | "Channels data-channel ALPNs" → "call++ apps" (or whatever the naming OQ settles). The category distinction holds (them vs SSH); the description changes from "gated by channels" to "call apps that produce data channels." | **Ready to draft.** |
-| **ADR-048 amendment + OQ-65 resolution** | WebSocket carries channels (8-byte chunk framing, call on channel 0 inside), not just bare call. OQ-65 resolved. "Native session, not gateway" survives (the decision); the session is a channels session. | **Ready to draft.** |
+| **ADR-048 amendment + OQ-65 resolution** | WebSocket may carry either `alknet/call` (bare, for call-only clients) or `alknet/channels` (8-byte chunk framing, call on channel 0 inside). Channels framing required for data-channel clients. OQ-65 resolved. "Native session, not gateway" survives (the decision). | **Ready to draft.** |
 | **ADR-057 amendment** | TTY data plane stays call-free; control plane (open/expose ops) depends on call. "Self-contained negotiation framing" becomes the data-plane negotiation (the 5-byte format's negotiation frame); the control-plane negotiation is the call op. | **Ready to draft.** |
 | **ADR-058 clarification** | The boundary criterion (EventEnvelope-compatible → call op; incompatible → data channel with call control plane) is preserved and sharpened by "call++". Probably a note, not a full amendment. | **Ready to draft.** |
 | **New OQ (Gap 3)** | Per-identity connection cap against `alknet-endpoint`. Named, `deferred(scope)` — the deployment shape that needs it isn't concrete yet. Owned by `alknet-endpoint`, not channels. | **Ready to open.** |
@@ -620,13 +673,15 @@ the responder" invariant.
   channels-opened sessions (`channels/tty/open` → allocate channel →
   spawn `TtyAdapter` on the channel's `BiStream`). Both paths
   converge at the `BiStream`.
-- Control plane (new): registers `channels/tty/open` and
-  `channels/tty/expose` on the call `OperationRegistry` at assembly
-  time, alongside its `ProtocolHandler` on the `HandlerRegistry` for
-  direct connections. The op specs carry the `channel_open` marker,
-  the `access_control` (e.g., `required_scopes: ["tty:open"]`), the
-  `input_schema` (the `NegotiateRequest`), and the `resource_id_path`
-  (e.g., `/params/container` for docker-backed TTY).
+- Control plane (new): registers `channels/tty/open` on the call
+  `OperationRegistry` at assembly time, alongside its
+  `ProtocolHandler` on the `HandlerRegistry` for direct connections.
+  The op spec carries the `channel_open` marker, the `access_control`
+  (e.g., `required_scopes: ["tty:open"]`), the `input_schema` (the
+  `NegotiateRequest`), and the `resource_id_path` (e.g.,
+  `/params/container` for docker-backed TTY). `channels/tty/expose`
+  is reserved in the enum but not registered until a concrete push
+  use case forces it.
 - The open handler validates params, consults ownership (ADR-050),
   prepares the `TtyBackend`, returns a "channel plan" to the
   `ChannelCore` wrapper, which spawns the `TtyAdapter`.
@@ -659,6 +714,12 @@ the responder" invariant.
   changes (from generic `channel/open` to per-ALPN
   `channels/<alpn>/open`); the marker (not prefix-matching) is how
   the hub recognizes and translates channel-open ops.
+- **`from_call` relay wrapper.** When `from_call` imports a marked op
+  on a channels-backed connection, it wraps it with relay machinery
+  (forward + allocate local-leg channel + record id mapping + start
+  byte-forward pumps) instead of the plain forwarding stub. ADR-022's
+  provenance table gets a note: a `FromCall`-imported marked op is a
+  leaf for composition purposes but carries relay machinery.
 
 ### `alknet-worker`
 
@@ -673,15 +734,28 @@ the responder" invariant.
 
 ### `alknet-http`
 
-- WebSocket carries channels (8-byte chunk framing, call on channel
-  0 inside), not just bare call. ADR-048 amended; OQ-65 resolved.
+- WebSocket may carry either `alknet/call` (bare, for call-only
+  clients) or `alknet/channels` (8-byte chunk framing, call on
+  channel 0 inside). Channels framing required for data-channel
+  clients. ADR-048 amended; OQ-65 resolved.
 - The HTTP adapter's call-protocol surface (registration, browser
-  API routes, MCP/OpenAPI adapters) is unchanged — it's call ops,
-  not channels ops.
+  API routes) is unchanged — it's call ops, not channels ops.
+- The MCP/OpenAPI adapters (`to_openapi`, `to_mcp`) must exclude
+  marked ops — "produces a data channel" is not expressible over a
+  request/response export.
 
 ---
 
 ## Open questions
+
+- **Per-connection state plumbing (POC-critical).** The
+  `OperationEnv::channel_manager()` accessor is the proposed
+  resolution for per-connection `ChannelManager` resolution. The
+  exact trait shape (return type, whether it's on `OperationEnv` or a
+  separate extension trait) is POC-worthy. The architectural point is
+  that the `OperationEnv` is the integration point for per-connection
+  state (ADR-024), and the wrapper resolves the `ChannelManager` at
+  invocation time — static registration, dynamic resolution.
 
 - **ChannelCore seam: wrapper vs invoke.** This doc specs the wrapper
   shape (the ALPN's open handler returns a "channel plan"; channels-
@@ -705,12 +779,19 @@ the responder" invariant.
   "channels-served ALPNs" (descriptive) vs "data-channel call apps."
   Cosmetic but in a lot of tables. Tracked as an OQ.
 
-- **Expose-case "hold until consumer connects" semantics.** The
-  worker-expose case (responder-to-initiator) requires the consumer
-  to be connected before the producer exposes. The hub must either
-  reject or hold. The hold semantics need spec work in the ADR. The
-  open case (consumer initiates on demand) is more natural and is
-  the common case.
+- **Op naming vs OQ-13.** `channels/tty/open` implies the ops belong
+  to the channels service, but the *TTY crate* registers them — the
+  docker precedent (`docker/container/list`) suggests `tty/open`.
+  Since relay recognition is via the marker (not name prefix), nothing
+  constrains the name; but the ALPN→path-segment mapping
+  (`alknet/tty` → `tty`) needs pinning either way, including what
+  non-`alknet/*` ALPNs do.
+
+- **Expose verb.** Deferred. The `Expose` variant is reserved in the
+  `ChannelDirection` enum; the op + hold semantics are deferred until
+  a concrete push use case forces the design (`deferred(scope)`,
+  blocked on a concrete consumer — the repo's own pattern from OQ-56,
+  OQ-57).
 
 - **Does `ProtocolHandler` want channel-context?** Probably not for
   TTY/tunnel/ssh (they just want a `BiStream`), but maybe for ALPNs
@@ -754,8 +835,9 @@ the responder" invariant.
   path this resolution preserves)
 - ADR-086: endpoint types and entry points (§4 amended — the
   "channels data-channel ALPNs" category reframed to "call++ apps")
-- ADR-048: WebSocket native session (amended — WebSocket carries
-  channels, not just bare call; OQ-65 resolved)
+- ADR-048: WebSocket native session (amended — WebSocket may carry
+  either `alknet/call` or `alknet/channels`; channels framing required
+  for data-channel clients; OQ-65 resolved)
 - ADR-057: alknet-tty does not depend on call (amended — the data
   plane stays call-free; the control plane depends on call)
 - ADR-058: alknet-docker on alknet/call (the boundary criterion
