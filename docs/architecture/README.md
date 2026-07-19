@@ -1,11 +1,47 @@
 ---
 status: draft
-last_updated: 2026-07-18
+last_updated: 2026-07-19
 ---
 
 # Alknet Architecture
 
 ## Current State
+
+**Per-identity channel cap added (ADR-094, 2026-07-19).** The
+channels-layer `max_channels = 256` cap (ADR-076) was framed as the
+per-connection DoS defense. On review this is not a DoS defense at
+all — a peer can open an unbounded number of transport connections,
+so a per-connection cap bounds a connection's reassembly-buffer cost,
+not a peer's total channels. The only coherent unit for a channel
+DoS defense is the identity. [ADR-094](decisions/094-per-identity-channel-cap.md)
+records the corrected design: a `ChannelLifecyclePolicy` trait in
+`channels-call` (where the identity is already on `OperationContext`),
+consulted by the `channel/open` handler (after `AccessControl::check`,
+before allocation) and the `channel/close` handler (after the drain
+completes). Default: `PerIdentityChannelPolicy::new(256)` — 256 per
+`PeerId` across all the peer's connections (no "NoOp default + wire it
+later"). The policy `Arc` is shared across every channels connection
+a peer accepts, which is what makes the cap per-identity, not
+per-connection. ADR-076 is amended — the per-connection `max_channels`
+is reframed as a memory bound, the "DoS defense summary" table is
+removed, and the "per-connection, not per-peer — a peer can open more
+channels on a second connection" line (the channels layer confessing
+a hole and hoping the layer above would fill it) is corrected. The
+cap lives in `channels-call`, not `channels-core`, because the
+channels layer is auth-blind by design (ADR-075 — that is what makes
+it WASM-compatible, transport-agnostic, and ALPN-blind). The cap is a
+peer concern, not a hub-specific concern — any accepting peer (worker
+or hub) enforces it, the same way it enforces `AccessControl::check`.
+For the hub-relay path (ADR-079), the spoke sees the hub as the direct
+caller (ADR-032 — `forwarded_for` is metadata, not authority, for the
+cap as for `AccessControl::check`), so the spoke caps the hub, not the
+browser; a spoke serving a high-fan-out hub sets the hub peer's cap
+higher via `with_per_identity_caps`. The "assembly layer" hedging
+pattern (putting the hard question off on a fictional later that
+turns out to be exactly the same problem) is actively avoided — the
+default is secure out of the box, and per-peer-role overrides are
+explicit opt-ins. See [ADR-094](decisions/094-per-identity-channel-cap.md)
+and the amended [ADR-076](decisions/076-backpressure-channel-limits-id-reuse.md).
 
 **Client-dial SOCKS5 proxy seam added (ADR-090, 2026-07-16).**
 `AlknetClient` (ADR-089) gains an optional SOCKS5 proxy
@@ -340,7 +376,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [073](decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations on the Call Protocol | Accepted (amended by ADR-093 — `stream_types` field removed from `channel/open`; `stream_type` field removed from `channel/control`) |
 | [074](decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection — BidiStreamSource over Chunk Reassembly | Accepted (amended by ADR-093 — `into_sub_streams()` removed; `accept_bi` yields `BiStream`) |
 | [075](decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Accepted (amended by ADR-093 — 8-byte headers, one reassembly buffer per channel) |
-| [076](decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Accepted (amended by ADR-093 — per-`channel_id`, not per-`(channel_id, stream_type)`) |
+| [076](decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Accepted (amended by ADR-093 — per-`channel_id`, not per-`(channel_id, stream_type)`; amended by ADR-094 — per-connection `max_channels` reframed as a memory bound, not a DoS defense; per-identity DoS defense lives in `channels-call` via `ChannelLifecyclePolicy`) |
 | [077](decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | Accepted (reversed by ADR-093 — TTY always uses its 5-byte format, carried transparently) |
 | [078](decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | Accepted |
 | [079](decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | Accepted |
@@ -358,6 +394,7 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [091](decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — Decouple Dial Credentials from Call Protocol | Accepted (amends ADR-089 §3/§5 and ADR-087 input framing; dial takes `ConnectionCredentials` not `CallCredentials`; all three dial signatures unified; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field; `CallCredentials` removed per Am. 2026-07-17) |
 | [092](decisions/092-bistream-as-the-handler-leaf.md) | `BiStream` as the Handler Leaf — Unify the Split-Pair `accept_bi` | Accepted (amends ADR-070's `accept_bi` return type; amends ADR-065's `from_stream`/`from_bidi` constructors; amends ADR-074's `ChannelBidiStreamSource::accept_bi` return type; `Connection::from_stream` removed; `from_bidi` is the only public stream constructor) |
 | [093](decisions/093-channels-pure-channel-multiplexing.md) | alknet-channels — Pure Channel Multiplexing (8-Byte Header, No `stream_type`) | Accepted (amends ADR-071 — 8-byte header; ADR-074 — `into_sub_streams` removed; reverses ADR-077 — TTY always uses its 5-byte format; amends the channels-facing clauses of ADR-072/073/075/076/080/081) |
+| [094](decisions/094-per-identity-channel-cap.md) | Per-Identity Channel Cap as DoS Defense | Accepted (amends ADR-076 — per-connection `max_channels` reframed as a memory bound; 256 per `PeerId` enforced via `ChannelLifecyclePolicy` in `channels-call`; symmetric; spoke caps hub as direct caller) |
 
 ## Open Questions
 

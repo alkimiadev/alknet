@@ -37,7 +37,8 @@ handler owns its sub-stream multiplexing on the `BiStream` it receives.
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations on the Call Protocol | `channel/open`/`close`/`control`/`resources/subscribe`; `direction` semantics; subscribe not poll |
 | [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection — BidiStreamSource over Chunk Reassembly | Per-channel `BidiStreamSource` impl; `accept_bi` yields `BiStream` (amended by ADR-093 — `into_sub_streams` removed) |
 | [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Substrate-agnostic demux loop; REQ-CH-01..04 contracts |
-| [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Bounded-buffer (1 MiB default), 256-channel cap, monotonic IDs with wrap |
+| [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Bounded-buffer (1 MiB default), 256-channel per-connection memory bound, monotonic IDs with wrap (DoS defense reframed by ADR-094) |
+| [094](../../decisions/094-per-identity-channel-cap.md) | Per-Identity Channel Cap | 256 per `PeerId`, enforced via `ChannelLifecyclePolicy` in `channels-call`; per-connection `max_channels` reframed as a memory bound; symmetric (both sides enforce); spoke caps hub (direct caller), not browser (forwarded_for is metadata) |
 | [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | TTY's two modes (direct vs channels); TTY always uses its 5-byte format, carried transparently in the channels payload |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | The two-pump deadlock contract; handler-level, not channels-layer |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | The hub translates channel 0, byte-forwards data channels with ID rewrite |
@@ -119,6 +120,19 @@ handler owns its sub-stream multiplexing on the `BiStream` it receives.
    `channel/open` on the spoke leg with `forwarded_for` (ADR-032). Data
    channels are byte-forwarded with `channel_id` rewrite (a 4-byte rewrite
    within the 8-byte header). This preserves the auth model. See ADR-079.
+
+9. **The channel cap is per-identity, not per-connection.** A channel
+   slot is a resource; the cap on how many an identity may hold open is
+   a quota check, parallel to `OwnershipProvider::owns` (ADR-050) for
+   spawned resources. The cap lives in `channels-call` (the channels
+   layer is auth-blind by ADR-075 — no identity, no scopes), consulted
+   by the `channel/open` and `channel/close` handlers after
+   `AccessControl::check`. The default is `PerIdentityChannelPolicy::
+   new(256)` — 256 per `PeerId` across all the peer's connections. The
+   per-connection `max_channels` (ADR-076) is a memory bound, not a
+   DoS defense. The cap is symmetric (both sides enforce); the spoke
+   caps the hub as direct caller, not the browser as `forwarded_for`
+   (metadata, not authority — ADR-032). See ADR-094.
 
 ## References
 

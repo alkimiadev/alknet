@@ -235,6 +235,150 @@ The hub ran **zero** protocol-specific auth. It ran `channel/open`'s
 `AccessControl::check` (call-protocol machinery) and forwarded. The channels
 layer inherited the auth model by being a call-protocol operation.
 
+## Per-identity channel cap (ADR-094)
+
+A channel slot is a resource. The cap on how many channels an identity
+may hold open is a quota check on that resource — parallel to
+`OwnershipProvider::owns` (ADR-050) for spawned resources. Same
+primitive, different resource. The cap is a **peer concern**, not a
+hub-specific concern: any accepting peer (worker or hub) enforces the
+cap on its inbound channels, just as it enforces `AccessControl::check`
+on `channel/open`. The cap is also **symmetric** — both sides of a
+channels connection enforce their cap on the other's channels.
+
+### Why the cap is not in the channels layer
+
+`ChannelManager` (ADR-075) is auth-blind by design — no auth state, no
+identity, no scopes. That decision is load-bearing (it is what makes
+the channels layer WASM-compatible, transport-agnostic, and
+ALPN-blind). So the per-identity cap lives in `channels-call`, where
+the identity is already on `OperationContext` (the same place
+`AccessControl::check` runs). The channels layer (`channels-core`) is
+unchanged. See ADR-094 §"Why the channels layer cannot hold the cap".
+
+The channels-layer per-connection `max_channels = 256` (ADR-076) is
+a **per-connection memory bound** (limits one connection's
+reassembly-buffer cost), not a DoS defense. A peer can open an
+unbounded number of transport connections, so a per-connection cap is
+not a per-peer DoS defense. The per-identity DoS defense is the cap
+documented here; see ADR-094 for the corrected DoS-defense framing.
+
+### The `ChannelLifecyclePolicy` trait
+
+```rust
+/// Per-identity channel lifecycle policy. Consulted by the
+/// `channel/open` handler (after `AccessControl::check`, before
+/// allocation) and the `channel/close` handler (after deallocation).
+/// Both handlers have the identity via `OperationContext`.
+pub trait ChannelLifecyclePolicy: Send + Sync + 'static {
+    /// Before channel allocation. Deny with `channel:too_many_channels`
+    /// (ADR-073) when the identity is over its cap. The identity is
+    /// the direct caller (the peer that opened this channels
+    /// connection); `forwarded_for` is metadata and is NOT consulted
+    /// (ADR-032).
+    fn check_open(&self, identity: &Identity) -> Result<(), ChannelError>;
+
+    /// After channel deallocation. Decrement the per-identity count.
+    /// Called by the `channel/close` handler after the drain completes
+    /// (ADR-076 §channel-id-reuse).
+    fn on_close(&self, identity: &Identity);
+}
+```
+
+### Default: `PerIdentityChannelPolicy::new(256)`
+
+The default constructor enforces 256 per identity out of the box — no
+"NoOp default + wire it later." A channels-accepting peer that
+constructs `ChannelOperations::new(manager)` with no policy argument
+gets `PerIdentityChannelPolicy::new(256)`. The default is secure;
+opt-outs are explicit:
+
+- `PerIdentityChannelPolicy::new(cap)` — shared per-identity state
+  (`HashMap<PeerId, usize>` + cap), constructed **once per accepting
+  peer** and shared (via `Arc`) across every channels connection that
+  peer accepts. The sharing is what makes the cap per-identity, not
+  per-connection.
+- `PerIdentityChannelPolicy::with_per_identity_caps(mapping)` —
+  per-peer-role variant: `HashMap<PeerId, usize>` overrides the
+  default cap for specific peers. Used by a spoke that serves a
+  high-fan-out hub (the hub peer's cap is set higher than a worker
+  peer's cap — see "Relay consequence" below).
+- `NoCap` — no cap. Explicit opt-out for tests, POCs, and trusted
+  single-peer deployments. Not the default.
+
+The policy is constructed once and passed to `ChannelOperations` at
+registration time:
+
+```rust
+let policy = Arc::new(PerIdentityChannelPolicy::new(256));
+let channel_ops = ChannelOperations::new(manager, policy);
+channel_ops.register_on(&mut call_registry)?;
+```
+
+### Enforcement point: between `AccessControl::check` and allocation
+
+The `channel/open` handler (above) gains the policy check after ACL
+and before `next_id.fetch_add`:
+
+1. ACL is already checked by `OperationRegistry::invoke` (the existing
+   `AccessControl::check` path — unchanged).
+2. **NEW:** `policy.check_open(&op_ctx.identity)?` — deny with
+   `channel:too_many_channels` if over cap.
+3. Allocate the `channel_id` via `next_id.fetch_add(1, Relaxed)`
+   (DP-1: server-assigned — unchanged).
+4. Construct the `ChannelBidiStreamSource`, spawn the handler, record
+   the `ChannelState` (unchanged).
+5. Return the `channel_id`.
+
+The `channel/close` handler gains the decrement after the drain
+completes (the same point ADR-076 marks the `channel_id` as eligible
+for reuse):
+
+1. Drain the reassembly buffer for `channel_id` (existing — ADR-076
+   §channel-id-reuse).
+2. **NEW:** `policy.on_close(&op_ctx.identity)` — decrement the
+   per-identity count.
+3. Return `{ "closed": true }` (unchanged).
+
+### Relay consequence: the spoke caps the hub, not the browser
+
+When the hub relays a browser's channel to a spoke (ADR-079), the
+spoke sees the hub as the direct caller. `forwarded_for` carries the
+browser's identity as metadata (ADR-032 — `forwarded_for` is not
+authority; `AccessControl::check` never reads it). The channel cap
+follows the same shape: the spoke's `ChannelLifecyclePolicy` is
+consulted with the **hub's** identity, not the browser's. The spoke
+asks "does the hub have access to open another channel?" and the
+hub's quota on the spoke reflects the aggregate of all relayed
+channels. The hub's per-browser caps are the hub's own concern
+(enforced on the browser leg by the hub's own policy), not the
+spoke's.
+
+This is correct and consistent — the spoke authorizes the hub for
+container access the same way it authorizes any peer, and the hub's
+browser-relay ACL is the hub's own layer. The channel cap follows the
+same pattern as any other resource ACL.
+
+**Deployment consequence:** a spoke that serves a hub relaying for
+many browsers must set the hub peer's cap higher than a worker peer's
+cap, or the spoke denies legitimate relayed channels when the hub's
+aggregate count exceeds a worker-sized cap. This is a per-peer-role
+policy, set by the spoke via `with_per_identity_caps`. The
+architecture provides the mechanism; the deployment sets the numbers.
+This is not a flaw — it is the same shape as any per-peer ACL (a
+spoke may authorize one peer for 1000 containers and another for 10;
+the channel cap is the same kind of per-peer policy).
+
+### Recursive channels do not bypass the cap
+
+A recursive `alknet/channels`-inside-`alknet/channels` channel runs a
+new `ChannelsAdapter` with a new `ChannelManager`. If the same
+`ChannelLifecyclePolicy` is wired into the inner `ChannelOperations`,
+the inner channels are counted against the same identity. Recursion
+is not a bypass; the 13-byte-per-chunk overhead is the documented
+cost (ADR-093), and the cap behavior is unchanged. Recursive channels
+are an edge case for edge cases and not specced further.
+
 ## Hub relay contract (ADR-079 — summary)
 
 The hub **translates**, not transparently forwards:
@@ -267,14 +411,17 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations | The four ops; `direction` pinned; subscribe not poll |
 | [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call` |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels |
+| [094](../../decisions/094-per-identity-channel-cap.md) | Per-Identity Channel Cap | 256 per `PeerId`, enforced via `ChannelLifecyclePolicy` in `channels-call`; per-connection `max_channels` reframed as a memory bound |
 | [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | No `stream_types` on `channel/open`; no `stream_type` on `channel/control`; handler owns sub-stream multiplexing |
 | [049](../../decisions/049-streaming-handler-for-subscriptions.md) | StreamingHandler | The machinery `channel/resources/subscribe` uses |
-| [032](../../decisions/032-forwarded-for-identity.md) | Forwarded-For Identity | The auth chain for hub-relayed opens |
-| [050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership | The ownership store the spoke queries |
+| [032](../../decisions/032-forwarded-for-identity.md) | Forwarded-For Identity | The auth chain for hub-relayed opens (and why the cap is per direct-caller, not per `forwarded_for`) |
+| [050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership | The parallel — a channel slot is a resource, the cap is a quota check |
 
 ## References
 
 - ADR-073: channel lifecycle operations (the decision)
+- ADR-094: per-identity channel cap (the cap, the trait, the relay
+  consequence)
 - ADR-079: hub relay (the translate contract)
 - `docs/research/alknet-channels/phase-0-findings.md` §Channel Open
   Negotiation, §ACL and Security Model

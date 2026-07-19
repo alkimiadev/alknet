@@ -78,7 +78,14 @@ pub struct ChannelManager {
     // call-protocol-blind.
     next_id: AtomicU32,       // monotonic; wraps at u32::MAX
     buffer_cap: usize,        // default 1 MiB (ADR-076)
-    max_channels: usize,      // default 256 (ADR-076)
+    max_channels: usize,      // default 256 (ADR-076) — per-connection
+                              // memory bound, NOT a DoS defense. The
+                              // per-identity DoS defense is the
+                              // ChannelLifecyclePolicy consulted by the
+                              // channel/open handler in channels-call
+                              // (ADR-094). The auth-blindness that forces
+                              // the cap out of this struct is ADR-075's
+                              // "no auth state" rule.
 }
 
 struct ChannelState {
@@ -136,27 +143,55 @@ dependencies.
 
 The `channel/open` (and `channel/close`, `channel/control`,
 `channel/resources/subscribe`) operations are registered on the call
-protocol's `OperationRegistry` at assembly time:
+protocol's `OperationRegistry` at registration time. The
+`ChannelOperations` constructor takes a `ChannelLifecyclePolicy`
+(ADR-094) — the default is `PerIdentityChannelPolicy::new(256)` (a
+real per-identity cap, not NoOp):
 
 ```rust
-let channel_ops = ChannelOperations::new(manager.clone());
+let policy = Arc::new(PerIdentityChannelPolicy::new(256));
+let channel_ops = ChannelOperations::new(manager.clone(), policy);
 channel_ops.register_on(&mut call_registry)?;
 ```
+
+The same `Arc<PerIdentityChannelPolicy>` is shared across every
+channels connection this peer accepts — that is what makes the cap
+per-identity, not per-connection. A hub constructs one policy and
+shares it across all worker and browser legs; a worker accepting
+direct channels constructs one policy and shares it across whatever
+connections it accepts. See ADR-094 for the policy trait and the
+default/opt-out variants.
 
 The `channel/open` handler (ADR-073):
 1. ACL is already checked by `OperationRegistry::invoke` before this handler
    runs.
 2. Looks up the ALPN in `HandlerRegistry` → `channel:unknown_alpn` if
    missing.
-3. Allocates the `channel_id` via `next_id.fetch_add(1, Relaxed)` (DP-1:
-   server-assigned).
-4. Constructs the `ChannelBidiStreamSource` (ADR-074, as amended by
+3. **Per-identity cap check (ADR-094):**
+   `policy.check_open(&op_ctx.identity)?` — deny with
+   `channel:too_many_channels` if the identity is over its cap. The
+   identity is the direct caller (the peer on this channels
+   connection); `forwarded_for` is metadata and is NOT consulted
+   (ADR-032). For the hub-relay path, the spoke sees the hub as the
+   direct caller — the hub's quota on the spoke reflects the aggregate
+   of all relayed channels (ADR-094 §5).
+4. Allocates the `channel_id` via `next_id.fetch_add(1, Relaxed)` (DP-1:
+   server-assigned). The per-connection `max_channels` (ADR-076) is
+   checked here too — the per-connection memory bound; if hit, the same
+   `channel:too_many_channels` error is returned (which cap fired first
+   is an implementation detail — ADR-094 §4).
+5. Constructs the `ChannelBidiStreamSource` (ADR-074, as amended by
    ADR-093) — one reassembly buffer, yielding a `BiStream`.
-5. Spawns the handler task — `tokio::spawn(handler.handle(conn, &auth))`.
+6. Spawns the handler task — `tokio::spawn(handler.handle(conn, &auth))`.
    Identical to what `TtyAdapter::handle` does today, but on a
    channels-backed `Connection`.
-6. Records the `ChannelState`.
-7. Returns the `channel_id`.
+7. Records the `ChannelState`.
+8. Returns the `channel_id`.
+
+The `channel/close` handler (ADR-073) gains a symmetric
+`policy.on_close(&op_ctx.identity)` call after the drain completes
+(the same point ADR-076 marks the `channel_id` as eligible for reuse)
+— decrementing the per-identity count.
 
 ## Demux invariants (REQ-CH-02, 04)
 
@@ -258,7 +293,8 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 |-----|----------|---------|
 | [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | The split; the contracts |
 | [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | The umbrella decision: 8-byte header, no `stream_type`, one reassembly buffer per channel |
-| [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Limits, ID Reuse | Bounded-buffer, 256-channel cap, monotonic IDs |
+| [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Limits, ID Reuse | Bounded-buffer, 256-channel per-connection memory bound, monotonic IDs (DoS defense reframed by ADR-094) |
+| [094](../../decisions/094-per-identity-channel-cap.md) | Per-Identity Channel Cap | 256 per `PeerId`, enforced via `ChannelLifecyclePolicy` in `channels-call`; per-connection `max_channels` reframed as a memory bound |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels |
 
@@ -271,7 +307,11 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 - ADR-073: channel lifecycle operations (the ops registered on `call_ops`)
 - ADR-074: ChannelBidiStreamSource (what the manager constructs per
   channel, as amended by ADR-093)
-- ADR-076: backpressure and limits (`buffer_cap`, `max_channels`)
+- ADR-076: backpressure and limits (`buffer_cap`, `max_channels` — the
+  per-connection memory bound)
+- ADR-094: per-identity channel cap (the `ChannelLifecyclePolicy`
+  consulted by the `channel/open` handler; the relay consequence for
+  hub-relayed channels)
 - `docs/research/alknet-channels/poc-summary.md` §Issues Surfaced #4-#7
   (REQ-CH-01..04, the two-pump deadlock)
 - `docs/research/stream-unification/findings.md` — the research that

@@ -117,7 +117,21 @@ welded to a dial. See "Transport" below.
    Lets a browser reach a spoke's channels through the hub without the
    hub parsing any protocol-specific framing.
 
-6. **Worker registration** (in scope of the hub) — the HTTP endpoint
+6. **Per-identity channel cap** — the hub constructs one
+   `ChannelLifecyclePolicy` (ADR-094) and shares it across every
+   channels connection it accepts. This is the cap the hub enforces on
+   its **inbound** peers (workers and browsers connecting to the hub).
+   The cap is per-identity, not per-connection — a peer with N
+   transport connections to the hub is bounded by the cap once, not
+   N times. The default is 256 per `PeerId`; per-peer-role overrides
+   (e.g., a lower cap for browser peers) are set via
+   `with_channel_policy`. The hub-as-caller case (hub dialing a
+   downstream spoke) is the **spoke's** policy — the spoke constructs
+   its own policy with a high cap for the hub peer (ADR-094 §5). The
+   cap is symmetric — both sides of a channels connection enforce
+   their cap. See "Per-identity channel cap" below.
+
+7. **Worker registration** (in scope of the hub) — the HTTP endpoint
    that lets a freshly-provisioned worker enroll its key with a
    one-time registration token. The registration flow is what makes
    worker provisioning over TCP+TLS a hard requirement, not an
@@ -181,7 +195,8 @@ The hub's `CallClient`-direct dial path is replaced by
 ### Hub struct
 
 The `Hub` owns the aggregated `PeerCompositeEnv`, the
-`OperationRegistry`, and the `Dispatcher`:
+`OperationRegistry`, the `Dispatcher`, and the per-identity channel
+cap policy:
 
 ```rust
 pub struct Hub {
@@ -189,6 +204,15 @@ pub struct Hub {
     aggregated_env: Arc<RwLock<PeerCompositeEnv>>,
     dispatcher: Dispatcher,
     identity_provider: Arc<dyn IdentityProvider>,
+    /// The per-identity channel cap policy (ADR-094). Shared across
+    /// every channels connection the hub accepts — that is what makes
+    /// the cap per-identity, not per-connection. Constructed once at
+    /// Hub::new and passed to ChannelOperations::new for each
+    /// connection. The hub's browser-leg caps and worker-leg caps are
+    /// enforced by the same policy (the cap is symmetric — both
+    /// sides of a channels connection enforce their cap on the other's
+    /// channels).
+    channel_policy: Arc<dyn ChannelLifecyclePolicy>,
 }
 ```
 
@@ -211,14 +235,42 @@ impl Hub {
             aggregated_env,
             dispatcher,
             identity_provider,
+            channel_policy: Arc::new(PerIdentityChannelPolicy::new(256)),
         }
     }
 
-    /// The shared aggregated PeerCompositeEnv. The assembly layer wires
-    /// this into CallAdapter::with_aggregated_env so every call's
+    /// The shared aggregated PeerCompositeEnv. The deployment binary
+    /// wires this into CallAdapter::with_aggregated_env so every call's
     /// compose_root_env sees all connected workers.
     pub fn aggregated_env(&self) -> &Arc<RwLock<PeerCompositeEnv>> {
         &self.aggregated_env
+    }
+
+    /// The shared per-identity channel cap policy (ADR-094). Wired into
+    /// `ChannelOperations::new` for every channels connection the hub
+    /// accepts — this is the cap the hub enforces on its **inbound**
+    /// peers (workers and browsers connecting to the hub). The policy
+    /// `Arc` is shared across all the hub's accepted connections, which
+    /// is what makes the cap per-identity (a peer with N transport
+    /// connections to the hub is bounded by the cap once, not N times).
+    /// The hub-as-caller case (hub dialing a downstream spoke) is
+    /// governed by the **spoke's** policy, not this one — the spoke
+    /// constructs its own `ChannelLifecyclePolicy` with a high cap for
+    /// the hub peer (ADR-094 §5). See "Per-identity channel cap" below.
+    pub fn channel_policy(&self) -> &Arc<dyn ChannelLifecyclePolicy> {
+        &self.channel_policy
+    }
+
+    /// Override the default per-identity channel cap policy. Builder
+    /// method for the deployment binary to set per-peer-role caps on
+    /// the hub's inbound peers (e.g., a worker peer gets 256, a
+    /// browser peer gets a lower cap). The hub-as-caller case on a
+    /// downstream spoke is the spoke's own policy, not set here.
+    pub fn with_channel_policy(mut self, policy: Arc<dyn ChannelLifecyclePolicy>)
+        -> Self
+    {
+        self.channel_policy = policy;
+        self
     }
 }
 ```
@@ -410,12 +462,16 @@ via a builder method. The `ChannelsAdapter::handle` flow becomes:
    aggregated env.
 
 The assembly layer constructs the callback and passes it to
-`ChannelsAdapter`:
+`ChannelsAdapter`, wiring the hub's per-identity channel cap policy
+(ADR-094) into `ChannelOperations::new` so every channels connection
+the hub accepts shares the same policy (the cap is per-identity, not
+per-connection, because the policy `Arc` is shared):
 
 ```rust
 let callback = WorkerConnectedCallback::new(Arc::clone(&hub), FromCallConfig::new());
 let channels_adapter = ChannelsAdapter::new(Arc::clone(&registry), /* ... */)
-    .with_worker_connected_callback(callback);
+    .with_worker_connected_callback(callback)
+    .with_channel_policy(hub.channel_policy().clone());
 // Register channels_adapter on alknet/channels in the HandlerRegistry.
 // The endpoint dispatches alknet/channels connections to it — whether
 // they arrived over quinn, iroh, or TCP+TLS (all owned by the endpoint).
@@ -593,6 +649,46 @@ handlers (`alknet/tty`, `alknet/ssh`, `alknet/tunnel`) — it runs
 `alknet/channels` (the relay) and `alknet/call` (for its own ops +
 translation). The full relay contract is in ADR-079; the relay
 implementation lives in `alknet-hub`.
+
+### Per-identity channel cap (ADR-094)
+
+A channel slot is a resource. The cap on how many channels a peer may
+hold open against the hub is a quota check on that resource — parallel
+to `OwnershipProvider::owns` (ADR-050) for spawned resources. The hub
+constructs one `ChannelLifecyclePolicy` and shares it across every
+channels connection it accepts (the policy `Arc` is shared, so the
+cap is per-identity, not per-connection). This is the cap the hub
+enforces on its **inbound** peers — workers and browsers connecting
+to the hub. The default is `PerIdentityChannelPolicy::new(256)` — 256
+per `PeerId` across all the peer's connections to the hub. The cap is
+symmetric — both sides of a channels connection enforce their cap on
+the other's channels.
+
+The cap lives in `channels-call`, not `channels-core`, because the
+channels layer is auth-blind by design (ADR-075 — that is what makes
+it WASM-compatible, transport-agnostic, and ALPN-blind). The identity
+is on `OperationContext`; the `channel/open` handler consults the
+policy after `AccessControl::check` and before allocation; the
+`channel/close` handler decrements after the drain completes.
+
+**Relay consequence (ADR-094 §5):** when the hub relays a browser's
+channel to a spoke, the spoke sees the hub as the direct caller
+(ADR-032 — `forwarded_for` is metadata, not authority, for the cap as
+for `AccessControl::check`). The spoke's cap applies to the hub, not
+the browser. A spoke that serves a hub relaying for many browsers
+must set the hub peer's cap higher than a worker peer's cap on the
+**spoke's own** `ChannelLifecyclePolicy`, or the spoke denies
+legitimate relayed channels when the hub's aggregate count exceeds a
+worker-sized cap. This is a per-peer-role policy on the spoke, not on
+the hub — the hub's `channel_policy` governs the hub's inbound peers,
+not the hub-as-caller case. The hub enforces per-browser caps on the
+browser leg (the hub's own policy); the spoke enforces per-hub caps
+on the spoke leg (the spoke's own policy). Same shape as any per-peer
+ACL.
+
+See [ADR-094](../../decisions/094-per-identity-channel-cap.md) for
+the full decision, the trait, the default/opt-out variants, and the
+recursive-channels edge case.
 
 ### Service discovery
 
@@ -798,6 +894,7 @@ into `CallAdapter::with_aggregated_env`.
 | Endpoint types and entry points | [ADR-086](../../decisions/086-endpoint-types-and-entry-points.md) | Three endpoint types (web/native/iroh); entry-point vs. endpoint ALPN distinction; split ALPN lists per endpoint type |
 | `TlsClientConfig` for outbound dials | [ADR-087](../../decisions/087-tlsclientconfig-not-blocked-on-dial.md) | `alknet-tls` provides client-side TLS config; hub-as-client is a first-class use case; not blocked on the dial-seam extraction (OQ-55) |
 | `AlknetClient` native dial seam | [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) | New crate `alknet-client`; the hub's outbound worker dials use `AlknetClient` (via the `supervise_worker` closure or the `connect_quic_worker` convenience); resolves OQ-55 |
+| Per-identity channel cap | [ADR-094](../../decisions/094-per-identity-channel-cap.md) | 256 per `PeerId`, enforced via `ChannelLifecyclePolicy` in `channels-call`; the hub's policy governs its inbound peers and is shared across all their connections; the hub-as-caller case on a downstream spoke is the spoke's own policy with a high cap for the hub peer (ADR-094 §5) |
 
 ## Open Questions
 
@@ -857,16 +954,23 @@ See [open-questions.md](../../open-questions.md) for full details.
   `resolve_from_fingerprint` (the identity paths over transports)
 - ADR-029: Peer-Graph Routing Model
 - ADR-034: Three Peer Roles (hub = role-3, bearer-token identity)
+- ADR-050: Dynamic Resource Ownership (the parallel for the channel cap —
+  a channel slot is a resource, the cap is a quota check)
 - ADR-065: `Connection::from_stream`/`from_bidi` (TCP+TLS path)
 - ADR-067: Aggregated Peer-Environment Wiring
 - ADR-068: PeerCompositeEnv::peer_operations Override
 - ADR-069: from_call Is a Manual Free Function
+- ADR-075: ChannelsAdapter and ChannelManager (the auth-blindness that
+  forces the per-identity cap into `channels-call`, not `channels-core`)
 - ADR-079: Hub Relay — Translate, Not Transparently Forward
 - ADR-080: ChannelClient (transport-agnostic `from_connection`)
 - ADR-082: alknet-tls extraction (`TlsServerConfig` — shared across quinn + TCP+TLS)
 - ADR-083: Endpoint as multi-transport accept-loop runner (`with_tcp_tls` — TCP+TLS owned by the endpoint; the hub composes transports and handlers)
 - ADR-086: Endpoint types and entry points (web/native/iroh; entry-point vs. endpoint; split ALPN lists per endpoint type)
 - ADR-087: `TlsClientConfig` not blocked on dial seam (client-side TLS config; hub-as-client requirement)
+- ADR-094: Per-Identity Channel Cap (the `ChannelLifecyclePolicy` the hub
+  constructs and shares across all its channels connections; the relay
+  consequence for hub-as-caller on downstream spokes)
 - alkapi [hub.md](/workspace/@alkdev/alkapi/docs/architecture/hub.md) —
   the first hub consumer, the concrete use case that informed this
   crate
