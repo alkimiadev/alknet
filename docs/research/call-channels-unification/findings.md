@@ -563,43 +563,45 @@ holds.
 
 ---
 
-## The hub-relay + worker-expose flow (walked end-to-end)
+## The hub-relay flow (walked end-to-end)
 
 This is the flow the outsider flagged as "where ADR-073's single-op
 design was doing the most implicit work." Walking it under "call++"
 to verify it holds.
 
-### Browser → hub → spoke, "open me a TTY" (the common case)
+### Consumer → hub → producer, "open me a TTY" (the common case)
 
-1. Browser sends `channels/tty/open` with
+1. Consumer (browser, another worker, another hub) sends
+   `channels/tty/open` with
    `{params: {backend: docker, cmd: ["bash"], container: "abc123"}}`
-   on its channel 0 (call op on the browser→hub leg).
+   on its channel 0 (call op on the consumer→hub leg).
 2. Hub's `CallAdapter` receives `channels/tty/open`. The
    `OperationRegistry` checks the op's `access_control` against the
-   browser's identity. The op's spec has
+   consumer's identity. The op's spec has
    `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty", direction: Open })`.
-   Browser is the initiator / consumer.
+   Consumer is the initiator / consumer.
 3. Hub's `CallAdapter` recognizes the `channel_open` marker. The hub
    does NOT run a local `TtyAdapter` — the hub never runs
-   protocol-specific handlers (ADR-079). It forwards to the spoke via
-   `from_call`: hub re-issues `channels/tty/open` on the spoke leg
-   with `forwarded_for = browser`.
-4. Spoke's `CallAdapter` receives `channels/tty/open`.
+   protocol-specific handlers (ADR-079). It forwards to the producer
+   (spoke/worker) via `from_call`: hub re-issues `channels/tty/open`
+   on the producer leg with `forwarded_for = consumer`.
+4. Producer's `CallAdapter` receives `channels/tty/open`.
    `OperationRegistry` checks the op's `access_control` against the
-   hub's identity (the direct caller per ADR-032). The spoke's
+   hub's identity (the direct caller per ADR-032). The producer's
    ownership store verifies the hub owns `container:abc123`
-   (per ADR-050). The spoke consults
+   (per ADR-050). The producer consults
    `ChannelLifecyclePolicy::check_open(hub)` (Gap 2 — keyed by
    direct caller, opener recorded in the per-connection ledger).
-5. Spoke's `ChannelCore` allocates `channel_id`, spawns `TtyAdapter`
-   on the channel's `BiStream` with the docker backend, records
-   opener (hub) in the ledger, returns `{channel_id}`.
-6. Hub receives the spoke's `{channel_id}`, opens a matching channel
-   on the browser's side (hub is the responder for the browser leg),
-   records the `channel_id` mapping `browser_id ↔ spoke_id`, returns
-   `{channel_id: browser_id}` to the browser.
-7. Hub byte-forwards between `browser_id` and `spoke_id` with 4-byte
-   `channel_id` rewrite (ADR-079 unchanged).
+5. Producer's `ChannelCore` allocates `channel_id`, spawns
+   `TtyAdapter` on the channel's `BiStream` with the docker backend,
+   records opener (hub) in the ledger, returns `{channel_id}`.
+6. Hub receives the producer's `{channel_id}`, opens a matching
+   channel on the consumer's side (hub is the responder for the
+   consumer leg), records the `channel_id` mapping
+   `consumer_id ↔ producer_id`, returns
+   `{channel_id: consumer_id}` to the consumer.
+7. Hub byte-forwards between `consumer_id` and `producer_id` with
+   4-byte `channel_id` rewrite (ADR-079 unchanged).
 
 The hub ran **zero** protocol-specific auth and zero protocol-specific
 data-plane work. It ran `channels/tty/open`'s `access_control`
@@ -607,38 +609,64 @@ data-plane work. It ran `channels/tty/open`'s `access_control`
 ADR-079 holds unchanged in shape; only the op name changed (from
 generic `channel/open` to per-ALPN `channels/tty/open`).
 
-### Worker → hub → browser, "worker exposes a TTY" (the push case — deferred)
+### Worker → hub → consumer, "worker exposes a resource" (the proxy case — deferred)
 
 The `expose` verb is reserved in the `ChannelDirection` enum but
 deferred. The walk-through below is a sketch of the shape, not a spec.
 The open case (consumer initiates on demand) is the common case and is
-specced; the expose case is for push scenarios (a worker pushes a log
-stream to a monitoring browser that's already connected) and will be
-specced when a concrete consumer forces the design.
+specced; the expose case is for push scenarios where a worker offers
+resources to a hub, which then acts as a proxy — re-exposing them to
+other consumers.
 
-Sketch: worker sends `channels/tty/expose` on its channel 0. Hub
-checks `access_control` against the worker's identity (separate ACL
-from `channels/tty/open`). Hub recognizes the `channel_open` marker
-and must relay to a connected browser that wants to consume. The hub
-initiates `channels/tty/expose` on the browser leg (hub is
-producer transparently — it forwards the data plane to the worker).
-Hub allocates `channel_id` on both legs, records the mapping, and
-byte-forwards with `channel_id` rewrite.
+**Concrete example.** A worker runs on a remote instance (vastai,
+runpod, a docker container). It wraps an opencode server's OpenAPI spec
+via `from_openapi` (call ops, JSON) and also registers
+`channels/tty/open` for terminal access. The worker connects to a hub
+and exposes both: the call ops and the TTY channel. The hub consumes
+these — the worker's resources become the hub's resources (ownership
+model: the hub owns what the worker exposes). Another consumer (a
+browser, another worker, another hub) that needs terminal access to
+that remote dev environment calls `channels/tty/open` on the hub. The
+hub is now a producer for that consumer — it proxies the data plane
+between the worker (the real producer) and the consumer.
 
-The hard question — "hold until consumer connects" vs "reject if no
-consumer" — is deferred with the verb. The `direction` field is
-per-leg, not end-to-end; the relay passes the verb through
-(`expose` → `expose`), same as in the open case (`open` → `open`).
+**The hub-as-proxy pattern.** The hub is a consumer of the worker's
+resource and a producer for downstream consumers. The relay is
+protocol-agnostic: swap channel IDs, tunnel reads/writes between the
+two `BiStream`s. From the worker's perspective, the hub is the sole
+consumer — the hub owns the resource and re-exposes it under its own
+authority (the `forwarded_for` chain carries attribution, not
+authority; ADR-032). From the downstream consumer's perspective, the
+hub is the producer — it doesn't know or care that the real backend is
+on a worker.
+
+This is the same shape as the open-case relay (ADR-079) but initiated
+from the producer side. The hub allocates `channel_id` on both legs,
+records the mapping, and byte-forwards with `channel_id` rewrite.
+
+**Single-producer, N-consumer.** The hub can proxy one producer's
+stream to multiple consumers — e.g., a worker producing a live video
+stream, with the hub re-streaming to N viewers. This is a future use
+case (the channels wire format already supports it — channels are
+independent, the hub just opens N consumer legs for one producer leg),
+but the ownership and ACL model is the same: the hub owns the
+producer's resource and controls which consumers may access it.
+
+**The hard questions** — "hold until consumer connects" vs "reject if
+no consumer," and the N-consumer fan-out semantics — are deferred with
+the verb. The `direction` field is per-leg, not end-to-end; the relay
+passes the verb through (`expose` → `expose`), same as in the open
+case (`open` → `open`).
 
 ### The `channel_id` allocation symmetry
 
 In both cases, `channel_id` allocation is by the responder (DP-1,
 unchanged). In the open case, the responder is the spoke (spoke
 allocates). In the expose case, the responder is the hub on the
-worker→hub leg (hub allocates) and the browser on the hub→browser
-leg (browser allocates). The hub relay records the mapping across
-legs. This preserves ADR-073's "channel_id allocation is always by
-the responder" invariant.
+worker→hub leg (hub allocates) and the downstream consumer on the
+hub→consumer leg (consumer allocates). The hub relay records the
+mapping across legs. This preserves ADR-073's "channel_id allocation
+is always by the responder" invariant.
 
 ---
 
