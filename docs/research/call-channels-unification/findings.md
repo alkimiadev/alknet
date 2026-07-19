@@ -55,11 +55,11 @@ before the handler runs, like every other op), makes the
 is per-op, not per-ALPN-branch-of-a-single-op), and lets the two
 `direction` values (initiator-to-responder vs responder-to-initiator)
 become two verbs (`channels/<alpn>/open` and
-`channels/<alpn>/expose`) with separate ACLs. `open` is specced;
-`expose` is reserved in the enum and deferred until a concrete push
-use case forces the design. The verb split's real win is enabling
-`open`-only shipping: the old `direction` field forced both semantics
-into the v1 wire contract.
+`channels/<alpn>/expose`) with separate ACLs. Both are specced; the
+call protocol's subscription model is the matching mechanism between
+them — a worker exposing a resource and a consumer opening it are
+matched by `(op_name, params_hash)` on the hub, which proxies the
+data plane between them.
 
 The ALPN crates served under channels (tty, tunnel, socks5, fs, sftp)
 stop being "just ALPNs" and become **call-consuming apps with a
@@ -133,7 +133,7 @@ The old "ALPN-server"/"ALPN-client" vocabulary is retired. Call++ apps
 are not TLS-layer ALPNs; "producer"/"consumer" describes the data-plane
 role without implying a TLS ALPN. The `ChannelDirection` enum uses
 `Open` (initiator is consumer, responder is producer — the common case)
-and `Expose` (initiator is producer, responder is consumer — deferred).
+and `Expose` (initiator is producer, responder is consumer).
 
 **Assembly layer** is the CLI binary that wires crates together at
 startup (ADR-019, ADR-024). It constructs backends, injects
@@ -376,23 +376,31 @@ request/response export.
 
 - `channels/<alpn>/open` — the initiator wants to consume a resource
   the responder will produce. Responder is the producer. The common
-  case: "open me a TTY on your docker container." Browser → hub →
-  spoke: both legs are `channels/tty/open`. **Specced.**
+  case: "open me a TTY on your docker container." Consumer → hub →
+  producer: both legs are `channels/tty/open`. **Specced.**
 - `channels/<alpn>/expose` — the initiator wants to produce a resource
   for the responder to consume. Initiator is the producer. The
-  worker-expose case: worker → hub, worker is making a TTY available
-  for the hub's clients to consume. **Reserved in the
-  `ChannelDirection` enum; deferred until a concrete push use case
-  forces the design.**
+  worker-expose case: worker → hub, worker is making a resource
+  available for the hub to proxy to consumers. **Specced.**
 
-Separate verbs → separate ACLs. The verb split's real win is enabling
-`open`-only shipping: the old `direction` field forced both semantics
-into the v1 wire contract. `Expose` is reserved so the shape is
-available when needed, but the op + hold semantics are deferred
-(`deferred(scope)`, blocked on a concrete consumer — the repo's own
-pattern from OQ-56, OQ-57). Half-specifying "hold until consumer
-connects" now would produce exactly the kind of hedge this doc
-criticizes ADR-073 for.
+Separate verbs → separate ACLs. A peer that may expose a TTY is not
+the same grant as a peer that may open one. The verb split also
+enables the hub-as-proxy pattern: a worker exposes a resource to the
+hub, the hub owns it, and consumers open it from the hub.
+
+**Matching: the call protocol's subscription model.** The hub matches
+expose and open by `(op_name, params_hash)`. When a worker calls
+`channels/tty/expose`, the hub records the exposed resource keyed by
+the hash of the op name + params. When a consumer calls
+`channels/tty/open` with matching params, the hub finds the exposed
+resource and proxies the data plane between them. This is a pubsub
+model where the topic is `(op_name, params_hash)` — the call protocol's
+existing subscription mechanism (`OperationType::Subscription`) is the
+natural fit for the expose side: the worker subscribes to consumer
+demand for that resource, and the hub delivers matching open requests
+as subscription events. Stream deduplication falls out naturally: if
+two consumers open the same resource, the hub fans out from one
+producer stream rather than opening duplicate channels to the worker.
 
 ### The `ChannelCore` seam (wrapper shape — flag for POC)
 
@@ -609,54 +617,82 @@ data-plane work. It ran `channels/tty/open`'s `access_control`
 ADR-079 holds unchanged in shape; only the op name changed (from
 generic `channel/open` to per-ALPN `channels/tty/open`).
 
-### Worker → hub → consumer, "worker exposes a resource" (the proxy case — deferred)
+### Worker → hub → consumer, "worker exposes a resource" (the proxy case)
 
-The `expose` verb is reserved in the `ChannelDirection` enum but
-deferred. The walk-through below is a sketch of the shape, not a spec.
-The open case (consumer initiates on demand) is the common case and is
-specced; the expose case is for push scenarios where a worker offers
-resources to a hub, which then acts as a proxy — re-exposing them to
-other consumers.
+The `expose` verb is specced alongside `open`. The call protocol's
+subscription model is the matching mechanism between them.
 
 **Concrete example.** A worker runs on a remote instance (vastai,
 runpod, a docker container). It wraps an opencode server's OpenAPI spec
-via `from_openapi` (call ops, JSON) and also registers
-`channels/tty/open` for terminal access. The worker connects to a hub
-and exposes both: the call ops and the TTY channel. The hub consumes
-these — the worker's resources become the hub's resources (ownership
-model: the hub owns what the worker exposes). Another consumer (a
-browser, another worker, another hub) that needs terminal access to
-that remote dev environment calls `channels/tty/open` on the hub. The
-hub is now a producer for that consumer — it proxies the data plane
-between the worker (the real producer) and the consumer.
+via `from_openapi` (call ops, JSON) and registers `channels/tty/open`
+for terminal access. The worker connects to a hub and calls
+`channels/tty/expose` as a **Subscription** — "I have this resource;
+notify me when a consumer wants it." The hub records the exposed
+resource keyed by `(op_name, params_hash)`. Later, a consumer (browser,
+another worker, another hub) calls `channels/tty/open` with matching
+params. The hub matches by hash, delivers the open request to the
+worker's subscription, the worker allocates the channel, and the hub
+proxies the data plane between them.
+
+**Step-by-step:**
+
+1. Worker calls `channels/tty/expose` (Subscription) with
+   `{params: {backend: docker, container: "abc123", cmd: ["bash"]}}`
+   on its channel 0. Worker is the initiator / producer.
+2. Hub's `CallAdapter` receives `channels/tty/expose`.
+   `OperationRegistry` checks the op's `access_control` against the
+   worker's identity. The op's spec has
+   `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty", direction: Expose })`.
+3. Hub recognizes the `channel_open` marker. The hub records the
+   exposed resource in its subscription table keyed by
+   `("channels/tty/expose", hash(params))`. The subscription is held
+   open — no channel is allocated yet. The worker is waiting for a
+   consumer.
+4. Later, a consumer calls `channels/tty/open` (Query/Mutation) with
+   matching params `{container: "abc123", cmd: ["bash"]}`.
+5. Hub checks `access_control` against the consumer's identity. Hub
+   computes `params_hash` and looks up the expose subscription table.
+   Finds the worker's subscription.
+6. Hub delivers the open request to the worker's subscription as an
+   event. The worker's expose handler runs: validates params, consults
+   ownership (ADR-050 — the hub owns the container), prepares the
+   `TtyBackend`. Worker's `ChannelCore` allocates `channel_id` on the
+   worker→hub leg, spawns `TtyAdapter`, records opener (hub) in the
+   ledger, returns `{channel_id}`.
+7. Hub receives the worker's `{channel_id}`, allocates a matching
+   channel on the consumer→hub leg, records the mapping
+   `consumer_id ↔ worker_id`, returns `{channel_id: consumer_id}` to
+   the consumer.
+8. Hub byte-forwards between `consumer_id` and `worker_id` with
+   4-byte `channel_id` rewrite (ADR-079 unchanged).
+
+**Stream deduplication (single-producer, N-consumer).** If a second
+consumer calls `channels/tty/open` with the same params, the hub
+matches the same worker subscription. The hub does NOT deliver another
+event to the worker — it already has the producer channel. Instead, it
+allocates a second consumer leg and fans out from the existing producer
+channel: `worker_channel → consumer_1_channel` and
+`worker_channel → consumer_2_channel`. One producer stream, N consumer
+streams, hub fans out. The `(op_name, params_hash)` key naturally
+deduplicates — it's a pubsub topic, and the hub is the broker.
 
 **The hub-as-proxy pattern.** The hub is a consumer of the worker's
 resource and a producer for downstream consumers. The relay is
-protocol-agnostic: swap channel IDs, tunnel reads/writes between the
-two `BiStream`s. From the worker's perspective, the hub is the sole
+protocol-agnostic: swap channel IDs, tunnel reads/writes between
+`BiStream`s. From the worker's perspective, the hub is the sole
 consumer — the hub owns the resource and re-exposes it under its own
 authority (the `forwarded_for` chain carries attribution, not
 authority; ADR-032). From the downstream consumer's perspective, the
 hub is the producer — it doesn't know or care that the real backend is
 on a worker.
 
-This is the same shape as the open-case relay (ADR-079) but initiated
-from the producer side. The hub allocates `channel_id` on both legs,
-records the mapping, and byte-forwards with `channel_id` rewrite.
-
-**Single-producer, N-consumer.** The hub can proxy one producer's
-stream to multiple consumers — e.g., a worker producing a live video
-stream, with the hub re-streaming to N viewers. This is a future use
-case (the channels wire format already supports it — channels are
-independent, the hub just opens N consumer legs for one producer leg),
-but the ownership and ACL model is the same: the hub owns the
-producer's resource and controls which consumers may access it.
-
-**The hard questions** — "hold until consumer connects" vs "reject if
-no consumer," and the N-consumer fan-out semantics — are deferred with
-the verb. The `direction` field is per-leg, not end-to-end; the relay
-passes the verb through (`expose` → `expose`), same as in the open
-case (`open` → `open`).
+**Teardown.** If the worker disconnects before a consumer arrives, the
+subscription is cancelled (connection drop → subscription teardown).
+If a consumer disconnects, the hub closes that consumer leg but keeps
+the producer channel open for other consumers. When the last consumer
+disconnects, the hub may close the producer channel or keep it
+(subscription stays open for future consumers — policy decision, not
+architecture).
 
 ### The `channel_id` allocation symmetry
 
@@ -730,15 +766,17 @@ is always by the responder" invariant.
   channels-opened sessions (`channels/tty/open` → allocate channel →
   spawn `TtyAdapter` on the channel's `BiStream`). Both paths
   converge at the `BiStream`.
-- Control plane (new): registers `channels/tty/open` on the call
-  `OperationRegistry` at assembly time, alongside its
-  `ProtocolHandler` on the `HandlerRegistry` for direct connections.
-  The op spec carries the `channel_open` marker, the `access_control`
-  (e.g., `required_scopes: ["tty:open"]`), the `input_schema` (the
+- Control plane (new): registers `channels/tty/open` and
+  `channels/tty/expose` on the call `OperationRegistry` at assembly
+  time, alongside its `ProtocolHandler` on the `HandlerRegistry` for
+  direct connections. The op specs carry the `channel_open` marker,
+  the `access_control` (e.g., `required_scopes: ["tty:open"]` and
+  `required_scopes: ["tty:expose"]`), the `input_schema` (the
   `NegotiateRequest`), and the `resource_id_path` (e.g.,
   `/params/container` for docker-backed TTY). `channels/tty/expose`
-  is reserved in the enum but not registered until a concrete push
-  use case forces it.
+  is registered as a `Subscription` op type — the worker subscribes
+  to consumer demand; the hub delivers matching open requests as
+  subscription events.
 - The open handler validates params, consults ownership (ADR-050),
   prepares the `TtyBackend`, returns a "channel plan" to the
   `ChannelCore` wrapper, which spawns the `TtyAdapter`.
@@ -844,11 +882,13 @@ is always by the responder" invariant.
   (`alknet/tty` → `tty`) needs pinning either way, including what
   non-`alknet/*` ALPNs do.
 
-- **Expose verb.** Deferred. The `Expose` variant is reserved in the
-  `ChannelDirection` enum; the op + hold semantics are deferred until
-  a concrete push use case forces the design (`deferred(scope)`,
-  blocked on a concrete consumer — the repo's own pattern from OQ-56,
-  OQ-57).
+- **Expose subscription matching.** The `(op_name, params_hash)` key
+  is the proposed matching mechanism between expose and open. The
+  exact hash function, collision handling, and the subscription
+  lifecycle (when does the hub tear down an expose subscription with
+  no consumers?) are POC-worthy details. The architectural point is
+  that the call protocol's `Subscription` op type is the natural fit
+  for the expose side, and the hub is the broker.
 
 - **Does `ProtocolHandler` want channel-context?** Probably not for
   TTY/tunnel/ssh (they just want a `BiStream`), but maybe for ALPNs
