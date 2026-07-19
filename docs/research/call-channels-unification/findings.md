@@ -44,46 +44,53 @@ concerns between the call protocol (which already has per-op ACL,
 identity, composition, ownership, and subscriptions) and the channels
 layer (which provides binary framing for ops whose response isn't
 JSON), and the resolution is **an openable ALPN is an operation**:
-each openable ALPN registers its own open op
-(`channels/tty/open`, `channels/tunnel/open`, etc.) on the call
+each openable ALPN registers its own ops on the call
 `OperationRegistry`, with its own `access_control`, `input_schema`,
 `resource_id_path`, and a `channel_open` marker that tells the call
-adapter "this op's response is a binary stream, not a JSON response."
+adapter "this op's stream is binary, not JSON."
 
 This dissolves the `channel/open` ACL granularity gap (each ALPN has
 its own ACL — checked by the existing `OperationRegistry::invoke`
 before the handler runs, like every other op), makes the
 `resource_id_path` from ADR-050 work for channel-open ops (the path
-is per-op, not per-ALPN-branch-of-a-single-op), and lets the two
-`direction` values (initiator-to-responder vs responder-to-initiator)
-become two verbs (`channels/<alpn>/open` and
-`channels/<alpn>/expose`) with separate ACLs. Both are specced; the
-call protocol's subscription model is the matching mechanism between
-them — a worker exposing a resource and a consumer opening it are
-matched by `(op_name, params_hash)` on the hub, which proxies the
-data plane between them.
+is per-op, not per-ALPN-branch-of-a-single-op), and replaces the
+`direction` field with the call protocol's `OperationType`:
+`channels/<alpn>/sub` (`OperationType::Sub` — consumer subscribes to a
+stream) and `channels/<alpn>/pub` (`OperationType::Pub` — producer
+publishes a stream). The hub matches `Pub` ↔ `Sub` by
+`(op_name, params_hash)` and proxies the data plane between them.
 
 **Channels is call with a binary data plane.** The call protocol
 already has the subscription model, ACL, identity, composition, and
 ownership. Channels adds one thing: binary framing (8-byte headers,
-channel multiplexing) for ops whose response isn't JSON. A call
+channel multiplexing) for ops whose stream isn't JSON. A call
 connection has two modes:
 
-- **Default call** (`alknet/call`): all ops return JSON on a single
-  stream. The subscription model works — events are JSON chunks.
+- **Default call** (`alknet/call`): all ops use JSON framing on a
+  single stream. Pub/Sub works — events are JSON chunks.
 - **Channels** (`alknet/channels`): call on channel 0 (JSON control
-  plane), binary streams on channels 1..N (data plane). The
-  subscription model works identically — the only difference is the
-  chunk format on the data-plane channels.
+  plane), binary streams on channels 1..N (data plane). Pub/Sub works
+  identically — the only difference is the chunk format on the
+  data-plane channels.
+
+**Pub/Sub unifies the model.** `Pub` is a streaming Mutation — the
+client publishes a stream to the server (producer → consumer).
+`Sub` is a streaming Query — the server streams to the client
+(producer → consumer). The hub is the broker: it matches `Pub` to
+`Sub` by `(op_name, params_hash)` and proxies the `BiStream` between
+them. Stream deduplication falls out naturally: if two consumers
+subscribe to the same topic, the hub fans out from one publisher
+stream. The `channel_open` marker is orthogonal — it tells the call
+adapter "this stream is binary, use channels framing." Without it,
+the same Pub/Sub model works for JSON streams.
 
 The ALPN crates served under channels (tty, tunnel, socks5, fs, sftp)
-stop being "just ALPNs" and become **call apps with binary-stream
-ops** — the same shape as alknet-docker (a call app with JSON ops),
-but where some ops carry the `channel_open` marker and produce a
-binary stream instead of a JSON response. The hub/worker composition
-story unifies: a hub composes call apps, full stop; some ops return
-JSON, some ops carry the `channel_open` marker and produce a binary
-stream.
+stop being "just ALPNs" and become **call apps** — the same shape as
+alknet-docker, but where some ops carry the `channel_open` marker and
+produce a binary stream instead of a JSON stream. The hub/worker
+composition story unifies: a hub composes call apps, full stop; some
+ops return JSON, some ops carry the `channel_open` marker and produce
+a binary stream.
 
 Three further gaps fall out of this framing:
 
@@ -141,14 +148,14 @@ another.
 | Axis | Roles | What it means |
 |------|-------|---------------|
 | **Deployment** | hub, worker (spoke), browser | Where the code runs. Hub relays; worker/spoke hosts resources; browser is the end-user client. |
-| **Call protocol** | initiator, responder | Who sends the call op. The initiator calls `channels/tty/open`; the responder receives it. |
+| **Call protocol** | initiator, responder | Who sends the call op. The initiator calls `channels/tty/sub`; the responder receives it. |
 | **Data plane** | producer, consumer | Who runs the `ProtocolHandler` (produces the data stream) vs who receives it. The producer is the side that spawns the handler on the `BiStream`. |
 
-The old "ALPN-server"/"ALPN-client" vocabulary is retired. Call++ apps
+The old "ALPN-server"/"ALPN-client" vocabulary is retired. Call apps
 are not TLS-layer ALPNs; "producer"/"consumer" describes the data-plane
-role without implying a TLS ALPN. The `ChannelDirection` enum uses
-`Open` (initiator is consumer, responder is producer — the common case)
-and `Expose` (initiator is producer, responder is consumer).
+role without implying a TLS ALPN. The call protocol's `OperationType`
+maps directly: `Pub` (initiator is producer, responder is consumer) and
+`Sub` (initiator is consumer, responder is producer).
 
 **Assembly layer** is the CLI binary that wires crates together at
 startup (ADR-019, ADR-024). It constructs backends, injects
@@ -279,7 +286,7 @@ is a consequence, not the definition.
 This also touches the HTTP/ WebSocket path: ADR-048 says "WebSocket
 carries the native call-protocol session." Under the unified model, a
 browser that wants to open a TTY channel needs to call
-`channels/tty/open`, which lives on channel 0 inside a *channels*
+`channels/tty/sub`, which lives on channel 0 inside a *channels*
 connection. So WebSocket may carry either `alknet/call` (bare, for
 call-only clients) or `alknet/channels` (8-byte chunk framing, with
 call on channel 0 inside). Channels framing is required for
@@ -323,39 +330,27 @@ pub struct OperationSpec {
     pub access_control: AccessControl,
     pub resource_id_path: Option<String>,
     /// Marker consumed by layers that manage binary streams. When set,
-    /// the op produces a binary stream alongside (or instead of) the JSON
-    /// response. The marker is registry metadata, not auth machinery —
-    /// it's how layers like channels-call know an op is a channel-open
-    /// op, parallel to how `resource_id_path` is how ADR-050 knows where
+    /// the op's stream is binary (channels framing) rather than JSON.
+    /// The marker is registry metadata, not auth machinery — it's how
+    /// layers like channels-call know an op needs a binary channel,
+    /// parallel to how `resource_id_path` is how ADR-050 knows where
     /// to find the resource id. The op's `access_control` is the ACL
     /// (unchanged); the marker is the dispatch hint.
     pub channel_open: Option<ChannelOpenSpec>,
 }
 
 pub struct ChannelOpenSpec {
-    pub alpn: &'static str,         // e.g., "alknet/tty"
-    pub direction: ChannelDirection, // Open or Expose
-}
-
-pub enum ChannelDirection {
-    /// Initiator wants to consume a resource the responder will produce.
-    /// Initiator is the consumer; responder is the producer (runs the
-    /// data-plane handler). Common case: "open me a TTY on your docker
-    /// container."
-    Open,
-    /// Initiator is the producer (runs the data-plane handler);
-    /// responder is the consumer. The worker-expose case: "I'm exposing
-    /// a TTY for you to consume."
-    Expose,
+    pub alpn: &'static str,  // e.g., "alknet/tty"
 }
 ```
 
-The marker is registry metadata, not auth machinery — it doesn't
-violate ADR-073's "no new auth machinery" promise. The op's
-`access_control` is the ACL (unchanged, checked by
-`OperationRegistry::invoke` before the handler runs); the marker is
-the dispatch hint that tells channels-call to wrap the handler with
-the channel machinery.
+The `direction` field is gone — the call protocol's `OperationType`
+carries the direction. `OperationType::Sub` means the initiator is the
+consumer (subscribes to a stream); `OperationType::Pub` means the
+initiator is the producer (publishes a stream). The `channel_open`
+marker is orthogonal: it says the stream is binary, not JSON. A
+`Sub`-typed op with `channel_open: None` is a JSON subscription; a
+`Pub`-typed op with `channel_open: Some(...)` is a binary publisher.
 
 **The marker is wire-visible.** `channel_open` must survive discovery
 serialization — it is part of the `services/schema` payload, not just
@@ -376,7 +371,7 @@ carries relay machinery that allocates channels and spawns byte-forward
 tasks. This is the load-bearing piece of the relay under the unified
 model.
 
-**Marked ops invoked outside a channels session.** `channels/tty/open`
+**Marked ops invoked outside a channels session.** `channels/tty/sub`
 is registered on the call registry — which means it's also
 visible/invocable on a bare top-level `alknet/call` connection, where
 there is no `ChannelManager` and no data plane. The wrapper resolves
@@ -386,37 +381,62 @@ the HTTP-side adapters (`to_openapi`, `to_mcp`) must exclude marked
 ops — "produces a binary stream" is not expressible over a
 request/response export.
 
-### Two verbs: `open` and `expose`
+### Pub/Sub: the call protocol's `OperationType` carries the direction
 
-`direction` becomes two verbs, not a field:
+The `direction` field is replaced by the call protocol's
+`OperationType`. Two new variants extend the existing `Query`,
+`Mutation`, `Subscription` set:
 
-- `channels/<alpn>/open` — the initiator wants to consume a resource
-  the responder will produce. Responder is the producer. The common
-  case: "open me a TTY on your docker container." Consumer → hub →
-  producer: both legs are `channels/tty/open`. **Specced.**
-- `channels/<alpn>/expose` — the initiator wants to produce a resource
-  for the responder to consume. Initiator is the producer. The
-  worker-expose case: worker → hub, worker is making a resource
-  available for the hub to proxy to consumers. **Specced.**
+- `OperationType::Sub` — the initiator subscribes to a stream from the
+  responder. The initiator is the consumer; the responder is the
+  producer. `HandlerKind::Stream` (server → client stream). Maps to
+  `channels/<alpn>/sub`. **Specced.**
+- `OperationType::Pub` — the initiator publishes a stream to the
+  responder. The initiator is the producer; the responder is the
+  consumer. `HandlerKind::Stream` (client → server stream). Maps to
+  `channels/<alpn>/pub`. **Specced.**
 
-Separate verbs → separate ACLs. A peer that may expose a TTY is not
-the same grant as a peer that may open one. The verb split also
-enables the hub-as-proxy pattern: a worker exposes a resource to the
-hub, the hub owns it, and consumers open it from the hub.
+The existing `Subscription` variant is superseded by `Sub` (same
+shape, clearer name). `Pub` fills the structural gap — there was no
+way for a client to stream *to* the server before.
 
-**Matching: the call protocol's subscription model.** The hub matches
-expose and open by `(op_name, params_hash)`. When a worker calls
-`channels/tty/expose`, the hub records the exposed resource keyed by
-the hash of the op name + params. When a consumer calls
-`channels/tty/open` with matching params, the hub finds the exposed
-resource and proxies the data plane between them. This is a pubsub
-model where the topic is `(op_name, params_hash)` — the call protocol's
-existing subscription mechanism (`OperationType::Subscription`) is the
-natural fit for the expose side: the worker subscribes to consumer
-demand for that resource, and the hub delivers matching open requests
-as subscription events. Stream deduplication falls out naturally: if
-two consumers open the same resource, the hub fans out from one
-producer stream rather than opening duplicate channels to the worker.
+Separate op types → separate ACLs. A peer that may publish a TTY
+stream is not the same grant as a peer that may subscribe to one. The
+op type split also enables the hub-as-proxy pattern: a worker publishes
+to the hub, the hub owns the resource, and consumers subscribe from the
+hub.
+
+**Matching: Pub/Sub by `(op_name, params_hash)`.** The hub matches
+`Pub` to `Sub` by topic hash. When a worker calls
+`channels/tty/pub`, the hub records the published stream keyed by
+`("channels/tty/pub", hash(params))`. When a consumer calls
+`channels/tty/sub` with matching params, the hub finds the publisher
+and proxies the `BiStream` between them. This is a pubsub model where
+the topic is `(op_name, params_hash)` — the hub is the broker. Stream
+deduplication falls out naturally: if two consumers subscribe to the
+same topic, the hub fans out from one publisher stream rather than
+opening duplicate channels to the worker.
+
+**JSON Pub/Sub works identically.** Without the `channel_open` marker,
+`Pub` and `Sub` ops use JSON framing on the default call stream. The
+matching mechanism, ACL, and hub broker are the same. The marker only
+changes the chunk format — binary (channels) vs JSON (default call).
+
+**`OperationType` changes in `alknet-call`:**
+
+```rust
+pub enum OperationType {
+    Query,         // unchanged: request → single JSON response
+    Mutation,      // unchanged: request → single JSON response
+    Sub,           // new: client subscribes, server streams (replaces Subscription)
+    Pub,           // new: client publishes, streams to server
+}
+```
+
+The registry restriction is loosened: `Sub` and `Pub` both use
+`HandlerKind::Stream`. The existing `Subscription` variant is
+deprecated (mapped to `Sub` in wire serialization for backward compat
+during the transition; no deployments exist, so this is cosmetic).
 
 ### The `ChannelCore` seam (wrapper shape — flag for POC)
 
@@ -561,7 +581,7 @@ The dependency split parallels `channels-core` / `channels-call`
 - **Data-plane core** (the `ProtocolHandler`, wire format, backend
   trait) — depends on `alknet-core` only. No call dep. ADR-057's
   "tty does not depend on call" property survives here.
-- **Control-plane layer** (the open/expose ops, registration helper)
+- **Control-plane layer** (the pub/sub ops, registration helper)
   — depends on the data-plane core + `alknet-call` +
   `alknet-channels-call` (for the channel machinery). ADR-057 is
   amended: the *data plane* stays call-free; the *control plane* is
@@ -577,7 +597,7 @@ point is the dependency boundary.
 SSH is an endpoint ALPN that wraps channels. Under the unified model,
 the channels inside SSH have call on channel 0, and the call registry
 has the open ops. An SSH client opens an SSH channel; the SSH server
-translates that to `channels/<alpn>/open` on channel 0 internally
+translates that to `channels/<alpn>/sub` on channel 0 internally
 (SSH server as translator, same shape as the hub relay — ADR-079).
 The SSH client doesn't know about call; it just opens SSH channels.
 SSH's category (endpoint ALPN wrapping channels) is unchanged. This
@@ -592,23 +612,23 @@ This is the flow the outsider flagged as "where ADR-073's single-op
 design was doing the most implicit work." Walking it under the unified
 model to verify it holds.
 
-### Consumer → hub → producer, "open me a TTY" (the common case)
+### Consumer subscribes, "give me a TTY" (the common case)
 
-1. Consumer (browser, another worker, another hub) sends
-   `channels/tty/open` with
+1. Consumer (browser, another worker, another hub) calls
+   `channels/tty/sub` (`OperationType::Sub`) with
    `{params: {backend: docker, cmd: ["bash"], container: "abc123"}}`
    on its channel 0 (call op on the consumer→hub leg).
-2. Hub's `CallAdapter` receives `channels/tty/open`. The
+2. Hub's `CallAdapter` receives `channels/tty/sub`. The
    `OperationRegistry` checks the op's `access_control` against the
    consumer's identity. The op's spec has
-   `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty", direction: Open })`.
+   `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty" })`.
    Consumer is the initiator / consumer.
 3. Hub's `CallAdapter` recognizes the `channel_open` marker. The hub
    does NOT run a local `TtyAdapter` — the hub never runs
    protocol-specific handlers (ADR-079). It forwards to the producer
-   (spoke/worker) via `from_call`: hub re-issues `channels/tty/open`
+   (spoke/worker) via `from_call`: hub re-issues `channels/tty/sub`
    on the producer leg with `forwarded_for = consumer`.
-4. Producer's `CallAdapter` receives `channels/tty/open`.
+4. Producer's `CallAdapter` receives `channels/tty/sub`.
    `OperationRegistry` checks the op's `access_control` against the
    hub's identity (the direct caller per ADR-032). The producer's
    ownership store verifies the hub owns `container:abc123`
@@ -627,49 +647,48 @@ model to verify it holds.
    4-byte `channel_id` rewrite (ADR-079 unchanged).
 
 The hub ran **zero** protocol-specific auth and zero protocol-specific
-data-plane work. It ran `channels/tty/open`'s `access_control`
+data-plane work. It ran `channels/tty/sub`'s `access_control`
 (call-protocol machinery) and forwarded. The relay contract from
 ADR-079 holds unchanged in shape; only the op name changed (from
-generic `channel/open` to per-ALPN `channels/tty/open`).
+generic `channel/open` to per-ALPN `channels/tty/sub`).
 
-### Worker → hub → consumer, "worker exposes a resource" (the proxy case)
+### Worker publishes, consumer subscribes (the proxy case)
 
-The `expose` verb is specced alongside `open`. The call protocol's
-subscription model is the matching mechanism between them.
+The `Pub`/`Sub` op types are the matching mechanism. The hub is the
+broker.
 
 **Concrete example.** A worker runs on a remote instance (vastai,
 runpod, a docker container). It wraps an opencode server's OpenAPI spec
-via `from_openapi` (call ops, JSON) and registers `channels/tty/open`
+via `from_openapi` (call ops, JSON) and registers `channels/tty/sub`
 for terminal access. The worker connects to a hub and calls
-`channels/tty/expose` as a **Subscription** — "I have this resource;
-notify me when a consumer wants it." The hub records the exposed
-resource keyed by `(op_name, params_hash)`. Later, a consumer (browser,
-another worker, another hub) calls `channels/tty/open` with matching
-params. The hub matches by hash, delivers the open request to the
-worker's subscription, the worker allocates the channel, and the hub
-proxies the data plane between them.
+`channels/tty/pub` (`OperationType::Pub`) — "I'm publishing a TTY
+stream for this container." The hub records the published stream keyed
+by `(op_name, params_hash)`. Later, a consumer (browser, another
+worker, another hub) calls `channels/tty/sub` (`OperationType::Sub`)
+with matching params. The hub matches by hash, proxies the `BiStream`
+between them.
 
 **Step-by-step:**
 
-1. Worker calls `channels/tty/expose` (Subscription) with
+1. Worker calls `channels/tty/pub` (`OperationType::Pub`) with
    `{params: {backend: docker, container: "abc123", cmd: ["bash"]}}`
    on its channel 0. Worker is the initiator / producer.
-2. Hub's `CallAdapter` receives `channels/tty/expose`.
+2. Hub's `CallAdapter` receives `channels/tty/pub`.
    `OperationRegistry` checks the op's `access_control` against the
    worker's identity. The op's spec has
-   `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty", direction: Expose })`.
+   `channel_open: Some(ChannelOpenSpec { alpn: "alknet/tty" })`.
 3. Hub recognizes the `channel_open` marker. The hub records the
-   exposed resource in its subscription table keyed by
-   `("channels/tty/expose", hash(params))`. The subscription is held
+   published stream in its broker table keyed by
+   `("channels/tty/pub", hash(params))`. The `Pub` stream is held
    open — no channel is allocated yet. The worker is waiting for a
-   consumer.
-4. Later, a consumer calls `channels/tty/open` (Query/Mutation) with
-   matching params `{container: "abc123", cmd: ["bash"]}`.
+   subscriber.
+4. Later, a consumer calls `channels/tty/sub` (`OperationType::Sub`)
+   with matching params `{container: "abc123", cmd: ["bash"]}`.
 5. Hub checks `access_control` against the consumer's identity. Hub
-   computes `params_hash` and looks up the expose subscription table.
-   Finds the worker's subscription.
-6. Hub delivers the open request to the worker's subscription as an
-   event. The worker's expose handler runs: validates params, consults
+   computes `params_hash` and looks up the broker table. Finds the
+   worker's `Pub` entry.
+6. Hub delivers the subscribe request to the worker's `Pub` stream as
+   an event. The worker's pub handler runs: validates params, consults
    ownership (ADR-050 — the hub owns the container), prepares the
    `TtyBackend`. Worker's `ChannelCore` allocates `channel_id` on the
    worker→hub leg, spawns `TtyAdapter`, records opener (hub) in the
@@ -682,8 +701,8 @@ proxies the data plane between them.
    4-byte `channel_id` rewrite (ADR-079 unchanged).
 
 **Stream deduplication (single-producer, N-consumer).** If a second
-consumer calls `channels/tty/open` with the same params, the hub
-matches the same worker subscription. The hub does NOT deliver another
+consumer calls `channels/tty/sub` with the same params, the hub
+matches the same worker `Pub` entry. The hub does NOT deliver another
 event to the worker — it already has the producer channel. Instead, it
 allocates a second consumer leg and fans out from the existing producer
 channel: `worker_channel → consumer_1_channel` and
@@ -701,19 +720,19 @@ authority; ADR-032). From the downstream consumer's perspective, the
 hub is the producer — it doesn't know or care that the real backend is
 on a worker.
 
-**Teardown.** If the worker disconnects before a consumer arrives, the
-subscription is cancelled (connection drop → subscription teardown).
+**Teardown.** If the worker disconnects before a subscriber arrives,
+the `Pub` stream is cancelled (connection drop → broker entry removed).
 If a consumer disconnects, the hub closes that consumer leg but keeps
 the producer channel open for other consumers. When the last consumer
 disconnects, the hub may close the producer channel or keep it
-(subscription stays open for future consumers — policy decision, not
+(broker entry stays open for future subscribers — policy decision, not
 architecture).
 
 ### The `channel_id` allocation symmetry
 
 In both cases, `channel_id` allocation is by the responder (DP-1,
-unchanged). In the open case, the responder is the spoke (spoke
-allocates). In the expose case, the responder is the hub on the
+unchanged). In the sub case, the responder is the producer (producer
+allocates). In the pub case, the responder is the hub on the
 worker→hub leg (hub allocates) and the downstream consumer on the
 hub→consumer leg (consumer allocates). The hub relay records the
 mapping across legs. This preserves ADR-073's "channel_id allocation
@@ -725,12 +744,12 @@ is always by the responder" invariant.
 
 | ADR | Scope | Status |
 |-----|-------|--------|
-| **ADR-095 (new)** | "Openable ALPNs are operations" — channels is call with a binary data plane. The mental model, the `channel_open` marker on `OperationSpec`, the `ChannelCore` seam (wrapper shape, POC-flagged), the two-verb split, the subscription-based expose/open matching, the discovery split, the three-category ALPN reframe. The unifying ADR. | **Ready to draft.** |
-| **ADR-073 amendment** | `channel/open` dissolves into per-ALPN ops in `channels/<alpn>/open` and `channels/<alpn>/expose`. `channel/close`, `channel/control`, `channel/resources/subscribe` stay generic (keyed by `channel_id`). The `direction` field is removed (becomes the verb). Error codes: `channel:unknown_alpn` becomes "operation not found"; `channel:invalid_params` becomes ordinary schema rejection. | **Ready to draft.** |
+| **ADR-095 (new)** | "Openable ALPNs are operations" — channels is call with a binary data plane. The mental model, the `channel_open` marker on `OperationSpec`, `OperationType::Pub`/`Sub`, the `ChannelCore` seam (wrapper shape, POC-flagged), the hub-as-broker Pub/Sub matching, the discovery split, the ALPN category reframe. The unifying ADR. | **Ready to draft.** |
+| **ADR-073 amendment** | `channel/open` dissolves into per-ALPN ops in `channels/<alpn>/sub` and `channels/<alpn>/pub`. `channel/close`, `channel/control`, `channel/resources/subscribe` stay generic (keyed by `channel_id`). The `direction` field is removed (replaced by `OperationType`). Error codes: `channel:unknown_alpn` becomes "operation not found"; `channel:invalid_params` becomes ordinary schema rejection. | **Ready to draft.** |
 | **ADR-094 amendment (Gap 2)** | The per-connection opener ledger in `channels-call`. The decrement is keyed by the opener (from the ledger), not the closer. The decrement is called from every teardown path (close received, close sent, handler exit, connection drop), not just `channel/close`. The trait shape (`check_open`, `on_close`) survives. The teardown hooks (connection-drop, handler-exit) are new structural requirements on `channels-call`. | **Ready to draft.** |
 | **ADR-086 §4 amendment** | "Channels data-channel ALPNs" → call apps (the third category dissolves — they're just call apps, some with binary-stream ops). The category distinction holds (them vs SSH); the description changes from "gated by channels" to "call apps." | **Ready to draft.** |
 | **ADR-048 amendment + OQ-65 resolution** | WebSocket may carry either `alknet/call` (bare, for call-only clients) or `alknet/channels` (8-byte chunk framing, call on channel 0 inside). Channels framing required for binary-stream clients. OQ-65 resolved. "Native session, not gateway" survives (the decision). | **Ready to draft.** |
-| **ADR-057 amendment** | TTY data plane stays call-free; control plane (open/expose ops) depends on call. "Self-contained negotiation framing" becomes the data-plane negotiation (the 5-byte format's negotiation frame); the control-plane negotiation is the call op. | **Ready to draft.** |
+| **ADR-057 amendment** | TTY data plane stays call-free; control plane (pub/sub ops) depends on call. "Self-contained negotiation framing" becomes the data-plane negotiation (the 5-byte format's negotiation frame); the control-plane negotiation is the call op. | **Ready to draft.** |
 | **ADR-058 clarification** | The boundary criterion (EventEnvelope-compatible → call op; incompatible → binary stream with call control plane) is preserved and sharpened. Probably a note, not a full amendment. | **Ready to draft.** |
 | **New OQ (Gap 3)** | Per-identity connection cap against `alknet-endpoint`. Named, `deferred(scope)` — the deployment shape that needs it isn't concrete yet. Owned by `alknet-endpoint`, not channels. | **Ready to open.** |
 
@@ -743,6 +762,11 @@ is always by the responder" invariant.
 - `OperationSpec` gains `channel_open: Option<ChannelOpenSpec>` (the
   marker). This is a one-way-door API change (every spec-constructing
   code adds the field, defaulting to `None`).
+- `OperationType` gains `Sub` and `Pub` variants. The existing
+  `Subscription` variant is deprecated (mapped to `Sub` in wire
+  serialization). The registry restriction is loosened: `Sub` and
+  `Pub` both use `HandlerKind::Stream`. `Pub` fills the structural gap
+  — there was no way for a client to stream *to* the server before.
 - No other change. The `OperationRegistry` is unchanged — it still
   invokes ops by name, checks `access_control`, runs the handler. The
   marker is opaque to the registry; it's channels-call that reads it.
@@ -778,21 +802,21 @@ is always by the responder" invariant.
 - Data plane (the `TtyAdapter`, the 5-byte wire format, the
   `TtyBackend` trait) is unchanged. Used by both direct connections
   (`HandlerRegistry` → `ProtocolHandler` → `BiStream`) and
-  channels-opened sessions (`channels/tty/open` → allocate channel →
+  channels-opened sessions (`channels/tty/sub` → allocate channel →
   spawn `TtyAdapter` on the channel's `BiStream`). Both paths
   converge at the `BiStream`.
-- Control plane (new): registers `channels/tty/open` and
-  `channels/tty/expose` on the call `OperationRegistry` at assembly
-  time, alongside its `ProtocolHandler` on the `HandlerRegistry` for
-  direct connections. The op specs carry the `channel_open` marker,
-  the `access_control` (e.g., `required_scopes: ["tty:open"]` and
-  `required_scopes: ["tty:expose"]`), the `input_schema` (the
+- Control plane (new): registers `channels/tty/sub`
+  (`OperationType::Sub`) and `channels/tty/pub` (`OperationType::Pub`)
+  on the call `OperationRegistry` at assembly time, alongside its
+  `ProtocolHandler` on the `HandlerRegistry` for direct connections.
+  The op specs carry the `channel_open` marker, the `access_control`
+  (e.g., `required_scopes: ["tty:sub"]` and
+  `required_scopes: ["tty:pub"]`), the `input_schema` (the
   `NegotiateRequest`), and the `resource_id_path` (e.g.,
-  `/params/container` for docker-backed TTY). `channels/tty/expose`
-  is registered as a `Subscription` op type — the worker subscribes
-  to consumer demand; the hub delivers matching open requests as
-  subscription events.
-- The open handler validates params, consults ownership (ADR-050),
+  `/params/container` for docker-backed TTY). `channels/tty/pub` is
+  registered as `OperationType::Pub` — the worker publishes a TTY
+  stream; the hub matches it to subscribers.
+- The sub handler validates params, consults ownership (ADR-050),
   prepares the `TtyBackend`, returns a "channel plan" to the
   `ChannelCore` wrapper, which spawns the `TtyAdapter`.
 - Dependency: data-plane core depends on `alknet-core` only
@@ -805,15 +829,15 @@ is always by the responder" invariant.
 ### `alknet-tunnel`, `alknet-socks5`, `alknet-fs`, `alknet-sftp`
 
 - Same shape as TTY: data plane (ProtocolHandler) unchanged; control
-  plane (open/expose ops) new. Each registers its open ops on the
-  call registry at assembly time.
+  plane (pub/sub ops) new. Each registers its ops on the call registry
+  at assembly time.
 - These crates are not yet specced (per ADR-085). When specced, they
   follow the same pattern from the start.
 
 ### `alknet-hub`
 
 - Unchanged in shape. The hub composes call apps — docker (JSON ops),
-  tty (open op + binary stream), tunnel (open op + binary stream),
+  tty (pub/sub + binary stream), tunnel (pub/sub + binary stream),
   agent, etc. All register ops on the call registry. The hub's
   assembly layer wires them uniformly. The hub doesn't distinguish
   "call app" from "channels app" — both are just apps with ops
@@ -822,7 +846,7 @@ is always by the responder" invariant.
   uniform.
 - The relay contract (ADR-079) is unchanged in shape. The op name
   changes (from generic `channel/open` to per-ALPN
-  `channels/<alpn>/open`); the marker (not prefix-matching) is how
+  `channels/<alpn>/sub`); the marker (not prefix-matching) is how
   the hub recognizes and translates channel-open ops.
 - **`from_call` relay wrapper.** When `from_call` imports a marked op
   on a channels-backed connection, it wraps it with relay machinery
@@ -885,21 +909,21 @@ is always by the responder" invariant.
   is a POC-worthy detail. The architectural point is that the data
   source lives in the ALPN crate.
 
-- **Op naming vs OQ-13.** `channels/tty/open` implies the ops belong
+- **Op naming vs OQ-13.** `channels/tty/sub` implies the ops belong
   to the channels service, but the *TTY crate* registers them — the
-  docker precedent (`docker/container/list`) suggests `tty/open`.
+  docker precedent (`docker/container/list`) suggests `tty/sub`.
   Since relay recognition is via the marker (not name prefix), nothing
   constrains the name; but the ALPN→path-segment mapping
   (`alknet/tty` → `tty`) needs pinning either way, including what
   non-`alknet/*` ALPNs do.
 
-- **Expose subscription matching.** The `(op_name, params_hash)` key
-  is the proposed matching mechanism between expose and open. The
-  exact hash function, collision handling, and the subscription
-  lifecycle (when does the hub tear down an expose subscription with
-  no consumers?) are POC-worthy details. The architectural point is
-  that the call protocol's `Subscription` op type is the natural fit
-  for the expose side, and the hub is the broker.
+- **Pub/Sub matching.** The `(op_name, params_hash)` key is the
+  proposed matching mechanism between `Pub` and `Sub`. The exact hash
+  function, collision handling, and the broker lifecycle (when does
+  the hub tear down a `Pub` entry with no subscribers?) are
+  POC-worthy details. The architectural point is that the call
+  protocol's `OperationType::Pub`/`Sub` is the natural fit, and the
+  hub is the broker.
 
 - **Does `ProtocolHandler` want channel-context?** Probably not for
   TTY/tunnel/ssh (they just want a `BiStream`), but maybe for ALPNs
