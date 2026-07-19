@@ -890,6 +890,9 @@ is always by the responder" invariant.
   that the `OperationEnv` is the integration point for per-connection
   state (ADR-024), and the wrapper resolves the `ChannelManager` at
   invocation time — static registration, dynamic resolution.
+  **Resolved by Gap E:** use an extension trait in
+  `alknet-channels-call` to avoid coupling `alknet-call` to channels
+  types.
 
 - **ChannelCore seam: wrapper vs invoke.** This doc specs the wrapper
   shape (the ALPN's open handler returns a "channel plan"; channels-
@@ -947,6 +950,507 @@ is always by the responder" invariant.
   `forwarded_for` browser, per policy)" clause is a spec
   inconsistency. Fix while editing. The spoke authorizes the hub,
   full stop; the hub's per-browser ACL is the hub's own layer.
+
+---
+
+## Known gaps (identified during review, 2026-07-19)
+
+These are structural gaps in the unified model that need resolution
+before the ADRs can be drafted. They are not open questions about
+POC-worthy details — they are places where the model is underspecified
+or contradicts itself.
+
+### Gap A — `Pub` handler shape is underspecified (one-way-door)
+
+The doc says `Pub` uses `HandlerKind::Stream` (line 437), but the
+current `StreamingHandler` type is inherently **server→client** — the
+handler *produces* a stream:
+
+```rust
+pub type StreamingHandler = Arc<
+    dyn Fn(Value, OperationContext) -> Pin<Box<dyn Stream<Item = ResponseEnvelope> + Send>>
+        + Send + Sync,
+>;
+```
+
+For `Pub`, the initiator is the producer streaming *to* the responder.
+The handler on the responder side needs to *consume* a stream from the
+initiator, not produce one. The doc gestures at this ("the handler
+receives the client's stream") but never specifies the type signature.
+
+This is a one-way-door API change — the handler trait shape can't be
+retrofitted later without breaking every handler. Options:
+
+(a) A new `HandlerKind::Sink` variant with a consuming handler type:
+    `Fn(Value, OperationContext, RecvStream) -> Future<Output = ResponseEnvelope>`.
+    The `RecvStream` is the initiator's data stream. Clean separation
+    from `Stream` — different handler shapes for different directions.
+
+(b) The handler receives a `BiStream` as part of `OperationContext` (or
+    a separate channel-context). The handler reads from the initiator's
+    half and writes to the responder's half. More general but muddies
+    the handler signature — every handler gets a `BiStream` it may not
+    need.
+
+(c) `Pub` is not a separate handler at all — the `Pub` op is matched to
+    a `Sub` op by the broker, and the actual data-plane handler is
+    always the `Sub` handler (the producer side). The `Pub` initiator's
+    stream is proxied through the broker to the `Sub` handler's
+    `BiStream`. This keeps the handler shape unchanged (always
+    server→client from the handler's perspective) but requires the
+    broker to hold the `Pub` stream open and splice it.
+
+**Recommendation:** (a) or (c). (a) is cleaner for the type system;
+(c) avoids a new handler variant entirely by making `Pub` purely a
+broker-level concept. The choice depends on whether non-brokered
+`Pub` (direct client→server streaming without a hub) is a use case.
+If direct `Pub` is needed, (a) is required. If `Pub` only exists in
+the hub-relay context, (c) suffices.
+
+### Gap B — Hub broker is a new component with no spec
+
+The doc describes matching `Pub` ↔ `Sub` by `(op_name, params_hash)`
+(lines 409-418, 660-711), but this requires a **broker** — a component
+that:
+
+- Holds `Pub` streams open while waiting for subscribers.
+- Matches incoming `Sub` calls to held `Pub` streams.
+- Fans out one producer stream to N consumers.
+- Manages teardown (producer disconnect, last consumer disconnect,
+  policy for keeping the producer channel open when all consumers
+  leave).
+
+This broker doesn't exist in the current architecture and isn't specced
+anywhere. The doc says "the hub is the broker" but doesn't say:
+
+- What crate owns the broker (`alknet-hub`? `alknet-channels-call`? A
+  new `alknet-broker`?).
+- What its API is (register a `Pub` stream, match a `Sub` call, fan
+  out, teardown).
+- How it integrates with the dispatch loop. The current dispatch model
+  runs a handler and gets a stream back — there's no mechanism to hold
+  that stream open across multiple future `Sub` calls. The broker needs
+  to interpose between the dispatch result and the wire: when a `Pub`
+  handler returns, the broker holds the stream; when a later `Sub`
+  arrives, the broker matches and splices.
+
+**Resolution needed:** At minimum, a sketch of the broker's crate
+location, core API (register/match/fanout/teardown), and integration
+point with the dispatch loop. This is not a POC-worthy detail — it's a
+new architectural component that the unified model depends on.
+
+### Gap C — `from_call` relay wrapper can't access `ChannelManager`
+
+The doc says (lines 362-372, 851-856) that `from_call` must wrap marked
+ops with relay machinery (forward + allocate local-leg channel + record
+id mapping + byte-forward pumps). But `from_call` currently:
+
+- Takes only a `CallConnection` and `FromCallConfig`.
+- Builds forwarding stubs that call `connection.call_with_payload()`.
+- Has no access to a `ChannelManager`, `ChannelCore`, or any channels
+  infrastructure.
+
+The hub's assembly layer would need to wire a `ChannelManager` into
+`from_call` somehow. The doc acknowledges this is "the load-bearing
+piece of the relay under the unified model" but doesn't specify the
+mechanism.
+
+**Resolution needed:** Either `from_call` gains a `ChannelManager`
+parameter (coupling `alknet-call` to `alknet-channels-core`), or the
+relay wrapping happens in a separate layer (e.g., a
+`from_call_with_channels` in `alknet-channels-call` or `alknet-hub`
+that wraps the `from_call` result with channel machinery). The latter
+preserves the layering (call doesn't depend on channels).
+
+### Gap D — `channel_id` allocation in Pub case contradicts the invariant
+
+The doc says (lines 732-739) "channel_id allocation is always by the
+responder." But in the Pub case walkthrough (lines 673-701):
+
+- Worker calls `channels/tty/pub` (worker is initiator/producer).
+- Hub is responder on the worker→hub leg.
+- Step 6: "Worker's `ChannelCore` allocates `channel_id` on the
+  worker→hub leg."
+
+The worker is the initiator, not the responder. If the responder (hub)
+allocates, the hub needs a `ChannelManager` for the worker's connection
+— but the hub doesn't own the worker's channels connection; the worker
+does. The hub can't allocate a channel on a connection it doesn't own.
+
+**Resolution needed:** Either:
+
+(a) Relax "responder allocates" to "the side that owns the
+    `ChannelManager` for that connection allocates." In the Pub case,
+    the worker owns its own channels connection, so the worker
+    allocates — even though it's the initiator. The invariant becomes
+    "the connection owner allocates," which is the same as "responder
+    allocates" in the Sub case (where the responder is the connection
+    owner) but differs in the Pub case.
+
+(b) The hub allocates on the worker's behalf via a relay mechanism
+    (the hub sends a `channel/allocate` control message to the worker,
+    the worker allocates and returns the id). More complex, preserves
+    the invariant literally.
+
+**Recommendation:** (a). The real invariant is "the side that holds
+the `ChannelManager` allocates." In the Sub case that's the responder;
+in the Pub case that's the initiator. The doc should state this
+explicitly.
+
+### Gap E — `OperationEnv::channel_manager()` couples call to channels
+
+The doc proposes (lines 488-501) adding
+`fn channel_manager(&self) -> Option<&ChannelManager>` to the
+`OperationEnv` trait in `alknet-call`. This means `alknet-call` would
+depend on `alknet-channels-core` (or at least know about
+`ChannelManager`). The doc's own layering principle (line 178) says
+`channels-core` is auth-blind and call is above it. Adding a channels
+type to the call crate's core trait inverts this dependency.
+
+**Resolution:** Use an extension trait in `alknet-channels-call`:
+
+```rust
+// in alknet-channels-call
+trait ChannelOperationEnv: OperationEnv {
+    fn channel_manager(&self) -> Option<&ChannelManager>;
+}
+```
+
+The wrapper handler downcasts `context.env` to
+`&dyn ChannelOperationEnv` at invocation time. If the downcast fails
+(no channels session), returns `channel:no_channels_session`. This
+keeps `alknet-call` free of any channels types and preserves the
+layering.
+
+### Gap F — `channel_open` marker wire format not specified
+
+The doc says (lines 355-360) the marker must survive discovery
+serialization — it is part of the `services/schema` payload. But
+`spec_to_json` in `discovery.rs:192-208` serializes a fixed set of
+fields. The marker needs:
+
+- A JSON field name (e.g., `"channel_open"`).
+- A JSON shape. Options:
+  - `"channel_open": {"alpn": "alknet/tty"}` — carries the ALPN,
+    redundant with the op name but self-describing.
+  - `"channel_open": true` — a boolean marker; the ALPN is derived
+    from the op name or the `ChannelOpenSpec` registry.
+  - `"channel_open": "alknet/tty"` — just the ALPN string.
+- Parsing on the `from_call` side in `rebuild_spec_for` (currently
+  ignores unknown fields; would need to parse `channel_open`).
+
+The `op_type` enum in the schema (`"query"`, `"mutation"`,
+`"subscription"`) also needs `"sub"` and `"pub"` added.
+
+**Resolution needed:** Pick the JSON shape and specify the exact field
+name. The boolean marker (`"channel_open": true`) is simplest and
+sufficient — the ALPN is already in the op name (`channels/tty/sub` →
+ALPN is `alknet/tty`). The `ChannelOpenSpec` struct in the doc
+(line 342-344) carries `alpn` but that's the in-process struct; the
+wire format can be a boolean.
+
+### Gap G — `resource_id_path` ACL vs handler ownership check is redundant
+
+The doc says (lines 54-56) `resource_id_path` works for channel-open
+ops — the ACL check in `OperationRegistry::invoke` extracts the
+resource ID from the input and checks ownership. But the doc also says
+(lines 443-449) the handler "consults ownership (ADR-050)" separately.
+
+If the ACL already checked ownership via `resource_id_path` and an
+`OwnershipProvider`, the handler's ownership check is redundant. If
+the handler needs to do its own check (e.g., because the resource ID
+isn't in the input at a fixed JSON pointer, or because the check
+involves ALPN-specific logic), then `resource_id_path` on the spec is
+misleading — it implies the ACL handles it when it doesn't.
+
+**Resolution needed:** Clarify the relationship:
+
+- The ACL check (via `resource_id_path` + `OwnershipProvider`) answers
+  "may this identity touch resources of this type, and if a specific
+  resource is targeted, does this identity own it?" This is the coarse
+  gate — it runs before the handler.
+- The handler's ownership check answers ALPN-specific questions the ACL
+  can't express (e.g., "is this container in a state that allows TTY
+  attachment?"). This is the fine gate — it runs inside the handler.
+
+The two are complementary, not redundant. The doc should state this
+explicitly and note that the handler check is ALPN-specific business
+logic, not a re-implementation of the ACL.
+
+---
+
+## Wire format family: the `[discriminant][length][payload]` shape
+
+The call protocol's `EventEnvelope` — `{ type, id, payload }` — is
+structurally identical to the channels header and TTY's 5-byte format.
+All three are variations on the same theme: a fixed-size discriminant
+followed by a length-prefixed payload.
+
+| Format | Header | Discriminant fields | Payload |
+|--------|--------|---------------------|---------|
+| Call JSON (ADR-064) | 4-byte BE length prefix | `type` (string), `id` (UUID string) | JSON `Value` |
+| Call binary (hypothetical) | 9 bytes | `request_id` (u32 BE), `event_type` (u8) | raw bytes |
+| Channels (ADR-093) | 8 bytes | `channel_id` (u32 BE) | raw bytes (handler's framing) |
+| TTY (ADR-052) | 5 bytes | `stream_type` (u8) | raw bytes |
+
+The call protocol's 5 event types map directly to 5 type bytes:
+
+| Event | Type byte |
+|-------|-----------|
+| `call.requested` | 0x01 |
+| `call.responded` | 0x02 |
+| `call.completed` | 0x03 |
+| `call.aborted` | 0x04 |
+| `call.error` | 0x05 |
+
+A binary call protocol frame would be:
+
+```
+[request_id: u32 BE][event_type: u8][length: u32 BE][payload bytes]
+```
+
+9 bytes of header vs the JSON envelope's ~80+ bytes (UUID string + type
+string + JSON structure wrapping). For TTY chunks of a few bytes, this
+is the difference between viable and absurd — the JSON envelope overhead
+dwarfs the payload.
+
+The binary call frame is the same shape as TTY's 5-byte format
+(`[stream_type: u8][length: u32][payload]`) with a `request_id` field
+added. Channels had a `stream_type` field before ADR-093 removed it —
+the binary call frame restores that shape but with call-protocol
+semantics (request correlation + lifecycle stage) instead of
+stream-type semantics (stdin/stdout/stderr/control).
+
+### The two axes don't fully collapse
+
+The call protocol's event types (request/response/completion/error/abort)
+and TTY's stream types (stdin/stdout/stderr/ctrl_in/ctrl_out) are
+different axes:
+
+- **Call protocol axis**: what stage of the request/response lifecycle?
+  (I'm sending you a request, I'm responding to your request, the stream
+  is done, something went wrong, cancel everything.)
+- **TTY axis**: what kind of data is this? (input to the process, output
+  from the process, error output, window resize, exit code.)
+
+They don't map 1:1. stdout and stderr are both "responses" in the call
+protocol sense but different stream types in the TTY sense. Window resize
+is a "request" in the call protocol sense but a control message in the
+TTY sense. The exit code is a "completion" in the call protocol sense
+and a control message in the TTY sense.
+
+This means the binary call protocol frame is not a drop-in replacement
+for TTY's 5-byte format — TTY still needs its own sub-multiplexing
+within the data plane. But the *shape* is the same family, and the
+binary call frame is the natural bridge: it carries call-protocol
+semantics (request correlation, lifecycle) in the same wire-format
+family as channels and TTY.
+
+### Composition: binary call inside channels
+
+When a `channel_open`-marked op's data plane uses binary call framing,
+the composition inside a channels connection is:
+
+```
+[channel_id: u32 BE][ch_len: u32 BE][request_id: u32 BE][event_type: u8][len: u32 BE][payload]
+       \_________  __________/   \___________________  ______________________/
+                 |                                     |
+          channels header                      binary call frame
+            (8 bytes)                       (9 bytes + payload)
+```
+
+The channels layer strips its 8-byte header and routes by `channel_id`.
+The handler receives the binary call frame and parses `request_id` +
+`event_type` + payload. This is the same add/strip composition the doc
+describes for TTY-inside-channels (line 39-57 of channels-wire.md), but
+with the binary call frame replacing TTY's 5-byte format as the
+handler's framing.
+
+### What this means for the `channel_open` marker
+
+The `channel_open` marker on an `OperationSpec` currently says "this
+op's stream is binary, use channels framing." Under this observation,
+it could say something more specific: "this op's stream uses binary
+call protocol framing" — the handler speaks the binary call protocol
+natively. The marker tells the call adapter: instead of JSON
+EventEnvelope frames on the default call stream, use binary call
+protocol frames on a dedicated channel.
+
+This is a refinement, not a contradiction. The doc's current framing
+("channels is call with a binary data plane") is correct; this
+observation adds that the binary data plane's wire format is the call
+protocol's own structure, just binary-encoded — not an unrelated format.
+
+---
+
+## `alknet-typedef`: JSON Schema as the binary struct engine
+
+The wire format family observation (above) converges with two other
+threads in the codebase: the `typedef.ts` schema kinds from TypeBox
+(`TStruct`, `TFloat32`, `TInt32`, etc.) and the russh-sftp protocol
+packets. The common pattern: **a JSON Schema describes the shape of
+binary data, and the binary data is the struct's bytes at computed
+offsets.**
+
+### The russh-sftp squint
+
+russh-sftp's protocol has 29 packet types, each a struct with typed
+fields:
+
+```rust
+// read.rs
+pub struct Read {
+    pub id: u32,
+    pub handle: String,
+    pub offset: u64,
+    pub len: u32,
+}
+
+// write.rs
+pub struct Write {
+    pub id: u32,
+    pub handle: String,
+    pub offset: u64,
+    pub data: Vec<u8>,  // serde_bytes
+}
+```
+
+The wire format is `[length: u32][type: u8][payload]` where payload is
+the struct's serde bytes. The `Packet` enum dispatches on the type byte
+— a tagged union of structs.
+
+Under the typedef lens, `Read` is a `TStruct` with fields:
+
+```json
+{
+  "TypeDef:Struct": true,
+  "properties": {
+    "id": { "TypeDef:Uint32": true },
+    "handle": { "TypeDef:String": true },
+    "offset": { "TypeDef:Uint64": true },
+    "len": { "TypeDef:Uint32": true }
+  }
+}
+```
+
+The `Packet` enum is a `TUnion` — discriminated by the type byte, each
+variant a `TStruct`. The JSON Schema describes the shape; the binary
+data is the struct's bytes at computed offsets. The serde derive on
+each struct is doing exactly what an offset map would do: serialize
+fields in order, deserialize by reading at computed positions.
+
+### The typedef.ts schema kinds
+
+`typedef.ts` (`/workspace/@alkdev/typebox/example/typedef/typedef.ts`,
+619 lines) defines custom TypeBox schema kinds that carry binary layout
+semantics:
+
+| Kind | TypeBox key | Rust type | Size |
+|------|-------------|-----------|------|
+| `TFloat32` | `TypeDef:Float32` | `f32` | 4 |
+| `TFloat64` | `TypeDef:Float64` | `f64` | 8 |
+| `TInt8` | `TypeDef:Int8` | `i8` | 1 |
+| `TInt16` | `TypeDef:Int16` | `i16` | 2 |
+| `TInt32` | `TypeDef:Int32` | `i32` | 4 |
+| `TUint8` | `TypeDef:Uint8` | `u8` | 1 |
+| `TUint16` | `TypeDef:Uint16` | `u16` | 2 |
+| `TUint32` | `TypeDef:Uint32` | `u32` | 4 |
+| `TString` | `TypeDef:String` | length-prefixed bytes | variable |
+| `TStruct` | `TypeDef:Struct` | record of fields | sum of field sizes |
+| `TUnion` | `TypeDef:Union` | tagged union | discriminator + variant |
+| `TArray` | `TypeDef:Array` | repeated element | count × element size |
+| `TEnum` | `TypeDef:Enum` | string enum | variable |
+| `TRecord` | `TypeDef:Record` | string-keyed map | variable |
+| `TBoolean` | `TypeDef:Boolean` | `bool` | 1 |
+| `TTimestamp` | `TypeDef:Timestamp` | ISO 8601 string | variable |
+
+These are registered in TypeBox via `TypeRegistry.Set` with custom
+validators. The Rust `jsonschema` crate supports the same pattern via
+`with_keyword("TypeDef:Float32", factory)` — each `TypeDef:*` kind maps
+to a custom keyword validator in Rust. Same semantics, different
+language, same JSON Schema wire format.
+
+### What `alknet-typedef` would be
+
+A small crate (`alknet-typedef`) that takes a JSON Schema with
+`TypeDef:*` custom keywords and produces:
+
+1. **An offset map** — walks the schema, computes byte offsets for each
+   field based on type sizes and field order. `TFloat32` → 4 bytes,
+   `TStruct` → sum of field sizes with alignment, `TArray` → element
+   size × count, `TString` → 4-byte length prefix + UTF-8 bytes.
+
+2. **Read/write functions** — given a `&[u8]` buffer and a field path,
+   read the field's bytes at its offset (zero-copy for fixed-size
+   types, slice for variable-length). Given a `&mut [u8]` buffer, write
+   a value at its offset.
+
+3. **Validation** — via `jsonschema` custom keywords, validates that
+   a buffer's bytes match the schema's type constraints (range checks
+   for ints, UTF-8 for strings, field presence for structs).
+
+4. **WASM-clean** — serde + jsonschema + byte manipulation. No tokio,
+   no platform deps. Compiles to `wasm32-unknown-unknown` for browser
+   use (the same constraint as channels-core's sync core).
+
+The crate is ~500 lines: the offset computation is a recursive walk of
+the schema JSON, the read/write functions are pointer casts and slice
+operations, the custom keywords are ~10 lines each. The heavy lifting
+is done by `jsonschema` and `serde_json`.
+
+### What this replaces
+
+- **typebox-rs** (`/workspace/@alkimiadev/typebox-rs/`) — the builder,
+  schema, registry, validate, value modules are replaced by jsonschema
+  + the offset map. The codebase drops from "a port of TypeBox" to
+  "jsonschema + an offset map + ~50 lines of custom keyword
+  implementations."
+
+- **Per-protocol serde structs** — russh-sftp's 29 packet structs with
+  serde derives are replaced by a single JSON Schema + the typedef
+  engine. The schema is the format definition; the engine reads/writes
+  bytes at computed offsets. Adding a new SFTP packet type is adding a
+  variant to the schema JSON, not writing a new Rust struct + serde
+  impl.
+
+- **Per-handler wire format code** — TTY's 5-byte format parser, the
+  binary call frame parser, the metatensor offset computer — all
+  become instances of the same engine with different schemas. The
+  engine is generic; the schema is the configuration.
+
+### Consumers
+
+| Consumer | Schema describes | Engine provides |
+|----------|-----------------|-----------------|
+| russh-sftp packets | 29 packet structs + Packet union | Read/write SFTP frames from bytes |
+| metatensor | Model layout (ConvNet struct, tensor refs) | Offset map for mmap'd tensor access |
+| binary call frames | `call.requested` / `call.responded` / etc. structs | Read/write binary call frames |
+| TTY negotiation | `NegotiateRequest` / `NegotiateResponse` structs | Read/write TTY control frames |
+| channels wire | `ChunkHeader { channel_id, length }` | Already trivial (8 bytes, no schema needed) |
+
+The russh-sftp case is the most instructive: the `Packet` enum's
+`TryFrom<&mut Bytes>` impl is a hand-written dispatch on a type byte
+followed by serde deserialization. Under typedef, the dispatch is
+`TUnion` — the schema says "byte 0 is the discriminator, bytes 1..N
+are the variant struct." The engine reads the discriminator, looks up
+the variant schema, computes offsets, reads fields. Same result, no
+per-packet-type code.
+
+### Relationship to the call protocol
+
+The call protocol's `OperationSpec.input_schema` and
+`OperationSpec.output_schema` are already JSON Schemas. With typedef,
+those schemas can describe binary payloads — not just JSON validation
+shapes. An op with `channel_open: Some(...)` and a typedef schema for
+its input/output is a binary-stream op whose wire format is
+schema-driven. The handler doesn't write a serde struct; it writes
+bytes at schema-computed offsets. The schema is the format.
+
+This closes the loop on "channels is call with a binary data plane":
+the binary data plane's wire format is the call protocol's own schema
+system, just binary-encoded. The `channel_open` marker says "use binary
+framing"; the typedef engine says "here's how to read/write the binary
+payload."
 
 ---
 
