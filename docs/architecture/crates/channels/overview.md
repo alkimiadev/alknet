@@ -233,10 +233,10 @@ inside-channels mode (`channel/open` with ALPN `alknet/tty`), the TTY
 adapter uses its own 5-byte wire format (ADR-052). The two modes differ
 only in *where the `BiStream` comes from* — a top-level connection vs a
 channels-backed `Connection`. The same `wire.rs` code runs in both modes
-(ADR-077, reversed by ADR-093): the channels layer strips its 8-byte
-header and hands TTY the payload bytes; TTY parses its 5-byte header from
-the payload. The `TtyBackend` trait and `TtyHandle` are unchanged;
-backends don't know which mode the adapter is in.
+(ADR-077): the channels layer strips its 8-byte header and hands TTY the
+payload bytes; TTY parses its 5-byte header from the payload. The
+`TtyBackend` trait and `TtyHandle` are unchanged; backends don't know
+which mode the adapter is in.
 
 ### alknet-ssh (future)
 
@@ -279,10 +279,10 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; yield-once `accept_bi` (amended by ADR-093 — `into_sub_streams` removed) |
 | [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Substrate-agnostic demux loop; REQ-CH-01..04 |
 | [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Limits, ID Reuse | Bounded-buffer (1 MiB), 256-channel cap, monotonic IDs |
-| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | Two modes (direct vs channels); **reversed by ADR-093 — TTY always uses its 5-byte format, carried transparently** |
+| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels | TTY's two modes (direct vs channels); TTY always uses its 5-byte format, carried transparently in the channels payload |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Pattern | Shutdown-on-completion contract; handler-level |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089, resolves OQ-55) |
 | [081](../../decisions/081-channels-subcrate-decomposition.md) | Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers |
 
 ## Open Questions

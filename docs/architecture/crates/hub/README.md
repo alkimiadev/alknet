@@ -287,8 +287,8 @@ another hub (A) is a client from A's perspective. The dial needs a
 client-side TLS config (`TlsClientConfig`, ADR-087) for the outbound
 connection's `rustls::ClientConfig` (verifier selection per ADR-034:
 fingerprint pin for the worker's known key). The dial path mirrors the
-`from_connection` primary (ADR-080; `ChannelClient::connect_quic` is
-removed per ADR-089 §5 — the dial lives in `AlknetClient`):
+`from_connection` primary (ADR-080; the dial lives in `AlknetClient`,
+ADR-089):
 
 ```rust
 impl Hub {
@@ -296,9 +296,8 @@ impl Hub {
     /// connection. Transport-agnostic — the caller (or a transport
     /// helper) produces the `Connection`. This is the primary path;
     /// `connect_quic_worker` (a hub-level convenience, distinct from
-    /// the removed `ChannelClient::connect_quic` per-protocol
-    /// constructor — ADR-089 §5) and future `connect_tcp_tls_worker`
-    /// are conveniences over it.
+    /// the per-protocol dial in `AlknetClient`) and future
+    /// `connect_tcp_tls_worker` are conveniences over it.
     pub async fn dial_worker_connection(
         &self,
         connection: Connection,
@@ -791,7 +790,7 @@ into `CallAdapter::with_aggregated_env`.
 | Peer-graph routing model | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays, `PeerRef` routing, `AccessControl`-based peer auth |
 | PeerEntry and Identity.id | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `PeerId` = `Identity.id` = `PeerEntry.peer_id` (stable) |
 | Three peer roles | [ADR-034](../../decisions/034-outgoing-only-x509-and-three-peer-roles.md) | Hub = role-3 `PeerEntry` (mixed fingerprints); browsers not peers; bearer-token identity over TCP/WebTransport |
-| ChannelClient — transport-agnostic | [ADR-080](../../decisions/080-channelclient.md) | `from_connection` primary; `connect_quic` removed per ADR-089 §5 (dial extracted to `AlknetClient`); the dial path the hub uses |
+| ChannelClient — transport-agnostic | [ADR-080](../../decisions/080-channelclient.md) | `from_connection` primary; dial in `AlknetClient` (ADR-089) — the dial path the hub uses |
 | Channels transport-agnostic | [ADR-071](../../decisions/071-channels-wire-format.md) | Substrate modes; `Connection::from_stream`/`from_bidi` (ADR-065) — the substrate the hub relays |
 | TCP+TLS as first-class owned transport | [ADR-083](../../decisions/083-endpoint-as-accept-loop-runner.md) | `with_tcp_tls(listener, acceptor)` — TCP+TLS is owned by the endpoint, not a sibling loop; supersedes ADR-010 Am. 1 |
 | Channel 0 pre-negotiated | [ADR-072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 = `alknet/call`; the `CallAdapter` runs here |
@@ -841,8 +840,7 @@ See [open-questions.md](../../open-questions.md) for full details.
 ## References
 
 - [channel-client.md](../channels/channel-client.md) — `ChannelClient`
-  (`from_connection` — the take-over; `connect_quic` removed per
-  ADR-089 §5, dial now via `AlknetClient`)
+  (`from_connection` — the take-over; dial via `AlknetClient` per ADR-089)
 - [channels-adapter.md](../channels/channels-adapter.md) —
   `ChannelsAdapter`, `ChannelManager`, the accept path
 - [channel-operations.md](../channels/channel-operations.md) —

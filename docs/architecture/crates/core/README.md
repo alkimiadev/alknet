@@ -10,19 +10,16 @@ dispatch. Every handler crate depends on `alknet-core` for
 `ProtocolHandler`, `Connection`, `AuthContext`, `IdentityProvider`, and
 config types. The endpoint (`AlknetEndpoint`, `HandlerRegistry`) lives
 in [`alknet-endpoint`](../endpoint/README.md) (ADR-083 Amendment
-2026-07-15; `EndpointError` is removed — both variants were vestigial);
-core does not carry the accept-loop runner or its transport deps
-(quinn, iroh, rcgen, rustls-acme). `Connection::from_quinn` /
-`from_iroh` are in core's `types.rs` as shared constructors (gated on
-core's `quinn` / `iroh` features).
+2026-07-15); core does not carry the accept-loop runner or its
+transport deps (quinn, iroh, rcgen, rustls-acme).
+`Connection::from_quinn` / `from_iroh` are in core's `types.rs` as
+shared constructors (gated on core's `quinn` / `iroh` features).
 
 `ConnectionCredentials` and `RemoteIdentity` live in `alknet-core` (per
 ADR-091) — the transport-level credential bundle consumed by the dial
 (`alknet-client`) and by server-side transport construction. There is no
-call-protocol credential bundle: `CallCredentials` is removed (ADR-091
-Am. 2026-07-17 — its `auth_token` field had no reader; `auth_token` is
-a per-request payload field on `call.requested`, not a transport
-credential).
+call-protocol credential bundle; `auth_token` is a per-request payload
+field on `call.requested`, not a transport credential.
 
 ## Documents
 

@@ -20,16 +20,17 @@ HTTP-to-SOCKS5 bridge for iroh).
 
 ## What
 
-`AlknetClient` is the dial. Before this crate, each protocol client
-(`CallClient::connect`, `ChannelClient::connect_quic`) built its own
-QUIC dial inline — building a `TlsClientConfig`, constructing a
-`quinn::Endpoint`, calling `connect_with`, wrapping as a `Connection`.
-The dial boilerplate was duplicated, and there was no place for a
-second transport's dial (TCP+TLS, iroh) to live without each protocol
-client growing its own per-transport dial helper. Those convenience
-constructors are removed (see "Relationship to `CallClient` /
-`ChannelClient`" below); `AlknetClient` is the single dial home, and
-the protocol crates shed their TLS/transport deps entirely.
+`AlknetClient` is the dial. It owns the transport-specific work each
+outbound connection needs — building a `TlsClientConfig`, constructing
+a `quinn::Endpoint`, calling `connect_with`, wrapping as a
+`Connection` — for each of three transports (QUIC, TCP+TLS, iroh).
+Centralizing the dial in one crate keeps the dial boilerplate in one
+place and gives a natural home for a second transport's dial (TCP+TLS,
+iroh) without each protocol client growing its own per-transport dial
+helper. `AlknetClient` is the single dial home; the protocol crates
+(`CallClient`, `ChannelClient`) shed their TLS/transport deps entirely
+and take over the `Connection` `AlknetClient` produces (see
+"Relationship to `CallClient` / `ChannelClient`" below).
 
 `alknet-client` extracts the dial the same way ADR-083 extracted the
 accept loop on the server side: one type that takes pre-built transport
@@ -406,15 +407,12 @@ let conn = client.dial_tcp_tls("hub.example", addr, b"alknet/call", &creds).awai
 let call = CallClient::new(registry, idp).spawn_dispatch(conn);
 ```
 
-The per-protocol QUIC convenience constructors that previously lived on
-`CallClient` / `ChannelClient` (`connect` / `connect_quic`) are
-**removed**. They welded the dial into the protocol crate — every
-`CallClient` user transitively pulled `quinn` + `rustls` + the TLS
-verifier machinery, and the convenience constructor's existence made
-`alknet-call` / `alknet-channels-call` depend on `alknet-client` (or
-duplicate the dial), contradicting the dep graph below. The dial is a
-distinct concern from the protocol take-over; `AlknetClient` is the
-single home for it. A caller that wants the old one-liner shape composes
+The dial is a distinct concern from the protocol take-over;
+`AlknetClient` is the single home for it. Keeping the dial off
+`CallClient` / `ChannelClient` means every `CallClient` user doesn't
+transitively pull `quinn` + `rustls` + the TLS verifier machinery, and
+`alknet-call` / `alknet-channels-call` don't depend on `alknet-client`
+(or duplicate the dial) — see the dep graph below. A caller composes
 two lines: `client.dial_quic(...).await?` then
 `CallClient::new(...).spawn_dispatch(conn)` (or
 `ChannelClient::from_connection(conn).await?`). See
@@ -675,7 +673,7 @@ All design decisions are documented as ADRs in
 |-----|----------|---------|
 | [089](../../decisions/089-alknetclient-native-dial-seam.md) | AlknetClient — native client dial seam | New crate `alknet-client`; client-side analogue of `AlknetEndpoint`; three dials (QUIC + TCP+TLS via `TlsClientConfig`, iroh via key); resolves OQ-55; `alknet/register` named, wire protocol deferred (§3/§5 amended by ADR-091 — dial takes `ConnectionCredentials`, not `CallCredentials`) |
 | [090](../../decisions/090-client-dial-socks5-proxy-seam.md) | Client-Dial SOCKS5 Proxy Seam | `AlknetClient` gains `with_socks5_proxy`; `dial_quic` routes via UDP ASSOCIATE, `dial_tcp_tls` via CONNECT, `dial_iroh` forces relay-only via an HTTP-to-SOCKS5 bridge; OQ-67 resolved; grounded in the quinn-proxy + iroh-proxy PoCs |
-| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `local_identity` + `remote_identity`), not `CallCredentials` (call-protocol-level); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field; `CallCredentials` removed per Am. 2026-07-17 |
+| [091](../../decisions/091-connectioncredentials-decouple-dial-from-call.md) | `ConnectionCredentials` — decouple dial from call protocol | The dial credential bundle is `ConnectionCredentials` (transport-level: `local_identity` + `remote_identity`); all three dial signatures unify on `&ConnectionCredentials`; `dial_iroh`'s `node_id` derived from `remote_identity`; `auth_token` is a per-request payload field |
 
 ## Open Questions
 

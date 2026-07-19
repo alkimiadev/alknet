@@ -397,15 +397,13 @@ pub enum OperationProvenance {
 | `FromJsonSchema` | No (leaf) | No | Internal |
 | `Session` | Yes (within sandbox) | Yes — scopes set at sandbox creation | Internal always |
 
-> **ADR-066 update.** `FromJsonSchema` was originally a schema-only
-> provenance with no handler (the old row read "N/A (no handler) /
-> N/A"). ADR-066 moved `from_jsonschema` to `alknet-http` as a real
-> HTTP-backed single-endpoint adapter with a reqwest forwarding
-> handler. `FromJsonSchema` is now a leaf, same trust model as
-> `FromOpenAPI` (HTTP endpoint trusted; handler is a forwarding stub).
-> The "schema-only, no handler" concept is removed — schema validation
-> without a handler is served by consuming `OperationSpec` directly,
-> not by registering a placeholder op.
+> **`FromJsonSchema` provenance.** `from_jsonschema` is an HTTP-backed
+> single-endpoint adapter in `alknet-http` (ADR-066): a real reqwest
+> forwarding handler, not a schema-only placeholder. `FromJsonSchema`
+> is a leaf, same trust model as `FromOpenAPI` (HTTP endpoint trusted;
+> handler is a forwarding stub). Schema validation without a handler is
+> served by consuming `OperationSpec` directly, not by registering a
+> placeholder op.
 
 #### CompositionAuthority
 
@@ -929,11 +927,10 @@ The `Capabilities` type holds non-serializable, zeroized secret material. It doe
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | Registration bundle carries provenance, composition authority, scoped env, capabilities; dispatch path reads from bundle |
 | Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Curated (static, immutable) + session and connection overlays (dynamic); `OperationEnv` as trait-object integration point; `OperationContext.env` split into `scoped_env` (data) and `env` (dispatch trait) |
 | Operation error schemas | [ADR-023](../../decisions/023-operation-error-schemas.md) | Operations declare domain errors; `call.error` carries typed `details`; adapter fidelity for `from_openapi`/`to_openapi` |
-| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md). ~~`from_jsonschema` clause superseded by ADR-066~~ |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `from_call`/`OperationAdapter` produce `HandlerRegistration` bundles; adapter-registered ops are `Internal` leaves. Surface specced in [client-and-adapters.md](client-and-adapters.md) |
 | `from_jsonschema` as HTTP-backed single-endpoint adapter | [ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) | Moved `from_jsonschema` from `alknet-call` (broken schema-only placeholder) to `alknet-http` as a real reqwest-backed single-endpoint adapter; `FromJsonSchema` provenance stays in `alknet-call` as a leaf (now handler-bearing, not "no handler") |
 | Peer-graph routing model (supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` (the field this doc's `HandlerRegistration` previously gained) |
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `OperationContext` and `call.requested`; metadata only — `AccessControl::check` never reads it; the `from_call` handler populates it |
-| ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~`remote_safe` marking on `HandlerRegistration`~~ — superseded by ADR-029 |
 | Streaming handler for subscriptions | [ADR-049](../../decisions/049-streaming-handler-for-subscriptions.md) | `StreamingHandler` type alongside `Handler`; `HandlerKind` enum on `HandlerRegistration` validated against `op_type`; `invoke_streaming()` on `OperationRegistry`; `invoke()` and `OperationEnv::invoke()` error with `INVALID_OPERATION_TYPE` on `Subscription` ops; composition stays request/response-only, stream composition is handler-level |
 | Dynamic resource ownership for runtime-spawned resources | [ADR-050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | `AccessControl::check` consults an `OwnershipProvider` (sync read trait, ADR-033 repo/adapter pattern); `OperationSpec` gains `resource_id_path` (JSON pointer into the input); proxy-only access pattern (spawner owns, proxy to share, teardown revokes); `list` = scope-gate + result-filter; teardown = automatic, handler-driven; composition = two orthogonal checks, ADR-015/022 unchanged |
 
@@ -953,10 +950,11 @@ See [open-questions.md](../../open-questions.md) for full details.
   variants: `DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`,
   `SamePeerCollision` (replaces flat `Conflict`). `#[non_exhaustive]`. See
   [client-and-adapters.md](client-and-adapters.md).
-- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a manual
-  free function; the assembly layer calls it after `connect()`. A
-  `CallConnection::refresh()` method is a genuine feature addition —
-  non-breaking, additive. See [ADR-069](../../decisions/069-from-call-manual-free-function.md).
+- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a
+  manual free function; the assembly layer calls it after the dial (in
+  `AlknetClient`). A `CallConnection::refresh()` method is a genuine
+  feature addition — non-breaking, additive. See
+  [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer
   collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
   `namespace_prefix` is optional local-naming sugar. See

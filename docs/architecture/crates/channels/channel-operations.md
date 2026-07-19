@@ -53,16 +53,6 @@ data flows — the same round-trip the call protocol makes for every
 operation. All current channel types (TTY, tunnel, SSH) already require a
 negotiation round-trip, so the open round-trip is not additive latency.
 
-> **Amendment (ADR-093, 2026-07-18):** the `stream_types` field is **removed**
-> from `channel/open`'s input and output. The channels layer has no
-> `stream_type` concept (ADR-093) — the handler owns its sub-stream
-> multiplexing on the `BiStream` it receives. The handler's sub-stream set
-> is implicit in its ALPN's wire format (e.g., TTY's 5-byte format
-> declares its own `stream_type` set internally; the channels layer carries
-> the bytes transparently). The `channel:stream_type_unavailable` error
-> code is removed (the channels layer can't refuse a `stream_type` it
-> doesn't know about).
-
 **Error codes** (new `CallError.code` strings, not new framing):
 
 | code | meaning | retryable |
@@ -116,13 +106,6 @@ keepalive):
 The channels layer routes `message` to the handler's control handle for
 `channel_id`. The `message` JSON is ALPN-specific; the channels layer does
 not interpret it.
-
-> **Amendment (ADR-093, 2026-07-18):** the `stream_type` field is **removed**
-> from `channel/control`'s input. Under ADR-093, the channels layer has no
-> `stream_type` concept — the control message is routed to the handler's
-> control handle (an ALPN-specific concept the handler owns), not to a
-> channels-layer `(channel_id, stream_type)` reassembly buffer. The
-> handler decides what to do with the message.
 
 ### `channel/resources/subscribe` — live resource discovery
 
@@ -284,7 +267,7 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 | [073](../../decisions/073-channel-lifecycle-operations.md) | Channel Lifecycle Operations | The four ops; `direction` pinned; subscribe not poll |
 | [072](../../decisions/072-channel-0-pre-negotiated-call.md) | Channel 0 Pre-Negotiated | Channel 0 = `alknet/call` |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay | Translate channel 0, byte-forward data channels |
-| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | `stream_types` field removed from `channel/open`; `stream_type` removed from `channel/control`; handler owns sub-stream multiplexing |
+| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | No `stream_types` on `channel/open`; no `stream_type` on `channel/control`; handler owns sub-stream multiplexing |
 | [049](../../decisions/049-streaming-handler-for-subscriptions.md) | StreamingHandler | The machinery `channel/resources/subscribe` uses |
 | [032](../../decisions/032-forwarded-for-identity.md) | Forwarded-For Identity | The auth chain for hub-relayed opens |
 | [050](../../decisions/050-dynamic-resource-ownership-for-runtime-spawned-resources.md) | Dynamic Resource Ownership | The ownership store the spoke queries |

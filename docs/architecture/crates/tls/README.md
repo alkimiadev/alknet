@@ -165,9 +165,9 @@ copies in `alknet-tls`, used by both `TlsServerConfig::new` and
 across the server (in core's endpoint module) and the client (in call's
 client module); the extraction consolidated them.
 
-`CallClient::connect` is removed (ADR-089 §5) — the dial is in
-`AlknetClient` (`alknet-client`); `CallClient` keeps only
-`spawn_dispatch`, and `alknet-call` has no TLS/transport deps.
+The dial is in `AlknetClient` (`alknet-client`, ADR-089);
+`CallClient` keeps only `spawn_dispatch`, and `alknet-call` has no
+TLS/transport deps.
 
 ### `TlsServerConfig`
 
@@ -645,9 +645,8 @@ arrive asynchronously and are logged (ADR-082 §"Behavior-preservation
 invariants").
 
 **Ownership.** `TlsError` lives in `alknet-tls`, owned by the crate
-that produces it. It is not re-exported from `alknet-core`; there is no
-`EndpointError` (removed per ADR-083 — both variants were vestigial),
-so core has no endpoint error type and does not need to know about
+that produces it. It is not re-exported from `alknet-core`; core has
+no endpoint error type, so core does not need to know about
 `TlsError`. The assembly layer (hub/worker) depends on `alknet-tls`
 directly and gets `TlsError` from that dependency.
 
@@ -662,8 +661,7 @@ alknet-core (lightweight — types + auth + config + fingerprint + credentials)
 
 alknet-call (pure protocol crate — no TLS/transport deps per ADR-089 §5)
 └── alknet-core (ProtocolHandler, Connection, types; ConnectionCredentials/
-    RemoteIdentity from core per ADR-091; CallCredentials removed per
-    ADR-091 Am. 2026-07-17)
+    RemoteIdentity from core per ADR-091)
 
 alknet-hub (multi-transport endpoint)
 ├── alknet-tls (TlsServerConfig — shared across quinn + TCP)
@@ -762,12 +760,10 @@ ALPNs via channel 0). Both consume `TlsClientConfig` through the dial
 for TCP+TLS); iroh is the exception (shares the key, not the config).
 `AlknetClient` is the dial that feeds them — it produces a `Connection`
 and the protocol take-overs (`spawn_dispatch`, `from_connection`)
-consume it. The per-protocol QUIC convenience constructors
-(`CallClient::connect` / `ChannelClient::connect_quic`) are removed
-per ADR-089 §5 — the dial is centralized in `AlknetClient`, and the
+consume it. The dial is centralized in `AlknetClient` (ADR-089); the
 protocol crates have no TLS/transport deps. The `alknet/register` ALPN
-(native registration entry point, parallel to HTTP registration in
-OQ-58) is named by ADR-089; its wire protocol is deferred (OQ-66).
+(named by ADR-089; wire protocol deferred, OQ-66) is the native
+registration entry point, parallel to HTTP registration in OQ-58.
 
 ## References
 

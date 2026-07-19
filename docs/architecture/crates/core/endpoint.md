@@ -7,8 +7,7 @@ last_updated: 2026-07-17
 
 > **This document is deprecated.** The `AlknetEndpoint` and
 > `HandlerRegistry` types live in a separate crate, `alknet-endpoint`
-> (ADR-083 Amendment 2026-07-15). `EndpointError` is removed (both
-> variants were vestigial). The canonical spec is
+> (ADR-083 Amendment 2026-07-15). The canonical spec is
 > [`crates/endpoint/README.md`](../endpoint/README.md).
 >
 > The shared types the endpoint imports (`ProtocolHandler`,

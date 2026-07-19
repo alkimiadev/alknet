@@ -74,9 +74,7 @@ per channel at `channel/open` time and wraps it in a `Connection` via
 
 Every handler — TTY, tunnel, SSH, call — receives a `Connection`, calls
 `accept_bi()` once, gets a `BiStream`, and sub-multiplexes it however it
-wants. There is one accessor; the two-accessor design
-(`accept_bi` vs `into_sub_streams`) from ADR-074's original shape is
-removed by ADR-093.
+wants. There is one accessor.
 
 ```rust
 // Tunnel handler — ~15 lines, zero channels-layer awareness
@@ -105,8 +103,8 @@ async fn handle(&self, connection: Connection, _auth: &AuthContext)
 ```
 
 ```rust
-// TTY handler (inside-channels mode, ADR-077 reversed by ADR-093) —
-// the SAME code as direct mode, just a different BiStream source.
+// TTY handler (inside-channels mode) — the SAME code as direct
+// mode, just a different BiStream source.
 async fn handle(&self, connection: Connection, _auth: &AuthContext)
     -> Result<(), HandlerError>
 {
@@ -160,21 +158,21 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; yield-once `accept_bi` (amended by ADR-093 — `into_sub_streams` removed, `accept_bi` is the only accessor) |
-| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | The umbrella decision: 8-byte header, no `stream_type`, `into_sub_streams` removed, `BiStream`-only |
+| [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection | Per-channel `BidiStreamSource`; yield-once `accept_bi` is the only accessor |
+| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | The umbrella decision: 8-byte header, no `stream_type`, `BiStream`-only |
 | [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | The extension point `ChannelBidiStreamSource` implements |
 | [092](../../decisions/092-bistream-as-the-handler-leaf.md) | `BiStream` as the Handler Leaf | `accept_bi` returns `BiStream` (the transport-leaf decision this doc builds on) |
 | [065](../../decisions/065-connection-from-stream-generic-single-stream.md) | `Connection::from_stream` | The yield-once path generalized for channels |
 
 ## References
 
-- ADR-074: ChannelConnection (the decision, amended by ADR-093)
+- ADR-074: ChannelConnection (the decision)
 - ADR-093: channels pure channel multiplexing (the umbrella decision)
 - ADR-070: BidiStreamSource trait
 - ADR-092: `BiStream` as the handler leaf
 - ADR-065: `Connection::from_stream` (the yield-once path generalized)
-- ADR-077: TTY inside channels (reversed by ADR-093 — TTY always uses
-  its 5-byte format, carried transparently in the channels payload)
+- ADR-077: TTY inside channels (TTY always uses its 5-byte format,
+  carried transparently in the channels payload)
 - `docs/research/alknet-channels/poc-summary.md` §POC Target 2 (the
   yield-once `Connection::from_stream` validation)
 - `docs/research/stream-unification/findings.md` — the research that

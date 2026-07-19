@@ -29,8 +29,7 @@ shared types (every handler crate). No handler crate imports
 `AlknetEndpoint` or `HandlerRegistry` — they depend on `alknet-core`
 for `ProtocolHandler`, `Connection`, `AuthContext`, and types only.
 This keeps the heavy transport deps (quinn, iroh, tokio-rustls) out of
-the handler crates' dep closure. (`EndpointError` is removed — see
-below.)
+the handler crates' dep closure.
 
 ## Why
 
@@ -140,26 +139,6 @@ Registration is static at startup (ADR-010, OQ-04). The assembly layer
 builds a `HandlerRegistry`, inserts all handlers, and passes it to
 `AlknetEndpoint::new()`.
 
-### `EndpointError` — removed
-
-The endpoint previously had an `EndpointError { BindFailed(io::Error),
-HandlerNotFound(Vec<u8>) }` enum. Both variants are vestigial after
-ADR-083:
-
-- `BindFailed` — the endpoint takes pre-built, pre-bound transports
-  (the assembly layer does the binding); the endpoint performs no bind,
-  so it cannot produce a bind error.
-- `HandlerNotFound` — `dispatch` swallows no-handler matches (close +
-  log per ADR-083), so this variant is never returned.
-
-The enum is removed. `shutdown()` is infallible (`async fn shutdown(&self)`,
-no `Result`). If a future requirement adds a real failure path to
-shutdown or dispatch, a fresh error type is cleaner than retrofitting
-this one. The `EndpointError` type, its `TlsConfig` variant (already
-removed by ADR-083), and the `BindFailed`/`HandlerNotFound` variants all
-move out of the codebase with the endpoint extraction — none survives
-into `alknet-endpoint`.
-
 ### `TcpTlsListener`
 
 The type held by the endpoint's `tcp_tls` field — a tuple of the TCP
@@ -264,10 +243,8 @@ alknet-endpoint
 `alknet-endpoint` depends on `alknet-core` (for `Connection`,
 `ProtocolHandler`, `AuthContext`, `IdentityProvider`, `DynamicConfig`).
 `HandlerRegistry` lives in `alknet-endpoint` (it moves with the
-endpoint from core). `EndpointError` is removed (both variants were
-vestigial — see "`EndpointError` — removed" above). The endpoint does
-**not** depend on `alknet-tls` — it takes pre-built transports, so TLS
-config
+endpoint from core). The endpoint does **not** depend on `alknet-tls` —
+it takes pre-built transports, so TLS config
 construction stays at the assembly layer.
 
 ### Crate dependencies (in the dep graph)

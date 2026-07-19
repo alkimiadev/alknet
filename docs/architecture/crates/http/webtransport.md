@@ -60,12 +60,11 @@ enabled. It serves two things on a single `h3` connection:
 1. **HTTP/3 requests** — the standard HTTP/3 over QUIC framing. An
    HTTP/3 request is dispatched through the same axum `Router` as `h2`/
    `http/1.1` requests (ADR-042 + ADR-047 — the gateway endpoints are
-   the sole invoke path; the direct-call `POST /{service}/{op}` surface
-   was removed). From the axum router's perspective, an HTTP/3 request
-   is just another HTTP request; the framing difference is handled
-   below the router. The HTTP/3 request path is the **one-directional
-   projection** (client→server calls only — HTTP is request/response;
-   see [http-server.md](http-server.md) §"One-directional projection").
+   the sole invoke path). From the axum router's perspective, an HTTP/3
+   request is just another HTTP request; the framing difference is
+   handled below the router. The HTTP/3 request path is the
+   **one-directional projection** (client→server calls only — HTTP is
+   request/response; see [http-server.md](http-server.md) §"One-directional projection").
 2. **WebTransport sessions** — the **bidirectional** path. WebTransport
    is a transport substrate that carries ALPN protocols as
    bidirectional streams (ADR-043), not a browser→hub one-way path. A

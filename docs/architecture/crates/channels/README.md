@@ -25,7 +25,7 @@ handler owns its sub-stream multiplexing on the `BiStream` it receives.
 | [channels-connection.md](channels-connection.md) | draft | `ChannelBidiStreamSource` (implements `BidiStreamSource` — ADR-070/074, as amended by ADR-093), `accept_bi` yields one `BiStream` per channel, recursive composition |
 | [channels-adapter.md](channels-adapter.md) | draft | `ChannelsAdapter` (`ProtocolHandler` on `alknet/channels`), `ChannelManager`, demux/mux contracts (REQ-CH-01..04), the two-pump pattern (ADR-078) |
 | [channel-operations.md](channel-operations.md) | draft | `channel/open`, `channel/close`, `channel/control`, `channel/resources/subscribe` — call-protocol operations on channel 0, ACL flow, `direction` semantics, the hub relay contract (ADR-079) |
-| [channel-client.md](channel-client.md) | draft | `ChannelClient` — the client side of a channels connection; transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5 (dial extracted to `AlknetClient`); bidirectionality preserved |
+| [channel-client.md](channel-client.md) | draft | `ChannelClient` — the client side of a channels connection; transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089); bidirectionality preserved |
 
 ## Applicable ADRs
 
@@ -38,10 +38,10 @@ handler owns its sub-stream multiplexing on the `BiStream` it receives.
 | [074](../../decisions/074-channelconnection-bidistreamsource.md) | ChannelConnection — BidiStreamSource over Chunk Reassembly | Per-channel `BidiStreamSource` impl; `accept_bi` yields `BiStream` (amended by ADR-093 — `into_sub_streams` removed) |
 | [075](../../decisions/075-channelsadapter-and-channelmanager.md) | ChannelsAdapter and ChannelManager | Substrate-agnostic demux loop; REQ-CH-01..04 contracts |
 | [076](../../decisions/076-backpressure-channel-limits-id-reuse.md) | Backpressure, Channel Limits, and ID Reuse | Bounded-buffer (1 MiB default), 256-channel cap, monotonic IDs with wrap |
-| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | TTY's two modes (direct vs channels); **reversed by ADR-093 — TTY always uses its 5-byte format, carried transparently** |
+| [077](../../decisions/077-tty-inside-channels.md) | TTY Inside Channels — Sub-Streams, Not Wire Format | TTY's two modes (direct vs channels); TTY always uses its 5-byte format, carried transparently in the channels payload |
 | [078](../../decisions/078-two-pump-shutdown-on-completion.md) | Two-Pump Shutdown-on-Completion Pattern | The two-pump deadlock contract; handler-level, not channels-layer |
 | [079](../../decisions/079-hub-relay-translate-not-forward.md) | Hub Relay — Translate, Not Transparently Forward | The hub translates channel 0, byte-forwards data channels with ID rewrite |
-| [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient`, transport-agnostic `from_connection` primary; `connect_quic` removed per ADR-089 §5; `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
+| [080](../../decisions/080-channelclient.md) | ChannelClient — the Client Side of a Channels Connection | `ChannelClient`, transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089, resolves OQ-55) |
 | [081](../../decisions/081-channels-subcrate-decomposition.md) | channels Sub-Crate Decomposition | `channels-core` (pure multiplexer) / `channels-call` (call coupling + ChannelClient); hub and worker are consumers, not sub-crates |
 | [070](../../decisions/070-bidistreamsource-trait.md) | BidiStreamSource Trait | The `Connection` extension point `ChannelBidiStreamSource` implements |
 | [092](../../decisions/092-bistream-as-the-handler-leaf.md) | `BiStream` as the Handler Leaf | `accept_bi` returns `BiStream`; the transport-leaf decision ADR-093 builds on |
@@ -55,7 +55,7 @@ handler owns its sub-stream multiplexing on the `BiStream` it receives.
 
 | OQ | Title | Status | Relevance |
 |----|-------|--------|-----------|
-| OQ-55 | AlknetClient / Client Establishment Extraction | resolved (ADR-089) | `ChannelClient`'s API is decided (ADR-080): transport-agnostic `from_connection` primary; `connect_quic` removed (ADR-089 §5). `AlknetClient` core extraction is now resolved — the native dial seam is `alknet-client` (ADR-089) |
+| OQ-55 | AlknetClient / Client Establishment Extraction | resolved (ADR-089) | `ChannelClient`'s API is decided (ADR-080): transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (`alknet-client`, ADR-089) |
 | OQ-56 | Full channel-level flow-control windowing | deferred(scope) | Bounded-buffer is decided (ADR-076); full windowing is an extension blocked on "a real deployment observes HOL blocking on a saturated channel where bounded buffer is insufficient" |
 | OQ-57 | Two-pump helper extraction to alknet-core | deferred(scope) | The shutdown-on-completion *contract* is decided (ADR-078); the *helper* extraction is blocked on a second two-pump handler existing (shape convergence) |
 | OQ-68 | Add/strip API shape (built-in vs utility) | open | Whether the 8-byte header add/strip is built into the channels read/write path or exposed as a standalone utility. The *contract* is decided (ADR-093); the *function surface* is not |

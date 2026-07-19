@@ -48,27 +48,6 @@ impl ChannelClient {
     pub async fn from_connection(connection: Connection)
         -> Result<Self, ChannelError>;
 
-    /// QUIC convenience constructor. Dials a QUIC connection to `addr`
-    /// on ALPN `alknet/channels` (using `credentials` for the TLS
-    /// handshake — ADR-034 verifier selection), then calls
-    /// `from_connection`. This is the "I just want QUIC" one-liner;
-    /// it is additive over `from_connection` and is a two-way door —
-    /// `connect_tcp_tls`, `connect_webtransport`, etc. can be added
-    /// alongside it without touching the one-way-door surface.
-    ///
-    /// **REMOVED per ADR-089 §5.** The dial is extracted into
-    /// `AlknetClient` (`alknet-client`); `connect_quic` is deleted,
-    /// not delegated, to avoid `alknet-channels-call` depending on
-    /// `alknet-client`. Callers compose `AlknetClient::dial_quic` +
-    /// `from_connection`. See "Relationship to `AlknetClient`" below.
-    /// The `CallCredentials` parameter is moot — `CallCredentials` is
-    /// removed per ADR-091 (amended 2026-07-17); the dial consumes
-    /// `ConnectionCredentials` from `alknet-core`.
-    pub async fn connect_quic(
-        addr: SocketAddr,
-        credentials: CallCredentials,  // REMOVED — CallCredentials is removed
-    ) -> Result<Self, ChannelError>;
-
     /// Open a data channel with the given ALPN and params. Sends
     /// `channel/open` on channel 0, waits for the response, and returns
     /// the channel.
@@ -119,12 +98,6 @@ pub struct ResourceEntry {
 }
 ```
 
-> **Amendment (ADR-093, 2026-07-18):** the `stream_types` field is
-> **removed** from `open_channel`'s signature and from `Channel`. The
-> channels layer has no `stream_type` concept (ADR-093) — the handler
-> owns its sub-stream multiplexing on the `BiStream` it receives. The
-> handler's sub-stream set is implicit in its ALPN's wire format.
-
 ## Transport-agnostic by construction
 
 `ChannelClient` is the client side of the channels protocol. The channels
@@ -143,14 +116,12 @@ a WebTransport `BiStream`, an SSH `direct-tcpip` channel wrapped via
 ADR-044) — all produce a `Connection` that `from_connection` accepts
 unchanged. This mirrors the server side's `ChannelsAdapter::handle(Connection)`, which is substrate-agnostic by the same mechanism.
 
-`connect_quic(addr, credentials)` was a **convenience** constructor —
-dial QUIC, then `from_connection`. It is **removed** per ADR-089 §5:
-keeping it as a thin wrapper over `AlknetClient::dial_quic` would make
-`alknet-channels-call` depend on `alknet-client`, contradicting the dep
-graph (the protocol crates are parallel to the dial, not downstream of
-it). Callers compose `AlknetClient::dial_quic(...).await?` +
-`ChannelClient::from_connection(conn).await?` — two lines, the dial
-then the take-over.
+The dial (QUIC, TCP+TLS, iroh) lives in `AlknetClient` (`alknet-client`,
+ADR-089), not on `ChannelClient`. Callers compose
+`AlknetClient::dial_quic(...).await?` + `ChannelClient::from_connection(conn).await?`
+— two lines, the dial then the take-over. Keeping the dial off
+`ChannelClient` avoids `alknet-channels-call` depending on `alknet-client`;
+the protocol crates are parallel to the dial, not downstream of it.
 
 The credential/verifier-selection rule (ADR-034) lives in the dial
 (`AlknetClient`), not in `from_connection` — `from_connection` receives
@@ -172,21 +143,20 @@ populates what operations they expose).
 name follows the `CallClient` convention (the side that dialed), not a
 request/response role.
 
-## Relationship to `AlknetClient` (ADR-089 — resolved)
+## Relationship to `AlknetClient`
 
 `ChannelClient`'s *API* is transport-agnostic — `from_connection` takes a
 pre-established `Connection`. The shared *dial+TLS* seam
-(`AlknetClient`, OQ-55) is now extracted: [`alknet-client`](../client/README.md)
+(`AlknetClient`, OQ-55) is [`alknet-client`](../client/README.md), which
 provides `AlknetClient` with three dial methods (`dial_quic` /
 `dial_tcp_tls` / `dial_iroh`), each producing a `Connection` that
 `from_connection` consumes. The dial is transport-specific (QUIC,
 TCP+TLS, iroh); the take-over (`from_connection`) is
 transport-agnostic. The two concerns are separated.
 
-`connect_quic` is removed (see above) — `AlknetClient::dial_quic` is the
-dial that feeds `from_connection`. A caller that needs transport
-selection (QUIC with TCP+TLS fallback) uses `AlknetClient` directly;
-the fallback policy is a caller concern. See
+`AlknetClient::dial_quic` is the dial that feeds `from_connection`. A
+caller that needs transport selection (QUIC with TCP+TLS fallback) uses
+`AlknetClient` directly; the fallback policy is a caller concern. See
 [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md) for the
 full decision and [OQ-55](../../questions/055-alknetclient-establishment-extraction.md)
 (resolved).
@@ -197,21 +167,20 @@ All design decisions are documented as ADRs in [decisions/](../../decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; `connect_quic` convenience **removed** per ADR-089 §5 (dial extracted to `AlknetClient`); `AlknetClient` dial-seam extracted (ADR-089, resolves OQ-55) |
-| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | `stream_types` removed from `open_channel` and `Channel`; handler owns sub-stream multiplexing |
+| [080](../../decisions/080-channelclient.md) | ChannelClient | Client side; transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089, resolves OQ-55) |
+| [093](../../decisions/093-channels-pure-channel-multiplexing.md) | channels Pure Channel Multiplexing | No `stream_types` on `open_channel`/`Channel`; handler owns sub-stream multiplexing |
 
 ## Open Questions
 
 - **OQ-55** (resolved by ADR-089): `AlknetClient` core **dial+TLS seam**
-  — extracted as `alknet-client` with three dial methods.
-  `ChannelClient`'s API is transport-agnostic (`from_connection`); the
-  dial is the shared seam, now extracted. See
-  [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md).
+  — `alknet-client` with three dial methods. `ChannelClient`'s API is
+  transport-agnostic (`from_connection`); the dial is the shared seam.
+  See [ADR-089](../../decisions/089-alknetclient-native-dial-seam.md).
 
 ## References
 
 - ADR-080: ChannelClient (the decision)
-- ADR-093: channels pure channel multiplexing (`stream_types` removed)
+- ADR-093: channels pure channel multiplexing (no `stream_types`)
 - ADR-073: channel lifecycle operations (`open_channel` sends `channel/open`)
 - ADR-074: ChannelBidiStreamSource (what `Channel.source` wraps, as
   amended by ADR-093 — `accept_bi` yields a `BiStream`)

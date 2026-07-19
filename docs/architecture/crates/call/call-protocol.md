@@ -177,11 +177,10 @@ The adapter:
 
 The dispatch loop is **shared** with `CallClient` (ADR-017 §1): both
 `CallAdapter::handle` (accept path) and `CallClient::spawn_dispatch`
-(connect path — the dial is now `AlknetClient::dial_*` per ADR-089 §5;
-`CallClient::connect` is removed) construct a `Dispatcher`
-(`protocol/dispatch.rs`) and call `run_loop` — the dispatch half is one
-implementation, the connection-establishment half differs (accept vs
-dial). Peer authorization flows through the existing
+(connect path — the dial is `AlknetClient::dial_*` per ADR-089) construct
+a `Dispatcher` (`protocol/dispatch.rs`) and call `run_loop` — the
+dispatch half is one implementation, the connection-establishment half
+differs (accept vs dial). Peer authorization flows through the existing
 `AccessControl::check(peer_identity)` — no `RemoteFilter`/`remote_safe` gate
 (ADR-029 §3). The composition env is peer-keyed (`PeerCompositeEnv`,
 ADR-029 §1) to handle head→N-workers routing. See
@@ -595,8 +594,9 @@ See [open-questions.md](../../open-questions.md) for full details.
   variants (`DiscoveryFailed`, `SchemaParse`, `Transport`, `Unauthorized`,
   `SamePeerCollision`); `#[non_exhaustive]`. See
   [client-and-adapters.md](client-and-adapters.md).
-- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a manual
-  free function; the assembly layer calls it after `connect()`. See
+- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a
+  manual free function; the assembly layer calls it after the dial (in
+  `AlknetClient`). See
   [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer collision
   = error; cross-peer dissolved by ADR-029 (separate sub-overlays). See

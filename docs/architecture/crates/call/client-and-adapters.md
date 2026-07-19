@@ -23,8 +23,8 @@ This document specifies three components, all in `alknet-call`:
 1. **`CallClient`** — takes over an established transport `Connection`
    on ALPN `alknet/call`, spawns the shared dispatch loop, and produces
    a `CallConnection`. Transport-agnostic (`spawn_dispatch` primary;
-   `connect` removed per ADR-089 §5 — dial extracted to `AlknetClient`);
-   the dispatch loop is shared with the server-side `CallAdapter`
+   dial lives in `AlknetClient` per ADR-089); the dispatch loop is
+   shared with the server-side `CallAdapter`
    (ADR-017 §1); `CallClient` is the connection-take-over half, not a
    parallel protocol implementation.
 2. **`from_call`** — discovers operations on a remote call-protocol endpoint
@@ -100,10 +100,10 @@ the producer on the inbound side. Both produce the same
 ordered, reliable bidirectional stream — QUIC, TCP+TLS, WebTransport,
 SSH `direct-tcpip`, a WebSocket (ADR-065 `Connection::from_stream` /
 `from_bidi`). The primary constructor (`spawn_dispatch`) takes a
-pre-established `Connection` from any transport; the QUIC convenience
-(`connect`) dials QUIC and calls `spawn_dispatch`. This mirrors
-`ChannelClient::from_connection` / `connect_quic` (ADR-080) and is the
-client-side analogue of the server-side generalization ADR-065 made.
+pre-established `Connection` from any transport; the dial lives in
+`AlknetClient` (`alknet-client`, ADR-089). This mirrors
+`ChannelClient::from_connection` (ADR-080) and is the client-side
+analogue of the server-side generalization ADR-065 made.
 
 ```rust
 pub struct CallClient {
@@ -123,22 +123,6 @@ impl CallClient {
     /// API surface (ADR-017 Am. 2026-07-13) — it must not be coupled to
     /// a transport.
     pub fn spawn_dispatch(&self, connection: Connection) -> CallConnection;
-
-    /// **REMOVED per ADR-089 §5.** The dial is extracted into
-    /// `AlknetClient` (`alknet-client`); `connect` is deleted, not
-    /// delegated, to avoid `alknet-call` depending on `alknet-client`
-    /// and to let `alknet-call` shed its TLS/transport deps entirely.
-    /// Callers compose `AlknetClient::dial_quic(...).await?` +
-    /// `CallClient::new(...).spawn_dispatch(conn)`. `ClientError` is
-    /// removed (it was produced only by `connect`). `CallCredentials`
-    /// is removed (its `auth_token` field had no reader; `auth_token`
-    /// is a per-request payload field — ADR-091, amended 2026-07-17).
-    #[cfg(feature = "quinn")]
-    pub async fn connect(
-        &self,
-        addr: SocketAddr,
-        credentials: CallCredentials,  // REMOVED — CallCredentials is removed
-    ) -> Result<CallConnection, ClientError>;
 }
 ```
 
@@ -191,19 +175,17 @@ authorization machinery that gates every other call. No `RemoteFilter`, no
 `CallClient::spawn_dispatch(connection)` is the transport-agnostic
 primary constructor — it takes a pre-established `Connection`,
 constructs a `CallConnection`, builds a `Dispatcher`, spawns the
-dispatch task, and returns the live `CallConnection`. `connect()` is
-**removed** per ADR-089 §5: the dial is extracted into `AlknetClient`
-(`alknet-client`), and keeping a QUIC convenience constructor on
-`CallClient` would make `alknet-call` depend on `alknet-client`,
-contradicting the dep graph (the protocol crates are parallel to the
-dial, not downstream of it). Callers compose `AlknetClient::dial_quic`
-+ `spawn_dispatch` — two lines, the dial then the take-over. Tests use
-`spawn_dispatch` directly to wire mock/loopback connections. The
-one-way-door surface is `spawn_dispatch`; the dial lives in
-`alknet-client`.
+dispatch task, and returns the live `CallConnection`. The dial lives in
+`AlknetClient` (`alknet-client`, ADR-089): keeping a QUIC convenience
+constructor on `CallClient` would make `alknet-call` depend on
+`alknet-client`, contradicting the dep graph (the protocol crates are
+parallel to the dial, not downstream of it). Callers compose
+`AlknetClient::dial_quic` + `spawn_dispatch` — two lines, the dial then
+the take-over. Tests use `spawn_dispatch` directly to wire mock/loopback
+connections. The one-way-door surface is `spawn_dispatch`; the dial
+lives in `alknet-client`.
 
-This mirrors `ChannelClient::from_connection` (ADR-080; its
-`connect_quic` is likewise removed per ADR-089 §5) and is the
+This mirrors `ChannelClient::from_connection` (ADR-080) and is the
 client-side analogue of the server-side generalization ADR-065 made.
 The call protocol, like the channels protocol, is transport-agnostic —
 `Connection::from_stream` / `from_bidi` (ADR-065) accept any
@@ -238,13 +220,12 @@ peer-keying is at the aggregation layer (the head node's composition env).
 #### services/list
 
 `services/list` filters by `AccessControl::check(calling_peer_identity)` —
-the calling peer sees only ops it is authorized to call. The
-`services_list_handler` / `services_list_handler_peer_scoped` split collapses
-to a single `AccessControl`-filtered handler (the `peer_scoped` variant and
-the `remote_safe` filter are removed). `services/list-peers` is the opt-in for
-peer-attributed re-export listing (each peer's sub-overlay listed with
-attribution, filtered by the calling peer's authorization). See
-[ADR-029](../../decisions/029-peer-graph-routing-model.md) §6.
+the calling peer sees only ops it is authorized to call. There is a
+single `AccessControl`-filtered handler (no `peer_scoped` variant, no
+`remote_safe` filter — both retired by ADR-029). `services/list-peers`
+is the opt-in for peer-attributed re-export listing (each peer's
+sub-overlay listed with attribution, filtered by the calling peer's
+authorization). See [ADR-029](../../decisions/029-peer-graph-routing-model.md) §6.
 
 ### Credential sources for connections
 
@@ -262,13 +243,8 @@ The credential dimensions are split across two layers (ADR-091, amended
   reads `payload.get("auth_token")` on each `call.requested` payload.
   Browsers send it directly in the WebSocket call payload; the HTTP
   gateway resolves the bearer token to an `Identity` at its boundary
-  (the call layer sees the identity, not the token). `CallCredentials`
-  is **removed** (its `auth_token` field had no reader — `connect()`
-  read only `tls_identity` + `remote_identity`; `spawn_dispatch` takes
-  no credentials; the `from_call` forwarding path's `auth_token` source
-  was `OpSummary.credentials_auth_token: Option<String>`, always
-  `None`, never connected to `CallCredentials.auth_token`). See
-  ADR-091 (amended 2026-07-17) for the full trace.
+  (the call layer sees the identity, not the token). See ADR-091 for
+  the credential-bundle decoupling.
 
 Credentials come from `Capabilities` (ADR-014), never from environment
 variables. The transport-identity dimensions (ADR-017 §7):
@@ -305,9 +281,9 @@ default `remote_identity` to a placeholder value to "satisfy" the field
 pub struct RemoteIdentity { pub fingerprint: String }
 ```
 
-There is no call-protocol credential bundle. `CallCredentials` is
-removed. The transport dimensions (`local_identity`, `remote_identity`)
-are in `ConnectionCredentials` in `alknet-core` per ADR-091.
+There is no call-protocol credential bundle. The transport dimensions
+(`local_identity`, `remote_identity`) are in `ConnectionCredentials` in
+`alknet-core` per ADR-091.
 
 - **TLS identity** — the local node's Ed25519 raw key (RFC 7250) or X.509 cert,
   derived from the vault at startup (ADR-020, ADR-026, ADR-027).
@@ -424,12 +400,12 @@ The flow (ADR-017 §3):
    `CallConnection::register_imported_all()`.
 
 **Re-import on reconnection** (DC-2, OQ-27): `from_call` is a free function;
-the assembly layer calls it after `connect()`. The overlay is per-connection
-(Layer 2, ADR-024), so a stale overlay dies with the connection; re-import on
-reconnect is naturally scoped to the new connection. A
-`CallConnection::refresh()` method for mid-connection re-discovery is a
-genuine feature addition — non-breaking, additive — if a deployment needs
-manual re-discovery without drop-and-reconnect. See
+the assembly layer calls it after the dial (in `AlknetClient`). The overlay
+is per-connection (Layer 2, ADR-024), so a stale overlay dies with the
+connection; re-import on reconnect is naturally scoped to the new
+connection. A `CallConnection::refresh()` method for mid-connection
+re-discovery is a genuine feature addition — non-breaking, additive — if a
+deployment needs manual re-discovery without drop-and-reconnect. See
 [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 
 **Namespace collision** (DC-3, OQ-28): under the peer-graph model (ADR-029),
@@ -542,8 +518,8 @@ alknet-call (lean — no HTTP client, no HTTP server)
 ├── OperationAdapter trait          (the contract — async, per ADR-017 §5)
 ├── from_call                     (transport-agnostic — discovers remote ops via
 │                                  call protocol over any Connection)
-└── CallClient                    (outbound connection take-over — spawn_dispatch
-                                  transport-agnostic, connect QUIC convenience)
+└── CallClient                    (outbound connection take-over —
+                                  spawn_dispatch, transport-agnostic; dial in AlknetClient)
 
 alknet-http (owns HTTP server + HTTP client — separate crate, separate Phase 0)
 ├── ProtocolHandler for h2/http1.1/h3   (axum server — inbound HTTP)
@@ -733,9 +709,9 @@ Based on the gap analysis and the downstream unblock chain:
   holds a `PeerCompositeEnv` with `connections: HashMap<PeerId, Arc<dyn OperationEnv>>`,
   not a singular connection overlay. `invoke_peer()` routes to the right peer
   via `PeerRef::Specific` / `PeerRef::Any` (ADR-029 §1-2).
-- **`from_call` is a manual free function.** The assembly layer calls it after
-  `connect()`. The overlay is per-connection so re-import on reconnect is
-  naturally scoped (DC-2, OQ-27). See
+- **`from_call` is a manual free function.** The assembly layer calls it
+  after the dial (in `AlknetClient`). The overlay is per-connection so
+  re-import on reconnect is naturally scoped (DC-2, OQ-27). See
   [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **`from_call` namespace collision is same-peer only.** Cross-peer collision
   dissolves (same name on different peers is fine — separate sub-overlays,
@@ -767,13 +743,12 @@ Based on the gap analysis and the downstream unblock chain:
 
 | Decision | ADR | Summary |
 |----------|-----|---------|
-| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction; trait is async; adapters produce `HandlerRegistration` bundles. ~~`from_jsonschema` clause superseded by ADR-066~~ |
+| Call protocol client and adapter contract | [ADR-017](../../decisions/017-call-protocol-client-and-adapter-contract.md) | `CallClient` opens connections; `from_call` imports remote ops; connection direction independent of call direction; trait is async; adapters produce `HandlerRegistration` bundles |
 | `from_jsonschema` as HTTP-backed single-endpoint adapter in alknet-http | [ADR-066](../../decisions/066-from-jsonschema-as-http-adapter.md) | Moved `from_jsonschema` from `alknet-call` (broken schema-only placeholder) to `alknet-http` as a real reqwest-backed single-endpoint adapter; `FromJsonSchema` provenance stays in `alknet-call` as a leaf |
 | Peer-graph routing model (DC-1, supersedes ADR-028) | [ADR-029](../../decisions/029-peer-graph-routing-model.md) | Peer-keyed overlays + `PeerRef` routing; peer authorization via existing `AccessControl::check(peer_identity)`; retires `remote_safe`/`trusted_peer` |
 | PeerEntry and Identity.id decoupling | [ADR-030](../../decisions/030-peerentry-and-identity-id-decoupling.md) | `PeerId` source changes from UUID to `Identity.id` (= `PeerEntry.peer_id`, stable across key rotation); `Identity.id` decoupled from crypto material on the fingerprint path |
 | Forwarded-for identity | [ADR-032](../../decisions/032-forwarded-for-identity.md) | `forwarded_for` field on `call.requested` and `OperationContext`; the `from_call` handler populates it; metadata only, never used by `AccessControl::check` |
 | Storage boundary and repo/adapter pattern | [ADR-033](../../decisions/033-storage-boundary-and-repo-adapter-pattern.md) | Core defines repo traits + in-memory defaults; persistence adapters are separate crates |
-| ~~Peer-scoped registry filtering~~ (superseded) | ~~[ADR-028](../../decisions/028-callclient-peer-scoped-registry-filtering.md)~~ | ~~Default-deny; `remote_safe: bool`; trusted-peer opt-in~~ — superseded by ADR-029 (flat-namespace single-peer model couldn't express head→N-workers; parallel auth system duplicated existing `AccessControl`) |
 | Secret material flow and capability injection | [ADR-014](../../decisions/014-secret-material-flow-and-capability-injection.md) | The no-env-vars invariant's foundation; capabilities injected at assembly layer |
 | Handler registration, provenance, and composition authority | [ADR-022](../../decisions/022-handler-registration-provenance-and-composition-authority.md) | The registration bundle adapters produce; `composition_authority: None` for leaves |
 | Operation registry layering | [ADR-024](../../decisions/024-operation-registry-layering.md) | Layer 2 per-connection overlay where `from_call` imports land |
@@ -799,10 +774,11 @@ See [open-questions.md](../../open-questions.md) for full details.
 - **OQ-26** (resolved): `AdapterError` variants — `DiscoveryFailed`,
   `SchemaParse`, `Transport`, `Unauthorized`, `SamePeerCollision`
   (replaces flat `Conflict`). `#[non_exhaustive]`.
-- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a manual
-  free function; the assembly layer calls it after `connect()`. A
-  `CallConnection::refresh()` method is a genuine feature addition —
-  non-breaking, additive. See [ADR-069](../../decisions/069-from-call-manual-free-function.md).
+- **OQ-27** (resolved): `from_call` re-import trigger — `from_call` is a
+  manual free function; the assembly layer calls it after the dial (in
+  `AlknetClient`). A `CallConnection::refresh()` method is a genuine
+  feature addition — non-breaking, additive. See
+  [ADR-069](../../decisions/069-from-call-manual-free-function.md).
 - **OQ-28** (resolved): `from_call` namespace collision — same-peer
   collision = error; cross-peer dissolved by ADR-029 (separate sub-overlays).
   `namespace_prefix` is optional local-naming sugar.
@@ -823,8 +799,7 @@ See [open-questions.md](../../open-questions.md) for full details.
   (ADR-029 §3.7).
 - **OQ-33** (resolved by ADR-030): `PeerId` is a logical id. Source is
   `Identity.id` from `IdentityProvider` resolution (= `PeerEntry.peer_id`,
-  stable across key rotation), not a connection-assigned UUID. The UUID
-  workaround is removed. See OQ-33 in open-questions.md.
+  stable across key rotation). See OQ-33 in open-questions.md.
 - **OQ-34** (resolved by ADR-030 + ADR-033): Persistent peer registry —
   the storage boundary is `core trait + in-memory default` (config-backed
   `ConfigIdentityProvider` now; persistence adapters additive in separate
@@ -856,9 +831,8 @@ See [open-questions.md](../../open-questions.md) for full details.
 
 - ADR-017: Call Protocol Client and Adapter Contract (the spec this document
   operationally fills)
-- ADR-029: Peer-Graph Routing Model (supersedes ADR-028; resolves DC-1 with
-  peer-keyed overlays + `AccessControl`-based peer authorization)
-- ~~ADR-028~~: Peer-Scoped Registry Filtering (superseded by ADR-029)
+- ADR-029: Peer-Graph Routing Model (resolves DC-1 with peer-keyed overlays
+  + `AccessControl`-based peer authorization)
 - `call-protocol.md` — `CallAdapter`, `CallConnection`, dispatch loop, stream
   model (the server-side complement to this document)
 - `operation-registry.md` — `HandlerRegistration`, provenance, capability
