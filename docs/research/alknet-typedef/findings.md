@@ -623,6 +623,72 @@ wire format is the call protocol's own schema system, just
 binary-encoded. The `channel_open` marker says "use binary framing";
 the typedef engine says "here's how to read/write the binary payload."
 
+### FFI and WASM ABI: schema-driven cross-language interfaces
+
+The typedef engine is a schema-driven FFI — the same problem space as
+`#[repr(C)]` struct layout, `wasm-bindgen`'s ABI conventions, and tools
+like `cbindgen`. The core operation is universal: define a struct layout,
+compute field offsets, read/write bytes at those offsets. The typedef
+engine does this at runtime from a portable JSON Schema instead of at
+compile-time from language-specific annotations.
+
+**WASM's linear memory model is a natural fit.** All cross-language
+communication in WASM is "write bytes at offsets, read bytes at
+offsets" — exactly what the typedef engine provides. A TypeBox schema
+describing a WASM import/export interface can drive byte-level
+marshalling on both sides of the boundary without per-function glue
+code. The schema is the ABI contract.
+
+**Cross-language schema portability.** Since the schema is standard JSON
+Schema + `TypeDef:*` keywords, it is language-agnostic. A TypeScript/
+TypeBox definition on the JS side maps 1:1 to a jsonschema custom
+keyword on the Rust side. The same schema could drive codegen for C,
+Zig, Go, or Python FFI bindings. One interface definition, consumed
+across every language that can parse JSON and read bytes at offsets —
+which is all of them.
+
+**Defense in depth.** Rust provides memory safety at compile time. WASM
+provides a sandbox at runtime — no arbitrary memory access, no syscall
+escape. The typedef engine adds a third layer: schema validation at the
+byte level. A malformed or malicious binary payload fails validation
+before any consumer touches it. The `jsonschema` crate's compiled
+validators are fast enough to run on every incoming frame, and the
+schema itself is the validation spec — no separate security review of
+hand-written deserialization code.
+
+**WASM is not just browsers.** WASM runtimes exist for Node, Deno, Bun,
+Python (via `wasmtime-py`), Go (via `wazero`), and most other languages.
+A Rust crate compiled to `wasm32-unknown-unknown` with typedef-driven
+interfaces can be embedded in any of these hosts with zero
+platform-specific FFI code. The typedef schema is the interface; the
+WASM module is the implementation; the host language only needs to read
+and write bytes at schema-computed offsets.
+
+**Implications for the call crate.** The call protocol's
+`OperationSpec.input_schema` and `OperationSpec.output_schema` are
+already JSON Schemas. Making the call crate WASM-friendly means:
+
+- The call adapter (channel 0 JSON control plane) compiles to WASM and
+  runs in the host's event loop.
+- Binary-stream ops (channel 1..N data plane) use typedef schemas for
+  their wire format — the WASM module reads/writes bytes at computed
+  offsets, the host proxies the bytes to the network.
+- The `jsonschema` crate compiles to WASM with `default-features =
+  false` (no HTTP/file resolution). The typedef engine's core (offset
+  computation, read/write) operates on `&[u8]` slices with no platform
+  dependencies.
+- A browser, a Node worker, a Python plugin, or a Go sidecar all use
+  the same WASM module with the same typedef schemas. The interface is
+  the schema; the runtime is the sandbox.
+
+**FFI without bindgen.** The russh-sftp POC already demonstrated
+replacing hand-written serde structs with schema-driven read/write. The
+same pattern applies to C FFI — instead of `#[repr(C)]` structs with
+manual `unsafe` pointer casts, define the struct layout as a typedef
+schema and let the engine handle the byte access. The schema is the FFI
+contract; the engine is the marshalling layer. No bindgen, no
+`cbindgen`, no per-struct `unsafe` blocks.
+
 ---
 
 ## POC Results
