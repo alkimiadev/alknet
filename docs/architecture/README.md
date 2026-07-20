@@ -296,6 +296,12 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/channels/channels-adapter.md](crates/channels/channels-adapter.md) | draft | `ChannelsAdapter`, `ChannelManager`, demux/mux contracts (REQ-CH-01..04), two-pump pattern (ADR-078) |
 | [crates/channels/channel-operations.md](crates/channels/channel-operations.md) | draft | `channel/open`/`close`/`control`/`resources/subscribe`, ACL flow, `direction` semantics, hub relay contract (ADR-079) |
 | [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089); bidirectionality preserved |
+| [crates/typedef/README.md](crates/typedef/README.md) | draft | alknet-typedef crate — binary struct engine; JSON Schema with `TypeDef:*` custom keywords → offset map + read/write + validation |
+| [crates/typedef/overview.md](crates/typedef/overview.md) | draft | Crate purpose, "schema is the format" principle, dependencies, consumers, scope boundaries |
+| [crates/typedef/schema-layer.md](crates/typedef/schema-layer.md) | draft | The 16 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
+| [crates/typedef/layout-engine.md](crates/typedef/layout-engine.md) | draft | Offset computation, two layout modes (packed sequential vs aligned static), alignment, endianness, variable-length handling |
+| [crates/typedef/data-access.md](crates/typedef/data-access.md) | draft | Read/write functions, TUnion dispatch, field paths, zero-copy access, length-prefix reading |
+| [crates/typedef/validation.md](crates/typedef/validation.md) | draft | Custom keyword validators for all 16 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation |
 
 ## ADR Table
 
@@ -395,10 +401,14 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [092](decisions/092-bistream-as-the-handler-leaf.md) | `BiStream` as the Handler Leaf — Unify the Split-Pair `accept_bi` | Accepted (amends ADR-070's `accept_bi` return type; amends ADR-065's `from_stream`/`from_bidi` constructors; amends ADR-074's `ChannelBidiStreamSource::accept_bi` return type; `Connection::from_stream` removed; `from_bidi` is the only public stream constructor) |
 | [093](decisions/093-channels-pure-channel-multiplexing.md) | alknet-channels — Pure Channel Multiplexing (8-Byte Header, No `stream_type`) | Accepted (amends ADR-071 — 8-byte header; ADR-074 — `into_sub_streams` removed; reverses ADR-077 — TTY always uses its 5-byte format; amends the channels-facing clauses of ADR-072/073/075/076/080/081) |
 | [094](decisions/094-per-identity-channel-cap.md) | Per-Identity Channel Cap as DoS Defense | Accepted (amends ADR-076 — per-connection `max_channels` reframed as a memory bound; 256 per `PeerId` enforced via `ChannelLifecyclePolicy` in `channels-call`; symmetric; spoke caps hub as direct caller) |
+| [095](decisions/095-alknet-typedef-purpose-scope-jsonschema-engine.md) | alknet-typedef — Purpose, Scope, and the jsonschema Engine | Accepted |
+| [096](decisions/096-two-layout-modes-packed-vs-aligned.md) | Two Layout Modes — Packed Sequential vs Aligned Static | Accepted |
+| [097](decisions/097-schema-annotations.md) | Schema Annotations — Endianness, Alignment, Encoding, and TUnion Discriminators | Accepted |
+| [098](decisions/098-error-handling-validation-strategy.md) | Error Handling and Validation Strategy | Accepted |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (68 OQs across 20 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
+Open questions are tracked in [open-questions.md](open-questions.md) — an index of theme-grouped tables (71 OQs across 21 themes) with a cross-theme [Deferred / Blocked](open-questions.md#deferred--blocked) section surfacing the safe-exit deferrals. Each OQ lives in its own file under [`questions/`](questions/) (`NNN-slug.md`, mirroring the ADR convention).
 
 ## Document Lifecycle
 

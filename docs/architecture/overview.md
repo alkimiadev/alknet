@@ -103,6 +103,7 @@ alknet-vault (standalone — foundational to ACL: key derivation, identity)
 │   │                  ConnectionCredentials + RemoteIdentity per ADR-091)
 │   ├── alknet-tls     TlsServerConfig + TlsClientConfig + FingerprintPinVerifier — shared TLS config across quinn + TCP+TLS + iroh (ADR-082/087; FingerprintPinVerifier per ADR-089 §5)
 │   ├── alknet-call    CallAdapter on alknet/call, CallClient (spawn_dispatch primary; dial in AlknetClient per ADR-089), OperationRegistry, adapters (no TLS/transport deps)
+│   ├── alknet-typedef  Binary struct engine — JSON Schema with TypeDef:* custom keywords → offset map + read/write + validation (ADR-095–098); depends on jsonschema + serde_json only; WASM-clean
 │   ├── alknet-channels
 │   │   ├── alknet-channels-core  pure multiplexer (wire format, demux/mux) — ADR-081
 │   │   └── alknet-channels-call  channel 0 pre-negotiation + lifecycle ops — ADR-081

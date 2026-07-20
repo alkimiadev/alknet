@@ -211,6 +211,14 @@ Door type is separate from whether a decision is made. A two-way door is a decis
 | [OQ-66](questions/066-alknet-register-wire-protocol.md) | `alknet/register` Wire Protocol | deferred(scope) | one | med |
 | [OQ-67](questions/067-iroh-proxy-support.md) | iroh Proxy Support (Direct-Connection Peer Exposure) | resolved | one | med |
 
+### alknet-typedef
+
+| OQ | Title | Status | Door | Pri |
+|----|-------|--------|------|-----|
+| [OQ-069](questions/069-arrays-of-variable-length-element-structs.md) | Arrays of Variable-Length-Element Structs | deferred(scope) | two | low |
+| [OQ-070](questions/070-no-std-alloc-support.md) | `no_std` + `alloc` Support | deferred(scope) | two | low |
+| [OQ-071](questions/071-builder-api-for-schema-construction.md) | Builder API for Schema Construction | deferred(scope) | two | med |
+
 ## Deferred / Blocked
 
 The safe-exit visibility surface. These questions are parked because the
@@ -357,4 +365,38 @@ filtering the tables above.
   [ADR-087](decisions/087-tlsclientconfig-not-blocked-on-dial.md) and
   [OQ-64](questions/064-client-side-tls-helper.md).
 - **Full file**: [OQ-64](questions/064-client-side-tls-helper.md)
+
+### OQ-069: Arrays of Variable-Length-Element Structs
+
+- **Blocked on**: A concrete consumer that needs arrays of structs with
+  variable-length fields, where the elements are interleaved
+  (`[fixed_0][str_0][fixed_1][str_1]...`) and the engine must walk
+  sequentially rather than use a fixed stride. The SFTP `Name` packet
+  has `Vec<File>` where `File` contains strings, but SFTP serializes
+  this as a sequence of length-prefixed strings (the serde `SeqAccess`
+  pattern), not as an array of fixed-stride structs. Arrays of
+  fixed-size structs are fully supported.
+- **Priority**: low
+- **Full file**: [OQ-069](questions/069-arrays-of-variable-length-element-structs.md)
+
+### OQ-070: `no_std` + `alloc` Support
+
+- **Blocked on**: An embedded use case that requires `no_std` + `alloc`
+  (e.g., a microcontroller running Rust without `std`). The WASM target
+  has `std` available via `wasm-bindgen`. The engine's core (offset
+  computation, read/write) is already allocation-free; the `jsonschema`
+  dependency is the only `alloc` consumer.
+- **Priority**: low
+- **Full file**: [OQ-070](questions/070-no-std-alloc-support.md)
+
+### OQ-071: Builder API for Schema Construction
+
+- **Blocked on**: A concrete need for programmatic schema construction
+  in Rust. The current consumers (SFTP, metatensor, binary call frames,
+  TTY negotiation) all have schemas that can be hand-written or
+  generated from TypeBox. A builder API would be a fluent Rust API that
+  produces the same JSON Schema structure — it would sit on top of the
+  engine, not inside it.
+- **Priority**: medium
+- **Full file**: [OQ-071](questions/071-builder-api-for-schema-construction.md)
 
