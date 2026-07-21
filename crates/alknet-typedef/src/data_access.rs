@@ -45,7 +45,7 @@ fn access_err(field_path: &str, reason: impl Into<String>) -> TypedefError {
     }
 }
 
-fn read_array<const N: usize>(
+pub(crate) fn read_array<const N: usize>(
     buffer: &[u8],
     offset: usize,
     field_path: &str,
@@ -74,7 +74,7 @@ fn read_array<const N: usize>(
     })
 }
 
-fn write_array<const N: usize>(
+pub(crate) fn write_array<const N: usize>(
     buffer: &mut [u8],
     offset: usize,
     bytes: [u8; N],
@@ -115,112 +115,15 @@ fn u32_to(value: u32, endian: Endian) -> [u8; U32_SIZE] {
 // Fixed-size read functions
 // ---------------------------------------------------------------------------
 
-/// Read an `i8` at `offset` from `buffer`.
-pub fn read_i8(buffer: &[u8], offset: usize, field_path: &str) -> Result<i8, TypedefError> {
-    let bytes: [u8; 1] = read_array(buffer, offset, field_path)?;
-    Ok(bytes[0] as i8)
-}
-
-/// Read an `i16` at `offset` from `buffer`, applying `endian`.
-pub fn read_i16(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<i16, TypedefError> {
-    let bytes: [u8; 2] = read_array(buffer, offset, field_path)?;
-    Ok(match endian {
-        Endian::Little => i16::from_le_bytes(bytes),
-        Endian::Big => i16::from_be_bytes(bytes),
-    })
-}
-
-/// Read an `i32` at `offset` from `buffer`, applying `endian`.
-pub fn read_i32(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<i32, TypedefError> {
-    let bytes: [u8; 4] = read_array(buffer, offset, field_path)?;
-    Ok(match endian {
-        Endian::Little => i32::from_le_bytes(bytes),
-        Endian::Big => i32::from_be_bytes(bytes),
-    })
-}
-
-/// Read a `u8` at `offset` from `buffer`.
-pub fn read_u8(buffer: &[u8], offset: usize, field_path: &str) -> Result<u8, TypedefError> {
-    let bytes: [u8; 1] = read_array(buffer, offset, field_path)?;
-    Ok(bytes[0])
-}
-
-/// Read a `u16` at `offset` from `buffer`, applying `endian`.
-pub fn read_u16(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<u16, TypedefError> {
-    let bytes: [u8; 2] = read_array(buffer, offset, field_path)?;
-    Ok(match endian {
-        Endian::Little => u16::from_le_bytes(bytes),
-        Endian::Big => u16::from_be_bytes(bytes),
-    })
-}
-
-/// Read a `u32` at `offset` from `buffer`, applying `endian`.
-pub fn read_u32(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<u32, TypedefError> {
-    let bytes: [u8; 4] = read_array(buffer, offset, field_path)?;
-    Ok(u32_from(bytes, endian))
-}
-
-/// Read a `u64` at `offset` from `buffer`, applying `endian`.
-pub fn read_u64(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<u64, TypedefError> {
-    let bytes: [u8; 8] = read_array(buffer, offset, field_path)?;
-    Ok(match endian {
-        Endian::Little => u64::from_le_bytes(bytes),
-        Endian::Big => u64::from_be_bytes(bytes),
-    })
-}
-
-/// Read an `f32` at `offset` from `buffer`, applying `endian`.
-pub fn read_f32(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<f32, TypedefError> {
-    let bytes: [u8; 4] = read_array(buffer, offset, field_path)?;
-    Ok(match endian {
-        Endian::Little => f32::from_le_bytes(bytes),
-        Endian::Big => f32::from_be_bytes(bytes),
-    })
-}
-
-/// Read an `f64` at `offset` from `buffer`, applying `endian`.
-pub fn read_f64(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<f64, TypedefError> {
-    let bytes: [u8; 8] = read_array(buffer, offset, field_path)?;
-    Ok(match endian {
-        Endian::Little => f64::from_le_bytes(bytes),
-        Endian::Big => f64::from_be_bytes(bytes),
-    })
-}
+define_read_write_ne!(i8, read_i8, write_i8, 1, |bytes: [u8; 1]| bytes[0] as i8);
+define_read_write_endian!(i16, read_i16, write_i16, 2);
+define_read_write_endian!(i32, read_i32, write_i32, 4);
+define_read_write_ne!(u8, read_u8, write_u8, 1, |bytes: [u8; 1]| bytes[0]);
+define_read_write_endian!(u16, read_u16, write_u16, 2);
+define_read_write_endian!(u32, read_u32, write_u32, 4);
+define_read_write_endian!(u64, read_u64, write_u64, 8);
+define_read_write_endian!(f32, read_f32, write_f32, 4);
+define_read_write_endian!(f64, read_f64, write_f64, 8);
 
 /// Read a `bool` at `offset` from `buffer`.
 ///
@@ -239,143 +142,6 @@ pub fn read_bool(buffer: &[u8], offset: usize, field_path: &str) -> Result<bool,
     }
 }
 
-/// Read a `TEnum` index (`u32`) at `offset` from `buffer`, applying `endian`.
-///
-/// The caller maps the returned index to the schema's `"enum"` array entry.
-pub fn read_enum(
-    buffer: &[u8],
-    offset: usize,
-    field_path: &str,
-    endian: Endian,
-) -> Result<u32, TypedefError> {
-    read_u32(buffer, offset, field_path, endian)
-}
-
-// ---------------------------------------------------------------------------
-// Fixed-size write functions
-// ---------------------------------------------------------------------------
-
-/// Write an `i8` `value` at `offset` into `buffer`.
-pub fn write_i8(
-    buffer: &mut [u8],
-    offset: usize,
-    value: i8,
-    field_path: &str,
-) -> Result<(), TypedefError> {
-    write_array(buffer, offset, value.to_ne_bytes(), field_path)
-}
-
-/// Write an `i16` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_i16(
-    buffer: &mut [u8],
-    offset: usize,
-    value: i16,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    let bytes = match endian {
-        Endian::Little => value.to_le_bytes(),
-        Endian::Big => value.to_be_bytes(),
-    };
-    write_array(buffer, offset, bytes, field_path)
-}
-
-/// Write an `i32` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_i32(
-    buffer: &mut [u8],
-    offset: usize,
-    value: i32,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    let bytes = match endian {
-        Endian::Little => value.to_le_bytes(),
-        Endian::Big => value.to_be_bytes(),
-    };
-    write_array(buffer, offset, bytes, field_path)
-}
-
-/// Write a `u8` `value` at `offset` into `buffer`.
-pub fn write_u8(
-    buffer: &mut [u8],
-    offset: usize,
-    value: u8,
-    field_path: &str,
-) -> Result<(), TypedefError> {
-    write_array(buffer, offset, value.to_ne_bytes(), field_path)
-}
-
-/// Write a `u16` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_u16(
-    buffer: &mut [u8],
-    offset: usize,
-    value: u16,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    let bytes = match endian {
-        Endian::Little => value.to_le_bytes(),
-        Endian::Big => value.to_be_bytes(),
-    };
-    write_array(buffer, offset, bytes, field_path)
-}
-
-/// Write a `u32` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_u32(
-    buffer: &mut [u8],
-    offset: usize,
-    value: u32,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    write_array(buffer, offset, u32_to(value, endian), field_path)
-}
-
-/// Write a `u64` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_u64(
-    buffer: &mut [u8],
-    offset: usize,
-    value: u64,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    let bytes = match endian {
-        Endian::Little => value.to_le_bytes(),
-        Endian::Big => value.to_be_bytes(),
-    };
-    write_array(buffer, offset, bytes, field_path)
-}
-
-/// Write an `f32` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_f32(
-    buffer: &mut [u8],
-    offset: usize,
-    value: f32,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    let bytes = match endian {
-        Endian::Little => value.to_le_bytes(),
-        Endian::Big => value.to_be_bytes(),
-    };
-    write_array(buffer, offset, bytes, field_path)
-}
-
-/// Write an `f64` `value` at `offset` into `buffer`, applying `endian`.
-pub fn write_f64(
-    buffer: &mut [u8],
-    offset: usize,
-    value: f64,
-    field_path: &str,
-    endian: Endian,
-) -> Result<(), TypedefError> {
-    let bytes = match endian {
-        Endian::Little => value.to_le_bytes(),
-        Endian::Big => value.to_be_bytes(),
-    };
-    write_array(buffer, offset, bytes, field_path)
-}
-
 /// Write a `bool` `value` at `offset` into `buffer`.
 ///
 /// `false` is encoded as `0x00`, `true` as `0x01`.
@@ -391,6 +157,18 @@ pub fn write_bool(
         [if value { 0x01 } else { 0x00 }],
         field_path,
     )
+}
+
+/// Read a `TEnum` index (`u32`) at `offset` from `buffer`, applying `endian`.
+///
+/// The caller maps the returned index to the schema's `"enum"` array entry.
+pub fn read_enum(
+    buffer: &[u8],
+    offset: usize,
+    field_path: &str,
+    endian: Endian,
+) -> Result<u32, TypedefError> {
+    read_u32(buffer, offset, field_path, endian)
 }
 
 /// Write a `TEnum` index (`u32`) `value` at `offset` into `buffer`, applying `endian`.

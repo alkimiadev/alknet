@@ -13,13 +13,11 @@
 
 use crate::error::TypedefError;
 use crate::schema::{
-    get_typedef_kind, natural_alignment, parse_align, parse_discriminator, parse_encoding,
-    parse_max_length, type_size, DiscriminatorKind, VariableEncoding,
+    get_typedef_kind, get_typedef_kind_loose, is_fixed_size, natural_alignment, parse_align,
+    parse_discriminator, parse_encoding, parse_max_length, resolve_ref_or_inline, type_size,
+    DiscriminatorKind, VariableEncoding, DISCRIMINATOR_PATH,
 };
 use serde_json::Value;
-
-/// The synthetic field path used for a TUnion byte-offset discriminator.
-const DISCRIMINATOR_PATH: &str = "__discriminator";
 
 /// A byte range within a buffer.
 ///
@@ -209,7 +207,7 @@ impl<'a> ComputeCtx<'a> {
         field_path: &str,
         struct_default_align: usize,
     ) -> Result<FieldLayout, TypedefError> {
-        let kind = typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
+        let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "field schema has no TypeDef:* kind".to_string(),
         })?;
@@ -227,7 +225,7 @@ impl<'a> ComputeCtx<'a> {
             "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Record" | "TypeDef:Timestamp" => {
                 self.compute_variable_field(field_schema, field_path, struct_default_align)
             }
-            fixed if is_fixed_kind(fixed) => {
+            fixed if is_fixed_size(fixed) => {
                 self.compute_fixed_field(fixed, field_schema, field_path, struct_default_align)
             }
             other => Err(TypedefError::Offset {
@@ -474,7 +472,7 @@ impl<'a> ComputeCtx<'a> {
             field_path: field_path.to_string(),
             reason: "TArray element schema has no TypeDef:* kind".to_string(),
         })?;
-        if !is_fixed_kind(elem_kind) {
+        if !is_fixed_size(elem_kind) {
             return Err(TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: format!(
@@ -606,71 +604,6 @@ fn round_up(n: usize, align: usize) -> usize {
     } else {
         n + align - rem
     }
-}
-
-/// Returns true if `kind` is one of the fixed-size primitive kinds.
-fn is_fixed_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "TypeDef:Float32"
-            | "TypeDef:Float64"
-            | "TypeDef:Int8"
-            | "TypeDef:Int16"
-            | "TypeDef:Int32"
-            | "TypeDef:Uint8"
-            | "TypeDef:Uint16"
-            | "TypeDef:Uint32"
-            | "TypeDef:Boolean"
-            | "TypeDef:Enum"
-    )
-}
-
-/// Detect a `TypeDef:*` kind from a schema node, accepting either the
-/// boolean form (`{ "TypeDef:String": true }`) or the object-annotation
-/// form (`{ "TypeDef:String": { "encoding": "..." } }`).
-///
-/// [`crate::schema::get_typedef_kind`] only recognizes the boolean form;
-/// offset computation also needs to recognize the object form so that
-/// variable-length encoding annotations are honored.
-fn typedef_kind_loose(node: &Value) -> Option<&str> {
-    let obj = node.as_object()?;
-    for key in obj.keys() {
-        if key.starts_with("TypeDef:") && obj.get(key).is_some_and(|v| !v.is_null()) {
-            return Some(key.as_str());
-        }
-    }
-    None
-}
-
-/// Resolve a `$ref` against the root schema, or return the inline schema.
-///
-/// If `node` has a `"$ref"` key, parse the JSON Pointer and walk `root`.
-/// Otherwise, return `node` itself (it's an inline schema).
-fn resolve_ref_or_inline<'a>(node: &'a Value, root: &'a Value) -> Option<&'a Value> {
-    let obj = node.as_object()?;
-    if let Some(Value::String(ref_path)) = obj.get("$ref") {
-        return resolve_ref(root, ref_path);
-    }
-    Some(node)
-}
-
-/// Resolve a JSON Pointer `$ref` (e.g., `"#/$defs/Read"`) against `root`.
-fn resolve_ref<'a>(root: &'a Value, ref_path: &str) -> Option<&'a Value> {
-    let stripped = ref_path.strip_prefix('#').unwrap_or(ref_path);
-    let stripped = stripped.strip_prefix('/').unwrap_or(stripped);
-    if stripped.is_empty() {
-        return Some(root);
-    }
-    let mut current = root;
-    for segment in stripped.split('/') {
-        let decoded = segment.replace("~1", "/").replace("~0", "~");
-        if let Ok(idx) = decoded.parse::<usize>() {
-            current = current.get(idx)?;
-        } else {
-            current = current.get(&decoded)?;
-        }
-    }
-    Some(current)
 }
 
 #[cfg(test)]

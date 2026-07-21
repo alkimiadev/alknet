@@ -11,12 +11,10 @@
 
 use crate::data_access::{read_enum, read_string, read_u16, read_u32, read_u8};
 use crate::error::TypedefError;
-use crate::schema::{get_typedef_kind, parse_discriminator, DiscriminatorKind, Endian};
+use crate::schema::{get_typedef_kind, parse_discriminator, DiscriminatorKind, Endian, DISCRIMINATOR_PATH, U32_SIZE};
 use serde_json::Value;
 
-const U32_SIZE: usize = 4;
 const STRING_PREFIX_SIZE: usize = 4;
-const DISCRIMINATOR_PATH: &str = "__discriminator";
 
 /// The result of reading a TUnion discriminator.
 #[derive(Debug, Clone)]
@@ -177,7 +175,7 @@ pub fn read_field_discriminator(
         }
     };
 
-    verify_mapping_key(union_schema, &key, &name, key.as_str())?;
+    verify_mapping_key(union_schema, &key, &name, &key)?;
 
     let variant_offset = disc_field_offset
         .checked_add(discriminator_field_size)

@@ -46,12 +46,10 @@
 //!   the variant struct.
 
 use crate::error::TypedefError;
-use crate::schema::{self, DiscriminatorKind, Endian};
+use crate::schema::{self, get_typedef_kind_loose, resolve_ref_or_inline, DiscriminatorKind, Endian, DISCRIMINATOR_PATH, U32_SIZE};
 use serde_json::Value;
 use std::collections::HashMap;
 
-const U32_SIZE: usize = 4;
-const DISCRIMINATOR_PATH: &str = "__discriminator";
 const VARIANT_KEY: &str = "__variant";
 
 /// A field position computed by the LayoutBuilder.
@@ -253,7 +251,7 @@ impl<'a> BuildCtx<'a> {
         field_path: &str,
         offset: &mut usize,
     ) -> Result<(), TypedefError> {
-        let kind = typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
+        let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "field schema has no TypeDef:* kind".to_string(),
         })?;
@@ -265,7 +263,7 @@ impl<'a> BuildCtx<'a> {
             "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Timestamp" | "TypeDef:Record" => {
                 self.walk_variable(field_path, offset, kind)
             }
-            fixed if is_fixed_kind(fixed) => {
+            fixed if schema::is_fixed_size(fixed) => {
                 let size = schema::type_size(fixed).ok_or_else(|| TypedefError::Offset {
                     field_path: field_path.to_string(),
                     reason: format!("type_size returned None for fixed kind {fixed}"),
@@ -343,12 +341,12 @@ impl<'a> BuildCtx<'a> {
                 field_path: field_path.to_string(),
                 reason: "could not resolve TArray items schema".to_string(),
             })?;
-        let elem_kind = typedef_kind_loose(element_schema).ok_or_else(|| TypedefError::Offset {
+        let elem_kind = get_typedef_kind_loose(element_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TArray element schema has no TypeDef:* kind".to_string(),
         })?;
 
-        if !is_fixed_kind(elem_kind) {
+        if !schema::is_fixed_size(elem_kind) {
             return Err(TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: format!(
@@ -519,7 +517,7 @@ impl<'a> BuildCtx<'a> {
                 reason: "could not resolve TUnion variant schema ($ref not found)".to_string(),
             }
         })?;
-        let v_kind = typedef_kind_loose(resolved).ok_or_else(|| TypedefError::Offset {
+        let v_kind = get_typedef_kind_loose(resolved).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
         })?;
@@ -582,7 +580,7 @@ impl<'a> BuildCtx<'a> {
                 reason: "could not resolve TUnion variant schema ($ref not found)".to_string(),
             }
         })?;
-        let v_kind = typedef_kind_loose(resolved).ok_or_else(|| TypedefError::Offset {
+        let v_kind = get_typedef_kind_loose(resolved).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
         })?;
@@ -607,71 +605,6 @@ impl<'a> BuildCtx<'a> {
             },
         ));
     }
-}
-
-/// Returns true if `kind` is one of the fixed-size primitive kinds.
-fn is_fixed_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "TypeDef:Float32"
-            | "TypeDef:Float64"
-            | "TypeDef:Int8"
-            | "TypeDef:Int16"
-            | "TypeDef:Int32"
-            | "TypeDef:Uint8"
-            | "TypeDef:Uint16"
-            | "TypeDef:Uint32"
-            | "TypeDef:Boolean"
-            | "TypeDef:Enum"
-    )
-}
-
-/// Detect a `TypeDef:*` kind from a schema node, accepting either the
-/// boolean form (`{ "TypeDef:String": true }`) or the object-annotation
-/// form (`{ "TypeDef:String": { "encoding": "..." } }`).
-///
-/// [`crate::schema::get_typedef_kind`] only recognizes the boolean form;
-/// packed layout computation also needs to recognize the object form so
-/// that variable-length encoding annotations don't hide the kind.
-fn typedef_kind_loose(node: &Value) -> Option<&str> {
-    let obj = node.as_object()?;
-    for key in obj.keys() {
-        if key.starts_with("TypeDef:") && obj.get(key).is_some_and(|v| !v.is_null()) {
-            return Some(key.as_str());
-        }
-    }
-    None
-}
-
-/// Resolve a `$ref` against the root schema, or return the inline schema.
-///
-/// If `node` has a `"$ref"` key, parse the JSON Pointer and walk `root`.
-/// Otherwise, return `node` itself (it's an inline schema).
-fn resolve_ref_or_inline<'b>(node: &'b Value, root: &'b Value) -> Option<&'b Value> {
-    let obj = node.as_object()?;
-    if let Some(Value::String(ref_path)) = obj.get("$ref") {
-        return resolve_ref(root, ref_path);
-    }
-    Some(node)
-}
-
-/// Resolve a JSON Pointer `$ref` (e.g., `"#/$defs/Read"`) against `root`.
-fn resolve_ref<'b>(root: &'b Value, ref_path: &str) -> Option<&'b Value> {
-    let stripped = ref_path.strip_prefix('#').unwrap_or(ref_path);
-    let stripped = stripped.strip_prefix('/').unwrap_or(stripped);
-    if stripped.is_empty() {
-        return Some(root);
-    }
-    let mut current = root;
-    for segment in stripped.split('/') {
-        let decoded = segment.replace("~1", "/").replace("~0", "~");
-        if let Ok(idx) = decoded.parse::<usize>() {
-            current = current.get(idx)?;
-        } else {
-            current = current.get(&decoded)?;
-        }
-    }
-    Some(current)
 }
 
 #[cfg(test)]

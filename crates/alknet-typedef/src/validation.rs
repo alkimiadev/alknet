@@ -51,133 +51,30 @@ pub fn build_validator(schema: &Value) -> Result<jsonschema::Validator, TypedefE
 }
 
 // ---------------------------------------------------------------------------
-// Numeric validators
+// Numeric validators (generated via macros)
 // ---------------------------------------------------------------------------
 
-struct Float32Validator;
-impl Keyword for Float32Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_f64() {
-            Some(f) if f.is_finite() => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected a finite f32-compatible number",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_f64().is_some_and(|f| f.is_finite())
-    }
-}
-
-struct Float64Validator;
-impl Keyword for Float64Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_f64() {
-            Some(f) if f.is_finite() => Ok(()),
-            _ => Err(ValidationError::custom("expected a finite f64 number")),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_f64().is_some_and(|f| f.is_finite())
-    }
-}
-
-struct Int8Validator;
-impl Keyword for Int8Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_i64() {
-            Some(n) if (-128..=127).contains(&n) => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected an integer in range [-128, 127]",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_i64().is_some_and(|n| (-128..=127).contains(&n))
-    }
-}
-
-struct Int16Validator;
-impl Keyword for Int16Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_i64() {
-            Some(n) if (-32_768..=32_767).contains(&n) => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected an integer in range [-32768, 32767]",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance
-            .as_i64()
-            .is_some_and(|n| (-32_768..=32_767).contains(&n))
-    }
-}
-
-struct Int32Validator;
-impl Keyword for Int32Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_i64() {
-            Some(n) if (-2_147_483_648..=2_147_483_647).contains(&n) => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected an integer in range [-2147483648, 2147483647]",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance
-            .as_i64()
-            .is_some_and(|n| (-2_147_483_648..=2_147_483_647).contains(&n))
-    }
-}
-
-struct Uint8Validator;
-impl Keyword for Uint8Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_u64() {
-            Some(n) if n <= 255 => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected an unsigned integer in range [0, 255]",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_u64().is_some_and(|n| n <= 255)
-    }
-}
-
-struct Uint16Validator;
-impl Keyword for Uint16Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_u64() {
-            Some(n) if n <= 65_535 => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected an unsigned integer in range [0, 65535]",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_u64().is_some_and(|n| n <= 65_535)
-    }
-}
-
-struct Uint32Validator;
-impl Keyword for Uint32Validator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        match instance.as_u64() {
-            Some(n) if n <= 4_294_967_295 => Ok(()),
-            _ => Err(ValidationError::custom(
-                "expected an unsigned integer in range [0, 4294967295]",
-            )),
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_u64().is_some_and(|n| n <= 4_294_967_295)
-    }
-}
+define_int_validator!(Int8Validator, int8_factory, "TypeDef:Int8", -128, 127);
+define_int_validator!(Int16Validator, int16_factory, "TypeDef:Int16", -32768, 32767);
+define_int_validator!(Int32Validator, int32_factory, "TypeDef:Int32", -2147483648, 2147483647);
+define_uint_validator!(Uint8Validator, uint8_factory, "TypeDef:Uint8", 255);
+define_uint_validator!(Uint16Validator, uint16_factory, "TypeDef:Uint16", 65535);
+define_uint_validator!(Uint32Validator, uint32_factory, "TypeDef:Uint32", 4294967295);
+define_float_validator!(
+    Float32Validator,
+    float32_factory,
+    "TypeDef:Float32",
+    "expected a finite f32-compatible number"
+);
+define_float_validator!(
+    Float64Validator,
+    float64_factory,
+    "TypeDef:Float64",
+    "expected a finite f64 number"
+);
 
 // ---------------------------------------------------------------------------
-// String and binary validators
+// String and binary validators (hand-written: need maxLength from parent)
 // ---------------------------------------------------------------------------
 
 struct StringValidator {
@@ -301,215 +198,27 @@ fn is_rfc3339_timestamp(s: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Composite validators (structural checks delegated to jsonschema)
+// Composite validators (generated via macros)
 // ---------------------------------------------------------------------------
 
-struct StructValidator;
-impl Keyword for StructValidator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        if instance.is_object() {
-            Ok(())
-        } else {
-            Err(ValidationError::custom("expected an object"))
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.is_object()
-    }
-}
-
-/// `TypeDef:Union` discriminator and variant conformance are validated
-/// by jsonschema's built-in keywords (`properties`, `oneOf`, etc.). The
-/// custom keyword only asserts the instance is an object.
-struct UnionValidator;
-impl Keyword for UnionValidator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        if instance.is_object() {
-            Ok(())
-        } else {
-            Err(ValidationError::custom("expected an object for union"))
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.is_object()
-    }
-}
-
-struct ArrayValidator;
-impl Keyword for ArrayValidator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        if instance.is_array() {
-            Ok(())
-        } else {
-            Err(ValidationError::custom("expected an array"))
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.is_array()
-    }
-}
-
-/// `TypeDef:Record` value-type conformance is validated by jsonschema's
-/// built-in `additionalProperties` keyword. The custom keyword only
-/// asserts the instance is an object.
-struct RecordValidator;
-impl Keyword for RecordValidator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        if instance.is_object() {
-            Ok(())
-        } else {
-            Err(ValidationError::custom("expected an object for record"))
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.is_object()
-    }
-}
-
-struct BooleanValidator;
-impl Keyword for BooleanValidator {
-    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
-        if instance.is_boolean() {
-            Ok(())
-        } else {
-            Err(ValidationError::custom("expected a boolean"))
-        }
-    }
-    fn is_valid(&self, instance: &Value) -> bool {
-        instance.is_boolean()
-    }
-}
+define_type_validator!(StructValidator, struct_factory, "TypeDef:Struct", is_object, "expected an object");
+define_type_validator!(UnionValidator, union_factory, "TypeDef:Union", is_object, "expected an object for union");
+define_type_validator!(ArrayValidator, array_factory, "TypeDef:Array", is_array, "expected an array");
+define_type_validator!(RecordValidator, record_factory, "TypeDef:Record", is_object, "expected an object for record");
+define_type_validator!(BooleanValidator, boolean_factory, "TypeDef:Boolean", is_boolean, "expected a boolean");
 
 // ---------------------------------------------------------------------------
-// Factory closures
+// Factory closures for non-macro-generated validators
 // ---------------------------------------------------------------------------
-
-fn float32_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Float32Validator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Float32 must be set to true",
-        ))
-    }
-}
-
-fn float64_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Float64Validator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Float64 must be set to true",
-        ))
-    }
-}
-
-fn int8_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Int8Validator))
-    } else {
-        Err(ValidationError::schema("TypeDef:Int8 must be set to true"))
-    }
-}
-
-fn int16_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Int16Validator))
-    } else {
-        Err(ValidationError::schema("TypeDef:Int16 must be set to true"))
-    }
-}
-
-fn int32_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Int32Validator))
-    } else {
-        Err(ValidationError::schema("TypeDef:Int32 must be set to true"))
-    }
-}
-
-fn uint8_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Uint8Validator))
-    } else {
-        Err(ValidationError::schema("TypeDef:Uint8 must be set to true"))
-    }
-}
-
-fn uint16_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Uint16Validator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Uint16 must be set to true",
-        ))
-    }
-}
-
-fn uint32_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(Uint32Validator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Uint32 must be set to true",
-        ))
-    }
-}
-
-fn boolean_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(BooleanValidator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Boolean must be set to true",
-        ))
-    }
-}
 
 fn string_factory<'a>(
     parent: &'a Map<String, Value>,
     value: &'a Value,
     _path: jsonschema::paths::Location,
 ) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() != Some(true) {
+    if !value.is_boolean() && !value.is_object() {
         return Err(ValidationError::schema(
-            "TypeDef:String must be set to true",
+            "TypeDef:String must be set to true or an annotation object",
         ));
     }
     let max_length = parent
@@ -524,8 +233,10 @@ fn bytes_factory<'a>(
     value: &'a Value,
     _path: jsonschema::paths::Location,
 ) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() != Some(true) {
-        return Err(ValidationError::schema("TypeDef:Bytes must be set to true"));
+    if !value.is_boolean() && !value.is_object() {
+        return Err(ValidationError::schema(
+            "TypeDef:Bytes must be set to true or an annotation object",
+        ));
     }
     let max_length = parent
         .get("maxLength")
@@ -543,58 +254,6 @@ fn enum_factory<'a>(
         Ok(Box::new(EnumValidator))
     } else {
         Err(ValidationError::schema("TypeDef:Enum must be set to true"))
-    }
-}
-
-fn struct_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(StructValidator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Struct must be set to true",
-        ))
-    }
-}
-
-fn union_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(UnionValidator))
-    } else {
-        Err(ValidationError::schema("TypeDef:Union must be set to true"))
-    }
-}
-
-fn array_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(ArrayValidator))
-    } else {
-        Err(ValidationError::schema("TypeDef:Array must be set to true"))
-    }
-}
-
-fn record_factory<'a>(
-    _parent: &'a Map<String, Value>,
-    value: &'a Value,
-    _path: jsonschema::paths::Location,
-) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
-    if value.as_bool() == Some(true) {
-        Ok(Box::new(RecordValidator))
-    } else {
-        Err(ValidationError::schema(
-            "TypeDef:Record must be set to true",
-        ))
     }
 }
 

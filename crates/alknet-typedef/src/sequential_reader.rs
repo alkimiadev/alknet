@@ -12,10 +12,8 @@
 
 use crate::data_access;
 use crate::error::TypedefError;
-use crate::schema::{self, DiscriminatorKind, Endian};
+use crate::schema::{self, get_typedef_kind_loose, DiscriminatorKind, Endian, U32_SIZE};
 use serde_json::Value;
-
-const U32_SIZE: usize = 4;
 
 /// A value read from a field during sequential traversal.
 ///
@@ -274,7 +272,7 @@ fn read_field_value<'a>(
     offset: usize,
     endian: Endian,
 ) -> Result<(FieldValue<'a>, usize), TypedefError> {
-    let kind = schema::get_typedef_kind(field_schema).ok_or_else(|| {
+    let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| {
         TypedefError::Schema(format!(
             "field {field_path} has no TypeDef:* kind: {field_schema}"
         ))
@@ -598,7 +596,7 @@ fn read_array_value<'a>(
         (count, offset + U32_SIZE)
     };
 
-    let element_kind = schema::get_typedef_kind(items_schema).ok_or_else(|| {
+    let element_kind = get_typedef_kind_loose(items_schema).ok_or_else(|| {
         TypedefError::Schema(format!(
             "array {field_path} items schema has no TypeDef:* kind"
         ))
@@ -735,7 +733,7 @@ fn resolve_and_walk_variant(
                 "union {field_path} variant could not be resolved: {variant_schema}"
             ))
         })?;
-    let kind = schema::get_typedef_kind(resolved).ok_or_else(|| {
+    let kind = get_typedef_kind_loose(resolved).ok_or_else(|| {
         TypedefError::Schema(format!(
             "union {field_path} variant has no TypeDef:* kind: {resolved}"
         ))
@@ -787,7 +785,7 @@ fn resolve_variant_schema<'a>(
         }
         return None;
     }
-    if schema::get_typedef_kind(variant).is_some() {
+    if get_typedef_kind_loose(variant).is_some() {
         Some(variant)
     } else {
         None

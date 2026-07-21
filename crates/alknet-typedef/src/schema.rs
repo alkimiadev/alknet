@@ -13,6 +13,9 @@ use serde_json::Value;
 
 const TYPEDEF_PREFIX: &str = "TypeDef:";
 
+pub(crate) const U32_SIZE: usize = 4;
+pub(crate) const DISCRIMINATOR_PATH: &str = "__discriminator";
+
 const BYTE_DISCRIMINATOR_TYPES: &[&str] = &["TypeDef:Uint8", "TypeDef:Uint16", "TypeDef:Uint32"];
 
 /// Returns the `TypeDef:*` kind string if the schema node declares one.
@@ -229,6 +232,54 @@ pub fn parse_discriminator(node: &Value) -> Result<DiscriminatorKind, TypedefErr
             "unknown discriminator 'kind': {other:?} (expected \"byte\" or \"field\")"
         ))),
     }
+}
+
+/// Detect a `TypeDef:*` kind from a schema node, accepting either the
+/// boolean form (`{ "TypeDef:String": true }`) or the object-annotation
+/// form (`{ "TypeDef:String": { "encoding": "..." } }`).
+///
+/// [`get_typedef_kind`] only recognizes the boolean form; layout computation
+/// and engine dispatch also need to recognize the object form so that
+/// variable-length encoding annotations don't hide the kind.
+pub fn get_typedef_kind_loose(node: &Value) -> Option<&str> {
+    let obj = node.as_object()?;
+    for key in obj.keys() {
+        if key.starts_with(TYPEDEF_PREFIX) && obj.get(key).is_some_and(|v| !v.is_null()) {
+            return Some(key.as_str());
+        }
+    }
+    None
+}
+
+/// Resolve a `$ref` against the root schema, or return the inline schema.
+///
+/// If `node` has a `"$ref"` key, parse the JSON Pointer and walk `root`.
+/// Otherwise, return `node` itself (it's an inline schema).
+pub fn resolve_ref_or_inline<'a>(node: &'a Value, root: &'a Value) -> Option<&'a Value> {
+    let obj = node.as_object()?;
+    if let Some(Value::String(ref_path)) = obj.get("$ref") {
+        return resolve_ref(root, ref_path);
+    }
+    Some(node)
+}
+
+/// Resolve a JSON Pointer `$ref` (e.g., `"#/$defs/Read"`) against `root`.
+pub fn resolve_ref<'a>(root: &'a Value, ref_path: &str) -> Option<&'a Value> {
+    let stripped = ref_path.strip_prefix('#').unwrap_or(ref_path);
+    let stripped = stripped.strip_prefix('/').unwrap_or(stripped);
+    if stripped.is_empty() {
+        return Some(root);
+    }
+    let mut current = root;
+    for segment in stripped.split('/') {
+        let decoded = segment.replace("~1", "/").replace("~0", "~");
+        if let Ok(idx) = decoded.parse::<usize>() {
+            current = current.get(idx)?;
+        } else {
+            current = current.get(&decoded)?;
+        }
+    }
+    Some(current)
 }
 
 /// Walk the schema tree. For every `"$ref"` whose value is a bare name

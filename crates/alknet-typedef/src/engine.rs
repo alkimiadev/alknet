@@ -13,7 +13,7 @@ use crate::data_access;
 use crate::error::TypedefError;
 use crate::layout_builder::LayoutBuilder;
 use crate::offset_map::OffsetMap;
-use crate::schema::{self, Endian};
+use crate::schema::{self, get_typedef_kind_loose, Endian};
 use crate::sequential_reader::{FieldValue, SequentialReader};
 use crate::validation;
 use serde_json::Value;
@@ -206,7 +206,7 @@ impl TypedefEngine {
                 field_path: field_path.to_string(),
                 reason: "field schema not found in schema tree".to_string(),
             })?;
-        let kind = typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
+        let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "field schema has no TypeDef:* kind".to_string(),
         })?;
@@ -398,23 +398,6 @@ fn lookup_field_schema<'a>(schema: &'a Value, field_path: &str) -> Option<&'a Va
         current = current.as_object()?.get("properties")?.get(segment)?;
     }
     Some(current)
-}
-
-/// Detect a `TypeDef:*` kind from a schema node, accepting either the
-/// boolean form (`{ "TypeDef:String": true }`) or the object-annotation
-/// form (`{ "TypeDef:String": { "encoding": "..." } }`).
-///
-/// [`crate::schema::get_typedef_kind`] only recognizes the boolean form;
-/// the engine's read/write dispatch needs to recognize the object form
-/// too so that variable-length encoding annotations are honored.
-fn typedef_kind_loose(node: &Value) -> Option<&str> {
-    let obj = node.as_object()?;
-    for key in obj.keys() {
-        if key.starts_with("TypeDef:") && obj.get(key).is_some_and(|v| !v.is_null()) {
-            return Some(key.as_str());
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -754,6 +737,6 @@ mod tests {
     #[test]
     fn typedef_kind_loose_recognizes_object_form() {
         let node = json!({ "TypeDef:String": { "encoding": "offset-indirect" } });
-        assert_eq!(typedef_kind_loose(&node), Some("TypeDef:String"));
+        assert_eq!(get_typedef_kind_loose(&node), Some("TypeDef:String"));
     }
 }

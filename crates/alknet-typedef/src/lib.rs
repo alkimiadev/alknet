@@ -21,6 +21,8 @@
 //! - **Engine** ([`engine`]): `TypedefEngine` — the compiled form of a
 //!   schema, combining layout and validation.
 
+#[macro_use]
+mod macros;
 pub mod data_access;
 pub mod engine;
 pub mod error;
@@ -36,8 +38,9 @@ pub use error::TypedefError;
 pub use layout_builder::{FieldPosition, LayoutBuilder, PackedLayout};
 pub use offset_map::{ByteRange, OffsetMap};
 pub use schema::{
-    normalize_refs, parse_align, parse_discriminator, parse_encoding, parse_endian,
-    parse_max_length, DiscriminatorKind, Endian, VariableEncoding,
+    get_typedef_kind_loose, normalize_refs, parse_align, parse_discriminator, parse_encoding,
+    parse_endian, parse_max_length, resolve_ref, resolve_ref_or_inline, DiscriminatorKind, Endian,
+    VariableEncoding,
 };
 pub use sequential_reader::{FieldValue, SequentialReader};
 pub use tunion::UnionDispatch;
