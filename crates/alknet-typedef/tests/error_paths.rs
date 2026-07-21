@@ -33,13 +33,6 @@ fn read_u16_buffer_too_short_returns_access_error() {
 }
 
 #[test]
-fn read_u64_buffer_too_short_returns_access_error() {
-    let buffer = [0u8; 4];
-    let err = data_access::read_u64(&buffer, 0, "offset", Endian::Big).unwrap_err();
-    assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
-}
-
-#[test]
 fn read_f32_buffer_too_short_returns_access_error() {
     let buffer = [0u8; 2];
     let err = data_access::read_f32(&buffer, 0, "score", Endian::Little).unwrap_err();

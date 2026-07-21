@@ -37,7 +37,6 @@ pub enum TypeDefKind {
     Uint8,
     Uint16,
     Uint32,
-    Uint64,
     Float32,
     Float64,
     Boolean,
@@ -61,7 +60,6 @@ impl TypeDefKind {
             TypeDefKind::Uint8 => "TypeDef:Uint8",
             TypeDefKind::Uint16 => "TypeDef:Uint16",
             TypeDefKind::Uint32 => "TypeDef:Uint32",
-            TypeDefKind::Uint64 => "TypeDef:Uint64",
             TypeDefKind::Float32 => "TypeDef:Float32",
             TypeDefKind::Float64 => "TypeDef:Float64",
             TypeDefKind::Boolean => "TypeDef:Boolean",
@@ -91,8 +89,7 @@ impl TypeDefKind {
             | TypeDefKind::Union
             | TypeDefKind::Array
             | TypeDefKind::Record
-            | TypeDefKind::Timestamp
-            | TypeDefKind::Uint64 => None,
+            | TypeDefKind::Timestamp => None,
         }
     }
 
@@ -112,7 +109,6 @@ impl TypeDefKind {
             | TypeDefKind::Record
             | TypeDefKind::Timestamp => 4,
             TypeDefKind::Struct | TypeDefKind::Union | TypeDefKind::Array => 1,
-            TypeDefKind::Uint64 => 8,
         }
     }
 
@@ -141,7 +137,6 @@ impl TypeDefKind {
                 | TypeDefKind::Int32
                 | TypeDefKind::Uint16
                 | TypeDefKind::Uint32
-                | TypeDefKind::Uint64
                 | TypeDefKind::Float32
                 | TypeDefKind::Float64
                 | TypeDefKind::Enum
@@ -188,7 +183,6 @@ impl FromStr for TypeDefKind {
             "TypeDef:Uint8" => Ok(TypeDefKind::Uint8),
             "TypeDef:Uint16" => Ok(TypeDefKind::Uint16),
             "TypeDef:Uint32" => Ok(TypeDefKind::Uint32),
-            "TypeDef:Uint64" => Ok(TypeDefKind::Uint64),
             "TypeDef:Float32" => Ok(TypeDefKind::Float32),
             "TypeDef:Float64" => Ok(TypeDefKind::Float64),
             "TypeDef:Boolean" => Ok(TypeDefKind::Boolean),

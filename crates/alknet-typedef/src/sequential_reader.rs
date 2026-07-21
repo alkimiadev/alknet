@@ -35,10 +35,6 @@ pub enum FieldValue<'a> {
     U16(u16),
     /// `TypeDef:Uint32`.
     U32(u32),
-    /// `TypeDef:Uint64` — included for completeness (the schema layer's
-    /// `type_size` returns `None` for `TypeDef:Uint64`, but `data_access`
-    /// provides `read_u64` and the reader exposes it when encountered).
-    U64(u64),
     /// `TypeDef:Float32`.
     F32(f32),
     /// `TypeDef:Float64`.
@@ -303,10 +299,6 @@ fn read_field_value<'a>(
         TypeDefKind::Uint32 => {
             let v = data_access::read_u32(buffer, offset, field_path, endian)?;
             Ok((FieldValue::U32(v), offset + 4))
-        }
-        TypeDefKind::Uint64 => {
-            let v = data_access::read_u64(buffer, offset, field_path, endian)?;
-            Ok((FieldValue::U64(v), offset + 8))
         }
         TypeDefKind::Float32 => {
             let v = data_access::read_f32(buffer, offset, field_path, endian)?;
@@ -1065,7 +1057,6 @@ mod tests {
                 "u8":  { "TypeDef:Uint8": true },
                 "u16": { "TypeDef:Uint16": true },
                 "u32": { "TypeDef:Uint32": true },
-                "u64": { "TypeDef:Uint64": true },
                 "f32": { "TypeDef:Float32": true },
                 "f64": { "TypeDef:Float64": true },
                 "b":   { "TypeDef:Boolean": true },
@@ -1079,11 +1070,10 @@ mod tests {
         buf[7] = 200;
         buf[8..10].copy_from_slice(&0xBEEFu16.to_le_bytes());
         buf[10..14].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
-        buf[14..22].copy_from_slice(&0x0102030405060708u64.to_le_bytes());
-        buf[22..26].copy_from_slice(&std::f32::consts::PI.to_le_bytes());
-        buf[26..34].copy_from_slice(&std::f64::consts::PI.to_le_bytes());
-        buf[34] = 0x01;
-        buf[35..39].copy_from_slice(&7u32.to_le_bytes());
+        buf[14..18].copy_from_slice(&std::f32::consts::PI.to_le_bytes());
+        buf[18..26].copy_from_slice(&std::f64::consts::PI.to_le_bytes());
+        buf[26] = 0x01;
+        buf[27..31].copy_from_slice(&7u32.to_le_bytes());
 
         let mut reader = SequentialReader::new(&schema).unwrap();
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
@@ -1098,8 +1088,6 @@ mod tests {
         assert_eq!(v, FieldValue::U16(0xBEEF));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(v, FieldValue::U32(0xDEADBEEF));
-        let (_, v) = reader.read_next(&buf).unwrap().unwrap();
-        assert_eq!(v, FieldValue::U64(0x0102030405060708));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert!(matches!(v, FieldValue::F32(x) if (x - std::f32::consts::PI).abs() < 1e-6));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();

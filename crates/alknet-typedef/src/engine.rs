@@ -236,10 +236,6 @@ impl TypedefEngine {
                 let v = data_access::read_u32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::U32(v))
             }
-            TypeDefKind::Uint64 => {
-                let v = data_access::read_u64(buffer, range.start, field_path, endian)?;
-                Ok(FieldValue::U64(v))
-            }
             TypeDefKind::Float32 => {
                 let v = data_access::read_f32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::F32(v))
@@ -338,9 +334,6 @@ impl TypedefEngine {
             }
             FieldValue::U32(v) => {
                 data_access::write_u32(buffer, range.start, *v, field_path, endian)
-            }
-            FieldValue::U64(v) => {
-                data_access::write_u64(buffer, range.start, *v, field_path, endian)
             }
             FieldValue::F32(v) => {
                 data_access::write_f32(buffer, range.start, *v, field_path, endian)

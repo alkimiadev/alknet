@@ -121,7 +121,6 @@ define_read_write_endian!(i32, read_i32, write_i32, 4);
 define_read_write_ne!(u8, read_u8, write_u8, 1, |bytes: [u8; 1]| bytes[0]);
 define_read_write_endian!(u16, read_u16, write_u16, 2);
 define_read_write_endian!(u32, read_u32, write_u32, 4);
-define_read_write_endian!(u64, read_u64, write_u64, 8);
 define_read_write_endian!(f32, read_f32, write_f32, 4);
 define_read_write_endian!(f64, read_f64, write_f64, 8);
 
@@ -405,18 +404,6 @@ mod tests {
         let mut buf = [0u8; 4];
         write_i32(&mut buf, 0, i32::MIN, "f", BE).unwrap();
         assert_eq!(read_i32(&buf, 0, "f", BE).unwrap(), i32::MIN);
-    }
-
-    #[test]
-    fn read_write_u64_endianness() {
-        let mut buf = [0u8; 8];
-        write_u64(&mut buf, 0, 0x0102030405060708, "f", LE).unwrap();
-        assert_eq!(buf, [0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
-        assert_eq!(read_u64(&buf, 0, "f", LE).unwrap(), 0x0102030405060708);
-
-        write_u64(&mut buf, 0, 0x0102030405060708, "f", BE).unwrap();
-        assert_eq!(buf, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
-        assert_eq!(read_u64(&buf, 0, "f", BE).unwrap(), 0x0102030405060708);
     }
 
     #[test]
