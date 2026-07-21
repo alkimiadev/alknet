@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 ---
 
 # alknet-typedef

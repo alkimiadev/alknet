@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 ---
 
 # alknet-typedef — Data Access
@@ -11,6 +11,48 @@ variable-length types. This is the consumer-facing API — given a compiled
 `TypedefEngine` and a byte buffer, read and write fields at
 schema-computed offsets.
 
+This document covers two layers:
+
+- **Primitive read/write functions** in the `data_access` module —
+  typed reads/writes at a caller-provided offset. These are the building
+  blocks used by the layout types (`OffsetMap`, `LayoutBuilder`,
+  `SequentialReader`) and the `TypedefEngine`. Each operates on a raw
+  byte buffer at a known offset and returns a `TypedefError::Access`
+  carrying the field path on bounds or encoding failures.
+- **The `FieldValue` enum and the higher-level APIs** —
+  `TypedefEngine::read_field`/`write_field` (aligned mode) and
+  `SequentialReader::read_next`/`read_field` (packed mode) — which look
+  up a field's offset via the layout and dispatch to the primitive
+  functions, returning a unified `FieldValue<'a>`.
+
+## The `FieldValue` enum
+
+The higher-level read APIs return a single unified type — `FieldValue<'a>`
+— so one method can read any field kind without the caller dispatching on
+schema kind first. The variant carries the typed value; the lifetime
+borrows from the input buffer for variable-length kinds (zero-copy).
+
+```rust
+pub enum FieldValue<'a> {
+    I8(i8), I16(i16), I32(i32),
+    U8(u8), U16(u16), U32(u32),
+    F32(f32), F64(f64),
+    Bool(bool),
+    Enum(u32),                              // u32 index into the schema's "enum" array
+    String(&'a str),                        // borrows from the buffer
+    Bytes(&'a [u8]),                        // borrows from the buffer
+    Struct { start: usize, end: usize },    // consumer recurses with a fresh reader
+    Union { discriminator: String, variant_start: usize },
+    Array { count: u32, element_start: usize, element_stride: usize },
+}
+```
+
+For composite kinds (`Struct`, `Union`, `Array`), `FieldValue` returns a
+layout descriptor, not the decoded contents — the consumer recurses with
+a fresh `SequentialReader` (or a sub-range read) scoped to the reported
+byte range. `Array`'s `element_stride` is `0` for variable-length element
+types, signalling the consumer must walk each element sequentially.
+
 ## Read/Write Model
 
 The typedef engine operates on raw byte buffers (`&[u8]` for reading,
@@ -19,48 +61,100 @@ reflection, no dynamic dispatch per field. The engine uses the offset map
 (or `LayoutBuilder`/`SequentialReader`) to locate fields, then performs
 typed access at the computed positions.
 
-### Fixed-size types
+### Higher-level read/write
 
-Fixed-size types (`TFloat32`, `TInt32`, `TUint8`, `TEnum`, etc.) are accessed via
-zero-copy pointer casts:
+The `TypedefEngine` and `SequentialReader` provide the primary
+consumer-facing read/write APIs. They look up a field's offset via the
+layout and dispatch to the primitive `data_access` functions, returning
+`FieldValue` (read) or accepting `&FieldValue` (write).
 
 ```rust
-// Read a u32 at a known offset
-fn read_u32(buffer: &[u8], offset: usize, endian: Endian) -> u32 {
-    let bytes: [u8; 4] = buffer[offset..offset+4].try_into().unwrap();
-    match endian {
-        Endian::Little => u32::from_le_bytes(bytes),
-        Endian::Big => u32::from_be_bytes(bytes),
-    }
+impl TypedefEngine {
+    // Aligned mode: looks up the field's ByteRange in the OffsetMap,
+    // dispatches to the right data_access function by TypeDefKind.
+    // Returns TypedefError::Access if compiled in packed mode
+    // (use sequential_reader() for packed mode).
+    pub fn read_field<'a>(&self, buffer: &'a [u8], field_path: &str)
+        -> Result<FieldValue<'a>, TypedefError>;
+    pub fn write_field(&self, buffer: &mut [u8], field_path: &str,
+        value: &FieldValue<'_>) -> Result<(), TypedefError>;
 }
 
-// Write a u32 at a known offset
-fn write_u32(buffer: &mut [u8], offset: usize, value: u32, endian: Endian) {
+impl SequentialReader {
+    // Packed mode: walks the buffer field-by-field, reading length
+    // prefixes to find each field's position. read_field walks all
+    // preceding fields to reach the target.
+    pub fn read_next<'a>(&mut self, buffer: &'a [u8])
+        -> Result<Option<(String, FieldValue<'a>)>, TypedefError>;
+    pub fn read_field<'a>(&mut self, buffer: &'a [u8], field_path: &str)
+        -> Result<FieldValue<'a>, TypedefError>;
+    pub fn reset(&mut self);
+    pub fn position(&self) -> usize;
+    pub fn endian(&self) -> Endian;
+}
+```
+
+`read_field`/`write_field` on `TypedefEngine` work for the fixed-size
+primitive kinds and the length-prefixed `String`/`Bytes`/`Timestamp`
+fields. Composite kinds (`Struct`, `Union`, `Array`, `Record`) return a
+`FieldValue` carrying a layout descriptor (byte range, variant start,
+or array stride) for the consumer to recurse on — see §"FieldValue" above.
+
+For writing in packed mode, the consumer uses `LayoutBuilder::build` to
+compute positions, then calls the primitive `data_access::write_*`
+functions at the computed offsets. There is no packed-mode
+`engine.write_field` — the layout depends on the actual data sizes,
+which the builder consumes at `build` time.
+
+### Primitive read/write functions
+
+The `data_access` module exposes typed read/write functions for each
+primitive kind. Each takes `field_path: &str` for error attribution
+(produces a `TypedefError::Access` carrying the path on bounds or
+encoding failures) and, for multi-byte types, an `Endian` parameter.
+
+### Fixed-size types
+
+Fixed-size types (`TFloat32`, `TInt32`, `TUint8`, `TEnum`, etc.) are
+accessed via zero-copy reads of N bytes at the offset:
+
+```rust
+// Read a u32 at a known offset, applying endianness. Bounds-checked.
+fn read_u32(buffer: &[u8], offset: usize, field_path: &str, endian: Endian)
+    -> Result<u32, TypedefError> {
+    let bytes: [u8; 4] = read_array(buffer, offset, field_path)?;
+    Ok(match endian {
+        Endian::Little => u32::from_le_bytes(bytes),
+        Endian::Big => u32::from_be_bytes(bytes),
+    })
+}
+
+// Write a u32 at a known offset, applying endianness. Bounds-checked.
+fn write_u32(buffer: &mut [u8], offset: usize, value: u32,
+              field_path: &str, endian: Endian) -> Result<(), TypedefError> {
     let bytes = match endian {
         Endian::Little => value.to_le_bytes(),
         Endian::Big => value.to_be_bytes(),
     };
-    buffer[offset..offset+4].copy_from_slice(&bytes);
+    write_array(buffer, offset, bytes, field_path)
 }
 ```
 
 The engine applies endianness at access time based on the schema's
 `"endian"` annotation (ADR-097). The offset computation is
-endian-agnostic.
+endian-agnostic. The `read_array`/`write_array` helpers perform the
+bounds check and produce `TypedefError::Access` with the field path on
+failure.
 
 ### TEnum access
 
-`TEnum` is a fixed-size type (4 bytes, `u32` index). Read/write follows
-the same pattern as other fixed-size types — the engine reads/writes a
-`u32` at the field's computed offset, applying the schema's endianness:
+`TEnum` is a fixed-size type (4 bytes, `u32` index). Read/write delegates
+to the `u32` primitives, applying the schema's endianness:
 
 ```rust
-fn read_enum(buffer: &[u8], offset: usize, endian: Endian) -> u32 {
-    let bytes: [u8; 4] = buffer[offset..offset+4].try_into().unwrap();
-    match endian {
-        Endian::Little => u32::from_le_bytes(bytes),
-        Endian::Big => u32::from_be_bytes(bytes),
-    }
+pub fn read_enum(buffer: &[u8], offset: usize, field_path: &str, endian: Endian)
+    -> Result<u32, TypedefError> {
+    read_u32(buffer, offset, field_path, endian)
 }
 ```
 
@@ -72,43 +166,28 @@ corresponds to a valid enum value at the JSON level.
 
 ### Variable-length types (inline length-prefixing)
 
-For variable-length types with inline length-prefixing (the default):
+For variable-length types with inline length-prefixing (the default),
+the `data_access` module provides `read_string`/`write_string`/
+`read_bytes`/`write_bytes`. Each takes `field_path: &str` for error
+attribution and `endian` for the length prefix:
 
 ```rust
-// Read a length-prefixed string
-fn read_string<'a>(buffer: &'a [u8], offset: usize, endian: Endian) -> Result<&'a str, TypedefError> {
-    let len_bytes: [u8; 4] = buffer[offset..offset+4].try_into()
-        .map_err(|_| TypedefError::Access { /* ... */ })?;
-    let len = match endian {
-        Endian::Little => u32::from_le_bytes(len_bytes),
-        Endian::Big => u32::from_be_bytes(len_bytes),
-    } as usize;
-    let data = buffer.get(offset+4..offset+4+len)
-        .ok_or_else(|| TypedefError::Access { /* ... */ })?;
-    std::str::from_utf8(data)
-        .map_err(|e| TypedefError::Access { /* ... */ })
-}
+// Read a length-prefixed string, borrowing from the buffer.
+fn read_string<'a>(buffer: &'a [u8], offset: usize,
+                   field_path: &str, endian: Endian) -> Result<&'a str, TypedefError>;
 
-// Write a length-prefixed string
-fn write_string(buffer: &mut [u8], offset: usize, value: &str, endian: Endian) -> Result<(), TypedefError> {
-    let data = value.as_bytes();
-    let len_bytes = match endian {
-        Endian::Little => (data.len() as u32).to_le_bytes(),
-        Endian::Big => (data.len() as u32).to_be_bytes(),
-    };
-    buffer.get_mut(offset..offset+4)
-        .ok_or_else(|| TypedefError::Access { /* ... */ })?
-        .copy_from_slice(&len_bytes);
-    buffer.get_mut(offset+4..offset+4+data.len())
-        .ok_or_else(|| TypedefError::Access { /* ... */ })?
-        .copy_from_slice(data);
-    Ok(())
-}
+// Write a length-prefixed string. Returns total bytes written (4 + data.len()).
+fn write_string(buffer: &mut [u8], offset: usize, value: &str,
+                field_path: &str, endian: Endian) -> Result<usize, TypedefError>;
+
+// read_bytes / write_bytes have the same shape — raw bytes, no UTF-8 check.
 ```
 
 The engine reads the 4-byte length prefix at the field's offset, then
 slices the data that follows. For writing, the engine writes the length
-prefix + data.
+prefix + data. `read_string` validates UTF-8 and returns a `&str`
+borrowing from the input buffer (zero-copy); `read_bytes` returns a
+`&[u8]` slice with no encoding check.
 
 In packed sequential mode, the `SequentialReader` uses the length prefix
 to determine the position of the next field. In aligned static mode, the
@@ -117,24 +196,19 @@ is accessed separately.
 
 ### Variable-length types (offset indirection)
 
-For variable-length types with offset indirection (opt-in):
+For variable-length types with offset indirection (opt-in), the
+`data_access` module provides `read_string_indirect`/`read_bytes_indirect`.
+The 8-byte struct at `buffer[offset..offset+8]` is
+`{ data_offset: u32, data_length: u32 }` (endian-aware); the actual
+bytes live in a separate `data_region`:
 
 ```rust
-// Read an offset-indirect string
-fn read_string_indirect<'a>(data_region: &'a [u8], offset: usize, endian: Endian) -> Result<&'a str, TypedefError> {
-    let ptr_offset = match endian {
-        Endian::Little => u32::from_le_bytes(data_region[offset..offset+4].try_into().unwrap()),
-        Endian::Big => u32::from_be_bytes(data_region[offset..offset+4].try_into().unwrap()),
-    } as usize;
-    let ptr_length = match endian {
-        Endian::Little => u32::from_le_bytes(data_region[offset+4..offset+8].try_into().unwrap()),
-        Endian::Big => u32::from_be_bytes(data_region[offset+4..offset+8].try_into().unwrap()),
-    } as usize;
-    let data = data_region.get(ptr_offset..ptr_offset+ptr_length)
-        .ok_or_else(|| TypedefError::Access { /* ... */ })?;
-    std::str::from_utf8(data)
-        .map_err(|e| TypedefError::Access { /* ... */ })
-}
+fn read_string_indirect<'a>(buffer: &'a [u8], offset: usize,
+                             data_region: &'a [u8], field_path: &str,
+                             endian: Endian) -> Result<&'a str, TypedefError>;
+fn read_bytes_indirect<'a>(buffer: &'a [u8], offset: usize,
+                            data_region: &'a [u8], field_path: &str,
+                            endian: Endian) -> Result<&'a [u8], TypedefError>;
 ```
 
 The field is a struct `{offset: u32, length: u32}` at a known position
@@ -143,157 +217,122 @@ engine reads the offset and length, then slices the data region.
 
 ## TUnion Dispatch
 
-TUnion dispatch reads the discriminator value, looks up the variant
-schema, and then reads the variant's fields. The dispatch mechanism
-differs by discriminator kind (ADR-097).
+The `tunion` module provides TUnion discriminator dispatch — reading the
+discriminator value from a byte buffer, looking up the variant schema in
+the union's `mapping`, and reporting the offset where the variant struct
+begins. All reads go through the `data_access` primitives so bounds checks
+and endianness handling are uniform with the rest of the engine.
+
+The result of dispatch is a `UnionDispatch` struct:
+
+```rust
+pub struct UnionDispatch {
+    pub key: String,              // mapping key (stringified disc value)
+    pub variant_offset: usize,    // byte offset where the variant struct starts
+    pub discriminator_size: usize, // discriminator's byte size
+}
+```
+
+After dispatch, the consumer calls `tunion::resolve_variant(union_schema, &dispatch.key)`
+to get the variant schema, then reads the variant's fields at
+`dispatch.variant_offset` using the normal `data_access` functions (or a
+fresh `SequentialReader` scoped to the variant).
 
 ### Byte-offset discriminator
 
 ```rust
-/// Read the discriminator value from a byte-offset TUnion.
-/// Returns the mapping key (as a string) so the consumer can look up
-/// the variant schema and read the variant's fields.
-fn read_union_discriminator(
+/// Read the discriminator value from a byte-offset TUnion. The discriminator
+/// is a fixed-size integer (TypeDef:Uint8/Uint16/Uint32) at a known byte
+/// offset. Returns the mapping key (stringified integer) and the variant
+/// struct offset.
+pub fn read_byte_discriminator(
     buffer: &[u8],
-    schema: &Value,
+    union_schema: &Value,
     endian: Endian,
-) -> Result<String, TypedefError> {
-    let disc = schema["discriminator"].as_object()
-        .ok_or_else(|| TypedefError::Schema("missing discriminator".into()))?;
-    let offset = disc["offset"].as_u64().unwrap_or(0) as usize;
-    let disc_type = disc["type"].as_str().unwrap_or("TypeDef:Uint8");
-
-    let (disc_value, disc_size) = match disc_type {
-        "TypeDef:Uint8" => {
-            let b = *buffer.get(offset)
-                .ok_or_else(|| TypedefError::Access { /* ... */ })?;
-            (b as u32, 1)
-        }
-        "TypeDef:Uint16" => {
-            let bytes: [u8; 2] = buffer[offset..offset+2].try_into().unwrap();
-            let v = match endian {
-                Endian::Little => u16::from_le_bytes(bytes),
-                Endian::Big => u16::from_be_bytes(bytes),
-            };
-            (v as u32, 2)
-        }
-        "TypeDef:Uint32" => {
-            let bytes: [u8; 4] = buffer[offset..offset+4].try_into().unwrap();
-            let v = match endian {
-                Endian::Little => u32::from_le_bytes(bytes),
-                Endian::Big => u32::from_be_bytes(bytes),
-            };
-            (v, 4)
-        }
-        _ => return Err(TypedefError::Schema(format!("unsupported discriminator type: {disc_type}"))),
-    };
-
-    let key = disc_value.to_string();
-    if schema["mapping"].as_object().map_or(false, |m| m.contains_key(&key)) {
-        Ok(key)
-    } else {
-        Err(TypedefError::Access {
-            field_path: "__discriminator".into(),
-            reason: format!("unknown discriminator value: {disc_value}"),
-        })
-    }
-}
+) -> Result<UnionDispatch, TypedefError>;
 ```
-
-The discriminator is a fixed-size integer at a known byte offset. The
-mapping keys are stringified integers. The variant struct starts at
-`offset + discriminator_size`. After reading the discriminator, the
-consumer looks up the variant schema and reads the variant's fields
-using the normal typed read functions (e.g., `read_u32`, `read_string`)
-at `offset + discriminator_size`.
 
 This is the SFTP `Packet` enum pattern — byte 0 is the type byte, bytes
 1..N are the variant struct. The call protocol's 5 event types
-(`call.requested` → 0x01, etc.) use the same pattern.
+(`call.requested` → 0x01, etc.) use the same pattern. The variant struct
+starts at `offset + discriminator_size`.
 
 ### Field-name discriminator
 
 ```rust
-/// Read the discriminator value from a field-name TUnion.
-/// The discriminator is a named field within the struct — its offset
-/// is computed like any other field. The consumer reads the field's
-/// value, looks up the variant schema, then reads the variant's fields.
-fn read_union_field_discriminator(
+/// Read the discriminator value from a field-name TUnion. The
+/// discriminator is a named field within the struct — the consumer
+/// provides the field's computed offset (from the OffsetMap or
+/// LayoutBuilder). Supports TypeDef:String, Uint8, and Enum discriminator
+/// fields.
+pub fn read_field_discriminator(
     buffer: &[u8],
-    schema: &Value,
-    offset_map: &OffsetMap,
+    union_schema: &Value,
+    disc_field_offset: usize,
     endian: Endian,
-) -> Result<String, TypedefError> {
-    let disc = schema["discriminator"].as_object()
-        .ok_or_else(|| TypedefError::Schema("missing discriminator".into()))?;
-    let field_name = disc["name"].as_str()
-        .ok_or_else(|| TypedefError::Schema("discriminator has no 'name'".into()))?;
-
-    // Read the discriminator field at its computed offset.
-    // The field's TypeDef kind determines how to read it (typically a string).
-    let field_schema = schema["properties"].get(field_name)
-        .ok_or_else(|| TypedefError::Schema(format!("discriminator field '{field_name}' not found")))?;
-    let kind = get_typedef_kind(field_schema)
-        .ok_or_else(|| TypedefError::Schema("discriminator field has no TypeDef kind".into()))?;
-
-    match kind {
-        "TypeDef:String" => {
-            let range = offset_map.get(field_name)
-                .ok_or_else(|| TypedefError::Offset { /* ... */ })?;
-            read_string(buffer, range.start, endian)
-                .map(|s| s.to_string())
-        }
-        "TypeDef:Uint8" => {
-            let range = offset_map.get(field_name)
-                .ok_or_else(|| TypedefError::Offset { /* ... */ })?;
-            Ok(buffer[range.start].to_string())
-        }
-        _ => Err(TypedefError::Schema(format!(
-            "unsupported discriminator field type: {kind}"
-        ))),
-    }
-}
+) -> Result<UnionDispatch, TypedefError>;
 ```
 
 The discriminator is a named field within the struct. Its offset is
-computed like any other field. The mapping keys are string values.
-After reading the discriminator, the consumer looks up the variant
-schema and reads the variant's fields starting at the end of the
-discriminator field (or at the start of the union buffer if the
-discriminator is the first field).
+computed like any other field (the consumer passes it in as
+`disc_field_offset`). The mapping keys are string values. After reading
+the discriminator, the consumer looks up the variant schema and reads
+the variant's fields starting at the end of the discriminator field.
+
+### Variant resolution
+
+```rust
+/// Look up a variant schema from the union's mapping. Inline schemas
+/// are returned directly. $ref pointers of the form "#/$defs/<name>"
+/// are resolved against the union schema's own $defs block.
+pub fn resolve_variant<'a>(union_schema: &'a Value, key: &str)
+    -> Result<&'a Value, TypedefError>;
+
+/// Get the discriminator's byte size (1/2/4 for Uint8/16/32) for a
+/// byte-offset TUnion. Field-name discriminators have no fixed size
+/// and produce a TypedefError::Schema.
+pub fn discriminator_size(union_schema: &Value) -> Result<usize, TypedefError>;
+```
+
+### TUnion in the layout engines
+
+The `LayoutBuilder` and `SequentialReader` also handle TUnion fields
+inline during traversal (the consumer does not need to call the `tunion`
+functions for a union field reached during a sequential walk). For
+`LayoutBuilder`, the consumer supplies the discriminator value (byte-offset)
+or variant index (field-name) in `var_sizes` under the synthetic key
+`"<union_path>.__discriminator"` or `"<union_path>.__variant"`. For
+`SequentialReader`, a union field yields
+`FieldValue::Union { discriminator, variant_start }`. The standalone
+`tunion` functions are for dispatch outside the layout walk — e.g., a
+consumer that receives a bare union buffer and needs to identify the
+variant before recursing.
 
 ## Field Paths
 
 Fields are addressed by dotted paths: `"header.version"`, `"payload.data"`.
-The `OffsetMap` stores fully-qualified paths. The read/write functions
-accept a field path and look up the byte range:
+Both `OffsetMap` and `PackedLayout` store fully-qualified paths (nested
+struct fields appear under their parent's path prefix). The higher-level
+APIs (`TypedefEngine::read_field`/`write_field`, `SequentialReader::read_field`)
+accept a field path, look up the byte range/position in the layout, and
+dispatch to the primitive `data_access` function for the field's kind.
 
-```rust
-/// Read an f32 field by path. This is the aligned-mode path (uses OffsetMap).
-/// In packed mode, the consumer uses SequentialReader instead.
-fn read_f32(&self, buffer: &[u8], field_path: &str) -> Result<f32, TypedefError> {
-    let range = self.offset_map.get(field_path)
-        .ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: "field not found in offset map".to_string(),
-        })?;
-    if buffer.len() < range.end {
-        return Err(TypedefError::Access {
-            field_path: field_path.to_string(),
-            reason: format!("buffer too short: need {} bytes, have {}", range.end, buffer.len()),
-        });
-    }
-    let bytes: [u8; 4] = buffer[range.start..range.end].try_into().unwrap();
-    Ok(match self.endian {
-        Endian::Little => f32::from_le_bytes(bytes),
-        Endian::Big => f32::from_be_bytes(bytes),
-    })
-}
-```
+For aligned-mode access, `TypedefEngine::read_field(&buffer, "header.version")`
+returns `FieldValue` — it looks up the `ByteRange` in the `OffsetMap`, finds
+the field's `TypeDef:*` kind in the schema, and calls the matching
+`data_access::read_*` function. `write_field` is the mirror. Composite
+kinds (`Struct`, `Union`, `Array`, `Record`) return a `FieldValue`
+carrying a layout descriptor; the consumer recurses with a fresh reader
+or sub-range read.
+
+For packed-mode access, `SequentialReader::read_field(&buffer, "c")` walks
+all preceding fields to reach the target (sequential access is inherent
+to packed layouts). `read_next` walks fields in declaration order.
 
 Nested structs produce nested field paths. The offset computation
 propagates the field path prefix during recursion, so the `OffsetMap`
-contains entries like `"header.version"` and `"header.magic"`.
+and `PackedLayout` contain entries like `"header.version"` and
+`"header.magic"`.
 
 ## Zero-Copy Access
 

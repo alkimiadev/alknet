@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 ---
 
 # alknet-typedef — Validation
@@ -50,30 +50,47 @@ process, not a single `validate(buffer)` call.
 ### The `TypedefEngine` struct
 
 The `TypedefEngine` is the compiled form of a schema. It supports both
-layout modes (ADR-096) via an internal enum:
+layout modes (ADR-096) via an internal `Layout` enum:
 
 ```rust
 pub struct TypedefEngine {
-    layout: Layout,                  // packed or aligned (see below)
+    layout: Layout,                   // packed or aligned (private enum)
     validator: jsonschema::Validator, // compiled once at load time
+    endian: Endian,                   // parsed from the schema's "endian" annotation
+    schema: Value,                    // the normalized schema (refs resolved)
 }
 
+// Private — the consumer selects via LayoutMode at compile time.
 enum Layout {
-    Packed {
-        builder: LayoutBuilder,
-        reader: SequentialReader,
-    },
-    Aligned {
-        offset_map: OffsetMap,
-    },
+    Packed { builder: LayoutBuilder, reader: SequentialReader },
+    Aligned { offset_map: OffsetMap },
 }
 ```
 
-The consumer selects the mode at construction time. The `Layout` enum
-ensures the engine always has the correct layout strategy for the
-consumer's use case — a protocol consumer gets `Packed`, an mmap
-consumer gets `Aligned`. The validator is mode-agnostic (it operates on
-`Value`, not raw bytes).
+The consumer selects the mode at construction time via `LayoutMode`
+(see [layout-engine.md](layout-engine.md) §"Mode Selection"). The `Layout`
+enum is private — the engine exposes mode-appropriate accessors instead:
+
+```rust
+impl TypedefEngine {
+    pub fn compile(schema: &mut Value, mode: LayoutMode) -> Result<Self, TypedefError>;
+    pub fn mode(&self) -> LayoutMode;
+    pub fn endian(&self) -> Endian;
+    pub fn offset_map(&self) -> Option<&OffsetMap>;          // Some in aligned mode
+    pub fn layout_builder(&self) -> Option<&LayoutBuilder>;  // Some in packed mode
+    pub fn sequential_reader(&self) -> Option<&SequentialReader>; // Some in packed mode
+}
+```
+
+`compile` takes `&mut Value` because it normalizes `$ref` values in place
+(via [`normalize_refs`](schema-layer.md#ref-resolution-and-normalization))
+before computing the layout and building the validator. The `schema`
+field retains the normalized schema for `read_field`'s kind lookup. The
+validator is mode-agnostic (it operates on `Value`, not raw bytes).
+
+The `read_field`/`write_field` methods on `TypedefEngine` are the
+aligned-mode data-access API — see [data-access.md](data-access.md)
+§"Higher-level read/write".
 
 ## Custom Keyword Validators
 
@@ -242,18 +259,30 @@ you exactly which field failed and why.
 ### Load time: `TypedefEngine::compile()`
 
 The expensive work happens once at schema load time:
-1. Parse the schema JSON (`serde_json::from_str` with `preserve_order`).
-2. Compute the offset map (or `LayoutBuilder`/`SequentialReader`).
-3. Build the jsonschema validator (`jsonschema::options().with_keyword(...).build(&schema)?`).
+1. Normalize `$ref` values in the schema (`normalize_refs`).
+2. Parse the schema's `"endian"` annotation.
+3. Compute the layout (`LayoutBuilder`/`SequentialReader` for packed, `OffsetMap` for aligned).
+4. Build the jsonschema validator (`jsonschema::options().with_keyword(...).build(&schema)?`).
 
 The result is a `TypedefEngine` that can be used for repeated operations.
 
-### Access time: `engine.validate(buffer)`
+### Access time: `engine.validate_json(&Value)` / `engine.is_valid_json(&Value)`
 
 Validation is opt-in per operation. The consumer calls
-`engine.validate(buffer)` when validation is desired. The jsonschema
-validator is already compiled — `is_valid()` is a fast check against
-the compiled validator.
+`engine.validate_json(instance)` when validation is desired, or
+`engine.is_valid_json(instance)` for a boolean check. The jsonschema
+validator is already compiled — these are fast checks against the
+compiled validator.
+
+```rust
+pub fn validate_json(&self, instance: &Value) -> Result<(), TypedefError>;
+pub fn is_valid_json(&self, instance: &Value) -> bool;
+```
+
+The argument is a `serde_json::Value` (the JSON representation of the
+data), not a raw byte buffer — see §"What validation validates" above.
+To validate a binary buffer end-to-end, the consumer reads it into a
+`Value` tree via the data access layer, then validates that `Value`.
 
 High-throughput paths can skip validation. Security-sensitive paths
 (parsing incoming frames from untrusted peers) can validate every frame.
@@ -261,16 +290,19 @@ The choice is the consumer's.
 
 ## Relationship to Read/Write
 
-Validation and data access are independent operations on the same buffer.
+Validation and data access are independent operations on the same data.
 The consumer can:
 
-1. Validate a buffer to ensure it conforms to the schema.
-2. Read fields from the buffer at computed offsets.
-3. Both — validate first, then read (defense in depth).
+1. Validate the JSON representation of a buffer to ensure it conforms to
+   the schema.
+2. Read fields from the binary buffer at computed offsets.
+3. Both — validate the JSON representation first, then read the binary
+   buffer (defense in depth).
 
 The engine does not couple validation and access. A consumer that trusts
 its data source can skip validation and go straight to read/write. A
-consumer that parses untrusted input can validate first, then access.
+consumer that parses untrusted input can validate the JSON
+representation first, then access the binary buffer.
 
 ## Design Decisions
 

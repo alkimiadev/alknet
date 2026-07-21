@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 ---
 
 # alknet-typedef — Overview
@@ -31,12 +31,12 @@ with `TypeDef:*` custom keywords (the same kinds defined in TypeBox's
 The heavy lifting is done by the `jsonschema` crate (validation) and
 `serde_json` (schema parsing). The novel code is the offset computation
 — a recursive walk of the schema JSON that computes byte positions for
-each field. The custom keyword implementations are ~10 lines each.
+each field. The custom keyword implementations are small (a few lines
+each, generated from shared macros — see [validation.md](validation.md)).
 
-The crate is ~1,900 lines (POC verified, 26 tests passing). It replaces
-two prior attempts that built their own jsonschema engines — typebox-rs
-(~8,400 lines) and alktype (~5,600 lines) — with `jsonschema` + an
-offset map + ~50 lines of custom keyword implementations. See
+The crate replaces two prior attempts that built their own jsonschema
+engines — typebox-rs (~8,400 lines) and alktype (~5,600 lines) — with
+`jsonschema` + an offset map + small custom keyword implementations. See
 [ADR-095](../../decisions/095-alknet-typedef-purpose-scope-jsonschema-engine.md).
 
 ## Why

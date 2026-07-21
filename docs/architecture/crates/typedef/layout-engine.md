@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 ---
 
 # alknet-typedef — Layout Engine
@@ -24,27 +24,21 @@ protocols.
 
 **Components:**
 
-- **`LayoutBuilder`** — takes a schema and actual data sizes for
-  variable-length fields, computes byte positions for each field in a
-  packed layout. Used at write time when the consumer knows the data
-  sizes upfront.
-- **`SequentialReader`** — walks a buffer field-by-field according to the
-  schema, reading length prefixes to determine variable-length data
-  positions. Used at read time when the consumer is parsing an incoming
-  frame.
+- **`LayoutBuilder`** — constructed via `LayoutBuilder::new(schema)` (requires `TypeDef:Struct` at the top level), then `builder.build(&var_sizes) -> Result<PackedLayout, TypedefError>` where `var_sizes: &HashMap<String, usize>` maps variable-length field paths (and TUnion discriminator/variant keys) to their actual byte sizes. Used at write time when the consumer knows the data sizes upfront. The builder computes positions only; the consumer writes data via the [`data_access`](data-access.md) functions at the computed positions.
+- **`SequentialReader`** — constructed via `SequentialReader::new(schema)`, then driven by `reader.read_next(&buffer) -> Result<Option<(String, FieldValue)>, TypedefError>` until `Ok(None)`, or `reader.read_field(&buffer, path)` to seek a single field (which walks all preceding fields to reach the target). `reader.reset()` rewinds to the start. Used at read time when the consumer is parsing an incoming frame.
 
 **How it works:**
 
-For a struct with fields `[u8, u32, string]`:
+For a struct with fields `[u8, u32, string]` where the string is 10 bytes:
 
 ```
-LayoutBuilder (write):
+LayoutBuilder::build(var_sizes: {"payload": 10}):
   field[0] u8:     offset 0, size 1
   field[1] u32:    offset 1, size 4
-  field[2] string: offset 5, size 4 (length prefix) + data_len
-  total: 9 + data_len
+  field[2] string: offset 5, size 4 (length prefix) + 10 (data)
+  total: 19
 
-SequentialReader (read):
+SequentialReader::read_next (read):
   read u8 at offset 0
   read u32 at offset 1
   read u32 length prefix at offset 5 → data_len
@@ -75,10 +69,7 @@ and safetensors.
 
 **Component:**
 
-- **`OffsetMap`** — walks the schema once, computes fixed byte positions
-  for each field based on type sizes and alignment. The output is a flat
-  table of `(field_path, byte_range)` pairs. Used for both read and write
-  at known offsets.
+- **`OffsetMap`** — constructed via `OffsetMap::compute(schema) -> Result<Self, TypedefError>` (requires `TypeDef:Struct` at the top level). Walks the schema once, computes fixed byte positions for each field based on type sizes and alignment. The output is a flat table of `(field_path, byte_range)` pairs (see [Public Types](#public-types)). Used for both read and write at known offsets.
 
 **How it works:**
 
@@ -199,7 +190,10 @@ annotation shapes).
 
 Nested structs produce dotted field paths: `header.version`,
 `header.magic`. The offset computation propagates the field path prefix
-during recursion. The `OffsetMap` stores fully-qualified paths.
+during recursion. Both `OffsetMap` and `PackedLayout` store fully-qualified
+paths; the `iter()` method of each yields fields in schema `properties`
+order, with nested struct fields appearing inline under their parent's
+path prefix.
 
 ### Endianness
 
@@ -212,19 +206,109 @@ and byte-swaps accordingly. All fixed-size types — including `TEnum`
 
 ## Mode Selection
 
-The consumer selects the mode at engine construction time. The choice is
-determined by the use case, not by the schema:
+The consumer selects the mode at engine construction time via the
+`LayoutMode` enum, passed to `TypedefEngine::compile`:
+
+```rust
+pub enum LayoutMode {
+    /// Packed sequential — for protocol wire formats (SFTP, channels, TTY).
+    Packed,
+    /// Aligned static — for mmap-friendly formats (metatensor, safetensors).
+    Aligned,
+}
+```
+
+The choice is determined by the use case, not by the schema:
 
 - **Protocol consumer** (SFTP, binary call frames, TTY negotiation):
-  uses `LayoutBuilder` for writing and `SequentialReader` for reading.
-- **mmap consumer** (metatensor): uses `OffsetMap` for both reading and
-  writing.
+  `LayoutMode::Packed` → uses `LayoutBuilder` for writing and
+  `SequentialReader` for reading.
+- **mmap consumer** (metatensor): `LayoutMode::Aligned` → uses `OffsetMap`
+  for both reading and writing at known offsets.
 
 The same schema can be used in either mode. A schema describing an SFTP
 packet can be consumed by a `SequentialReader` (for parsing incoming
 frames) and a `LayoutBuilder` (for constructing outgoing frames). A schema
 describing a metatensor layout can be consumed by an `OffsetMap` (for
 mmap access).
+
+`TypedefEngine` exposes mode-appropriate accessors: `engine.offset_map()`
+returns `Some` in aligned mode and `None` in packed mode;
+`engine.layout_builder()` and `engine.sequential_reader()` return `Some`
+in packed mode and `None` in aligned mode. See [validation.md](validation.md)
+§"The TypedefEngine struct" for the engine API.
+
+## Public Types
+
+The layout engine produces three public types, one per layout component.
+All are re-exported from the crate root.
+
+### `ByteRange` (aligned mode)
+
+```rust
+pub struct ByteRange {
+    pub start: usize,  // inclusive
+    pub end: usize,    // exclusive
+}
+```
+
+A half-open byte range produced by `OffsetMap::compute` for each field.
+`end - start` is the field's byte size in the static layout (for
+variable-length fields: the length prefix, the `{offset, length}` pair,
+or the `maxLength` reservation — not the variable data). `ByteRange`
+provides `len()` and `is_empty()`.
+
+### `FieldPosition` (packed mode)
+
+```rust
+pub struct FieldPosition {
+    pub offset: usize,
+    pub size: usize,
+    pub kind: TypeDefKind,
+}
+```
+
+A field's computed position in a packed layout, produced by
+`LayoutBuilder::build`. For variable-length fields, `size` is `4` (the
+length prefix); for fixed-size fields, `size` is the type's byte size.
+`kind` records the field's `TypeDef:*` kind so the consumer can dispatch
+to the correct `data_access` read/write function.
+
+### `PackedLayout` (packed mode)
+
+The result of `LayoutBuilder::build`: a map of `field_path → FieldPosition`
+plus the total buffer size needed.
+
+```rust
+impl PackedLayout {
+    pub fn get(&self, field_path: &str) -> Option<&FieldPosition>;
+    pub fn total_size(&self) -> usize;
+    pub fn iter(&self) -> impl Iterator<Item = &(String, FieldPosition)>;
+}
+```
+
+`get` looks up a field by dotted path. For TUnion byte-offset
+discriminators, the discriminator is recorded under the synthetic path
+`"<union_path>.__discriminator"`. `iter` yields fields in layout order
+(schema `properties` order, with nested struct fields appearing inline
+under their parent's path prefix).
+
+### `OffsetMap` (aligned mode)
+
+A flat table of `(field_path, byte_range)` pairs computed from a schema.
+
+```rust
+impl OffsetMap {
+    pub fn compute(schema: &Value) -> Result<Self, TypedefError>;
+    pub fn get(&self, field_path: &str) -> Option<&ByteRange>;
+    pub fn total_size(&self) -> usize;
+    pub fn iter(&self) -> impl Iterator<Item = &(String, ByteRange)>;
+}
+```
+
+`compute` requires a `TypeDef:Struct` at the top level. `total_size`
+includes trailing alignment padding. `iter` yields fields in insertion
+order (schema `properties` order, nested struct fields appearing inline).
 
 ## Design Decisions
 

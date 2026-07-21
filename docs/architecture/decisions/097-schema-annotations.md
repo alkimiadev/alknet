@@ -144,8 +144,15 @@ the `"values"` property in the schema:
 - `"values"` is a schema object declaring the `TypeDef:*` kind of all
   values in the record. All values share the same type.
 - The binary layout is a count-prefixed sequence of `(key, value)` pairs:
-  `[count: u32][key_len: u32][key_bytes][value_len: u32][value_bytes]...`.
-- The count prefix respects the schema's endianness.
+  `[count: u32][key_len: u32][key_bytes][value]...` repeated `count`
+  times. Each key is a length-prefixed UTF-8 string. Each value is
+  encoded according to its declared `TypeDef:*` kind — a `Record<Uint32>`
+  value is 4 raw bytes; a `Record<String>` value is itself a
+  length-prefixed string; a `Record<Struct>` value is the struct's
+  fields laid out inline. There is **no separate `value_len` prefix** —
+  the value's size is determined by its kind (fixed-size kinds have a
+  known size; variable-length kinds carry their own length prefix).
+- The count and key-length prefixes respect the schema's endianness.
 - In aligned static mode with `maxLength`, the entire record is reserved
   at `maxLength` bytes (zero-padded).
 

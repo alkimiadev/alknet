@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 ---
 
 # alknet-typedef — Schema Layer
@@ -36,6 +36,42 @@ encoding strategy (for variable-length types).
 | `TEnum` | `TypeDef:Enum` | u32 index into enum values | 4 (fixed) | fixed |
 | `TRecord` | `TypeDef:Record` | count-prefixed sequence of (key, value) pairs | variable | variable |
 | `TTimestamp` | `TypeDef:Timestamp` | length-prefixed RFC 3339 string | variable | variable |
+
+### The `TypeDefKind` enum
+
+The engine represents the 17 kinds as a Rust enum — `TypeDefKind` — with
+one variant per kind (`TypeDefKind::Float32`, `TypeDefKind::Struct`, etc.).
+The enum provides compile-time exhaustiveness checking and integer
+discriminant dispatch (a jump table) instead of string comparison at
+every field access. It is `pub` and re-exported from the crate root.
+
+```rust
+pub enum TypeDefKind {
+    Int8, Int16, Int32,
+    Uint8, Uint16, Uint32,
+    Float32, Float64,
+    Boolean, Enum,
+    String, Bytes, Timestamp,
+    Struct, Union, Array, Record,
+}
+```
+
+The enum carries the kind's binary-layout metadata as inherent methods:
+
+| Method | Returns | Notes |
+|--------|---------|-------|
+| `as_str(self)` | `&'static str` | The JSON Schema keyword, e.g. `"TypeDef:Uint8"` |
+| `type_size(self)` | `Option<usize>` | `Some(N)` for fixed-size kinds; `None` for variable/composite |
+| `natural_alignment(self)` | `usize` | 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/enum, 8 for f64, 4 for variable-length (the u32 length prefix), 1 for struct/union/array |
+| `is_fixed_size(self)` | `bool` | True for the 10 fixed-size primitive kinds |
+| `is_composite(self)` | `bool` | True for Struct, Union, Array, Record |
+| `is_variable_length(self)` | `bool` | True for String, Bytes, Timestamp, Record |
+| `needs_endian(self)` | `bool` | True for kinds whose read/write takes an `Endian` parameter |
+
+`TypeDefKind` implements `Display` (renders the keyword string) and
+`FromStr` (parses the keyword string back into the variant, returning
+`TypedefError::Schema` for unknown kinds). The layout engines and the
+validator dispatch on the enum, not on strings.
 
 ### Fixed-size types
 
@@ -132,14 +168,20 @@ distinct from UTF-8 strings. In the binary representation, TBytes is raw
 bytes with no encoding (not base64, not hex). In the JSON representation
 (for validation), TBytes is a string (JSON has no native byte type).
 
-**`TRecord`:** A string-keyed map. Binary layout is a count-prefixed
-sequence of `(key, value)` pairs: `[count: u32][key_len: u32][key_bytes]
-[value_len: u32][value_bytes]...`. The count is the number of entries.
-Each key is a length-prefixed UTF-8 string. Each value is the record's
-declared value type (specified via the `"values"` property in the schema,
-e.g., `"values": { "TypeDef:Float32": true }`). The count prefix respects
-the schema's endianness. In aligned static mode with `maxLength`, the
-entire record is reserved at `maxLength` bytes (zero-padded).
+**`TRecord`:** A string-keyed map. The value type is declared via the
+schema's `"values"` property (e.g., `"values": { "TypeDef:Float32": true }`).
+Binary layout is a count-prefixed sequence of `(key, value)` pairs:
+`[count: u32][key_len: u32][key_bytes][value]...` repeated `count` times.
+The count is the number of entries. Each key is a length-prefixed UTF-8
+string. Each value is encoded according to its declared `TypeDef:*` kind
+— a `Record<Uint32>` value is 4 raw bytes; a `Record<String>` value is
+itself a length-prefixed string; a `Record<Struct>` value is the struct's
+fields laid out inline. There is **no separate `value_len` prefix** —
+the value's size is determined by its kind (fixed-size kinds have a
+known size; variable-length kinds carry their own length prefix). The
+count and key-length prefixes respect the schema's endianness. In
+aligned static mode with `maxLength`, the entire record is reserved at
+`maxLength` bytes (zero-padded).
 
 **`TTimestamp`:** An RFC 3339 timestamp string (the internet profile of
 ISO 8601). Stored as a length-prefixed UTF-8 string (strategy 1) or
@@ -165,6 +207,74 @@ The count prefix respects the schema's endianness.
 `TStruct` and `TUnion` are composite — their size is the sum of their
 fields' sizes (plus alignment padding in aligned static mode). The offset
 computation recurses into their properties.
+
+## Schema-Layer Public API
+
+The `schema` module exposes the foundational types and functions every
+other module depends on. These are re-exported from the crate root.
+
+### `get_typedef_kind` vs `get_typedef_kind_loose`
+
+The engine recognizes a `TypeDef:*` kind on a schema node two ways,
+because the keyword value may be either a boolean (`true`) or an
+annotation object (`{ "encoding": "..." }`):
+
+| Function | Recognizes | Returns |
+|----------|------------|---------|
+| `get_typedef_kind(node) -> Option<&str>` | Boolean form only (`{ "TypeDef:String": true }`) | The keyword string, e.g. `"TypeDef:String"` |
+| `get_typedef_kind_loose(node) -> Option<&str>` | Boolean form **and** object form | The keyword string |
+| `get_typedef_kind_enum(node) -> Option<TypeDefKind>` | Boolean form only | The parsed enum variant |
+| `get_typedef_kind_loose_enum(node) -> Option<TypeDefKind>` | Boolean form **and** object form | The parsed enum variant |
+
+The boolean-form-only functions are used by the validator factories
+(which reject the object form as a schema error) and the top-level
+kind-check in `OffsetMap::compute` / `LayoutBuilder::new` / `SequentialReader::new`
+(which require `TypeDef:Struct` at the root). The "loose" variants are
+used by the layout engines during field traversal, so that a variable-
+length field with an `encoding` annotation (`{ "TypeDef:String":
+{ "encoding": "offset-indirect" } }`) is still recognized as a `String`.
+
+### Annotation parsers
+
+Each schema-level annotation has a dedicated parser that reads it from a
+`serde_json::Value` node and returns a sensible default when absent:
+
+| Function | Annotation | Default |
+|----------|------------|---------|
+| `parse_endian(node) -> Endian` | `"endian"` | `Endian::Little` |
+| `parse_align(node) -> Option<usize>` | `"align"` | `None` |
+| `parse_max_length(node) -> Option<usize>` | `"maxLength"` | `None` |
+| `parse_encoding(keyword_value) -> VariableEncoding` | `"encoding"` (within the keyword's value object) | `VariableEncoding::LengthPrefixed` |
+| `parse_discriminator(node) -> Result<DiscriminatorKind, TypedefError>` | `"discriminator"` | (required — returns `TypedefError::Schema` if absent) |
+
+### Public enums
+
+```rust
+pub enum Endian { Little, Big }
+pub enum VariableEncoding { LengthPrefixed, OffsetIndirect }
+pub enum DiscriminatorKind {
+    Byte { offset: usize, disc_type: TypeDefKind },
+    Field { name: String },
+}
+```
+
+`DiscriminatorKind::Byte` carries the byte position (`offset`) and the
+discriminator's `TypeDef:*` kind (`disc_type`, restricted to `Uint8`/
+`Uint16`/`Uint32`). `DiscriminatorKind::Field` carries the discriminator
+field's name. See [data-access.md](data-access.md) §"TUnion Dispatch" for
+how these drive dispatch.
+
+### `$ref` resolution and normalization
+
+| Function | Purpose |
+|----------|---------|
+| `normalize_refs(schema: &mut Value)` | Walks the schema; rewrites every `"$ref"` whose value is a bare name (no `#` prefix) to `"#/$defs/<name>"`. Idempotent. Runs once at `TypedefEngine::compile` time. |
+| `resolve_ref(root, ref_path) -> Option<&Value>` | Resolves a JSON Pointer `$ref` (e.g. `"#/$defs/Read"`) against the root schema. |
+| `resolve_ref_or_inline(node, root) -> Option<&Value>` | If `node` has a `"$ref"`, resolves it against `root`; otherwise returns `node` itself (it's an inline schema). |
+
+`normalize_refs` bridges TypeBox's bare-name ref output and `jsonschema`'s
+JSON Pointer requirement. The layout engines call `resolve_ref_or_inline`
+on every `$ref`-bearing node they encounter during traversal.
 
 ## jsonschema Custom Keyword Integration
 
@@ -222,20 +332,12 @@ TypeBox generates bare-name `$ref` values (e.g., `"$ref": "Read"`),
 referencing sibling definitions within the same `$defs` block. The
 `jsonschema` crate requires full JSON Pointer paths (e.g.,
 `"$ref": "#/$defs/Read"`). The typedef engine normalizes TypeBox-style
-refs at schema load time:
-
-```rust
-fn normalize_refs(schema: &mut Value) {
-    // Walk the schema tree. For every "$ref" whose value is a bare name
-    // (no "#" prefix), rewrite it to "#/$defs/<name>".
-    // "$ref": "Read"  →  "$ref": "#/$defs/Read"
-}
-```
-
-This is a ~20-line recursive walk of the schema JSON. It runs once at
-load time, before the schema is passed to `jsonschema::validator_for`
-or the offset computation. The normalization is idempotent — full JSON
-Pointer refs pass through unchanged.
+refs at schema load time via [`normalize_refs`](#ref-resolution-and-normalization)
+— a ~20-line recursive walk that rewrites every bare-name `"$ref"` to
+`"#/$defs/<name>"`. The normalization is idempotent — full JSON Pointer
+refs pass through unchanged. It runs once at `TypedefEngine::compile`
+time, before the schema is passed to `jsonschema` or the offset
+computation.
 
 **Verification:** The jsonschema crate (v0.46.5) rejects bare-name refs
 with `Resource 'Read' is not present in a registry`. Full JSON Pointer
@@ -279,8 +381,9 @@ Both struct-level and field-level, with field-level overriding:
 
 - Struct-level `"align"` sets the default for all fields.
 - Field-level `"align"` overrides the struct default.
-- Default alignment: 1 for u8/bool, 2 for u16/i16, 4 for u32/i32/f32,
-  8 for u64/i64/f64, max field alignment for structs.
+- Default alignment: 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/
+  enum, 8 for f64, 4 for variable-length (the u32 length prefix), 1 for
+  struct/union/array.
 - Only meaningful in aligned static mode (ADR-096). Ignored in packed
   sequential mode.
 
