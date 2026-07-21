@@ -1,7 +1,7 @@
 ---
 id: typedef/layout-builder
 name: Implement packed sequential LayoutBuilder for protocol write-side
-status: pending
+status: completed
 depends_on: [typedef/schema-types, typedef/error-type, typedef/data-access]
 scope: moderate
 risk: medium
@@ -170,4 +170,4 @@ sizes. The builder:
 
 ## Summary
 
-> To be filled on completion
+Implemented the packed sequential `LayoutBuilder` and `PackedLayout` types in `crates/alknet-typedef/src/layout_builder.rs`. The builder walks the schema recursively via a `BuildCtx` threaded through the computation, recording `(field_path, FieldPosition)` pairs in layout order with no alignment padding. Fixed-size fields use the schema's known byte sizes; variable-length fields (`String`/`Bytes`/`Timestamp`/`Record`) always use inline length-prefixing in packed mode, pulling actual data sizes from the consumer-provided `var_sizes` map. Nested structs produce dotted field paths; `TArray` of fixed-size elements records each element as `"<path>[i]"` (or a 4-byte count prefix for variable-count arrays); `TUnion` with byte-offset discriminators uses the SFTP pattern (`<union>.__discriminator` plus a variant struct laid out at `offset + disc_size`), and field-name discriminators use a 0-based variant index under `<union>.__variant`. The implementation includes 37 unit tests covering the spec example (u8/u32/string → total 19), nested structs, arrays, both TUnion discriminator kinds, error paths, and `$ref` resolution, all passing with `cargo check`, `cargo clippy -D warnings`, and `cargo build --workspace`.
