@@ -32,3 +32,7 @@ pub mod tunion;
 pub mod validation;
 
 pub use error::TypedefError;
+pub use schema::{
+    parse_align, parse_discriminator, parse_encoding, parse_endian, parse_max_length,
+    normalize_refs, DiscriminatorKind, Endian, VariableEncoding,
+};
