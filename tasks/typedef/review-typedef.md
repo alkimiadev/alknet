@@ -1,7 +1,7 @@
 ---
 id: typedef/review-typedef
 name: Review alknet-typedef implementation for spec conformance, API shape, and test coverage
-status: pending
+status: completed
 depends_on: [typedef/tests]
 scope: moderate
 risk: low
@@ -159,4 +159,39 @@ SFTP, binary call frames, and TTY negotiation.
 
 ## Summary
 
-> To be filled on completion
+Review checkpoint complete. The `alknet-typedef` crate is spec-conformant, self-contained, and ready for downstream consumption.
+
+### Verification results (all green)
+
+- `cargo build -p alknet-typedef` — succeeds
+- `cargo test -p alknet-typedef` — **288 tests pass** (202 unit + 86 integration), 0 failures
+- `cargo clippy -p alknet-typedef --all-targets -- -D warnings` — no warnings
+- `cargo fmt --check -p alknet-typedef` — passes
+- `cargo build --workspace` — succeeds (old code untouched)
+- `cargo test --workspace` — all workspace tests pass (old tests untouched)
+- WASM-clean: no tokio/reqwest/rustls/hyper/openssl in the dependency tree (`jsonschema` with `default-features = false`)
+
+### Crate structure (matches spec)
+
+9 source files in `crates/alknet-typedef/src/`: `error.rs`, `schema.rs`, `data_access.rs`, `offset_map.rs`, `layout_builder.rs`, `sequential_reader.rs`, `tunion.rs`, `validation.rs`, `engine.rs`. 4 integration test files in `tests/`: `engine_integration.rs`, `poc_roundtrip.rs`, `tunion_dispatch.rs`, `error_paths.rs`. ~7,114 lines of source + ~1,650 lines of tests = ~9,764 total.
+
+### Public API (re-exported at crate root)
+
+`TypedefEngine`, `LayoutMode`, `TypedefError`, `Endian`, `VariableEncoding`, `DiscriminatorKind`, `OffsetMap`, `ByteRange`, `LayoutBuilder`, `PackedLayout`, `FieldPosition`, `SequentialReader`, `FieldValue`, `UnionDispatch`, `build_validator`, `normalize_refs`, and the `parse_*` functions. Module-qualified access for `data_access::*` (28 read/write functions) and `tunion::*` (discriminator dispatch functions).
+
+### Spec conformance highlights
+
+- All 17 `TypeDef:*` kinds correctly identified by `get_typedef_kind()` and registered as custom keywords with `jsonschema`
+- `TEnum` uses `u32` index (not variable-length string) — deliberate deviation from TypeBox for binary efficiency
+- Both layout modes work: aligned static (`OffsetMap`) with natural alignment padding, packed sequential (`LayoutBuilder`/`SequentialReader`) with no padding
+- TUnion dispatch supports both byte-offset (SFTP pattern) and field-name (typedef.ts pattern) discriminators
+- `TypedefError` has four variants with field-path-carrying `Offset` and `Access` errors
+- `TypedefEngine::compile()` normalizes `$ref` values, builds the layout, and builds the validator
+- `serde_json` has `preserve_order` feature enabled (field order is load-bearing)
+- No `unwrap()` or `expect()` in production code (verified by audit — all occurrences are in `#[cfg(test)]` blocks)
+
+### Notes for downstream consumers
+
+- `resolve_variant()` in `tunion.rs` resolves `$ref` against the union schema's own `$defs` block. For nested unions whose `$defs` live on an ancestor, the engine's `compile()` normalizes refs at the root level, and the layout modules resolve refs against the root schema passed internally. This covers the common case; consumers with deeply nested `$defs` should verify ref resolution works for their schema structure.
+- `read_field`/`write_field` on `TypedefEngine` (aligned mode) support all fixed-size types and string/bytes. Composite types (Struct/Union/Array/Record) return a descriptive `TypedefError::Access` pointing to the layout-specific APIs.
+- Arrays of variable-length-element structs are deferred (OQ-069).
