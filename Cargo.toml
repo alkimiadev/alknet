@@ -9,6 +9,7 @@ members = [
     "crates/alknet-tty",
     "crates/alknet-tty-local",
     "crates/alknet-client",
+    "crates/alknet-typedef",
 ]
 resolver = "2"
 

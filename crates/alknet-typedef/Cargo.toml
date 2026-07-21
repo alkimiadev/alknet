@@ -1,0 +1,17 @@
+[package]
+name = "alknet-typedef"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Binary struct engine: takes a JSON Schema with TypeDef:* custom keywords and produces an offset map, read/write functions, and validation"
+repository.workspace = true
+
+[lib]
+name = "alknet_typedef"
+
+[features]
+default = []
+
+[dependencies]
+jsonschema = { version = "0.46", default-features = false }
+serde_json = { version = "1", features = ["preserve_order"] }
