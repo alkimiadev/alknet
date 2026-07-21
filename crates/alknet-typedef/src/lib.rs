@@ -41,3 +41,4 @@ pub use offset_map::{ByteRange, OffsetMap};
 pub use layout_builder::{FieldPosition, LayoutBuilder, PackedLayout};
 pub use sequential_reader::{FieldValue, SequentialReader};
 pub use tunion::UnionDispatch;
+pub use engine::{LayoutMode, TypedefEngine};

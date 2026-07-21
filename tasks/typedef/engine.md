@@ -1,7 +1,7 @@
 ---
 id: typedef/engine
 name: Implement TypedefEngine struct combining layout and validation, with compile() constructor
-status: pending
+status: completed
 depends_on: [typedef/offset-map, typedef/layout-builder, typedef/sequential-reader, typedef/tunion, typedef/validation]
 scope: moderate
 risk: medium
@@ -199,4 +199,4 @@ convenient access using the `OffsetMap`:
 
 ## Summary
 
-> To be filled on completion
+Implemented `TypedefEngine` in `crates/alknet-typedef/src/engine.rs` as the integration layer for all Gen 1-4 components. The `compile()` constructor normalizes `$ref` values, parses endianness, builds the mode-appropriate layout (`LayoutBuilder`+`SequentialReader` for packed, `OffsetMap` for aligned), and builds the jsonschema validator with all 17 custom keywords. Mode accessors (`offset_map`, `layout_builder`, `sequential_reader`) return `Option`s gated on the compiled mode, and `validate_json`/`is_valid_json` delegate to the compiled validator (using `ValidationError::to_owned()` to obtain the `'static` lifetime). Aligned-mode convenience methods `read_field`/`write_field` dispatch over all fixed-size and length-prefixed kinds via `data_access`, return `TypedefError::Access` in packed mode and for composite `FieldValue` variants, and use a `lookup_field_schema` helper that walks dotted paths through `properties`. A manual `Debug` impl formats the layout, endian, and schema while using a placeholder for the `jsonschema::Validator`. Re-exports `TypedefEngine` and `LayoutMode` from `lib.rs`; 22 new unit tests pass alongside the full crate suite (202 total).
