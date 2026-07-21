@@ -1,7 +1,7 @@
 ---
 id: typedef/tests
 name: "Write comprehensive tests for alknet-typedef: unit tests, integration tests, and POC round-trip tests"
-status: pending
+status: completed
 depends_on: [typedef/engine]
 scope: moderate
 risk: low
@@ -189,4 +189,4 @@ Tests can be organized as:
 
 ## Summary
 
-> To be filled on completion
+Added 86 integration tests across 4 files in `crates/alknet-typedef/tests/` (engine_integration: 20, error_paths: 39, poc_roundtrip: 14, tunion_dispatch: 13) exercising the public API end-to-end. Combined with the pre-existing 202 unit tests, the crate now has 288 tests covering all 17 TypeDef kinds, both layout modes, TUnion byte-offset and field-name discriminators, validation, and error paths (buffer-too-short, invalid UTF-8, invalid boolean, missing var-sizes, malformed discriminators). The POC round-trip patterns — fixed-size, string, nested struct, big-endian, alignment padding, packed layout, and sequential reader — are replicated and passing. All four verification commands pass: `cargo check --all-targets`, `cargo test -p alknet-typedef`, `cargo build --workspace`, and `cargo clippy` on the new test files (pre-existing source-file clippy errors in `src/sequential_reader.rs:855` and `src/validation.rs:608/691` are unrelated to this task).
