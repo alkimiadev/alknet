@@ -1,7 +1,7 @@
 ---
 id: typedef/data-access
 name: Implement primitive read/write functions for all 17 TypeDef kinds with endianness support
-status: pending
+status: completed
 depends_on: [typedef/schema-types, typedef/error-type]
 scope: moderate
 risk: medium
@@ -171,4 +171,4 @@ pub fn read_bytes_indirect<'a>(
 
 ## Summary
 
-> To be filled on completion
+Implemented the full data access layer in `crates/alknet-typedef/src/data_access.rs`: 11 fixed-size read functions, 11 fixed-size write functions, 2 inline length-prefixed variable-length read functions (`read_string`, `read_bytes`), 2 inline write functions (`write_string`, `write_bytes`), and 2 offset-indirect read functions (`read_string_indirect`, `read_bytes_indirect`). All multi-byte types respect the `Endian` parameter; all functions perform bounds checks and return `TypedefError::Access` with the field path on failure; `read_bool` rejects bytes other than `0x00`/`0x01`; `read_string`/`read_string_indirect` validate UTF-8. Variable-length read functions return zero-copy slices borrowing from the input buffer. No `unwrap()`/`expect()` is used on fallible paths — a private `read_array`/`write_array` helper pair propagates `try_into` failures as `TypedefError::Access`. The module ships with 27 unit tests covering round-trips, endianness, bounds failures, and zero-copy semantics; all pass under `cargo test -p alknet-typedef data_access` with `cargo clippy -- -D warnings` clean.
