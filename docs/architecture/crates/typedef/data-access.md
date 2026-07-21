@@ -76,16 +76,33 @@ For variable-length types with inline length-prefixing (the default):
 
 ```rust
 // Read a length-prefixed string
-fn read_string<'a>(buffer: &'a [u8], offset: usize) -> &'a str {
-    let len = u32::from_le_bytes(buffer[offset..offset+4].try_into().unwrap()) as usize;
-    std::str::from_utf8(&buffer[offset+4..offset+4+len]).unwrap()
+fn read_string<'a>(buffer: &'a [u8], offset: usize, endian: Endian) -> Result<&'a str, TypedefError> {
+    let len_bytes: [u8; 4] = buffer[offset..offset+4].try_into()
+        .map_err(|_| TypedefError::Access { /* ... */ })?;
+    let len = match endian {
+        Endian::Little => u32::from_le_bytes(len_bytes),
+        Endian::Big => u32::from_be_bytes(len_bytes),
+    } as usize;
+    let data = buffer.get(offset+4..offset+4+len)
+        .ok_or_else(|| TypedefError::Access { /* ... */ })?;
+    std::str::from_utf8(data)
+        .map_err(|e| TypedefError::Access { /* ... */ })
 }
 
 // Write a length-prefixed string
-fn write_string(buffer: &mut [u8], offset: usize, value: &str) {
+fn write_string(buffer: &mut [u8], offset: usize, value: &str, endian: Endian) -> Result<(), TypedefError> {
     let data = value.as_bytes();
-    buffer[offset..offset+4].copy_from_slice(&(data.len() as u32).to_le_bytes());
-    buffer[offset+4..offset+4+data.len()].copy_from_slice(data);
+    let len_bytes = match endian {
+        Endian::Little => (data.len() as u32).to_le_bytes(),
+        Endian::Big => (data.len() as u32).to_be_bytes(),
+    };
+    buffer.get_mut(offset..offset+4)
+        .ok_or_else(|| TypedefError::Access { /* ... */ })?
+        .copy_from_slice(&len_bytes);
+    buffer.get_mut(offset+4..offset+4+data.len())
+        .ok_or_else(|| TypedefError::Access { /* ... */ })?
+        .copy_from_slice(data);
+    Ok(())
 }
 ```
 
@@ -104,10 +121,19 @@ For variable-length types with offset indirection (opt-in):
 
 ```rust
 // Read an offset-indirect string
-fn read_string_indirect(data_region: &[u8], offset: usize) -> &str {
-    let ptr_offset = u32::from_le_bytes(data_region[offset..offset+4].try_into().unwrap()) as usize;
-    let ptr_length = u32::from_le_bytes(data_region[offset+4..offset+8].try_into().unwrap()) as usize;
-    std::str::from_utf8(&data_region[ptr_offset..ptr_offset+ptr_length]).unwrap()
+fn read_string_indirect<'a>(data_region: &'a [u8], offset: usize, endian: Endian) -> Result<&'a str, TypedefError> {
+    let ptr_offset = match endian {
+        Endian::Little => u32::from_le_bytes(data_region[offset..offset+4].try_into().unwrap()),
+        Endian::Big => u32::from_be_bytes(data_region[offset..offset+4].try_into().unwrap()),
+    } as usize;
+    let ptr_length = match endian {
+        Endian::Little => u32::from_le_bytes(data_region[offset+4..offset+8].try_into().unwrap()),
+        Endian::Big => u32::from_be_bytes(data_region[offset+4..offset+8].try_into().unwrap()),
+    } as usize;
+    let data = data_region.get(ptr_offset..ptr_offset+ptr_length)
+        .ok_or_else(|| TypedefError::Access { /* ... */ })?;
+    std::str::from_utf8(data)
+        .map_err(|e| TypedefError::Access { /* ... */ })
 }
 ```
 
@@ -124,28 +150,62 @@ differs by discriminator kind (ADR-097).
 ### Byte-offset discriminator
 
 ```rust
-fn read_union(buffer: &[u8], schema: &Value) -> Result<Value, TypedefError> {
-    let disc = &schema["discriminator"];
-    let offset = disc["offset"].as_u64().unwrap() as usize;
-    let disc_type = disc["type"].as_str().unwrap(); // e.g., "TypeDef:Uint8"
+/// Read the discriminator value from a byte-offset TUnion.
+/// Returns the mapping key (as a string) so the consumer can look up
+/// the variant schema and read the variant's fields.
+fn read_union_discriminator(
+    buffer: &[u8],
+    schema: &Value,
+    endian: Endian,
+) -> Result<String, TypedefError> {
+    let disc = schema["discriminator"].as_object()
+        .ok_or_else(|| TypedefError::Schema("missing discriminator".into()))?;
+    let offset = disc["offset"].as_u64().unwrap_or(0) as usize;
+    let disc_type = disc["type"].as_str().unwrap_or("TypeDef:Uint8");
 
-    // Read the discriminator value
-    let disc_value: u8 = read_u8(buffer, offset);
-    let key = disc_value.to_string(); // "5", "6", "101"
+    let (disc_value, disc_size) = match disc_type {
+        "TypeDef:Uint8" => {
+            let b = *buffer.get(offset)
+                .ok_or_else(|| TypedefError::Access { /* ... */ })?;
+            (b as u32, 1)
+        }
+        "TypeDef:Uint16" => {
+            let bytes: [u8; 2] = buffer[offset..offset+2].try_into().unwrap();
+            let v = match endian {
+                Endian::Little => u16::from_le_bytes(bytes),
+                Endian::Big => u16::from_be_bytes(bytes),
+            };
+            (v as u32, 2)
+        }
+        "TypeDef:Uint32" => {
+            let bytes: [u8; 4] = buffer[offset..offset+4].try_into().unwrap();
+            let v = match endian {
+                Endian::Little => u32::from_le_bytes(bytes),
+                Endian::Big => u32::from_be_bytes(bytes),
+            };
+            (v, 4)
+        }
+        _ => return Err(TypedefError::Schema(format!("unsupported discriminator type: {disc_type}"))),
+    };
 
-    // Look up the variant schema
-    let mapping = &schema["mapping"];
-    let variant_schema = &mapping[&key];
-
-    // Read the variant struct starting at offset + discriminator_size
-    let variant_offset = offset + 1; // discriminator_size for Uint8
-    read_struct(buffer, variant_offset, variant_schema)
+    let key = disc_value.to_string();
+    if schema["mapping"].as_object().map_or(false, |m| m.contains_key(&key)) {
+        Ok(key)
+    } else {
+        Err(TypedefError::Access {
+            field_path: "__discriminator".into(),
+            reason: format!("unknown discriminator value: {disc_value}"),
+        })
+    }
 }
 ```
 
 The discriminator is a fixed-size integer at a known byte offset. The
 mapping keys are stringified integers. The variant struct starts at
-`offset + discriminator_size`.
+`offset + discriminator_size`. After reading the discriminator, the
+consumer looks up the variant schema and reads the variant's fields
+using the normal typed read functions (e.g., `read_u32`, `read_string`)
+at `offset + discriminator_size`.
 
 This is the SFTP `Packet` enum pattern — byte 0 is the type byte, bytes
 1..N are the variant struct. The call protocol's 5 event types
@@ -154,24 +214,53 @@ This is the SFTP `Packet` enum pattern — byte 0 is the type byte, bytes
 ### Field-name discriminator
 
 ```rust
-fn read_union_field(buffer: &[u8], schema: &Value) -> Result<Value, TypedefError> {
-    let disc = &schema["discriminator"];
-    let field_name = disc["name"].as_str().unwrap(); // e.g., "type"
+/// Read the discriminator value from a field-name TUnion.
+/// The discriminator is a named field within the struct — its offset
+/// is computed like any other field. The consumer reads the field's
+/// value, looks up the variant schema, then reads the variant's fields.
+fn read_union_field_discriminator(
+    buffer: &[u8],
+    schema: &Value,
+    offset_map: &OffsetMap,
+    endian: Endian,
+) -> Result<String, TypedefError> {
+    let disc = schema["discriminator"].as_object()
+        .ok_or_else(|| TypedefError::Schema("missing discriminator".into()))?;
+    let field_name = disc["name"].as_str()
+        .ok_or_else(|| TypedefError::Schema("discriminator has no 'name'".into()))?;
 
-    // Read the discriminator field like any other field
-    let disc_value = read_field(buffer, field_name, schema)?;
+    // Read the discriminator field at its computed offset.
+    // The field's TypeDef kind determines how to read it (typically a string).
+    let field_schema = schema["properties"].get(field_name)
+        .ok_or_else(|| TypedefError::Schema(format!("discriminator field '{field_name}' not found")))?;
+    let kind = get_typedef_kind(field_schema)
+        .ok_or_else(|| TypedefError::Schema("discriminator field has no TypeDef kind".into()))?;
 
-    // Look up the variant schema
-    let mapping = &schema["mapping"];
-    let variant_schema = &mapping[disc_value.as_str().unwrap()];
-
-    // Read the variant struct
-    read_struct(buffer, variant_offset, variant_schema)
+    match kind {
+        "TypeDef:String" => {
+            let range = offset_map.get(field_name)
+                .ok_or_else(|| TypedefError::Offset { /* ... */ })?;
+            read_string(buffer, range.start, endian)
+                .map(|s| s.to_string())
+        }
+        "TypeDef:Uint8" => {
+            let range = offset_map.get(field_name)
+                .ok_or_else(|| TypedefError::Offset { /* ... */ })?;
+            Ok(buffer[range.start].to_string())
+        }
+        _ => Err(TypedefError::Schema(format!(
+            "unsupported discriminator field type: {kind}"
+        ))),
+    }
 }
 ```
 
 The discriminator is a named field within the struct. Its offset is
 computed like any other field. The mapping keys are string values.
+After reading the discriminator, the consumer looks up the variant
+schema and reads the variant's fields starting at the end of the
+discriminator field (or at the start of the union buffer if the
+discriminator is the first field).
 
 ## Field Paths
 
@@ -180,6 +269,8 @@ The `OffsetMap` stores fully-qualified paths. The read/write functions
 accept a field path and look up the byte range:
 
 ```rust
+/// Read an f32 field by path. This is the aligned-mode path (uses OffsetMap).
+/// In packed mode, the consumer uses SequentialReader instead.
 fn read_f32(&self, buffer: &[u8], field_path: &str) -> Result<f32, TypedefError> {
     let range = self.offset_map.get(field_path)
         .ok_or_else(|| TypedefError::Offset {
@@ -192,7 +283,11 @@ fn read_f32(&self, buffer: &[u8], field_path: &str) -> Result<f32, TypedefError>
             reason: format!("buffer too short: need {} bytes, have {}", range.end, buffer.len()),
         });
     }
-    Ok(read_f32_raw(buffer, range.start, self.endian))
+    let bytes: [u8; 4] = buffer[range.start..range.end].try_into().unwrap();
+    Ok(match self.endian {
+        Endian::Little => f32::from_le_bytes(bytes),
+        Endian::Big => f32::from_be_bytes(bytes),
+    })
 }
 ```
 

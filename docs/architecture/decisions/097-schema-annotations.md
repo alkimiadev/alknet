@@ -129,6 +129,26 @@ reserving worst-case space.
   types: `TypeDef:String`, `TypeDef:Bytes`, `TypeDef:Array`,
   `TypeDef:Record`, `TypeDef:Timestamp`.
 
+### 3a. TRecord value type
+
+`TypeDef:Record` is a string-keyed map. The value type is declared via
+the `"values"` property in the schema:
+
+```json
+{
+  "TypeDef:Record": true,
+  "values": { "TypeDef:Float32": true }
+}
+```
+
+- `"values"` is a schema object declaring the `TypeDef:*` kind of all
+  values in the record. All values share the same type.
+- The binary layout is a count-prefixed sequence of `(key, value)` pairs:
+  `[count: u32][key_len: u32][key_bytes][value_len: u32][value_bytes]...`.
+- The count prefix respects the schema's endianness.
+- In aligned static mode with `maxLength`, the entire record is reserved
+  at `maxLength` bytes (zero-padded).
+
 ### 4. TUnion discriminators
 
 **Two discriminator kinds: byte-offset (protocol dispatch) and

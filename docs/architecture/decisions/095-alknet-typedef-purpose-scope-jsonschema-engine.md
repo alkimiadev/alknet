@@ -65,8 +65,12 @@ functions, and validation — all driven by the schema.
 2. **Read/write functions** — given a `&[u8]` buffer and a field path,
    read the field's bytes at its offset (zero-copy for fixed-size types).
    Given a `&mut [u8]` buffer, write a value at its offset.
-3. **Validation** — via `jsonschema` custom keywords, validates that a
-   buffer's bytes match the schema's type constraints.
+3. **Validation** — via `jsonschema` custom keywords, validates that data
+   conforms to the schema's type constraints. The jsonschema validator
+   operates on `serde_json::Value` instances (JSON representations), not
+   raw byte buffers directly. A consumer that wants to validate a binary
+   buffer reads it into a `Value` tree via the data access layer, then
+   validates that `Value` against the jsonschema validator.
 
 **The heavy lifting is done by the `jsonschema` crate (validation) and
 `serde_json` (schema parsing).** The novel code is the offset computation
@@ -114,10 +118,11 @@ read/write) is already allocation-free. See OQ-070.
   under `$defs`. That JSON feeds directly into `jsonschema::validator_for`
   on the Rust side. Zero translation. The same schema validates in both
   ecosystems.
-- **Defense in depth.** Schema validation at the byte level — a malformed
-  binary payload fails validation before any consumer touches it. The
-  `jsonschema` crate's compiled validators are fast enough to run on
-  every incoming frame.
+- **Defense in depth.** Schema validation via jsonschema custom keywords —
+  a malformed binary payload can be read into a `Value` tree via the data
+  access layer and validated against the schema before any consumer
+  touches it. The `jsonschema` crate's compiled validators are fast enough
+  to run on every incoming frame.
 
 ### Negative
 

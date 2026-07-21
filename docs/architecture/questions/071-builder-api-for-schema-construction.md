@@ -8,10 +8,12 @@
 - **Door type**: Two-way (additive — a builder API can be added without
   changing the existing JSON-consumption path)
 - **Priority**: medium
-- **Impacts**: No current consumer. Schemas are authored in TypeBox (JS)
-  or hand-written JSON for v1. A Rust builder API would enable
-  programmatic schema construction in Rust without depending on a JS
-  toolchain, but no current consumer needs this.
+- **Impacts**: Blocks programmatic schema construction in Rust without a
+  JS toolchain. Any consumer that wants to build typedef schemas at
+  runtime from Rust code (rather than loading pre-authored JSON) must
+  construct the JSON manually or depend on TypeBox. Does NOT block any
+  current consumer — all v1 consumers (SFTP, metatensor, binary call
+  frames, TTY negotiation) use pre-authored schemas.
 - **Blocked on**: A concrete need for programmatic schema construction
   in Rust. The current consumers (SFTP, metatensor, binary call frames,
   TTY negotiation) all have schemas that can be hand-written or generated

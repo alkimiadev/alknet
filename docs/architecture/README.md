@@ -298,10 +298,10 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089); bidirectionality preserved |
 | [crates/typedef/README.md](crates/typedef/README.md) | draft | alknet-typedef crate — binary struct engine; JSON Schema with `TypeDef:*` custom keywords → offset map + read/write + validation |
 | [crates/typedef/overview.md](crates/typedef/overview.md) | draft | Crate purpose, "schema is the format" principle, dependencies, consumers, scope boundaries |
-| [crates/typedef/schema-layer.md](crates/typedef/schema-layer.md) | draft | The 16 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
+| [crates/typedef/schema-layer.md](crates/typedef/schema-layer.md) | draft | The 17 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
 | [crates/typedef/layout-engine.md](crates/typedef/layout-engine.md) | draft | Offset computation, two layout modes (packed sequential vs aligned static), alignment, endianness, variable-length handling |
 | [crates/typedef/data-access.md](crates/typedef/data-access.md) | draft | Read/write functions, TUnion dispatch, field paths, zero-copy access, length-prefix reading |
-| [crates/typedef/validation.md](crates/typedef/validation.md) | draft | Custom keyword validators for all 16 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation |
+| [crates/typedef/validation.md](crates/typedef/validation.md) | draft | Custom keyword validators for all 17 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation |
 
 ## ADR Table
 

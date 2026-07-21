@@ -95,7 +95,7 @@ Each `TypeDef:*` kind gets a `Keyword` implementation registered via
 - **`TypeDef:Union`**: discriminator value membership in the mapping.
 - **`TypeDef:Array`**: element type conformance.
 - **`TypeDef:Boolean`**: value is `true` or `false`.
-- **`TypeDef:Timestamp`**: ISO 8601 string format.
+- **`TypeDef:Timestamp`**: RFC 3339 string format (the internet profile of ISO 8601).
 
 The `jsonschema` crate handles all the structural validation (object
 properties, required fields, array items, enum values) — the custom
