@@ -1,7 +1,7 @@
 ---
 id: typedef/offset-map
 name: Implement aligned static OffsetMap for mmap-friendly formats
-status: pending
+status: completed
 depends_on: [typedef/schema-types, typedef/error-type, typedef/data-access]
 scope: moderate
 risk: medium
@@ -160,4 +160,21 @@ The offset computation propagates the field path prefix during recursion. The
 
 ## Summary
 
-> To be filled on completion
+Implemented the aligned static `OffsetMap` (`ByteRange` + `OffsetMap`) in
+`crates/alknet-typedef/src/offset_map.rs`. The recursive walker threads a
+`ComputeCtx` (root schema, accumulating `fields` vec, running offset) to keep
+helper signatures small; `compute_struct` returns `(total_size, alignment)`
+so nested structs and TUnion variants can be probed at offset 0 and shifted
+into place. Fixed-size types, nested structs (dotted paths), TStruct `align`
+annotations, field-level `align` overrides, and `TArray` of fixed-size
+elements (fixed-count and variable-count/length-prefixed) are all handled.
+Variable-length types support all three strategies: inline length-prefix
+(4-byte), `maxLength` reservation, and `offset-indirect` (8-byte
+`{offset, length}`). TUnion layout computes `discriminator_size +
+max(variant_sizes)` for byte-offset discriminators (recorded under
+`"payload.__discriminator"`) and `max(variant_sizes)` for field-name
+discriminators (the discriminator is recorded at its in-variant offset).
+`$ref` pointers are resolved against the root schema via a small JSON
+Pointer walker. 17 unit tests cover the acceptance criteria; all pass
+along with `cargo check`, `cargo clippy -D warnings`, and `cargo build
+--workspace`.
