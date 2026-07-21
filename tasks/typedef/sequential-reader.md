@@ -1,7 +1,7 @@
 ---
 id: typedef/sequential-reader
 name: Implement packed sequential SequentialReader for protocol read-side
-status: pending
+status: completed
 depends_on: [typedef/schema-types, typedef/error-type, typedef/data-access]
 scope: moderate
 risk: medium
@@ -178,4 +178,23 @@ When the reader encounters a `TArray` field:
 
 ## Summary
 
-> To be filled on completion
+Implemented the packed sequential `SequentialReader` and the `FieldValue`
+enum in `crates/alknet-typedef/src/sequential_reader.rs`. The reader walks
+a buffer field-by-field using `crate::data_access` reads, applying the
+schema's endianness to every multi-byte value and reading the 4-byte
+length prefix on variable-length fields (`TypeDef:String`/`Bytes`/
+`Timestamp`) to advance correctly. Composite kinds return layout
+descriptors: `TypeDef:Struct` returns `{start, end}` (the end is
+computed by a `walk_struct_size` helper that recursively walks the
+struct's fields, including variable-length ones), `TypeDef:Union`
+returns `{discriminator, variant_start}` (resolving `$ref` variants
+against either the union's own `$defs` or the root schema's `$defs`),
+and `TypeDef:Array` returns `{count, element_start, element_stride}`
+(fixed-count via `minItems == maxItems`, else a 4-byte count prefix;
+stride is `0` for variable-length elements, signalling sequential
+walks). The implementation handles byte-offset and field-name union
+discriminators and `TypeDef:Record` count-prefixed entries, exposes
+`new`/`read_next`/`read_field`/`reset`/`position` (plus `endian` and
+`schema` accessors), and is covered by 24 unit tests. All verification
+commands (`cargo check`, `cargo clippy -D warnings`, `cargo test
+sequential_reader`, `cargo build --workspace`) pass.
