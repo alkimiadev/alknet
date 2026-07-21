@@ -1,7 +1,7 @@
 ---
 id: typedef/schema-types
 name: Implement TypeDef kind detection, schema annotation parsing, $ref normalization, and Endian enum
-status: pending
+status: completed
 depends_on: [typedef/crate-init]
 scope: moderate
 risk: medium
@@ -180,4 +180,16 @@ passed to `jsonschema::validator_for` or the offset computation.
 
 ## Summary
 
-> To be filled on completion
+Implemented the schema layer in `crates/alknet-typedef/src/schema.rs` with full
+coverage of all acceptance criteria. The module exposes `get_typedef_kind`,
+`type_size`, `natural_alignment`, and `is_fixed_size` for the 17 TypeDef kinds;
+the `Endian` enum with `from_schema`/`parse_endian` (defaulting to Little);
+the `VariableEncoding` enum with `parse_encoding` (shorthand `true` and object
+form with `length-prefixed`/`offset-indirect`); `parse_align`/`parse_max_length`
+JSON Schema keyword readers; `parse_discriminator` returning the
+`DiscriminatorKind::Byte`/`Field` variants with `TypedefError::Schema` on
+malformed input; and `normalize_refs` rewriting bare-name `$ref`s to
+`#/$defs/<name>` recursively and idempotently. 31 unit tests pass, and
+`cargo check`, `cargo clippy -D warnings`, and `cargo build --workspace` all
+succeed clean. The `TypedefError` dependency was already provided by the
+parallel `error.rs` implementation (no stub needed).
