@@ -852,7 +852,7 @@ mod tests {
     const LE: Endian = Endian::Little;
     const BE: Endian = Endian::Big;
 
-    fn write_u32(buf: &mut Vec<u8>, offset: usize, value: u32, endian: Endian) {
+    fn write_u32(buf: &mut [u8], offset: usize, value: u32, endian: Endian) {
         let bytes = match endian {
             Endian::Little => value.to_le_bytes(),
             Endian::Big => value.to_be_bytes(),
@@ -860,7 +860,7 @@ mod tests {
         buf[offset..offset + 4].copy_from_slice(&bytes);
     }
 
-    fn write_string(buf: &mut Vec<u8>, offset: usize, value: &str, endian: Endian) -> usize {
+    fn write_string(buf: &mut [u8], offset: usize, value: &str, endian: Endian) -> usize {
         let bytes = value.as_bytes();
         let total = 4 + bytes.len();
         write_u32(buf, offset, bytes.len() as u32, endian);

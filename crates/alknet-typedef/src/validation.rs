@@ -605,7 +605,7 @@ mod tests {
         let validator = validator_for(&schema);
         let instance = json!({
             "id": 42,
-            "score": 3.14,
+            "score": 3.5,
             "flag": 1,
             "count": 1000
         });
@@ -688,7 +688,7 @@ mod tests {
             "required": ["f32", "f64"]
         });
         let validator = validator_for(&schema);
-        assert!(validator.is_valid(&json!({"f32": 3.14, "f64": 2.71})));
+        assert!(validator.is_valid(&json!({"f32": 3.5, "f64": 2.5})));
         assert!(validator.is_valid(&json!({"f32": 0, "f64": 0})));
         assert!(!validator.is_valid(&json!({"f32": "x", "f64": 0})));
     }
