@@ -36,3 +36,4 @@ pub use schema::{
     parse_align, parse_discriminator, parse_encoding, parse_endian, parse_max_length,
     normalize_refs, DiscriminatorKind, Endian, VariableEncoding,
 };
+pub use validation::build_validator;
