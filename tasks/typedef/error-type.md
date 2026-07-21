@@ -1,7 +1,7 @@
 ---
 id: typedef/error-type
 name: Implement TypedefError enum with Schema, Offset, Access, and Validation variants
-status: pending
+status: completed
 depends_on: [typedef/crate-init]
 scope: narrow
 risk: low
@@ -107,4 +107,4 @@ Since the `jsonschema` crate is a dependency, this is straightforward.
 
 ## Summary
 
-> To be filled on completion
+Implemented the `TypedefError` enum in `crates/alknet-typedef/src/error.rs` with four variants (`Schema`, `Offset`, `Access`, `Validation`) per ADR-098, plus `Display` (with field-path-aware messages for `Offset` and `Access`) and `std::error::Error` impls and a derived `Debug`. Re-exported `TypedefError` from `crates/alknet-typedef/src/lib.rs` so it is accessible as `alknet_typedef::TypedefError`. `cargo check`, `cargo clippy -D warnings`, and `cargo build --workspace` all pass with no warnings.

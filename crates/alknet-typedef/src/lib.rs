@@ -30,3 +30,5 @@ pub mod schema;
 pub mod sequential_reader;
 pub mod tunion;
 pub mod validation;
+
+pub use error::TypedefError;
