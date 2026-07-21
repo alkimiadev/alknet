@@ -116,9 +116,8 @@ impl SequentialReader {
     /// Returns [`TypedefError::Schema`] if the schema is not an object,
     /// does not declare `TypeDef:Struct`, or has no `properties` object.
     pub fn new(schema: &Value) -> Result<Self, TypedefError> {
-        let kind = schema::get_typedef_kind(schema).ok_or_else(|| {
-            TypedefError::Schema("schema has no TypeDef:* kind".to_string())
-        })?;
+        let kind = schema::get_typedef_kind(schema)
+            .ok_or_else(|| TypedefError::Schema("schema has no TypeDef:* kind".to_string()))?;
         if kind != "TypeDef:Struct" {
             return Err(TypedefError::Schema(format!(
                 "SequentialReader only supports TypeDef:Struct at the top level, got {kind}"
@@ -143,7 +142,7 @@ impl SequentialReader {
             field_index: 0,
             position: 0,
         })
-}
+    }
 
     /// Read the next field from `buffer` at the current position.
     ///
@@ -407,20 +406,22 @@ fn read_union_value<'a>(
         .as_object()
         .and_then(|obj| obj.get("mapping"))
         .and_then(Value::as_object)
-        .ok_or_else(|| {
-            TypedefError::Schema(format!("union {field_path} has no mapping object"))
-        })?;
+        .ok_or_else(|| TypedefError::Schema(format!("union {field_path} has no mapping object")))?;
 
     match disc {
-        DiscriminatorKind::Byte { offset: disc_offset, disc_type } => {
-            let abs_offset = offset
-                .checked_add(disc_offset)
-                .ok_or_else(|| TypedefError::Access {
-                    field_path: field_path.to_string(),
-                    reason: format!(
-                        "discriminator offset {offset} + {disc_offset} overflows usize"
-                    ),
-                })?;
+        DiscriminatorKind::Byte {
+            offset: disc_offset,
+            disc_type,
+        } => {
+            let abs_offset =
+                offset
+                    .checked_add(disc_offset)
+                    .ok_or_else(|| TypedefError::Access {
+                        field_path: field_path.to_string(),
+                        reason: format!(
+                            "discriminator offset {offset} + {disc_offset} overflows usize"
+                        ),
+                    })?;
             let (disc_value, disc_size) =
                 read_byte_discriminator(buffer, abs_offset, field_path, &disc_type, endian)?;
             let key = disc_value.to_string();
@@ -428,14 +429,13 @@ fn read_union_value<'a>(
                 field_path: field_path.to_string(),
                 reason: format!("unknown union discriminator value: {key}"),
             })?;
-            let variant_start = abs_offset
-                .checked_add(disc_size)
-                .ok_or_else(|| TypedefError::Access {
-                    field_path: field_path.to_string(),
-                    reason: format!(
-                        "variant start {abs_offset} + {disc_size} overflows usize"
-                    ),
-                })?;
+            let variant_start =
+                abs_offset
+                    .checked_add(disc_size)
+                    .ok_or_else(|| TypedefError::Access {
+                        field_path: field_path.to_string(),
+                        reason: format!("variant start {abs_offset} + {disc_size} overflows usize"),
+                    })?;
             let variant_size = resolve_and_walk_variant(
                 root_schema,
                 schema,
@@ -445,14 +445,15 @@ fn read_union_value<'a>(
                 endian,
                 field_path,
             )?;
-            let end = variant_start
-                .checked_add(variant_size)
-                .ok_or_else(|| TypedefError::Access {
-                    field_path: field_path.to_string(),
-                    reason: format!(
-                        "union end {variant_start} + {variant_size} overflows usize"
-                    ),
-                })?;
+            let end =
+                variant_start
+                    .checked_add(variant_size)
+                    .ok_or_else(|| TypedefError::Access {
+                        field_path: field_path.to_string(),
+                        reason: format!(
+                            "union end {variant_start} + {variant_size} overflows usize"
+                        ),
+                    })?;
             Ok((
                 FieldValue::Union {
                     discriminator: key,
@@ -476,14 +477,8 @@ fn read_union_value<'a>(
                     "union {field_path} has no discriminator field '{name}'"
                 ))
             })?;
-            let (disc_value, after_disc) = read_field_value(
-                buffer,
-                root_schema,
-                disc_schema,
-                field_path,
-                offset,
-                endian,
-            )?;
+            let (disc_value, after_disc) =
+                read_field_value(buffer, root_schema, disc_schema, field_path, offset, endian)?;
             let key = discriminator_string_value(&disc_value, field_path)?;
             let variant_schema = mapping.get(&key).ok_or_else(|| TypedefError::Access {
                 field_path: field_path.to_string(),
@@ -502,9 +497,7 @@ fn read_union_value<'a>(
                 .checked_add(variant_size)
                 .ok_or_else(|| TypedefError::Access {
                     field_path: field_path.to_string(),
-                    reason: format!(
-                        "union end {after_disc} + {variant_size} overflows usize"
-                    ),
+                    reason: format!("union end {after_disc} + {variant_size} overflows usize"),
                 })?;
             Ok((
                 FieldValue::Union {
@@ -548,7 +541,10 @@ fn read_byte_discriminator(
 /// Stringify a field-name discriminator value. Only the common kinds
 /// (String, Uint8/16/32, Enum) are supported — anything else is a schema
 /// error.
-fn discriminator_string_value(value: &FieldValue<'_>, field_path: &str) -> Result<String, TypedefError> {
+fn discriminator_string_value(
+    value: &FieldValue<'_>,
+    field_path: &str,
+) -> Result<String, TypedefError> {
     match value {
         FieldValue::String(s) => Ok(s.to_string()),
         FieldValue::U8(v) => Ok(v.to_string()),
@@ -577,12 +573,18 @@ fn read_array_value<'a>(
     let obj = schema.as_object().ok_or_else(|| {
         TypedefError::Schema(format!("array {field_path} schema is not an object"))
     })?;
-    let items_schema = obj.get("items").ok_or_else(|| {
-        TypedefError::Schema(format!("array {field_path} has no items schema"))
-    })?;
+    let items_schema = obj
+        .get("items")
+        .ok_or_else(|| TypedefError::Schema(format!("array {field_path} has no items schema")))?;
 
-    let min = obj.get("minItems").and_then(Value::as_u64).map(|n| n as u32);
-    let max = obj.get("maxItems").and_then(Value::as_u64).map(|n| n as u32);
+    let min = obj
+        .get("minItems")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32);
+    let max = obj
+        .get("maxItems")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32);
     let fixed_count = matches!((min, max), (Some(a), Some(b)) if a == b);
     let (count, element_start) = if fixed_count {
         let count = min.ok_or_else(|| {
@@ -623,9 +625,7 @@ fn read_array_value<'a>(
             .checked_mul(element_stride)
             .ok_or_else(|| TypedefError::Access {
                 field_path: field_path.to_string(),
-                reason: format!(
-                    "array size {count} × stride {element_stride} overflows usize"
-                ),
+                reason: format!("array size {count} × stride {element_stride} overflows usize"),
             })?
     };
 
@@ -672,9 +672,7 @@ fn walk_variable_array_size(
         if new_position < position {
             return Err(TypedefError::Access {
                 field_path: element_path,
-                reason: format!(
-                    "array element walked backwards: {position} → {new_position}"
-                ),
+                reason: format!("array element walked backwards: {position} → {new_position}"),
             });
         }
         position = new_position;
@@ -698,9 +696,7 @@ fn read_record_value<'a>(
     let value_schema = schema
         .as_object()
         .and_then(|obj| obj.get("values"))
-        .ok_or_else(|| {
-            TypedefError::Schema(format!("record {field_path} has no values schema"))
-        })?;
+        .ok_or_else(|| TypedefError::Schema(format!("record {field_path} has no values schema")))?;
     let mut position = offset + U32_SIZE;
     for i in 0..count {
         let entry_path = format!("{field_path}[{i}].key");
@@ -733,11 +729,11 @@ fn resolve_and_walk_variant(
     endian: Endian,
     field_path: &str,
 ) -> Result<usize, TypedefError> {
-    let resolved = resolve_variant_schema(root_schema, union_schema, variant_schema)
-        .ok_or_else(|| {
+    let resolved =
+        resolve_variant_schema(root_schema, union_schema, variant_schema).ok_or_else(|| {
             TypedefError::Schema(format!(
-            "union {field_path} variant could not be resolved: {variant_schema}"
-        ))
+                "union {field_path} variant could not be resolved: {variant_schema}"
+            ))
         })?;
     let kind = schema::get_typedef_kind(resolved).ok_or_else(|| {
         TypedefError::Schema(format!(
@@ -745,9 +741,7 @@ fn resolve_and_walk_variant(
         ))
     })?;
     match kind {
-        "TypeDef:Struct" => {
-            walk_struct_size(root_schema, resolved, buffer, variant_start, endian)
-        }
+        "TypeDef:Struct" => walk_struct_size(root_schema, resolved, buffer, variant_start, endian),
         "TypeDef:Union" => {
             let (_, end) = read_union_value(
                 buffer,
@@ -834,9 +828,7 @@ fn walk_struct_size(
         if new_position < position {
             return Err(TypedefError::Access {
                 field_path: name.clone(),
-                reason: format!(
-                    "struct field walked backwards: {position} → {new_position}"
-                ),
+                reason: format!("struct field walked backwards: {position} → {new_position}"),
             });
         }
         position = new_position;
@@ -1150,7 +1142,8 @@ mod tests {
                 assert_eq!(end, 3);
                 let inner_schema = &nested["properties"]["inner"];
                 let inner_reader = SequentialReader::new(inner_schema).unwrap();
-                let inner_end = walk_struct_size(inner_schema, inner_schema, &buf, start, LE).unwrap();
+                let inner_end =
+                    walk_struct_size(inner_schema, inner_schema, &buf, start, LE).unwrap();
                 assert_eq!(inner_end, end - start);
                 let _ = inner_reader;
             }
@@ -1191,7 +1184,10 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "packet");
         match value {
-            FieldValue::Union { discriminator, variant_start } => {
+            FieldValue::Union {
+                discriminator,
+                variant_start,
+            } => {
                 assert_eq!(discriminator, "5");
                 assert_eq!(variant_start, 1);
             }
@@ -1230,7 +1226,10 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "event");
         match value {
-            FieldValue::Union { discriminator, variant_start } => {
+            FieldValue::Union {
+                discriminator,
+                variant_start,
+            } => {
                 assert_eq!(discriminator, "read");
                 assert_eq!(variant_start, after);
             }
@@ -1258,7 +1257,11 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "vals");
         match value {
-            FieldValue::Array { count, element_start, element_stride } => {
+            FieldValue::Array {
+                count,
+                element_start,
+                element_stride,
+            } => {
                 assert_eq!(count, 3);
                 assert_eq!(element_start, 0);
                 assert_eq!(element_stride, 1);
@@ -1288,7 +1291,11 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "vals");
         match value {
-            FieldValue::Array { count, element_start, element_stride } => {
+            FieldValue::Array {
+                count,
+                element_start,
+                element_stride,
+            } => {
                 assert_eq!(count, 2);
                 assert_eq!(element_start, 4);
                 assert_eq!(element_stride, 2);
@@ -1319,7 +1326,11 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "items");
         match value {
-            FieldValue::Array { count, element_start, element_stride } => {
+            FieldValue::Array {
+                count,
+                element_start,
+                element_stride,
+            } => {
                 assert_eq!(count, 2);
                 assert_eq!(element_start, 4);
                 assert_eq!(element_stride, 0);
@@ -1423,7 +1434,10 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "packet");
         match value {
-            FieldValue::Union { discriminator, variant_start } => {
+            FieldValue::Union {
+                discriminator,
+                variant_start,
+            } => {
                 assert_eq!(discriminator, "5");
                 assert_eq!(variant_start, 1);
             }
@@ -1457,7 +1471,10 @@ mod tests {
         let (name, value) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(name, "packet");
         match value {
-            FieldValue::Union { discriminator, variant_start } => {
+            FieldValue::Union {
+                discriminator,
+                variant_start,
+            } => {
                 assert_eq!(discriminator, "5");
                 assert_eq!(variant_start, 1);
             }

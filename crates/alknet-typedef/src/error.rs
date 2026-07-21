@@ -15,17 +15,11 @@ pub enum TypedefError {
 
     /// Offset computation errors — field not found, type not supported
     /// for offset computation, recursive depth exceeded.
-    Offset {
-        field_path: String,
-        reason: String,
-    },
+    Offset { field_path: String, reason: String },
 
     /// Read/write errors — buffer too short, invalid UTF-8, value out
     /// of range for the target type.
-    Access {
-        field_path: String,
-        reason: String,
-    },
+    Access { field_path: String, reason: String },
 
     /// Validation errors — delegated to the `jsonschema` crate.
     /// The `'static` lifetime is correct: the validator owns its schema

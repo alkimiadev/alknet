@@ -8,17 +8,14 @@
 //! reads them back, asserting both the values and (where applicable)
 //! the byte positions.
 
-use alknet_typedef::*;
 use alknet_typedef::data_access;
 use alknet_typedef::tunion;
+use alknet_typedef::*;
 use serde_json::json;
 use std::collections::HashMap;
 
 fn var_sizes(pairs: &[(&str, usize)]) -> HashMap<String, usize> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), *v))
-        .collect()
+    pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
 }
 
 #[test]
@@ -42,7 +39,13 @@ fn fixed_size_round_trip_via_offset_map() -> Result<(), TypedefError> {
     let flag_range = offset_map.get("flag").expect("flag range");
     data_access::write_u8(&mut buffer, flag_range.start, 1, "flag")?;
     let count_range = offset_map.get("count").expect("count range");
-    data_access::write_u16(&mut buffer, count_range.start, 1000, "count", Endian::Little)?;
+    data_access::write_u16(
+        &mut buffer,
+        count_range.start,
+        1000,
+        "count",
+        Endian::Little,
+    )?;
 
     assert_eq!(
         data_access::read_u32(&buffer, id_range.start, "id", Endian::Little)?,
@@ -162,12 +165,35 @@ fn nested_struct_round_trip_via_offset_map() -> Result<(), TypedefError> {
 
     let data = b"body-data".to_vec();
     let mut buffer = vec![0u8; offset_map.total_size() + data.len()];
-    data_access::write_u32(&mut buffer, header_version.start, 1, "header.version", Endian::Little)?;
-    data_access::write_u32(&mut buffer, header_magic.start, 0xCAFEBABE, "header.magic", Endian::Little)?;
-    data_access::write_bytes(&mut buffer, payload_prefix.start, &data, "payload", Endian::Little)?;
+    data_access::write_u32(
+        &mut buffer,
+        header_version.start,
+        1,
+        "header.version",
+        Endian::Little,
+    )?;
+    data_access::write_u32(
+        &mut buffer,
+        header_magic.start,
+        0xCAFEBABE,
+        "header.magic",
+        Endian::Little,
+    )?;
+    data_access::write_bytes(
+        &mut buffer,
+        payload_prefix.start,
+        &data,
+        "payload",
+        Endian::Little,
+    )?;
 
     assert_eq!(
-        data_access::read_u32(&buffer, header_version.start, "header.version", Endian::Little)?,
+        data_access::read_u32(
+            &buffer,
+            header_version.start,
+            "header.version",
+            Endian::Little
+        )?,
         1
     );
     assert_eq!(
@@ -283,13 +309,22 @@ fn alignment_padding_round_trip_u8_then_u32() -> Result<(), TypedefError> {
 
     let mut buffer = vec![0u8; offset_map.total_size()];
     data_access::write_u8(&mut buffer, flag_range.start, 0xAB, "flag")?;
-    data_access::write_u32(&mut buffer, id_range.start, 0x01020304, "id", Endian::Little)?;
+    data_access::write_u32(
+        &mut buffer,
+        id_range.start,
+        0x01020304,
+        "id",
+        Endian::Little,
+    )?;
 
     assert_eq!(buffer[0], 0xAB);
     assert_eq!(&buffer[1..4], &[0x00, 0x00, 0x00]);
     assert_eq!(&buffer[4..8], 0x01020304u32.to_le_bytes());
 
-    assert_eq!(data_access::read_u8(&buffer, flag_range.start, "flag")?, 0xAB);
+    assert_eq!(
+        data_access::read_u8(&buffer, flag_range.start, "flag")?,
+        0xAB
+    );
     assert_eq!(
         data_access::read_u32(&buffer, id_range.start, "id", Endian::Little)?,
         0x01020304
@@ -326,14 +361,23 @@ fn packed_layout_round_trip_via_layout_builder() -> Result<(), TypedefError> {
     let mut buffer = vec![0u8; layout.total_size()];
     data_access::write_u8(&mut buffer, flag_pos.offset, 0xAB, "flag")?;
     data_access::write_u32(&mut buffer, id_pos.offset, 0x01020304, "id", Endian::Little)?;
-    data_access::write_string(&mut buffer, payload_pos.offset, payload_str, "payload", Endian::Little)?;
+    data_access::write_string(
+        &mut buffer,
+        payload_pos.offset,
+        payload_str,
+        "payload",
+        Endian::Little,
+    )?;
 
     assert_eq!(buffer[0], 0xAB);
     assert_eq!(&buffer[1..5], 0x01020304u32.to_le_bytes());
     assert_eq!(&buffer[5..9], 10u32.to_le_bytes());
     assert_eq!(&buffer[9..19], payload_bytes);
 
-    assert_eq!(data_access::read_u8(&buffer, flag_pos.offset, "flag")?, 0xAB);
+    assert_eq!(
+        data_access::read_u8(&buffer, flag_pos.offset, "flag")?,
+        0xAB
+    );
     assert_eq!(
         data_access::read_u32(&buffer, id_pos.offset, "id", Endian::Little)?,
         0x01020304
@@ -459,7 +503,9 @@ fn tunion_byte_offset_discriminator_dispatch() -> Result<(), TypedefError> {
 
     let variant = tunion::resolve_variant(&union_schema, &dispatch.key)?;
     assert_eq!(
-        variant.get("TypeDef:Struct").and_then(serde_json::Value::as_bool),
+        variant
+            .get("TypeDef:Struct")
+            .and_then(serde_json::Value::as_bool),
         Some(true)
     );
     Ok(())

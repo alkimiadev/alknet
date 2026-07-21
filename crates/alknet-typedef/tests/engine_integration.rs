@@ -201,8 +201,14 @@ fn read_write_aligned_round_trips_all_fixed_size_kinds() -> Result<(), TypedefEr
     assert_eq!(engine.read_field(&buffer, "u8")?, FieldValue::U8(0xAB));
     assert_eq!(engine.read_field(&buffer, "i16")?, FieldValue::I16(-32000));
     assert_eq!(engine.read_field(&buffer, "u16")?, FieldValue::U16(0xBEEF));
-    assert_eq!(engine.read_field(&buffer, "i32")?, FieldValue::I32(-2_000_000_007));
-    assert_eq!(engine.read_field(&buffer, "u32")?, FieldValue::U32(0xDEADBEEF));
+    assert_eq!(
+        engine.read_field(&buffer, "i32")?,
+        FieldValue::I32(-2_000_000_007)
+    );
+    assert_eq!(
+        engine.read_field(&buffer, "u32")?,
+        FieldValue::U32(0xDEADBEEF)
+    );
     assert_eq!(engine.read_field(&buffer, "f32")?, FieldValue::F32(1.5));
     assert_eq!(engine.read_field(&buffer, "f64")?, FieldValue::F64(2.5));
     assert_eq!(engine.read_field(&buffer, "b")?, FieldValue::Bool(true));

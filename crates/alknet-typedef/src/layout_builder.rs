@@ -183,10 +183,7 @@ impl LayoutBuilder {
     /// - [`TypedefError::Offset`] for missing variable-length field
     ///   sizes in `var_sizes`, missing discriminator values, or unknown
     ///   discriminator values.
-    pub fn build(
-        &self,
-        var_sizes: &HashMap<String, usize>,
-    ) -> Result<PackedLayout, TypedefError> {
+    pub fn build(&self, var_sizes: &HashMap<String, usize>) -> Result<PackedLayout, TypedefError> {
         let mut ctx = BuildCtx {
             root: &self.schema,
             var_sizes,
@@ -298,12 +295,14 @@ impl<'a> BuildCtx<'a> {
         offset: &mut usize,
         kind: &str,
     ) -> Result<(), TypedefError> {
-        let data_size = self.var_sizes.get(field_path).copied().ok_or_else(|| {
-            TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: "missing variable-length field size".to_string(),
-            }
-        })?;
+        let data_size =
+            self.var_sizes
+                .get(field_path)
+                .copied()
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: "missing variable-length field size".to_string(),
+                })?;
         let start = *offset;
         let total = U32_SIZE
             .checked_add(data_size)
@@ -328,21 +327,22 @@ impl<'a> BuildCtx<'a> {
         field_path: &str,
         offset: &mut usize,
     ) -> Result<(), TypedefError> {
-        let obj = field_schema.as_object().ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: "array schema is not an object".to_string(),
-        })?;
+        let obj = field_schema
+            .as_object()
+            .ok_or_else(|| TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: "array schema is not an object".to_string(),
+            })?;
 
         let items = obj.get("items").ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TArray is missing 'items'".to_string(),
         })?;
-        let element_schema = resolve_ref_or_inline(items, self.root).ok_or_else(|| {
-            TypedefError::Offset {
+        let element_schema =
+            resolve_ref_or_inline(items, self.root).ok_or_else(|| TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: "could not resolve TArray items schema".to_string(),
-            }
-        })?;
+            })?;
         let elem_kind = typedef_kind_loose(element_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TArray element schema has no TypeDef:* kind".to_string(),
@@ -362,8 +362,14 @@ impl<'a> BuildCtx<'a> {
             reason: format!("element kind {elem_kind} has no fixed size"),
         })?;
 
-        let min_items = obj.get("minItems").and_then(Value::as_u64).map(|n| n as usize);
-        let max_items = obj.get("maxItems").and_then(Value::as_u64).map(|n| n as usize);
+        let min_items = obj
+            .get("minItems")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
+        let max_items = obj
+            .get("maxItems")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
         let fixed_count = match (min_items, max_items) {
             (Some(mn), Some(mx)) if mn == mx => Some(mn),
             _ => None,
@@ -373,15 +379,25 @@ impl<'a> BuildCtx<'a> {
             let start = *offset;
             for i in 0..count {
                 let elem_offset = start
-                    .checked_add(i.checked_mul(elem_size).ok_or_else(|| TypedefError::Offset {
-                        field_path: field_path.to_string(),
-                        reason: format!("element index {i} × size {elem_size} overflows usize"),
-                    })?)
+                    .checked_add(
+                        i.checked_mul(elem_size)
+                            .ok_or_else(|| TypedefError::Offset {
+                                field_path: field_path.to_string(),
+                                reason: format!(
+                                    "element index {i} × size {elem_size} overflows usize"
+                                ),
+                            })?,
+                    )
                     .ok_or_else(|| TypedefError::Offset {
                         field_path: field_path.to_string(),
                         reason: format!("element offset {start} + {i}×{elem_size} overflows usize"),
                     })?;
-                self.push(&format!("{field_path}[{i}]"), elem_offset, elem_size, elem_kind);
+                self.push(
+                    &format!("{field_path}[{i}]"),
+                    elem_offset,
+                    elem_size,
+                    elem_kind,
+                );
             }
             let array_size = count
                 .checked_mul(elem_size)
@@ -397,18 +413,22 @@ impl<'a> BuildCtx<'a> {
                 })?;
             Ok(())
         } else {
-            let data_size = self.var_sizes.get(field_path).copied().ok_or_else(|| {
-                TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: "missing variable-count array element data size".to_string(),
-                }
-            })?;
+            let data_size =
+                self.var_sizes
+                    .get(field_path)
+                    .copied()
+                    .ok_or_else(|| TypedefError::Offset {
+                        field_path: field_path.to_string(),
+                        reason: "missing variable-count array element data size".to_string(),
+                    })?;
             let start = *offset;
             let total = U32_SIZE
                 .checked_add(data_size)
                 .ok_or_else(|| TypedefError::Offset {
                     field_path: field_path.to_string(),
-                    reason: format!("count prefix {U32_SIZE} + data size {data_size} overflows usize"),
+                    reason: format!(
+                        "count prefix {U32_SIZE} + data size {data_size} overflows usize"
+                    ),
                 })?;
             *offset = start
                 .checked_add(total)
@@ -439,15 +459,11 @@ impl<'a> BuildCtx<'a> {
             })?;
 
         match disc {
-            DiscriminatorKind::Byte { offset: disc_off, disc_type } => {
-                self.walk_byte_discriminator_union(
-                    field_path,
-                    offset,
-                    &disc_type,
-                    disc_off,
-                    mapping,
-                )
-            }
+            DiscriminatorKind::Byte {
+                offset: disc_off,
+                disc_type,
+            } => self
+                .walk_byte_discriminator_union(field_path, offset, &disc_type, disc_off, mapping),
             DiscriminatorKind::Field { name: _ } => {
                 self.walk_field_discriminator_union(field_path, offset, mapping)
             }
@@ -469,27 +485,34 @@ impl<'a> BuildCtx<'a> {
         })?;
 
         let disc_key = format!("{field_path}.{DISCRIMINATOR_PATH}");
-        let disc_value = self.var_sizes.get(&disc_key).copied().ok_or_else(|| {
-            TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!("missing discriminator value at key '{disc_key}'"),
-            }
-        })?;
+        let disc_value =
+            self.var_sizes
+                .get(&disc_key)
+                .copied()
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: format!("missing discriminator value at key '{disc_key}'"),
+                })?;
 
         let union_start = *offset;
-        let disc_abs_offset = union_start
-            .checked_add(disc_off)
-            .ok_or_else(|| TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!("union offset {union_start} + disc offset {disc_off} overflows usize"),
-            })?;
+        let disc_abs_offset =
+            union_start
+                .checked_add(disc_off)
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: format!(
+                        "union offset {union_start} + disc offset {disc_off} overflows usize"
+                    ),
+                })?;
         self.push(&disc_key, disc_abs_offset, disc_size, disc_type);
 
         let variant_key = disc_value.to_string();
-        let variant_schema = mapping.get(&variant_key).ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: format!("unknown discriminator value: {variant_key}"),
-        })?;
+        let variant_schema = mapping
+            .get(&variant_key)
+            .ok_or_else(|| TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: format!("unknown discriminator value: {variant_key}"),
+            })?;
         let resolved = resolve_ref_or_inline(variant_schema, self.root).ok_or_else(|| {
             TypedefError::Offset {
                 field_path: field_path.to_string(),
@@ -507,14 +530,15 @@ impl<'a> BuildCtx<'a> {
             });
         }
 
-        let variant_start = disc_abs_offset
-            .checked_add(disc_size)
-            .ok_or_else(|| TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!(
-                    "variant start {disc_abs_offset} + disc size {disc_size} overflows usize"
-                ),
-            })?;
+        let variant_start =
+            disc_abs_offset
+                .checked_add(disc_size)
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: format!(
+                        "variant start {disc_abs_offset} + disc size {disc_size} overflows usize"
+                    ),
+                })?;
         *offset = variant_start;
         self.walk_struct(resolved, field_path, offset)?;
         Ok(())
@@ -532,21 +556,25 @@ impl<'a> BuildCtx<'a> {
         mapping: &serde_json::Map<String, Value>,
     ) -> Result<(), TypedefError> {
         let variant_key = format!("{field_path}.{VARIANT_KEY}");
-        let variant_index = self.var_sizes.get(&variant_key).copied().ok_or_else(|| {
-            TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!("missing variant index at key '{variant_key}'"),
-            }
-        })?;
-        let variant_entry = mapping.iter().nth(variant_index).ok_or_else(|| {
-            TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!(
-                    "variant index {variant_index} out of range (mapping has {} entries)",
-                    mapping.len()
-                ),
-            }
-        })?;
+        let variant_index =
+            self.var_sizes
+                .get(&variant_key)
+                .copied()
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: format!("missing variant index at key '{variant_key}'"),
+                })?;
+        let variant_entry =
+            mapping
+                .iter()
+                .nth(variant_index)
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: format!(
+                        "variant index {variant_index} out of range (mapping has {} entries)",
+                        mapping.len()
+                    ),
+                })?;
         let variant_schema = variant_entry.1;
         let resolved = resolve_ref_or_inline(variant_schema, self.root).ok_or_else(|| {
             TypedefError::Offset {
@@ -675,15 +703,27 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[]));
         assert_eq!(
             layout.get("a"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("b"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("c"),
-            Some(&FieldPosition { offset: 5, size: 2, kind: "TypeDef:Uint16".into() })
+            Some(&FieldPosition {
+                offset: 5,
+                size: 2,
+                kind: "TypeDef:Uint16".into()
+            })
         );
         assert_eq!(layout.total_size(), 7);
     }
@@ -701,15 +741,27 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("payload", 10)]));
         assert_eq!(
             layout.get("flag"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("id"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("payload"),
-            Some(&FieldPosition { offset: 5, size: 4, kind: "TypeDef:String".into() })
+            Some(&FieldPosition {
+                offset: 5,
+                size: 4,
+                kind: "TypeDef:String".into()
+            })
         );
         assert_eq!(layout.total_size(), 19);
     }
@@ -726,11 +778,19 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("name", 5)]));
         assert_eq!(
             layout.get("name"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:String".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:String".into()
+            })
         );
         assert_eq!(
             layout.get("tail"),
-            Some(&FieldPosition { offset: 9, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 9,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(layout.total_size(), 10);
     }
@@ -746,7 +806,11 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("blob", 3)]));
         assert_eq!(
             layout.get("blob"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:Bytes".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:Bytes".into()
+            })
         );
         assert_eq!(layout.total_size(), 7);
     }
@@ -762,7 +826,11 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("ts", 20)]));
         assert_eq!(
             layout.get("ts"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:Timestamp".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:Timestamp".into()
+            })
         );
         assert_eq!(layout.total_size(), 24);
     }
@@ -781,7 +849,11 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("counts", 100)]));
         assert_eq!(
             layout.get("counts"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:Record".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:Record".into()
+            })
         );
         assert_eq!(layout.total_size(), 104);
     }
@@ -799,7 +871,10 @@ mod tests {
         match err {
             TypedefError::Offset { field_path, reason } => {
                 assert_eq!(field_path, "name");
-                assert!(reason.contains("missing variable-length field size"), "reason: {reason}");
+                assert!(
+                    reason.contains("missing variable-length field size"),
+                    "reason: {reason}"
+                );
             }
             other => panic!("expected Offset, got {other:?}"),
         }
@@ -823,15 +898,27 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[]));
         assert_eq!(
             layout.get("header.magic"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("header.version"),
-            Some(&FieldPosition { offset: 4, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 4,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("body"),
-            Some(&FieldPosition { offset: 5, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 5,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 9);
     }
@@ -854,15 +941,27 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("header.name", 3)]));
         assert_eq!(
             layout.get("header.id"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("header.name"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:String".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:String".into()
+            })
         );
         assert_eq!(
             layout.get("tail"),
-            Some(&FieldPosition { offset: 8, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 8,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(layout.total_size(), 9);
     }
@@ -883,15 +982,27 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[]));
         assert_eq!(
             layout.get("vals[0]"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("vals[1]"),
-            Some(&FieldPosition { offset: 4, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 4,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("vals[2]"),
-            Some(&FieldPosition { offset: 8, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 8,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 12);
     }
@@ -913,15 +1024,27 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[]));
         assert_eq!(
             layout.get("id"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("vals[0]"),
-            Some(&FieldPosition { offset: 1, size: 2, kind: "TypeDef:Uint16".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 2,
+                kind: "TypeDef:Uint16".into()
+            })
         );
         assert_eq!(
             layout.get("vals[1]"),
-            Some(&FieldPosition { offset: 3, size: 2, kind: "TypeDef:Uint16".into() })
+            Some(&FieldPosition {
+                offset: 3,
+                size: 2,
+                kind: "TypeDef:Uint16".into()
+            })
         );
         assert_eq!(layout.total_size(), 5);
     }
@@ -940,7 +1063,11 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("vals", 12)]));
         assert_eq!(
             layout.get("vals"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:Array".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:Array".into()
+            })
         );
         assert_eq!(layout.total_size(), 16);
     }
@@ -1022,15 +1149,27 @@ mod tests {
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("payload.__discriminator"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("payload.handle"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("payload.length"),
-            Some(&FieldPosition { offset: 5, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 5,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 9);
     }
@@ -1075,11 +1214,19 @@ mod tests {
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("payload.__discriminator"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("payload.data"),
-            Some(&FieldPosition { offset: 9, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 9,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 13);
     }
@@ -1111,22 +1258,31 @@ mod tests {
                 }
             }
         });
-        let vs = var_sizes(&[
-            ("packet.__discriminator", 5),
-            ("packet.path", 8),
-        ]);
+        let vs = var_sizes(&[("packet.__discriminator", 5), ("packet.path", 8)]);
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("packet.__discriminator"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("packet.handle"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(
             layout.get("packet.path"),
-            Some(&FieldPosition { offset: 5, size: 4, kind: "TypeDef:String".into() })
+            Some(&FieldPosition {
+                offset: 5,
+                size: 4,
+                kind: "TypeDef:String".into()
+            })
         );
         assert_eq!(layout.total_size(), 17);
     }
@@ -1231,11 +1387,19 @@ mod tests {
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("event.type"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("event.handle"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 5);
     }
@@ -1276,7 +1440,11 @@ mod tests {
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("event.length"),
-            Some(&FieldPosition { offset: 5, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 5,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 9);
     }
@@ -1450,7 +1618,11 @@ mod tests {
         let layout = build(&schema, &var_sizes(&[("name", 5)]));
         assert_eq!(
             layout.get("name"),
-            Some(&FieldPosition { offset: 0, size: 4, kind: "TypeDef:String".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 4,
+                kind: "TypeDef:String".into()
+            })
         );
         assert_eq!(layout.total_size(), 9);
     }
@@ -1524,11 +1696,19 @@ mod tests {
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("packet.__discriminator"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("packet.x"),
-            Some(&FieldPosition { offset: 1, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 5);
     }
@@ -1564,15 +1744,27 @@ mod tests {
         let layout = build(&schema, &vs);
         assert_eq!(
             layout.get("id"),
-            Some(&FieldPosition { offset: 0, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 0,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("payload.__discriminator"),
-            Some(&FieldPosition { offset: 1, size: 1, kind: "TypeDef:Uint8".into() })
+            Some(&FieldPosition {
+                offset: 1,
+                size: 1,
+                kind: "TypeDef:Uint8".into()
+            })
         );
         assert_eq!(
             layout.get("payload.handle"),
-            Some(&FieldPosition { offset: 2, size: 4, kind: "TypeDef:Uint32".into() })
+            Some(&FieldPosition {
+                offset: 2,
+                size: 4,
+                kind: "TypeDef:Uint32".into()
+            })
         );
         assert_eq!(layout.total_size(), 6);
     }

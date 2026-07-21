@@ -58,7 +58,9 @@ fn read_byte_discriminator_uint8_dispatches_to_read() -> Result<(), TypedefError
 
     let variant = tunion::resolve_variant(&union_schema, &dispatch.key)?;
     assert_eq!(
-        variant.get("TypeDef:Struct").and_then(serde_json::Value::as_bool),
+        variant
+            .get("TypeDef:Struct")
+            .and_then(serde_json::Value::as_bool),
         Some(true)
     );
     Ok(())
@@ -177,7 +179,9 @@ fn read_field_discriminator_string_dispatches_to_read() -> Result<(), TypedefErr
 
     let variant = tunion::resolve_variant(&union_schema, &dispatch.key)?;
     assert_eq!(
-        variant.get("TypeDef:Struct").and_then(serde_json::Value::as_bool),
+        variant
+            .get("TypeDef:Struct")
+            .and_then(serde_json::Value::as_bool),
         Some(true)
     );
     Ok(())
@@ -263,7 +267,8 @@ fn read_field_discriminator_unknown_value_returns_access_error() -> Result<(), T
     });
     let mut buffer = vec![0u8; 8];
     buffer[0] = 99;
-    let err = tunion::read_field_discriminator(&buffer, &union_schema, 0, Endian::Little).unwrap_err();
+    let err =
+        tunion::read_field_discriminator(&buffer, &union_schema, 0, Endian::Little).unwrap_err();
     assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
     Ok(())
 }

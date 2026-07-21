@@ -7,8 +7,8 @@
 //! variable-length field size in `LayoutBuilder::build`).
 
 use alknet_typedef::data_access;
-use alknet_typedef::*;
 use alknet_typedef::tunion;
+use alknet_typedef::*;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -143,7 +143,8 @@ fn write_u32_buffer_too_short_returns_access_error() {
 #[test]
 fn write_string_buffer_too_short_returns_access_error() {
     let mut buffer = vec![0u8; 4];
-    let err = data_access::write_string(&mut buffer, 0, "hello", "name", Endian::Little).unwrap_err();
+    let err =
+        data_access::write_string(&mut buffer, 0, "hello", "name", Endian::Little).unwrap_err();
     assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
 }
 
@@ -255,7 +256,8 @@ fn read_field_discriminator_unknown_value_returns_access_error() -> Result<(), T
     });
     let mut buffer = vec![0u8; 8];
     buffer[0] = 99;
-    let err = tunion::read_field_discriminator(&buffer, &union_schema, 0, Endian::Little).unwrap_err();
+    let err =
+        tunion::read_field_discriminator(&buffer, &union_schema, 0, Endian::Little).unwrap_err();
     assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
     Ok(())
 }
@@ -274,7 +276,10 @@ fn layout_builder_missing_var_size_returns_offset_error() {
     match err {
         TypedefError::Offset { field_path, reason } => {
             assert_eq!(field_path, "name");
-            assert!(reason.contains("missing variable-length field size"), "reason: {reason}");
+            assert!(
+                reason.contains("missing variable-length field size"),
+                "reason: {reason}"
+            );
         }
         other => panic!("expected Offset, got {other:?}"),
     }
@@ -384,7 +389,8 @@ fn read_string_indirect_data_region_too_short_returns_access_error() {
     let _ = data_access::write_u32(&mut index, 0, 100, "idx.off", Endian::Little);
     let _ = data_access::write_u32(&mut index, 4, 10, "idx.len", Endian::Little);
     let data_region = b"too short";
-    let err = data_access::read_bytes_indirect(&index, 0, data_region, "blob", Endian::Little).unwrap_err();
+    let err = data_access::read_bytes_indirect(&index, 0, data_region, "blob", Endian::Little)
+        .unwrap_err();
     assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
 }
 
@@ -392,7 +398,8 @@ fn read_string_indirect_data_region_too_short_returns_access_error() {
 fn read_bytes_indirect_index_too_short_returns_access_error() {
     let buffer = [0u8; 4];
     let data_region = b"anything";
-    let err = data_access::read_bytes_indirect(&buffer, 0, data_region, "blob", Endian::Little).unwrap_err();
+    let err = data_access::read_bytes_indirect(&buffer, 0, data_region, "blob", Endian::Little)
+        .unwrap_err();
     assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
 }
 
@@ -402,6 +409,7 @@ fn read_string_indirect_invalid_utf8_returns_access_error() {
     let mut index = [0u8; 8];
     let _ = data_access::write_u32(&mut index, 0, 0, "idx.off", Endian::Little);
     let _ = data_access::write_u32(&mut index, 4, 3, "idx.len", Endian::Little);
-    let err = data_access::read_string_indirect(&index, 0, data_region, "name", Endian::Little).unwrap_err();
+    let err = data_access::read_string_indirect(&index, 0, data_region, "name", Endian::Little)
+        .unwrap_err();
     assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
 }

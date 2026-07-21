@@ -79,14 +79,15 @@ pub fn read_byte_discriminator(
     let key = disc_value.to_string();
     verify_mapping_key(union_schema, &key, DISCRIMINATOR_PATH, &key)?;
 
-    let variant_offset = offset
-        .checked_add(discriminator_size)
-        .ok_or_else(|| TypedefError::Access {
-            field_path: DISCRIMINATOR_PATH.to_string(),
-            reason: format!(
-                "offset {offset} + discriminator_size {discriminator_size} overflows usize"
-            ),
-        })?;
+    let variant_offset =
+        offset
+            .checked_add(discriminator_size)
+            .ok_or_else(|| TypedefError::Access {
+                field_path: DISCRIMINATOR_PATH.to_string(),
+                reason: format!(
+                    "offset {offset} + discriminator_size {discriminator_size} overflows usize"
+                ),
+            })?;
 
     Ok(UnionDispatch {
         key,
@@ -149,15 +150,16 @@ pub fn read_field_discriminator(
     let (key, discriminator_field_size) = match kind {
         "TypeDef:String" => {
             let s = read_string(buffer, disc_field_offset, &name, endian)?;
-            let size = STRING_PREFIX_SIZE
-                .checked_add(s.len())
-                .ok_or_else(|| TypedefError::Access {
-                    field_path: name.clone(),
-                    reason: format!(
-                        "string prefix {STRING_PREFIX_SIZE} + data length {} overflows usize",
-                        s.len()
-                    ),
-                })?;
+            let size =
+                STRING_PREFIX_SIZE
+                    .checked_add(s.len())
+                    .ok_or_else(|| TypedefError::Access {
+                        field_path: name.clone(),
+                        reason: format!(
+                            "string prefix {STRING_PREFIX_SIZE} + data length {} overflows usize",
+                            s.len()
+                        ),
+                    })?;
             (s.to_string(), size)
         }
         "TypeDef:Uint8" => {
@@ -208,10 +210,7 @@ pub fn read_field_discriminator(
 /// - [`TypedefError::Schema`] if the union has no `mapping` object, the
 ///   `key` is not present, a `$ref` is malformed, or a `$ref` cannot be
 ///   resolved against the union schema's own `$defs`.
-pub fn resolve_variant<'a>(
-    union_schema: &'a Value,
-    key: &str,
-) -> Result<&'a Value, TypedefError> {
+pub fn resolve_variant<'a>(union_schema: &'a Value, key: &str) -> Result<&'a Value, TypedefError> {
     let mapping = union_schema
         .get("mapping")
         .and_then(Value::as_object)

@@ -165,9 +165,9 @@ impl<'a> ComputeCtx<'a> {
         prefix: &str,
         parent_struct_align: usize,
     ) -> Result<(usize, usize), TypedefError> {
-        let obj = struct_schema.as_object().ok_or_else(|| {
-            TypedefError::Schema("struct schema is not an object".to_string())
-        })?;
+        let obj = struct_schema
+            .as_object()
+            .ok_or_else(|| TypedefError::Schema("struct schema is not an object".to_string()))?;
         let properties = obj
             .get("properties")
             .and_then(|v| v.as_object())
@@ -316,7 +316,10 @@ impl<'a> ComputeCtx<'a> {
         let union_default_align = union_align_annotation.unwrap_or(struct_default_align);
 
         match disc {
-            DiscriminatorKind::Byte { offset: disc_off, disc_type } => {
+            DiscriminatorKind::Byte {
+                offset: disc_off,
+                disc_type,
+            } => {
                 let disc_size = type_size(&disc_type).ok_or_else(|| TypedefError::Offset {
                     field_path: field_path.to_string(),
                     reason: format!("discriminator type {disc_type} has no fixed size"),
@@ -451,21 +454,22 @@ impl<'a> ComputeCtx<'a> {
         field_path: &str,
         struct_default_align: usize,
     ) -> Result<FieldLayout, TypedefError> {
-        let obj = field_schema.as_object().ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: "array schema is not an object".to_string(),
-        })?;
+        let obj = field_schema
+            .as_object()
+            .ok_or_else(|| TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: "array schema is not an object".to_string(),
+            })?;
 
         let items = obj.get("items").ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TArray is missing 'items'".to_string(),
         })?;
-        let element_schema = resolve_ref_or_inline(items, self.root).ok_or_else(|| {
-            TypedefError::Offset {
+        let element_schema =
+            resolve_ref_or_inline(items, self.root).ok_or_else(|| TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: "could not resolve TArray items schema".to_string(),
-            }
-        })?;
+            })?;
         let elem_kind = get_typedef_kind(element_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TArray element schema has no TypeDef:* kind".to_string(),
@@ -487,8 +491,14 @@ impl<'a> ComputeCtx<'a> {
         let elem_align = field_alignment(element_schema, struct_default_align, elem_natural);
         let stride = round_up(elem_size, elem_align);
 
-        let min_items = obj.get("minItems").and_then(|v| v.as_u64()).map(|n| n as usize);
-        let max_items = obj.get("maxItems").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let min_items = obj
+            .get("minItems")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let max_items = obj
+            .get("maxItems")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
         let fixed_count = match (min_items, max_items) {
             (Some(mn), Some(mx)) if mn == mx => Some(mn),
             _ => None,
@@ -718,7 +728,10 @@ mod tests {
         });
         let m = map(&schema);
         assert_eq!(m.get("header.magic"), Some(&ByteRange { start: 0, end: 4 }));
-        assert_eq!(m.get("header.version"), Some(&ByteRange { start: 4, end: 5 }));
+        assert_eq!(
+            m.get("header.version"),
+            Some(&ByteRange { start: 4, end: 5 })
+        );
         assert_eq!(m.get("body"), Some(&ByteRange { start: 8, end: 12 }));
         assert_eq!(m.total_size(), 12);
     }
@@ -881,10 +894,7 @@ mod tests {
             }
         });
         let m = map(&schema);
-        assert_eq!(
-            m.get("event.type"),
-            Some(&ByteRange { start: 0, end: 1 })
-        );
+        assert_eq!(m.get("event.type"), Some(&ByteRange { start: 0, end: 1 }));
         assert_eq!(m.total_size(), 12);
     }
 
@@ -952,7 +962,8 @@ mod tests {
 
     #[test]
     fn compute_rejects_non_struct_top_level() {
-        let schema = json!({ "TypeDef:Union": true, "discriminator": { "kind": "byte" }, "mapping": {} });
+        let schema =
+            json!({ "TypeDef:Union": true, "discriminator": { "kind": "byte" }, "mapping": {} });
         let err = OffsetMap::compute(&schema).unwrap_err();
         assert!(matches!(err, TypedefError::Schema(_)));
     }

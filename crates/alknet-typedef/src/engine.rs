@@ -44,9 +44,7 @@ enum Layout {
     },
     /// Aligned static layout. Field offsets are precomputed in an
     /// [`OffsetMap`] for random access.
-    Aligned {
-        offset_map: OffsetMap,
-    },
+    Aligned { offset_map: OffsetMap },
 }
 
 /// The compiled form of a typedef schema. Combines the layout engine
@@ -84,10 +82,7 @@ impl TypedefEngine {
     /// underlying layout/validator construction fails. The error is
     /// propagated from [`LayoutBuilder::new`], [`SequentialReader::new`],
     /// [`OffsetMap::compute`], or [`validation::build_validator`].
-    pub fn compile(
-        schema: &mut Value,
-        mode: LayoutMode,
-    ) -> Result<Self, TypedefError> {
+    pub fn compile(schema: &mut Value, mode: LayoutMode) -> Result<Self, TypedefError> {
         schema::normalize_refs(schema);
         let endian = Endian::from_schema(schema);
         let layout = match mode {
@@ -200,10 +195,12 @@ impl TypedefEngine {
                 });
             }
         };
-        let range = offset_map.get(field_path).ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: "field not found in offset map".to_string(),
-        })?;
+        let range = offset_map
+            .get(field_path)
+            .ok_or_else(|| TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: "field not found in offset map".to_string(),
+            })?;
         let field_schema =
             lookup_field_schema(&self.schema, field_path).ok_or_else(|| TypedefError::Offset {
                 field_path: field_path.to_string(),
@@ -275,14 +272,12 @@ impl TypedefEngine {
                 start: range.start,
                 end: range.end,
             }),
-            "TypeDef:Union" | "TypeDef:Array" | "TypeDef:Record" => {
-                Err(TypedefError::Access {
-                    field_path: field_path.to_string(),
-                    reason: "read_field does not support composite types; \
+            "TypeDef:Union" | "TypeDef:Array" | "TypeDef:Record" => Err(TypedefError::Access {
+                field_path: field_path.to_string(),
+                reason: "read_field does not support composite types; \
                              use the layout-specific APIs"
-                        .to_string(),
-                })
-            }
+                    .to_string(),
+            }),
             other => Err(TypedefError::Access {
                 field_path: field_path.to_string(),
                 reason: format!("unsupported TypeDef kind for read_field: {other}"),
@@ -324,24 +319,22 @@ impl TypedefEngine {
                 });
             }
         };
-        let range = offset_map.get(field_path).ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: "field not found in offset map".to_string(),
-        })?;
+        let range = offset_map
+            .get(field_path)
+            .ok_or_else(|| TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: "field not found in offset map".to_string(),
+            })?;
         let endian = self.endian;
         match value {
-            FieldValue::I8(v) => {
-                data_access::write_i8(buffer, range.start, *v, field_path)
-            }
+            FieldValue::I8(v) => data_access::write_i8(buffer, range.start, *v, field_path),
             FieldValue::I16(v) => {
                 data_access::write_i16(buffer, range.start, *v, field_path, endian)
             }
             FieldValue::I32(v) => {
                 data_access::write_i32(buffer, range.start, *v, field_path, endian)
             }
-            FieldValue::U8(v) => {
-                data_access::write_u8(buffer, range.start, *v, field_path)
-            }
+            FieldValue::U8(v) => data_access::write_u8(buffer, range.start, *v, field_path),
             FieldValue::U16(v) => {
                 data_access::write_u16(buffer, range.start, *v, field_path, endian)
             }
@@ -357,9 +350,7 @@ impl TypedefEngine {
             FieldValue::F64(v) => {
                 data_access::write_f64(buffer, range.start, *v, field_path, endian)
             }
-            FieldValue::Bool(v) => {
-                data_access::write_bool(buffer, range.start, *v, field_path)
-            }
+            FieldValue::Bool(v) => data_access::write_bool(buffer, range.start, *v, field_path),
             FieldValue::Enum(v) => {
                 data_access::write_enum(buffer, range.start, *v, field_path, endian)
             }
@@ -371,14 +362,14 @@ impl TypedefEngine {
                 data_access::write_bytes(buffer, range.start, v, field_path, endian)?;
                 Ok(())
             }
-            FieldValue::Struct { .. }
-            | FieldValue::Union { .. }
-            | FieldValue::Array { .. } => Err(TypedefError::Access {
-                field_path: field_path.to_string(),
-                reason: "write_field does not support composite types; \
+            FieldValue::Struct { .. } | FieldValue::Union { .. } | FieldValue::Array { .. } => {
+                Err(TypedefError::Access {
+                    field_path: field_path.to_string(),
+                    reason: "write_field does not support composite types; \
                          use the layout-specific APIs"
-                    .to_string(),
-            }),
+                        .to_string(),
+                })
+            }
         }
     }
 }
@@ -404,10 +395,7 @@ impl fmt::Debug for TypedefEngine {
 fn lookup_field_schema<'a>(schema: &'a Value, field_path: &str) -> Option<&'a Value> {
     let mut current = schema;
     for segment in field_path.split('.') {
-        current = current
-            .as_object()?
-            .get("properties")?
-            .get(segment)?;
+        current = current.as_object()?.get("properties")?.get(segment)?;
     }
     Some(current)
 }
@@ -723,11 +711,7 @@ mod tests {
         let engine = TypedefEngine::compile(&mut schema, LayoutMode::Aligned).expect("compile");
         let mut buf = [0u8; 8];
         let err = engine
-            .write_field(
-                &mut buf,
-                "id",
-                &FieldValue::Struct { start: 0, end: 4 },
-            )
+            .write_field(&mut buf, "id", &FieldValue::Struct { start: 0, end: 4 })
             .unwrap_err();
         assert!(matches!(err, TypedefError::Access { .. }), "got {err:?}");
     }

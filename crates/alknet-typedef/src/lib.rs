@@ -31,14 +31,14 @@ pub mod sequential_reader;
 pub mod tunion;
 pub mod validation;
 
+pub use engine::{LayoutMode, TypedefEngine};
 pub use error::TypedefError;
-pub use schema::{
-    parse_align, parse_discriminator, parse_encoding, parse_endian, parse_max_length,
-    normalize_refs, DiscriminatorKind, Endian, VariableEncoding,
-};
-pub use validation::build_validator;
-pub use offset_map::{ByteRange, OffsetMap};
 pub use layout_builder::{FieldPosition, LayoutBuilder, PackedLayout};
+pub use offset_map::{ByteRange, OffsetMap};
+pub use schema::{
+    normalize_refs, parse_align, parse_discriminator, parse_encoding, parse_endian,
+    parse_max_length, DiscriminatorKind, Endian, VariableEncoding,
+};
 pub use sequential_reader::{FieldValue, SequentialReader};
 pub use tunion::UnionDispatch;
-pub use engine::{LayoutMode, TypedefEngine};
+pub use validation::build_validator;

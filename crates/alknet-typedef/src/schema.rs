@@ -13,11 +13,7 @@ use serde_json::Value;
 
 const TYPEDEF_PREFIX: &str = "TypeDef:";
 
-const BYTE_DISCRIMINATOR_TYPES: &[&str] = &[
-    "TypeDef:Uint8",
-    "TypeDef:Uint16",
-    "TypeDef:Uint32",
-];
+const BYTE_DISCRIMINATOR_TYPES: &[&str] = &["TypeDef:Uint8", "TypeDef:Uint16", "TypeDef:Uint32"];
 
 /// Returns the `TypeDef:*` kind string if the schema node declares one.
 /// Returns `None` if the node has no `TypeDef:*` keyword.
@@ -48,13 +44,8 @@ pub fn type_size(kind: &str) -> Option<usize> {
         "TypeDef:Float64" => Some(8),
         "TypeDef:Int8" | "TypeDef:Uint8" | "TypeDef:Boolean" => Some(1),
         "TypeDef:Int16" | "TypeDef:Uint16" => Some(2),
-        "TypeDef:String"
-        | "TypeDef:Bytes"
-        | "TypeDef:Struct"
-        | "TypeDef:Union"
-        | "TypeDef:Array"
-        | "TypeDef:Record"
-        | "TypeDef:Timestamp" => None,
+        "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Struct" | "TypeDef:Union"
+        | "TypeDef:Array" | "TypeDef:Record" | "TypeDef:Timestamp" => None,
         _ => None,
     }
 }
@@ -157,7 +148,11 @@ pub fn parse_max_length(node: &Value) -> Option<usize> {
 /// Parse the `"endian"` annotation. Defaults to `Little` if absent or
 /// unrecognized. Operates on any node, not just the root.
 pub fn parse_endian(node: &Value) -> Endian {
-    match node.as_object().and_then(|o| o.get("endian")).and_then(Value::as_str) {
+    match node
+        .as_object()
+        .and_then(|o| o.get("endian"))
+        .and_then(Value::as_str)
+    {
         Some("big") => Endian::Big,
         _ => Endian::Little,
     }
@@ -196,18 +191,16 @@ pub fn parse_discriminator(node: &Value) -> Result<DiscriminatorKind, TypedefErr
     let disc = obj.get("discriminator").ok_or_else(|| {
         TypedefError::Schema("union is missing 'discriminator' annotation".to_string())
     })?;
-    let disc_obj = disc.as_object().ok_or_else(|| {
-        TypedefError::Schema("'discriminator' must be an object".to_string())
-    })?;
-    let kind = disc_obj.get("kind").and_then(Value::as_str).ok_or_else(|| {
-        TypedefError::Schema("discriminator is missing 'kind' field".to_string())
-    })?;
+    let disc_obj = disc
+        .as_object()
+        .ok_or_else(|| TypedefError::Schema("'discriminator' must be an object".to_string()))?;
+    let kind = disc_obj
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| TypedefError::Schema("discriminator is missing 'kind' field".to_string()))?;
     match kind {
         "byte" => {
-            let offset = disc_obj
-                .get("offset")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
+            let offset = disc_obj.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
             let disc_type = disc_obj
                 .get("type")
                 .and_then(Value::as_str)
@@ -377,8 +370,14 @@ mod tests {
     #[test]
     fn endian_from_schema_defaults_to_little() {
         assert_eq!(Endian::from_schema(&json!({})), Endian::Little);
-        assert_eq!(Endian::from_schema(&json!({"endian": "little"})), Endian::Little);
-        assert_eq!(Endian::from_schema(&json!({"endian": "weird"})), Endian::Little);
+        assert_eq!(
+            Endian::from_schema(&json!({"endian": "little"})),
+            Endian::Little
+        );
+        assert_eq!(
+            Endian::from_schema(&json!({"endian": "weird"})),
+            Endian::Little
+        );
     }
 
     #[test]
@@ -388,7 +387,10 @@ mod tests {
 
     #[test]
     fn parse_encoding_shorthand_true() {
-        assert_eq!(parse_encoding(&json!(true)), VariableEncoding::LengthPrefixed);
+        assert_eq!(
+            parse_encoding(&json!(true)),
+            VariableEncoding::LengthPrefixed
+        );
     }
 
     #[test]
@@ -414,7 +416,10 @@ mod tests {
             VariableEncoding::LengthPrefixed
         );
         assert_eq!(parse_encoding(&json!(42)), VariableEncoding::LengthPrefixed);
-        assert_eq!(parse_encoding(&json!(null)), VariableEncoding::LengthPrefixed);
+        assert_eq!(
+            parse_encoding(&json!(null)),
+            VariableEncoding::LengthPrefixed
+        );
     }
 
     #[test]
@@ -450,10 +455,13 @@ mod tests {
     fn parse_discriminator_byte_default_offset_and_type() {
         let schema = json!({"discriminator": {"kind": "byte"}});
         let disc = parse_discriminator(&schema).expect("byte discriminator");
-        assert_eq!(disc, DiscriminatorKind::Byte {
-            offset: 0,
-            disc_type: "TypeDef:Uint8".to_string(),
-        });
+        assert_eq!(
+            disc,
+            DiscriminatorKind::Byte {
+                offset: 0,
+                disc_type: "TypeDef:Uint8".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -462,19 +470,25 @@ mod tests {
             "discriminator": {"kind": "byte", "offset": 4, "type": "TypeDef:Uint16"}
         });
         let disc = parse_discriminator(&schema).expect("byte discriminator");
-        assert_eq!(disc, DiscriminatorKind::Byte {
-            offset: 4,
-            disc_type: "TypeDef:Uint16".to_string(),
-        });
+        assert_eq!(
+            disc,
+            DiscriminatorKind::Byte {
+                offset: 4,
+                disc_type: "TypeDef:Uint16".to_string(),
+            }
+        );
     }
 
     #[test]
     fn parse_discriminator_field() {
         let schema = json!({"discriminator": {"kind": "field", "name": "type"}});
         let disc = parse_discriminator(&schema).expect("field discriminator");
-        assert_eq!(disc, DiscriminatorKind::Field {
-            name: "type".to_string()
-        });
+        assert_eq!(
+            disc,
+            DiscriminatorKind::Field {
+                name: "type".to_string()
+            }
+        );
     }
 
     #[test]

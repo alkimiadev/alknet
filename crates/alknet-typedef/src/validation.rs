@@ -59,7 +59,9 @@ impl Keyword for Float32Validator {
     fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
         match instance.as_f64() {
             Some(f) if f.is_finite() => Ok(()),
-            _ => Err(ValidationError::custom("expected a finite f32-compatible number")),
+            _ => Err(ValidationError::custom(
+                "expected a finite f32-compatible number",
+            )),
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
@@ -85,7 +87,9 @@ impl Keyword for Int8Validator {
     fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
         match instance.as_i64() {
             Some(n) if (-128..=127).contains(&n) => Ok(()),
-            _ => Err(ValidationError::custom("expected an integer in range [-128, 127]")),
+            _ => Err(ValidationError::custom(
+                "expected an integer in range [-128, 127]",
+            )),
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
@@ -98,7 +102,9 @@ impl Keyword for Int16Validator {
     fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
         match instance.as_i64() {
             Some(n) if (-32_768..=32_767).contains(&n) => Ok(()),
-            _ => Err(ValidationError::custom("expected an integer in range [-32768, 32767]")),
+            _ => Err(ValidationError::custom(
+                "expected an integer in range [-32768, 32767]",
+            )),
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
@@ -130,7 +136,9 @@ impl Keyword for Uint8Validator {
     fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
         match instance.as_u64() {
             Some(n) if n <= 255 => Ok(()),
-            _ => Err(ValidationError::custom("expected an unsigned integer in range [0, 255]")),
+            _ => Err(ValidationError::custom(
+                "expected an unsigned integer in range [0, 255]",
+            )),
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
@@ -143,7 +151,9 @@ impl Keyword for Uint16Validator {
     fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
         match instance.as_u64() {
             Some(n) if n <= 65_535 => Ok(()),
-            _ => Err(ValidationError::custom("expected an unsigned integer in range [0, 65535]")),
+            _ => Err(ValidationError::custom(
+                "expected an unsigned integer in range [0, 65535]",
+            )),
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
@@ -191,9 +201,9 @@ impl Keyword for StringValidator {
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_str().is_some_and(|s| {
-            self.max_length.is_none_or(|max| s.len() <= max)
-        })
+        instance
+            .as_str()
+            .is_some_and(|s| self.max_length.is_none_or(|max| s.len() <= max))
     }
 }
 
@@ -218,9 +228,9 @@ impl Keyword for BytesValidator {
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
-        instance.as_str().is_some_and(|s| {
-            self.max_length.is_none_or(|max| s.len() <= max)
-        })
+        instance
+            .as_str()
+            .is_some_and(|s| self.max_length.is_none_or(|max| s.len() <= max))
     }
 }
 
@@ -242,7 +252,9 @@ impl Keyword for TimestampValidator {
     fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
         match instance.as_str() {
             Some(s) if is_rfc3339_timestamp(s) => Ok(()),
-            _ => Err(ValidationError::custom("expected an RFC 3339 timestamp string")),
+            _ => Err(ValidationError::custom(
+                "expected an RFC 3339 timestamp string",
+            )),
         }
     }
     fn is_valid(&self, instance: &Value) -> bool {
@@ -277,11 +289,13 @@ fn is_rfc3339_timestamp(s: &str) -> bool {
     if time_parts.len() < 2 || time_parts.len() > 3 {
         return false;
     }
-    date_parts[0]
-        .parse::<u16>()
-        .is_ok_and(|y| y > 0)
-        && date_parts[1].parse::<u8>().is_ok_and(|m| (1..=12).contains(&m))
-        && date_parts[2].parse::<u8>().is_ok_and(|d| (1..=31).contains(&d))
+    date_parts[0].parse::<u16>().is_ok_and(|y| y > 0)
+        && date_parts[1]
+            .parse::<u8>()
+            .is_ok_and(|m| (1..=12).contains(&m))
+        && date_parts[2]
+            .parse::<u8>()
+            .is_ok_and(|d| (1..=31).contains(&d))
         && time_parts[0].parse::<u8>().is_ok_and(|h| h <= 23)
         && time_parts[1].parse::<u8>().is_ok_and(|m| m <= 59)
 }
@@ -378,7 +392,9 @@ fn float32_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(Float32Validator))
     } else {
-        Err(ValidationError::schema("TypeDef:Float32 must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Float32 must be set to true",
+        ))
     }
 }
 
@@ -390,7 +406,9 @@ fn float64_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(Float64Validator))
     } else {
-        Err(ValidationError::schema("TypeDef:Float64 must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Float64 must be set to true",
+        ))
     }
 }
 
@@ -450,7 +468,9 @@ fn uint16_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(Uint16Validator))
     } else {
-        Err(ValidationError::schema("TypeDef:Uint16 must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Uint16 must be set to true",
+        ))
     }
 }
 
@@ -462,7 +482,9 @@ fn uint32_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(Uint32Validator))
     } else {
-        Err(ValidationError::schema("TypeDef:Uint32 must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Uint32 must be set to true",
+        ))
     }
 }
 
@@ -474,7 +496,9 @@ fn boolean_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(BooleanValidator))
     } else {
-        Err(ValidationError::schema("TypeDef:Boolean must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Boolean must be set to true",
+        ))
     }
 }
 
@@ -484,7 +508,9 @@ fn string_factory<'a>(
     _path: jsonschema::paths::Location,
 ) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
     if value.as_bool() != Some(true) {
-        return Err(ValidationError::schema("TypeDef:String must be set to true"));
+        return Err(ValidationError::schema(
+            "TypeDef:String must be set to true",
+        ));
     }
     let max_length = parent
         .get("maxLength")
@@ -528,7 +554,9 @@ fn struct_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(StructValidator))
     } else {
-        Err(ValidationError::schema("TypeDef:Struct must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Struct must be set to true",
+        ))
     }
 }
 
@@ -564,7 +592,9 @@ fn record_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(RecordValidator))
     } else {
-        Err(ValidationError::schema("TypeDef:Record must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Record must be set to true",
+        ))
     }
 }
 
@@ -576,7 +606,9 @@ fn timestamp_factory<'a>(
     if value.as_bool() == Some(true) {
         Ok(Box::new(TimestampValidator))
     } else {
-        Err(ValidationError::schema("TypeDef:Timestamp must be set to true"))
+        Err(ValidationError::schema(
+            "TypeDef:Timestamp must be set to true",
+        ))
     }
 }
 

@@ -60,12 +60,18 @@ fn read_array<const N: usize>(
     let slice = buffer.get(offset..end).ok_or_else(|| {
         access_err(
             field_path,
-            format!("slice [{offset}..{end}) unavailable in buffer of length {}", buffer.len()),
+            format!(
+                "slice [{offset}..{end}) unavailable in buffer of length {}",
+                buffer.len()
+            ),
         )
     })?;
-    slice
-        .try_into()
-        .map_err(|_| access_err(field_path, format!("internal: try_into failed for {N}-byte slice")))
+    slice.try_into().map_err(|_| {
+        access_err(
+            field_path,
+            format!("internal: try_into failed for {N}-byte slice"),
+        )
+    })
 }
 
 fn write_array<const N: usize>(
@@ -379,7 +385,12 @@ pub fn write_bool(
     value: bool,
     field_path: &str,
 ) -> Result<(), TypedefError> {
-    write_array(buffer, offset, [if value { 0x01 } else { 0x00 }], field_path)
+    write_array(
+        buffer,
+        offset,
+        [if value { 0x01 } else { 0x00 }],
+        field_path,
+    )
 }
 
 /// Write a `TEnum` index (`u32`) `value` at `offset` into `buffer`, applying `endian`.
@@ -536,12 +547,9 @@ pub fn read_bytes_indirect<'a>(
     field_path: &str,
     endian: Endian,
 ) -> Result<&'a [u8], TypedefError> {
-    let struct_end = offset.checked_add(8).ok_or_else(|| {
-        access_err(
-            field_path,
-            format!("offset {offset} + 8 overflows usize"),
-        )
-    })?;
+    let struct_end = offset
+        .checked_add(8)
+        .ok_or_else(|| access_err(field_path, format!("offset {offset} + 8 overflows usize")))?;
     check_bounds(buffer.len(), offset, struct_end, field_path)?;
     let off_bytes: [u8; U32_SIZE] = buffer[offset..offset + U32_SIZE]
         .try_into()
@@ -639,11 +647,17 @@ mod tests {
         let value: f32 = std::f32::consts::PI;
         write_f32(&mut buf, 0, value, "f", LE).unwrap();
         let read = read_f32(&buf, 0, "f", LE).unwrap();
-        assert!((read - value).abs() < 1e-6, "le mismatch: {read} vs {value}");
+        assert!(
+            (read - value).abs() < 1e-6,
+            "le mismatch: {read} vs {value}"
+        );
 
         write_f32(&mut buf, 0, value, "f", BE).unwrap();
         let read = read_f32(&buf, 0, "f", BE).unwrap();
-        assert!((read - value).abs() < 1e-6, "be mismatch: {read} vs {value}");
+        assert!(
+            (read - value).abs() < 1e-6,
+            "be mismatch: {read} vs {value}"
+        );
     }
 
     #[test]
