@@ -10,13 +10,202 @@
 
 use crate::error::TypedefError;
 use serde_json::Value;
+use std::fmt;
+use std::str::FromStr;
 
 const TYPEDEF_PREFIX: &str = "TypeDef:";
 
 pub(crate) const U32_SIZE: usize = 4;
 pub(crate) const DISCRIMINATOR_PATH: &str = "__discriminator";
 
-const BYTE_DISCRIMINATOR_TYPES: &[&str] = &["TypeDef:Uint8", "TypeDef:Uint16", "TypeDef:Uint32"];
+const BYTE_DISCRIMINATOR_TYPES: &[TypeDefKind] = &[
+    TypeDefKind::Uint8,
+    TypeDefKind::Uint16,
+    TypeDefKind::Uint32,
+];
+
+/// The 17 `TypeDef:*` kinds recognized by the engine.
+///
+/// Each variant corresponds to a `TypeDef:<name>` JSON Schema keyword.
+/// The enum provides compile-time exhaustiveness checking and integer
+/// discriminant dispatch (jump table) instead of string comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeDefKind {
+    Int8,
+    Int16,
+    Int32,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    Float32,
+    Float64,
+    Boolean,
+    Enum,
+    String,
+    Bytes,
+    Struct,
+    Union,
+    Array,
+    Record,
+    Timestamp,
+}
+
+impl TypeDefKind {
+    /// The JSON Schema keyword string, e.g. `"TypeDef:Int8"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TypeDefKind::Int8 => "TypeDef:Int8",
+            TypeDefKind::Int16 => "TypeDef:Int16",
+            TypeDefKind::Int32 => "TypeDef:Int32",
+            TypeDefKind::Uint8 => "TypeDef:Uint8",
+            TypeDefKind::Uint16 => "TypeDef:Uint16",
+            TypeDefKind::Uint32 => "TypeDef:Uint32",
+            TypeDefKind::Uint64 => "TypeDef:Uint64",
+            TypeDefKind::Float32 => "TypeDef:Float32",
+            TypeDefKind::Float64 => "TypeDef:Float64",
+            TypeDefKind::Boolean => "TypeDef:Boolean",
+            TypeDefKind::Enum => "TypeDef:Enum",
+            TypeDefKind::String => "TypeDef:String",
+            TypeDefKind::Bytes => "TypeDef:Bytes",
+            TypeDefKind::Struct => "TypeDef:Struct",
+            TypeDefKind::Union => "TypeDef:Union",
+            TypeDefKind::Array => "TypeDef:Array",
+            TypeDefKind::Record => "TypeDef:Record",
+            TypeDefKind::Timestamp => "TypeDef:Timestamp",
+        }
+    }
+
+    /// Fixed byte size, or `None` for variable-size / composite kinds.
+    pub fn type_size(self) -> Option<usize> {
+        match self {
+            TypeDefKind::Float32 | TypeDefKind::Int32 | TypeDefKind::Uint32 | TypeDefKind::Enum => {
+                Some(4)
+            }
+            TypeDefKind::Float64 => Some(8),
+            TypeDefKind::Int8 | TypeDefKind::Uint8 | TypeDefKind::Boolean => Some(1),
+            TypeDefKind::Int16 | TypeDefKind::Uint16 => Some(2),
+            TypeDefKind::String
+            | TypeDefKind::Bytes
+            | TypeDefKind::Struct
+            | TypeDefKind::Union
+            | TypeDefKind::Array
+            | TypeDefKind::Record
+            | TypeDefKind::Timestamp
+            | TypeDefKind::Uint64 => None,
+        }
+    }
+
+    /// Natural alignment: 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/enum,
+    /// 8 for f64, 4 for variable-length (u32 length prefix), 1 for composites.
+    pub fn natural_alignment(self) -> usize {
+        match self {
+            TypeDefKind::Int8 | TypeDefKind::Uint8 | TypeDefKind::Boolean => 1,
+            TypeDefKind::Int16 | TypeDefKind::Uint16 => 2,
+            TypeDefKind::Int32
+            | TypeDefKind::Uint32
+            | TypeDefKind::Float32
+            | TypeDefKind::Enum => 4,
+            TypeDefKind::Float64 => 8,
+            TypeDefKind::String
+            | TypeDefKind::Bytes
+            | TypeDefKind::Record
+            | TypeDefKind::Timestamp => 4,
+            TypeDefKind::Struct | TypeDefKind::Union | TypeDefKind::Array => 1,
+            TypeDefKind::Uint64 => 8,
+        }
+    }
+
+    /// Returns `true` for fixed-size primitive kinds.
+    pub fn is_fixed_size(self) -> bool {
+        matches!(
+            self,
+            TypeDefKind::Float32
+                | TypeDefKind::Float64
+                | TypeDefKind::Int8
+                | TypeDefKind::Int16
+                | TypeDefKind::Int32
+                | TypeDefKind::Uint8
+                | TypeDefKind::Uint16
+                | TypeDefKind::Uint32
+                | TypeDefKind::Boolean
+                | TypeDefKind::Enum
+        )
+    }
+
+    /// Returns `true` for kinds whose read/write functions need an `Endian` parameter.
+    pub fn needs_endian(self) -> bool {
+        matches!(
+            self,
+            TypeDefKind::Int16
+                | TypeDefKind::Int32
+                | TypeDefKind::Uint16
+                | TypeDefKind::Uint32
+                | TypeDefKind::Uint64
+                | TypeDefKind::Float32
+                | TypeDefKind::Float64
+                | TypeDefKind::Enum
+                | TypeDefKind::String
+                | TypeDefKind::Bytes
+                | TypeDefKind::Timestamp
+        )
+    }
+
+    /// Returns `true` for composite kinds (Struct, Union, Array, Record).
+    pub fn is_composite(self) -> bool {
+        matches!(
+            self,
+            TypeDefKind::Struct | TypeDefKind::Union | TypeDefKind::Array | TypeDefKind::Record
+        )
+    }
+
+    /// Returns `true` for variable-length kinds (String, Bytes, Timestamp, Record).
+    pub fn is_variable_length(self) -> bool {
+        matches!(
+            self,
+            TypeDefKind::String
+                | TypeDefKind::Bytes
+                | TypeDefKind::Timestamp
+                | TypeDefKind::Record
+        )
+    }
+}
+
+impl fmt::Display for TypeDefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TypeDefKind {
+    type Err = TypedefError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "TypeDef:Int8" => Ok(TypeDefKind::Int8),
+            "TypeDef:Int16" => Ok(TypeDefKind::Int16),
+            "TypeDef:Int32" => Ok(TypeDefKind::Int32),
+            "TypeDef:Uint8" => Ok(TypeDefKind::Uint8),
+            "TypeDef:Uint16" => Ok(TypeDefKind::Uint16),
+            "TypeDef:Uint32" => Ok(TypeDefKind::Uint32),
+            "TypeDef:Uint64" => Ok(TypeDefKind::Uint64),
+            "TypeDef:Float32" => Ok(TypeDefKind::Float32),
+            "TypeDef:Float64" => Ok(TypeDefKind::Float64),
+            "TypeDef:Boolean" => Ok(TypeDefKind::Boolean),
+            "TypeDef:Enum" => Ok(TypeDefKind::Enum),
+            "TypeDef:String" => Ok(TypeDefKind::String),
+            "TypeDef:Bytes" => Ok(TypeDefKind::Bytes),
+            "TypeDef:Struct" => Ok(TypeDefKind::Struct),
+            "TypeDef:Union" => Ok(TypeDefKind::Union),
+            "TypeDef:Array" => Ok(TypeDefKind::Array),
+            "TypeDef:Record" => Ok(TypeDefKind::Record),
+            "TypeDef:Timestamp" => Ok(TypeDefKind::Timestamp),
+            other => Err(TypedefError::Schema(format!(
+                "unknown TypeDef kind: {other}"
+            ))),
+        }
+    }
+}
 
 /// Returns the `TypeDef:*` kind string if the schema node declares one.
 /// Returns `None` if the node has no `TypeDef:*` keyword.
@@ -35,58 +224,10 @@ pub fn get_typedef_kind(node: &Value) -> Option<&str> {
     None
 }
 
-/// Returns the fixed byte size for a TypeDef kind, or `None` if variable-size
-/// or composite (Struct/Union/Array/Record).
-///
-/// Only the 17 alknet-typedef kinds are recognized. `TypeDef:Int64` and
-/// `TypeDef:Uint64` are NOT among the 17 kinds (TypeBox defines them but
-/// alknet-typedef omits them), so they return `None` here.
-pub fn type_size(kind: &str) -> Option<usize> {
-    match kind {
-        "TypeDef:Float32" | "TypeDef:Int32" | "TypeDef:Uint32" | "TypeDef:Enum" => Some(4),
-        "TypeDef:Float64" => Some(8),
-        "TypeDef:Int8" | "TypeDef:Uint8" | "TypeDef:Boolean" => Some(1),
-        "TypeDef:Int16" | "TypeDef:Uint16" => Some(2),
-        "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Struct" | "TypeDef:Union"
-        | "TypeDef:Array" | "TypeDef:Record" | "TypeDef:Timestamp" => None,
-        _ => None,
-    }
-}
-
-/// Returns the natural alignment for a TypeDef kind.
-///
-/// Default alignment: 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/enum,
-/// 8 for u64/i64/f64. Variable-length types (String/Bytes/Record/Timestamp)
-/// align to 4 (the length prefix is u32). Composite types (Struct/Union/Array)
-/// return 1 here — their alignment is computed from their fields during
-/// offset computation.
-pub fn natural_alignment(kind: &str) -> usize {
-    match kind {
-        "TypeDef:Int8" | "TypeDef:Uint8" | "TypeDef:Boolean" => 1,
-        "TypeDef:Int16" | "TypeDef:Uint16" => 2,
-        "TypeDef:Int32" | "TypeDef:Uint32" | "TypeDef:Float32" | "TypeDef:Enum" => 4,
-        "TypeDef:Float64" => 8,
-        "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Record" | "TypeDef:Timestamp" => 4,
-        "TypeDef:Struct" | "TypeDef:Union" | "TypeDef:Array" => 1,
-        _ => 1,
-    }
-}
-
-/// Returns true if the kind is a fixed-size type (known byte size at schema time).
-pub fn is_fixed_size(kind: &str) -> bool {
-    matches!(
-        kind,
-        "TypeDef:Float32"
-            | "TypeDef:Float64"
-            | "TypeDef:Int8"
-            | "TypeDef:Int16"
-            | "TypeDef:Int32"
-            | "TypeDef:Uint8"
-            | "TypeDef:Uint16"
-            | "TypeDef:Uint32"
-            | "TypeDef:Boolean"
-            | "TypeDef:Enum"
-    )
+/// Returns the `TypeDefKind` enum variant if the schema node declares one
+/// (boolean form only, like `get_typedef_kind`).
+pub fn get_typedef_kind_enum(node: &Value) -> Option<TypeDefKind> {
+    get_typedef_kind(node).and_then(|s| s.parse().ok())
 }
 
 /// Byte endianness for multi-byte integer and float fields.
@@ -172,7 +313,7 @@ pub enum DiscriminatorKind {
         offset: usize,
         /// The `TypeDef:*` kind of the discriminator (typically
         /// `TypeDef:Uint8`).
-        disc_type: String,
+        disc_type: TypeDefKind,
     },
     /// Field-name discriminator: a named field within the struct. Mapping keys
     /// are string values matching the discriminator field's value. The
@@ -204,17 +345,24 @@ pub fn parse_discriminator(node: &Value) -> Result<DiscriminatorKind, TypedefErr
     match kind {
         "byte" => {
             let offset = disc_obj.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let disc_type = disc_obj
+            let disc_type_str = disc_obj
                 .get("type")
                 .and_then(Value::as_str)
-                .unwrap_or("TypeDef:Uint8")
-                .to_string();
-            if !BYTE_DISCRIMINATOR_TYPES.contains(&disc_type.as_str()) {
+                .unwrap_or("TypeDef:Uint8");
+            let disc_type: TypeDefKind = disc_type_str.parse().map_err(|_| {
+                TypedefError::Schema(format!(
+                    "discriminator 'type' must be one of {BYTE_DISCRIMINATOR_TYPES:?}, got {disc_type_str:?}"
+                ))
+            })?;
+            if !BYTE_DISCRIMINATOR_TYPES.contains(&disc_type) {
                 return Err(TypedefError::Schema(format!(
                     "discriminator 'type' must be one of {BYTE_DISCRIMINATOR_TYPES:?}, got {disc_type:?}"
                 )));
             }
-            Ok(DiscriminatorKind::Byte { offset, disc_type })
+            Ok(DiscriminatorKind::Byte {
+                offset,
+                disc_type,
+            })
         }
         "field" => {
             let name = disc_obj
@@ -249,6 +397,11 @@ pub fn get_typedef_kind_loose(node: &Value) -> Option<&str> {
         }
     }
     None
+}
+
+/// Like [`get_typedef_kind_loose`] but returns the parsed [`TypeDefKind`] enum.
+pub fn get_typedef_kind_loose_enum(node: &Value) -> Option<TypeDefKind> {
+    get_typedef_kind_loose(node).and_then(|s| s.parse().ok())
 }
 
 /// Resolve a `$ref` against the root schema, or return the inline schema.
@@ -334,87 +487,87 @@ mod tests {
 
     #[test]
     fn type_size_fixed_kinds() {
-        assert_eq!(type_size("TypeDef:Float32"), Some(4));
-        assert_eq!(type_size("TypeDef:Float64"), Some(8));
-        assert_eq!(type_size("TypeDef:Int8"), Some(1));
-        assert_eq!(type_size("TypeDef:Int16"), Some(2));
-        assert_eq!(type_size("TypeDef:Int32"), Some(4));
-        assert_eq!(type_size("TypeDef:Uint8"), Some(1));
-        assert_eq!(type_size("TypeDef:Uint16"), Some(2));
-        assert_eq!(type_size("TypeDef:Uint32"), Some(4));
-        assert_eq!(type_size("TypeDef:Boolean"), Some(1));
-        assert_eq!(type_size("TypeDef:Enum"), Some(4));
+        assert_eq!(TypeDefKind::Float32.type_size(), Some(4));
+        assert_eq!(TypeDefKind::Float64.type_size(), Some(8));
+        assert_eq!(TypeDefKind::Int8.type_size(), Some(1));
+        assert_eq!(TypeDefKind::Int16.type_size(), Some(2));
+        assert_eq!(TypeDefKind::Int32.type_size(), Some(4));
+        assert_eq!(TypeDefKind::Uint8.type_size(), Some(1));
+        assert_eq!(TypeDefKind::Uint16.type_size(), Some(2));
+        assert_eq!(TypeDefKind::Uint32.type_size(), Some(4));
+        assert_eq!(TypeDefKind::Boolean.type_size(), Some(1));
+        assert_eq!(TypeDefKind::Enum.type_size(), Some(4));
     }
 
     #[test]
     fn type_size_variable_and_composite_kinds() {
         for kind in [
-            "TypeDef:String",
-            "TypeDef:Bytes",
-            "TypeDef:Struct",
-            "TypeDef:Union",
-            "TypeDef:Array",
-            "TypeDef:Record",
-            "TypeDef:Timestamp",
+            TypeDefKind::String,
+            TypeDefKind::Bytes,
+            TypeDefKind::Struct,
+            TypeDefKind::Union,
+            TypeDefKind::Array,
+            TypeDefKind::Record,
+            TypeDefKind::Timestamp,
         ] {
-            assert_eq!(type_size(kind), None, "failed for {kind}");
+            assert_eq!(kind.type_size(), None, "failed for {kind}");
         }
     }
 
     #[test]
     fn type_size_unknown_kind_returns_none() {
-        assert_eq!(type_size("TypeDef:Int64"), None);
-        assert_eq!(type_size("TypeDef:Uint64"), None);
-        assert_eq!(type_size("not-a-typedef"), None);
+        assert!("TypeDef:Int64".parse::<TypeDefKind>().is_err());
+        assert!("TypeDef:Uint128".parse::<TypeDefKind>().is_err());
+        assert!("not-a-typedef".parse::<TypeDefKind>().is_err());
     }
 
     #[test]
     fn natural_alignment_matches_spec() {
-        assert_eq!(natural_alignment("TypeDef:Int8"), 1);
-        assert_eq!(natural_alignment("TypeDef:Uint8"), 1);
-        assert_eq!(natural_alignment("TypeDef:Boolean"), 1);
-        assert_eq!(natural_alignment("TypeDef:Int16"), 2);
-        assert_eq!(natural_alignment("TypeDef:Uint16"), 2);
-        assert_eq!(natural_alignment("TypeDef:Int32"), 4);
-        assert_eq!(natural_alignment("TypeDef:Uint32"), 4);
-        assert_eq!(natural_alignment("TypeDef:Float32"), 4);
-        assert_eq!(natural_alignment("TypeDef:Enum"), 4);
-        assert_eq!(natural_alignment("TypeDef:Float64"), 8);
-        assert_eq!(natural_alignment("TypeDef:String"), 4);
-        assert_eq!(natural_alignment("TypeDef:Bytes"), 4);
-        assert_eq!(natural_alignment("TypeDef:Record"), 4);
-        assert_eq!(natural_alignment("TypeDef:Timestamp"), 4);
-        assert_eq!(natural_alignment("TypeDef:Struct"), 1);
-        assert_eq!(natural_alignment("TypeDef:Union"), 1);
-        assert_eq!(natural_alignment("TypeDef:Array"), 1);
+        assert_eq!(TypeDefKind::Int8.natural_alignment(), 1);
+        assert_eq!(TypeDefKind::Uint8.natural_alignment(), 1);
+        assert_eq!(TypeDefKind::Boolean.natural_alignment(), 1);
+        assert_eq!(TypeDefKind::Int16.natural_alignment(), 2);
+        assert_eq!(TypeDefKind::Uint16.natural_alignment(), 2);
+        assert_eq!(TypeDefKind::Int32.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Uint32.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Float32.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Enum.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Float64.natural_alignment(), 8);
+        assert_eq!(TypeDefKind::String.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Bytes.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Record.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Timestamp.natural_alignment(), 4);
+        assert_eq!(TypeDefKind::Struct.natural_alignment(), 1);
+        assert_eq!(TypeDefKind::Union.natural_alignment(), 1);
+        assert_eq!(TypeDefKind::Array.natural_alignment(), 1);
     }
 
     #[test]
     fn is_fixed_size_classifies_correctly() {
         for kind in [
-            "TypeDef:Float32",
-            "TypeDef:Float64",
-            "TypeDef:Int8",
-            "TypeDef:Int16",
-            "TypeDef:Int32",
-            "TypeDef:Uint8",
-            "TypeDef:Uint16",
-            "TypeDef:Uint32",
-            "TypeDef:Boolean",
-            "TypeDef:Enum",
+            TypeDefKind::Float32,
+            TypeDefKind::Float64,
+            TypeDefKind::Int8,
+            TypeDefKind::Int16,
+            TypeDefKind::Int32,
+            TypeDefKind::Uint8,
+            TypeDefKind::Uint16,
+            TypeDefKind::Uint32,
+            TypeDefKind::Boolean,
+            TypeDefKind::Enum,
         ] {
-            assert!(is_fixed_size(kind), "expected fixed: {kind}");
+            assert!(kind.is_fixed_size(), "expected fixed: {kind}");
         }
         for kind in [
-            "TypeDef:String",
-            "TypeDef:Bytes",
-            "TypeDef:Struct",
-            "TypeDef:Union",
-            "TypeDef:Array",
-            "TypeDef:Record",
-            "TypeDef:Timestamp",
+            TypeDefKind::String,
+            TypeDefKind::Bytes,
+            TypeDefKind::Struct,
+            TypeDefKind::Union,
+            TypeDefKind::Array,
+            TypeDefKind::Record,
+            TypeDefKind::Timestamp,
         ] {
-            assert!(!is_fixed_size(kind), "expected variable: {kind}");
+            assert!(!kind.is_fixed_size(), "expected variable: {kind}");
         }
     }
 
@@ -510,7 +663,7 @@ mod tests {
             disc,
             DiscriminatorKind::Byte {
                 offset: 0,
-                disc_type: "TypeDef:Uint8".to_string(),
+                disc_type: TypeDefKind::Uint8,
             }
         );
     }
@@ -525,7 +678,7 @@ mod tests {
             disc,
             DiscriminatorKind::Byte {
                 offset: 4,
-                disc_type: "TypeDef:Uint16".to_string(),
+                disc_type: TypeDefKind::Uint16,
             }
         );
     }

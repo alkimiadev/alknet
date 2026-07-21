@@ -13,7 +13,7 @@ use crate::data_access;
 use crate::error::TypedefError;
 use crate::layout_builder::LayoutBuilder;
 use crate::offset_map::OffsetMap;
-use crate::schema::{self, get_typedef_kind_loose, Endian};
+use crate::schema::{self, get_typedef_kind_loose_enum, Endian, TypeDefKind};
 use crate::sequential_reader::{FieldValue, SequentialReader};
 use crate::validation;
 use serde_json::Value;
@@ -206,82 +206,80 @@ impl TypedefEngine {
                 field_path: field_path.to_string(),
                 reason: "field schema not found in schema tree".to_string(),
             })?;
-        let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
+        let kind = get_typedef_kind_loose_enum(field_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "field schema has no TypeDef:* kind".to_string(),
         })?;
         let endian = self.endian;
         match kind {
-            "TypeDef:Int8" => {
+            TypeDefKind::Int8 => {
                 let v = data_access::read_i8(buffer, range.start, field_path)?;
                 Ok(FieldValue::I8(v))
             }
-            "TypeDef:Int16" => {
+            TypeDefKind::Int16 => {
                 let v = data_access::read_i16(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::I16(v))
             }
-            "TypeDef:Int32" => {
+            TypeDefKind::Int32 => {
                 let v = data_access::read_i32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::I32(v))
             }
-            "TypeDef:Uint8" => {
+            TypeDefKind::Uint8 => {
                 let v = data_access::read_u8(buffer, range.start, field_path)?;
                 Ok(FieldValue::U8(v))
             }
-            "TypeDef:Uint16" => {
+            TypeDefKind::Uint16 => {
                 let v = data_access::read_u16(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::U16(v))
             }
-            "TypeDef:Uint32" => {
+            TypeDefKind::Uint32 => {
                 let v = data_access::read_u32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::U32(v))
             }
-            "TypeDef:Uint64" => {
+            TypeDefKind::Uint64 => {
                 let v = data_access::read_u64(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::U64(v))
             }
-            "TypeDef:Float32" => {
+            TypeDefKind::Float32 => {
                 let v = data_access::read_f32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::F32(v))
             }
-            "TypeDef:Float64" => {
+            TypeDefKind::Float64 => {
                 let v = data_access::read_f64(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::F64(v))
             }
-            "TypeDef:Boolean" => {
+            TypeDefKind::Boolean => {
                 let v = data_access::read_bool(buffer, range.start, field_path)?;
                 Ok(FieldValue::Bool(v))
             }
-            "TypeDef:Enum" => {
+            TypeDefKind::Enum => {
                 let v = data_access::read_enum(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::Enum(v))
             }
-            "TypeDef:String" => {
+            TypeDefKind::String => {
                 let v = data_access::read_string(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::String(v))
             }
-            "TypeDef:Bytes" => {
+            TypeDefKind::Bytes => {
                 let v = data_access::read_bytes(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::Bytes(v))
             }
-            "TypeDef:Timestamp" => {
+            TypeDefKind::Timestamp => {
                 let v = data_access::read_string(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::String(v))
             }
-            "TypeDef:Struct" => Ok(FieldValue::Struct {
+            TypeDefKind::Struct => Ok(FieldValue::Struct {
                 start: range.start,
                 end: range.end,
             }),
-            "TypeDef:Union" | "TypeDef:Array" | "TypeDef:Record" => Err(TypedefError::Access {
-                field_path: field_path.to_string(),
-                reason: "read_field does not support composite types; \
-                             use the layout-specific APIs"
-                    .to_string(),
-            }),
-            other => Err(TypedefError::Access {
-                field_path: field_path.to_string(),
-                reason: format!("unsupported TypeDef kind for read_field: {other}"),
-            }),
+            TypeDefKind::Union | TypeDefKind::Array | TypeDefKind::Record => {
+                Err(TypedefError::Access {
+                    field_path: field_path.to_string(),
+                    reason: "read_field does not support composite types; \
+                              use the layout-specific APIs"
+                        .to_string(),
+                })
+            }
         }
     }
 
@@ -737,6 +735,9 @@ mod tests {
     #[test]
     fn typedef_kind_loose_recognizes_object_form() {
         let node = json!({ "TypeDef:String": { "encoding": "offset-indirect" } });
-        assert_eq!(get_typedef_kind_loose(&node), Some("TypeDef:String"));
+        assert_eq!(
+            get_typedef_kind_loose_enum(&node),
+            Some(TypeDefKind::String)
+        );
     }
 }

@@ -11,7 +11,7 @@
 
 use crate::data_access::{read_enum, read_string, read_u16, read_u32, read_u8};
 use crate::error::TypedefError;
-use crate::schema::{get_typedef_kind, parse_discriminator, DiscriminatorKind, Endian, DISCRIMINATOR_PATH, U32_SIZE};
+use crate::schema::{get_typedef_kind, parse_discriminator, DiscriminatorKind, Endian, TypeDefKind, DISCRIMINATOR_PATH, U32_SIZE};
 use serde_json::Value;
 
 const STRING_PREFIX_SIZE: usize = 4;
@@ -60,13 +60,13 @@ pub fn read_byte_discriminator(
         }
     };
 
-    let (disc_value, discriminator_size) = match disc_type.as_str() {
-        "TypeDef:Uint8" => (u32::from(read_u8(buffer, offset, DISCRIMINATOR_PATH)?), 1),
-        "TypeDef:Uint16" => (
+    let (disc_value, discriminator_size) = match disc_type {
+        TypeDefKind::Uint8 => (u32::from(read_u8(buffer, offset, DISCRIMINATOR_PATH)?), 1),
+        TypeDefKind::Uint16 => (
             u32::from(read_u16(buffer, offset, DISCRIMINATOR_PATH, endian)?),
             2,
         ),
-        "TypeDef:Uint32" => (read_u32(buffer, offset, DISCRIMINATOR_PATH, endian)?, 4),
+        TypeDefKind::Uint32 => (read_u32(buffer, offset, DISCRIMINATOR_PATH, endian)?, 4),
         other => {
             return Err(TypedefError::Schema(format!(
                 "unsupported byte discriminator type: {other}"
@@ -139,14 +139,16 @@ pub fn read_field_discriminator(
             ))
         })?;
 
-    let kind = get_typedef_kind(field_schema).ok_or_else(|| {
-        TypedefError::Schema(format!(
-            "discriminator field '{name}' has no TypeDef:* kind"
-        ))
-    })?;
+    let kind = get_typedef_kind(field_schema)
+        .and_then(|s| s.parse::<TypeDefKind>().ok())
+        .ok_or_else(|| {
+            TypedefError::Schema(format!(
+                "discriminator field '{name}' has no TypeDef:* kind"
+            ))
+        })?;
 
     let (key, discriminator_field_size) = match kind {
-        "TypeDef:String" => {
+        TypeDefKind::String => {
             let s = read_string(buffer, disc_field_offset, &name, endian)?;
             let size =
                 STRING_PREFIX_SIZE
@@ -160,11 +162,11 @@ pub fn read_field_discriminator(
                     })?;
             (s.to_string(), size)
         }
-        "TypeDef:Uint8" => {
+        TypeDefKind::Uint8 => {
             let v = read_u8(buffer, disc_field_offset, &name)?;
             (v.to_string(), 1)
         }
-        "TypeDef:Enum" => {
+        TypeDefKind::Enum => {
             let v = read_enum(buffer, disc_field_offset, &name, endian)?;
             (v.to_string(), U32_SIZE)
         }
@@ -249,10 +251,10 @@ pub fn resolve_variant<'a>(union_schema: &'a Value, key: &str) -> Result<&'a Val
 pub fn discriminator_size(union_schema: &Value) -> Result<usize, TypedefError> {
     let disc = parse_discriminator(union_schema)?;
     match disc {
-        DiscriminatorKind::Byte { disc_type, .. } => match disc_type.as_str() {
-            "TypeDef:Uint8" => Ok(1),
-            "TypeDef:Uint16" => Ok(2),
-            "TypeDef:Uint32" => Ok(4),
+        DiscriminatorKind::Byte { disc_type, .. } => match disc_type {
+            TypeDefKind::Uint8 => Ok(1),
+            TypeDefKind::Uint16 => Ok(2),
+            TypeDefKind::Uint32 => Ok(4),
             other => Err(TypedefError::Schema(format!(
                 "unsupported byte discriminator type: {other}"
             ))),

@@ -13,9 +13,9 @@
 
 use crate::error::TypedefError;
 use crate::schema::{
-    get_typedef_kind, get_typedef_kind_loose, is_fixed_size, natural_alignment, parse_align,
-    parse_discriminator, parse_encoding, parse_max_length, resolve_ref_or_inline, type_size,
-    DiscriminatorKind, VariableEncoding, DISCRIMINATOR_PATH,
+    get_typedef_kind, get_typedef_kind_loose_enum, parse_align, parse_discriminator, parse_encoding,
+    parse_max_length, resolve_ref_or_inline, DiscriminatorKind, TypeDefKind, VariableEncoding,
+    DISCRIMINATOR_PATH,
 };
 use serde_json::Value;
 
@@ -79,10 +79,12 @@ impl OffsetMap {
     /// Returns [`TypedefError::Offset`] for unsupported type combinations
     /// encountered during the walk.
     pub fn compute(schema: &Value) -> Result<Self, TypedefError> {
-        let kind = get_typedef_kind(schema).ok_or_else(|| {
-            TypedefError::Schema("top-level schema has no TypeDef:* kind".to_string())
-        })?;
-        if kind != "TypeDef:Struct" {
+        let kind = get_typedef_kind(schema)
+            .and_then(|s| s.parse::<TypeDefKind>().ok())
+            .ok_or_else(|| {
+                TypedefError::Schema("top-level schema has no TypeDef:* kind".to_string())
+            })?;
+        if kind != TypeDefKind::Struct {
             return Err(TypedefError::Schema(format!(
                 "OffsetMap::compute requires a TypeDef:Struct at the top level, got {kind}"
             )));
@@ -207,47 +209,47 @@ impl<'a> ComputeCtx<'a> {
         field_path: &str,
         struct_default_align: usize,
     ) -> Result<FieldLayout, TypedefError> {
-        let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
+        let kind = get_typedef_kind_loose_enum(field_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "field schema has no TypeDef:* kind".to_string(),
         })?;
 
         match kind {
-            "TypeDef:Struct" => {
+            TypeDefKind::Struct => {
                 self.compute_struct_field(field_schema, field_path, struct_default_align)
             }
-            "TypeDef:Union" => {
+            TypeDefKind::Union => {
                 self.compute_union_field(field_schema, field_path, struct_default_align)
             }
-            "TypeDef:Array" => {
+            TypeDefKind::Array => {
                 self.compute_array_field(field_schema, field_path, struct_default_align)
             }
-            "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Record" | "TypeDef:Timestamp" => {
+            TypeDefKind::String
+            | TypeDefKind::Bytes
+            | TypeDefKind::Record
+            | TypeDefKind::Timestamp => {
                 self.compute_variable_field(field_schema, field_path, struct_default_align)
             }
-            fixed if is_fixed_size(fixed) => {
-                self.compute_fixed_field(fixed, field_schema, field_path, struct_default_align)
+            k if k.is_fixed_size() => {
+                self.compute_fixed_field(k, field_schema, field_path, struct_default_align)
             }
-            other => Err(TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!("unsupported TypeDef kind for offset computation: {other}"),
-            }),
+            _ => unreachable!("all TypeDefKind variants are covered above"),
         }
     }
 
     /// Compute the layout for a fixed-size primitive field.
     fn compute_fixed_field(
         &mut self,
-        kind: &str,
+        kind: TypeDefKind,
         field_schema: &Value,
         field_path: &str,
         struct_default_align: usize,
     ) -> Result<FieldLayout, TypedefError> {
-        let size = type_size(kind).ok_or_else(|| TypedefError::Offset {
+        let size = kind.type_size().ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: format!("type_size returned None for fixed kind {kind}"),
         })?;
-        let natural = natural_alignment(kind);
+        let natural = kind.natural_alignment();
         let align = field_alignment(field_schema, struct_default_align, natural);
         align_up(&mut self.offset, align);
         let start = self.offset;
@@ -318,11 +320,11 @@ impl<'a> ComputeCtx<'a> {
                 offset: disc_off,
                 disc_type,
             } => {
-                let disc_size = type_size(&disc_type).ok_or_else(|| TypedefError::Offset {
+                let disc_size = disc_type.type_size().ok_or_else(|| TypedefError::Offset {
                     field_path: field_path.to_string(),
                     reason: format!("discriminator type {disc_type} has no fixed size"),
                 })?;
-                let disc_natural = natural_alignment(&disc_type);
+                let disc_natural = disc_type.natural_alignment();
                 let disc_align = union_default_align.max(disc_natural);
                 align_up(&mut self.offset, disc_align);
                 let union_start = self.offset;
@@ -378,11 +380,13 @@ impl<'a> ComputeCtx<'a> {
                     reason: "could not resolve TUnion variant schema ($ref not found)".to_string(),
                 }
             })?;
-            let v_kind = get_typedef_kind(resolved).ok_or_else(|| TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
-            })?;
-            if v_kind != "TypeDef:Struct" {
+            let v_kind = get_typedef_kind(resolved)
+                .and_then(|s| s.parse::<TypeDefKind>().ok())
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
+                })?;
+            if v_kind != TypeDefKind::Struct {
                 return Err(TypedefError::Offset {
                     field_path: field_path.to_string(),
                     reason: format!("TUnion variant must be TypeDef:Struct, got {v_kind}"),
@@ -416,11 +420,13 @@ impl<'a> ComputeCtx<'a> {
             let Some(resolved) = resolve_ref_or_inline(variant_schema, self.root) else {
                 continue;
             };
-            let v_kind = get_typedef_kind(resolved).ok_or_else(|| TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
-            })?;
-            if v_kind != "TypeDef:Struct" {
+            let v_kind = get_typedef_kind(resolved)
+                .and_then(|s| s.parse::<TypeDefKind>().ok())
+                .ok_or_else(|| TypedefError::Offset {
+                    field_path: field_path.to_string(),
+                    reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
+                })?;
+            if v_kind != TypeDefKind::Struct {
                 return Err(TypedefError::Offset {
                     field_path: field_path.to_string(),
                     reason: format!("TUnion variant must be TypeDef:Struct, got {v_kind}"),
@@ -468,11 +474,13 @@ impl<'a> ComputeCtx<'a> {
                 field_path: field_path.to_string(),
                 reason: "could not resolve TArray items schema".to_string(),
             })?;
-        let elem_kind = get_typedef_kind(element_schema).ok_or_else(|| TypedefError::Offset {
-            field_path: field_path.to_string(),
-            reason: "TArray element schema has no TypeDef:* kind".to_string(),
-        })?;
-        if !is_fixed_size(elem_kind) {
+        let elem_kind = get_typedef_kind(element_schema)
+            .and_then(|s| s.parse::<TypeDefKind>().ok())
+            .ok_or_else(|| TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: "TArray element schema has no TypeDef:* kind".to_string(),
+            })?;
+        if !elem_kind.is_fixed_size() {
             return Err(TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: format!(
@@ -481,11 +489,11 @@ impl<'a> ComputeCtx<'a> {
             });
         }
 
-        let elem_size = type_size(elem_kind).ok_or_else(|| TypedefError::Offset {
+        let elem_size = elem_kind.type_size().ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: format!("element kind {elem_kind} has no fixed size"),
         })?;
-        let elem_natural = natural_alignment(elem_kind);
+        let elem_natural = elem_kind.natural_alignment();
         let elem_align = field_alignment(element_schema, struct_default_align, elem_natural);
         let stride = round_up(elem_size, elem_align);
 

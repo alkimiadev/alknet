@@ -38,9 +38,9 @@ pub use error::TypedefError;
 pub use layout_builder::{FieldPosition, LayoutBuilder, PackedLayout};
 pub use offset_map::{ByteRange, OffsetMap};
 pub use schema::{
-    get_typedef_kind_loose, normalize_refs, parse_align, parse_discriminator, parse_encoding,
-    parse_endian, parse_max_length, resolve_ref, resolve_ref_or_inline, DiscriminatorKind, Endian,
-    VariableEncoding,
+    get_typedef_kind_loose, get_typedef_kind_loose_enum, normalize_refs, parse_align,
+    parse_discriminator, parse_encoding, parse_endian, parse_max_length, resolve_ref,
+    resolve_ref_or_inline, DiscriminatorKind, Endian, TypeDefKind, VariableEncoding,
 };
 pub use sequential_reader::{FieldValue, SequentialReader};
 pub use tunion::UnionDispatch;

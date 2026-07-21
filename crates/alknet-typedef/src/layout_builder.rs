@@ -46,7 +46,7 @@
 //!   the variant struct.
 
 use crate::error::TypedefError;
-use crate::schema::{self, get_typedef_kind_loose, resolve_ref_or_inline, DiscriminatorKind, Endian, DISCRIMINATOR_PATH, U32_SIZE};
+use crate::schema::{self, get_typedef_kind_loose_enum, resolve_ref_or_inline, DiscriminatorKind, Endian, TypeDefKind, DISCRIMINATOR_PATH, U32_SIZE};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -60,9 +60,8 @@ pub struct FieldPosition {
     /// Byte size of the field (4 for length prefix of variable-length
     /// fields, actual size for fixed-size fields).
     pub size: usize,
-    /// The TypeDef kind of the field (e.g., "TypeDef:Uint32",
-    /// "TypeDef:String").
-    pub kind: String,
+    /// The TypeDef kind of the field.
+    pub kind: TypeDefKind,
 }
 
 /// The result of building a layout: a map of field_path → FieldPosition
@@ -148,10 +147,12 @@ impl LayoutBuilder {
     /// Returns [`TypedefError::Schema`] if the schema has no
     /// `TypeDef:*` kind or the top-level kind is not `TypeDef:Struct`.
     pub fn new(schema: &Value) -> Result<Self, TypedefError> {
-        let kind = schema::get_typedef_kind(schema).ok_or_else(|| {
-            TypedefError::Schema("top-level schema has no TypeDef:* kind".to_string())
-        })?;
-        if kind != "TypeDef:Struct" {
+        let kind = schema::get_typedef_kind(schema)
+            .and_then(|s| s.parse::<TypeDefKind>().ok())
+            .ok_or_else(|| {
+                TypedefError::Schema("top-level schema has no TypeDef:* kind".to_string())
+            })?;
+        if kind != TypeDefKind::Struct {
             return Err(TypedefError::Schema(format!(
                 "LayoutBuilder requires a TypeDef:Struct at the top level, got {kind}"
             )));
@@ -251,22 +252,25 @@ impl<'a> BuildCtx<'a> {
         field_path: &str,
         offset: &mut usize,
     ) -> Result<(), TypedefError> {
-        let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| TypedefError::Offset {
+        let kind = get_typedef_kind_loose_enum(field_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "field schema has no TypeDef:* kind".to_string(),
         })?;
 
         match kind {
-            "TypeDef:Struct" => self.walk_struct(field_schema, field_path, offset),
-            "TypeDef:Union" => self.walk_union(field_schema, field_path, offset),
-            "TypeDef:Array" => self.walk_array(field_schema, field_path, offset),
-            "TypeDef:String" | "TypeDef:Bytes" | "TypeDef:Timestamp" | "TypeDef:Record" => {
+            TypeDefKind::Struct => self.walk_struct(field_schema, field_path, offset),
+            TypeDefKind::Union => self.walk_union(field_schema, field_path, offset),
+            TypeDefKind::Array => self.walk_array(field_schema, field_path, offset),
+            TypeDefKind::String
+            | TypeDefKind::Bytes
+            | TypeDefKind::Timestamp
+            | TypeDefKind::Record => {
                 self.walk_variable(field_path, offset, kind)
             }
-            fixed if schema::is_fixed_size(fixed) => {
-                let size = schema::type_size(fixed).ok_or_else(|| TypedefError::Offset {
+            k if k.is_fixed_size() => {
+                let size = k.type_size().ok_or_else(|| TypedefError::Offset {
                     field_path: field_path.to_string(),
-                    reason: format!("type_size returned None for fixed kind {fixed}"),
+                    reason: format!("type_size returned None for fixed kind {k}"),
                 })?;
                 let start = *offset;
                 *offset = start
@@ -275,13 +279,10 @@ impl<'a> BuildCtx<'a> {
                         field_path: field_path.to_string(),
                         reason: format!("offset {start} + size {size} overflows usize"),
                     })?;
-                self.push(field_path, start, size, fixed);
+                self.push(field_path, start, size, k);
                 Ok(())
             }
-            other => Err(TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: format!("unsupported TypeDef kind for packed layout: {other}"),
-            }),
+            _ => unreachable!("all TypeDefKind variants are covered above"),
         }
     }
 
@@ -291,7 +292,7 @@ impl<'a> BuildCtx<'a> {
         &mut self,
         field_path: &str,
         offset: &mut usize,
-        kind: &str,
+        kind: TypeDefKind,
     ) -> Result<(), TypedefError> {
         let data_size =
             self.var_sizes
@@ -341,12 +342,12 @@ impl<'a> BuildCtx<'a> {
                 field_path: field_path.to_string(),
                 reason: "could not resolve TArray items schema".to_string(),
             })?;
-        let elem_kind = get_typedef_kind_loose(element_schema).ok_or_else(|| TypedefError::Offset {
+        let elem_kind = get_typedef_kind_loose_enum(element_schema).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TArray element schema has no TypeDef:* kind".to_string(),
         })?;
 
-        if !schema::is_fixed_size(elem_kind) {
+        if !elem_kind.is_fixed_size() {
             return Err(TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: format!(
@@ -355,7 +356,7 @@ impl<'a> BuildCtx<'a> {
             });
         }
 
-        let elem_size = schema::type_size(elem_kind).ok_or_else(|| TypedefError::Offset {
+        let elem_size = elem_kind.type_size().ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: format!("element kind {elem_kind} has no fixed size"),
         })?;
@@ -434,7 +435,7 @@ impl<'a> BuildCtx<'a> {
                     field_path: field_path.to_string(),
                     reason: format!("offset {start} + total {total} overflows usize"),
                 })?;
-            self.push(field_path, start, U32_SIZE, "TypeDef:Array");
+            self.push(field_path, start, U32_SIZE, TypeDefKind::Array);
             Ok(())
         }
     }
@@ -461,7 +462,7 @@ impl<'a> BuildCtx<'a> {
                 offset: disc_off,
                 disc_type,
             } => self
-                .walk_byte_discriminator_union(field_path, offset, &disc_type, disc_off, mapping),
+                .walk_byte_discriminator_union(field_path, offset, disc_type, disc_off, mapping),
             DiscriminatorKind::Field { name: _ } => {
                 self.walk_field_discriminator_union(field_path, offset, mapping)
             }
@@ -473,11 +474,11 @@ impl<'a> BuildCtx<'a> {
         &mut self,
         field_path: &str,
         offset: &mut usize,
-        disc_type: &str,
+        disc_type: TypeDefKind,
         disc_off: usize,
         mapping: &serde_json::Map<String, Value>,
     ) -> Result<(), TypedefError> {
-        let disc_size = schema::type_size(disc_type).ok_or_else(|| TypedefError::Offset {
+        let disc_size = disc_type.type_size().ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: format!("discriminator type {disc_type} has no fixed size"),
         })?;
@@ -517,11 +518,11 @@ impl<'a> BuildCtx<'a> {
                 reason: "could not resolve TUnion variant schema ($ref not found)".to_string(),
             }
         })?;
-        let v_kind = get_typedef_kind_loose(resolved).ok_or_else(|| TypedefError::Offset {
+        let v_kind = get_typedef_kind_loose_enum(resolved).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
         })?;
-        if v_kind != "TypeDef:Struct" {
+        if v_kind != TypeDefKind::Struct {
             return Err(TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: format!("TUnion variant must be TypeDef:Struct, got {v_kind}"),
@@ -580,11 +581,11 @@ impl<'a> BuildCtx<'a> {
                 reason: "could not resolve TUnion variant schema ($ref not found)".to_string(),
             }
         })?;
-        let v_kind = get_typedef_kind_loose(resolved).ok_or_else(|| TypedefError::Offset {
+        let v_kind = get_typedef_kind_loose_enum(resolved).ok_or_else(|| TypedefError::Offset {
             field_path: field_path.to_string(),
             reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
         })?;
-        if v_kind != "TypeDef:Struct" {
+        if v_kind != TypeDefKind::Struct {
             return Err(TypedefError::Offset {
                 field_path: field_path.to_string(),
                 reason: format!("TUnion variant must be TypeDef:Struct, got {v_kind}"),
@@ -595,13 +596,13 @@ impl<'a> BuildCtx<'a> {
     }
 
     /// Push a `(field_path, FieldPosition)` pair onto the fields vec.
-    fn push(&mut self, path: &str, offset: usize, size: usize, kind: &str) {
+    fn push(&mut self, path: &str, offset: usize, size: usize, kind: TypeDefKind) {
         self.fields.push((
             path.to_string(),
             FieldPosition {
                 offset,
                 size,
-                kind: kind.to_string(),
+                kind,
             },
         ));
     }
@@ -639,7 +640,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -647,7 +648,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -655,7 +656,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 5,
                 size: 2,
-                kind: "TypeDef:Uint16".into()
+                kind: TypeDefKind::Uint16
             })
         );
         assert_eq!(layout.total_size(), 7);
@@ -677,7 +678,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -685,7 +686,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -693,7 +694,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 5,
                 size: 4,
-                kind: "TypeDef:String".into()
+                kind: TypeDefKind::String
             })
         );
         assert_eq!(layout.total_size(), 19);
@@ -714,7 +715,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:String".into()
+                kind: TypeDefKind::String
             })
         );
         assert_eq!(
@@ -722,7 +723,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 9,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(layout.total_size(), 10);
@@ -742,7 +743,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:Bytes".into()
+                kind: TypeDefKind::Bytes
             })
         );
         assert_eq!(layout.total_size(), 7);
@@ -762,7 +763,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:Timestamp".into()
+                kind: TypeDefKind::Timestamp
             })
         );
         assert_eq!(layout.total_size(), 24);
@@ -785,7 +786,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:Record".into()
+                kind: TypeDefKind::Record
             })
         );
         assert_eq!(layout.total_size(), 104);
@@ -834,7 +835,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -842,7 +843,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 4,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -850,7 +851,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 5,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 9);
@@ -877,7 +878,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -885,7 +886,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:String".into()
+                kind: TypeDefKind::String
             })
         );
         assert_eq!(
@@ -893,7 +894,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 8,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(layout.total_size(), 9);
@@ -918,7 +919,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -926,7 +927,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 4,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -934,7 +935,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 8,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 12);
@@ -960,7 +961,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -968,7 +969,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 2,
-                kind: "TypeDef:Uint16".into()
+                kind: TypeDefKind::Uint16
             })
         );
         assert_eq!(
@@ -976,7 +977,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 3,
                 size: 2,
-                kind: "TypeDef:Uint16".into()
+                kind: TypeDefKind::Uint16
             })
         );
         assert_eq!(layout.total_size(), 5);
@@ -999,7 +1000,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:Array".into()
+                kind: TypeDefKind::Array
             })
         );
         assert_eq!(layout.total_size(), 16);
@@ -1085,7 +1086,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1093,7 +1094,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -1101,7 +1102,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 5,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 9);
@@ -1150,7 +1151,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1158,7 +1159,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 9,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 13);
@@ -1198,7 +1199,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1206,7 +1207,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(
@@ -1214,7 +1215,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 5,
                 size: 4,
-                kind: "TypeDef:String".into()
+                kind: TypeDefKind::String
             })
         );
         assert_eq!(layout.total_size(), 17);
@@ -1323,7 +1324,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1331,7 +1332,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 5);
@@ -1376,7 +1377,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 5,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 9);
@@ -1554,7 +1555,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 4,
-                kind: "TypeDef:String".into()
+                kind: TypeDefKind::String
             })
         );
         assert_eq!(layout.total_size(), 9);
@@ -1632,7 +1633,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1640,7 +1641,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 5);
@@ -1680,7 +1681,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 0,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1688,7 +1689,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 1,
                 size: 1,
-                kind: "TypeDef:Uint8".into()
+                kind: TypeDefKind::Uint8
             })
         );
         assert_eq!(
@@ -1696,7 +1697,7 @@ mod tests {
             Some(&FieldPosition {
                 offset: 2,
                 size: 4,
-                kind: "TypeDef:Uint32".into()
+                kind: TypeDefKind::Uint32
             })
         );
         assert_eq!(layout.total_size(), 6);

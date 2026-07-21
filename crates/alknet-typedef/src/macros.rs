@@ -1,8 +1,8 @@
 //! Macros for generating repetitive code across the 17 TypeDef kinds.
 //!
-//! These macros eliminate boilerplate in validation and data access.
-//! Each macro takes a compact specification and generates the full
-//! implementation, ensuring consistency across all types.
+//! These macros eliminate boilerplate in validation, data access, and
+//! dispatch. Each macro takes a compact specification and generates the
+//! full implementation, ensuring consistency across all types.
 
 // ---------------------------------------------------------------------------
 // Validation macros

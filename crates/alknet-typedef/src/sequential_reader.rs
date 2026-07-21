@@ -12,7 +12,7 @@
 
 use crate::data_access;
 use crate::error::TypedefError;
-use crate::schema::{self, get_typedef_kind_loose, DiscriminatorKind, Endian, U32_SIZE};
+use crate::schema::{self, get_typedef_kind_loose_enum, DiscriminatorKind, Endian, TypeDefKind, U32_SIZE};
 use serde_json::Value;
 
 /// A value read from a field during sequential traversal.
@@ -115,8 +115,9 @@ impl SequentialReader {
     /// does not declare `TypeDef:Struct`, or has no `properties` object.
     pub fn new(schema: &Value) -> Result<Self, TypedefError> {
         let kind = schema::get_typedef_kind(schema)
+            .and_then(|s| s.parse::<TypeDefKind>().ok())
             .ok_or_else(|| TypedefError::Schema("schema has no TypeDef:* kind".to_string()))?;
-        if kind != "TypeDef:Struct" {
+        if kind != TypeDefKind::Struct {
             return Err(TypedefError::Schema(format!(
                 "SequentialReader only supports TypeDef:Struct at the top level, got {kind}"
             )));
@@ -272,73 +273,73 @@ fn read_field_value<'a>(
     offset: usize,
     endian: Endian,
 ) -> Result<(FieldValue<'a>, usize), TypedefError> {
-    let kind = get_typedef_kind_loose(field_schema).ok_or_else(|| {
+    let kind = get_typedef_kind_loose_enum(field_schema).ok_or_else(|| {
         TypedefError::Schema(format!(
             "field {field_path} has no TypeDef:* kind: {field_schema}"
         ))
     })?;
 
     match kind {
-        "TypeDef:Int8" => {
+        TypeDefKind::Int8 => {
             let v = data_access::read_i8(buffer, offset, field_path)?;
             Ok((FieldValue::I8(v), offset + 1))
         }
-        "TypeDef:Int16" => {
+        TypeDefKind::Int16 => {
             let v = data_access::read_i16(buffer, offset, field_path, endian)?;
             Ok((FieldValue::I16(v), offset + 2))
         }
-        "TypeDef:Int32" => {
+        TypeDefKind::Int32 => {
             let v = data_access::read_i32(buffer, offset, field_path, endian)?;
             Ok((FieldValue::I32(v), offset + 4))
         }
-        "TypeDef:Uint8" => {
+        TypeDefKind::Uint8 => {
             let v = data_access::read_u8(buffer, offset, field_path)?;
             Ok((FieldValue::U8(v), offset + 1))
         }
-        "TypeDef:Uint16" => {
+        TypeDefKind::Uint16 => {
             let v = data_access::read_u16(buffer, offset, field_path, endian)?;
             Ok((FieldValue::U16(v), offset + 2))
         }
-        "TypeDef:Uint32" => {
+        TypeDefKind::Uint32 => {
             let v = data_access::read_u32(buffer, offset, field_path, endian)?;
             Ok((FieldValue::U32(v), offset + 4))
         }
-        "TypeDef:Uint64" => {
+        TypeDefKind::Uint64 => {
             let v = data_access::read_u64(buffer, offset, field_path, endian)?;
             Ok((FieldValue::U64(v), offset + 8))
         }
-        "TypeDef:Float32" => {
+        TypeDefKind::Float32 => {
             let v = data_access::read_f32(buffer, offset, field_path, endian)?;
             Ok((FieldValue::F32(v), offset + 4))
         }
-        "TypeDef:Float64" => {
+        TypeDefKind::Float64 => {
             let v = data_access::read_f64(buffer, offset, field_path, endian)?;
             Ok((FieldValue::F64(v), offset + 8))
         }
-        "TypeDef:Boolean" => {
+        TypeDefKind::Boolean => {
             let v = data_access::read_bool(buffer, offset, field_path)?;
             Ok((FieldValue::Bool(v), offset + 1))
         }
-        "TypeDef:Enum" => {
+        TypeDefKind::Enum => {
             let v = data_access::read_enum(buffer, offset, field_path, endian)?;
             Ok((FieldValue::Enum(v), offset + 4))
         }
-        "TypeDef:String" => {
+        TypeDefKind::String => {
             let s = data_access::read_string(buffer, offset, field_path, endian)?;
             let total = U32_SIZE + s.len();
             Ok((FieldValue::String(s), offset + total))
         }
-        "TypeDef:Bytes" => {
+        TypeDefKind::Bytes => {
             let b = data_access::read_bytes(buffer, offset, field_path, endian)?;
             let total = U32_SIZE + b.len();
             Ok((FieldValue::Bytes(b), offset + total))
         }
-        "TypeDef:Timestamp" => {
+        TypeDefKind::Timestamp => {
             let s = data_access::read_string(buffer, offset, field_path, endian)?;
             let total = U32_SIZE + s.len();
             Ok((FieldValue::String(s), offset + total))
         }
-        "TypeDef:Struct" => {
+        TypeDefKind::Struct => {
             let size = walk_struct_size(root_schema, field_schema, buffer, offset, endian)?;
             let end = offset
                 .checked_add(size)
@@ -348,7 +349,7 @@ fn read_field_value<'a>(
                 })?;
             Ok((FieldValue::Struct { start: offset, end }, end))
         }
-        "TypeDef:Union" => read_union_value(
+        TypeDefKind::Union => read_union_value(
             buffer,
             root_schema,
             field_schema,
@@ -356,7 +357,7 @@ fn read_field_value<'a>(
             offset,
             endian,
         ),
-        "TypeDef:Array" => read_array_value(
+        TypeDefKind::Array => read_array_value(
             buffer,
             root_schema,
             field_schema,
@@ -364,7 +365,7 @@ fn read_field_value<'a>(
             offset,
             endian,
         ),
-        "TypeDef:Record" => read_record_value(
+        TypeDefKind::Record => read_record_value(
             buffer,
             root_schema,
             field_schema,
@@ -372,9 +373,6 @@ fn read_field_value<'a>(
             offset,
             endian,
         ),
-        other => Err(TypedefError::Schema(format!(
-            "unsupported TypeDef kind for sequential read: {other}"
-        ))),
     }
 }
 
@@ -421,7 +419,7 @@ fn read_union_value<'a>(
                         ),
                     })?;
             let (disc_value, disc_size) =
-                read_byte_discriminator(buffer, abs_offset, field_path, &disc_type, endian)?;
+                read_byte_discriminator(buffer, abs_offset, field_path, disc_type, endian)?;
             let key = disc_value.to_string();
             let variant_schema = mapping.get(&key).ok_or_else(|| TypedefError::Access {
                 field_path: field_path.to_string(),
@@ -514,19 +512,19 @@ fn read_byte_discriminator(
     buffer: &[u8],
     offset: usize,
     field_path: &str,
-    disc_type: &str,
+    disc_type: TypeDefKind,
     endian: Endian,
 ) -> Result<(u32, usize), TypedefError> {
     match disc_type {
-        "TypeDef:Uint8" => {
+        TypeDefKind::Uint8 => {
             let v = data_access::read_u8(buffer, offset, field_path)?;
             Ok((v as u32, 1))
         }
-        "TypeDef:Uint16" => {
+        TypeDefKind::Uint16 => {
             let v = data_access::read_u16(buffer, offset, field_path, endian)?;
             Ok((v as u32, 2))
         }
-        "TypeDef:Uint32" => {
+        TypeDefKind::Uint32 => {
             let v = data_access::read_u32(buffer, offset, field_path, endian)?;
             Ok((v, 4))
         }
@@ -596,14 +594,14 @@ fn read_array_value<'a>(
         (count, offset + U32_SIZE)
     };
 
-    let element_kind = get_typedef_kind_loose(items_schema).ok_or_else(|| {
+    let element_kind = get_typedef_kind_loose_enum(items_schema).ok_or_else(|| {
         TypedefError::Schema(format!(
             "array {field_path} items schema has no TypeDef:* kind"
         ))
     })?;
 
-    let element_stride = if schema::is_fixed_size(element_kind) {
-        schema::type_size(element_kind).unwrap_or(0)
+    let element_stride = if element_kind.is_fixed_size() {
+        element_kind.type_size().unwrap_or(0)
     } else {
         0
     };
@@ -733,14 +731,16 @@ fn resolve_and_walk_variant(
                 "union {field_path} variant could not be resolved: {variant_schema}"
             ))
         })?;
-    let kind = get_typedef_kind_loose(resolved).ok_or_else(|| {
+    let kind = get_typedef_kind_loose_enum(resolved).ok_or_else(|| {
         TypedefError::Schema(format!(
             "union {field_path} variant has no TypeDef:* kind: {resolved}"
         ))
     })?;
     match kind {
-        "TypeDef:Struct" => walk_struct_size(root_schema, resolved, buffer, variant_start, endian),
-        "TypeDef:Union" => {
+        TypeDefKind::Struct => {
+            walk_struct_size(root_schema, resolved, buffer, variant_start, endian)
+        }
+        TypeDefKind::Union => {
             let (_, end) = read_union_value(
                 buffer,
                 root_schema,
@@ -785,7 +785,7 @@ fn resolve_variant_schema<'a>(
         }
         return None;
     }
-    if get_typedef_kind_loose(variant).is_some() {
+    if get_typedef_kind_loose_enum(variant).is_some() {
         Some(variant)
     } else {
         None
