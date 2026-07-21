@@ -1,7 +1,7 @@
 ---
 id: typedef/tunion
 name: Implement TUnion discriminator dispatch for byte-offset and field-name discriminators
-status: pending
+status: completed
 depends_on: [typedef/schema-types, typedef/error-type, typedef/data-access]
 scope: narrow
 risk: medium
@@ -142,4 +142,17 @@ are full JSON Pointer paths).
 
 ## Summary
 
-> To be filled on completion
+Implemented TUnion discriminator dispatch in `crates/alknet-typedef/src/tunion.rs`
+with the `UnionDispatch` result type and four public functions: `read_byte_discriminator`,
+`read_field_discriminator`, `resolve_variant`, and `discriminator_size`. Byte-offset
+discriminators support `TypeDef:Uint8`/`Uint16`/`Uint32` via the endian-aware
+`data_access` readers, stringifying the integer value as the mapping key and returning
+`offset + discriminator_size` as the variant start. Field-name discriminators support
+`TypeDef:String`/`Uint8`/`Enum` fields, reading the value at the caller-provided offset
+and computing the variant start as `disc_field_offset + discriminator_field_size`
+(`4 + str.len()` for strings, 1 for u8, 4 for enum). `resolve_variant` returns inline
+schemas directly and resolves `"#/$defs/<name>"` refs against the union schema's own
+`$defs` block, returning `TypedefError::Schema` for unresolvable refs (the engine
+layer is expected to inline or pass the root for nested unions). All 28 unit tests
+pass, covering both discriminator kinds, all supported sub-types, both endiannesses,
+buffer-too-short, unknown mapping keys, and ref resolution.
