@@ -207,7 +207,8 @@ Endianness is per-schema (ADR-097). The offset computation is
 endian-agnostic — it computes byte positions, not byte values. The
 read/write functions apply endianness when converting between bytes and
 typed values. The engine reads the `"endian"` annotation from the schema
-and byte-swaps accordingly.
+and byte-swaps accordingly. All fixed-size types — including `TEnum`
+(u32 index) — follow the schema's endianness.
 
 ## Mode Selection
 

@@ -5,7 +5,7 @@ last_updated: 2026-07-20
 
 # alknet-typedef — Schema Layer
 
-The schema layer: the 16 `TypeDef:*` custom type kinds, their mapping to
+The schema layer: the 17 `TypeDef:*` custom type kinds, their mapping to
 Rust types and byte sizes, the `jsonschema` custom keyword integration,
 TypeBox interop, and the concrete JSON shapes for schema-level annotations.
 
@@ -53,8 +53,17 @@ second is index 1, etc. The enum's values are declared via the standard
 JSON Schema `"enum"` keyword (e.g., `"enum": ["read", "write", "execute"]`).
 The `TypeDef:Enum` custom keyword signals that the type is an enum for
 layout purposes; the built-in `enum` keyword provides the value list.
-The `u32` index is always little-endian (enum indices are not protocol
-data — they are internal to the schema). See [ADR-097](../../decisions/097-schema-annotations.md).
+
+**Design note:** TypeBox's `TEnum` is a string enum (variable-length). The
+typedef engine uses a `u32` index instead — a deliberate deviation from
+TypeBox fidelity in favor of binary efficiency. Most enums have a small
+number of variants (e.g., the call protocol's 5 event types); a `u32`
+index is compact, fixed-size, and sufficient for any realistic enum. The
+JSON representation (for validation) remains a string; the binary
+representation is the `u32` index.
+The `u32` index follows the schema's endianness annotation (ADR-097), like
+all other fixed-size types. In little-endian mode the index is
+`u32::from_le_bytes`; in big-endian mode it is `u32::from_be_bytes`.
 
 ### Variable-length types
 
@@ -115,6 +124,14 @@ consistent byte order for both field values and length prefixes.
 **`TBytes`:** Raw bytes — no UTF-8 constraint. The payload is `&[u8]`.
 Otherwise identical to `TString` in layout (same three strategies).
 
+**Design note:** `TypeDef:Bytes` is an alknet-typedef addition — it does
+not exist in TypeBox's `typedef.ts` (which defines 16 kinds). It is
+included because raw byte arrays are a common binary protocol primitive
+(SFTP data payloads, channels payloads, tensor data) and are semantically
+distinct from UTF-8 strings. In the binary representation, TBytes is raw
+bytes with no encoding (not base64, not hex). In the JSON representation
+(for validation), TBytes is a string (JSON has no native byte type).
+
 **`TRecord`:** A string-keyed map. Binary layout is a count-prefixed
 sequence of `(key, value)` pairs: `[count: u32][key_len: u32][key_bytes]
 [value_len: u32][value_bytes]...`. The count is the number of entries.
@@ -126,9 +143,11 @@ entire record is reserved at `maxLength` bytes (zero-padded).
 
 **`TTimestamp`:** An RFC 3339 timestamp string (the internet profile of
 ISO 8601). Stored as a length-prefixed UTF-8 string (strategy 1) or
-fixed-size reservation (strategy 2 with `maxLength`). The engine does not
-parse or validate the timestamp format beyond UTF-8 — the jsonschema
-validator checks RFC 3339 conformance at the JSON level.
+fixed-size reservation (strategy 2 with `maxLength`). The data-access
+layer treats timestamps as opaque length-prefixed strings — it does not
+parse or validate the timestamp format. The jsonschema custom keyword
+validator checks RFC 3339 conformance at the JSON level (see
+[validation.md](validation.md)).
 
 `TArray` is variable-length when the element type is variable-length or
 when the count is not known at schema time. For fixed-size element arrays

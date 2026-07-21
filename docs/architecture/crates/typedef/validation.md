@@ -104,8 +104,13 @@ type constraints; `jsonschema` handles all structural validation.
   must not exceed it.
 
 **`TypeDef:Bytes`:**
-- Value must be a string (JSON represents binary data as a string).
+- Value must be a string (JSON represents binary data as a string — JSON
+  has no native byte type).
 - If `maxLength` is specified, the byte length must not exceed it.
+- **Binary representation:** In the binary layout, `TBytes` is raw bytes
+  with no encoding (not base64, not hex). The JSON representation (for
+  validation) uses a string; the binary representation (for data access)
+  uses `&[u8]` directly.
 
 **`TypeDef:Enum`:**
 - The `TypeDef:Enum` custom keyword signals that the type is an enum for

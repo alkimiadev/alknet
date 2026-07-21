@@ -18,7 +18,7 @@ format definition; the engine is generic.
 | [schema-layer.md](schema-layer.md) | draft | The 17 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
 | [layout-engine.md](layout-engine.md) | draft | Offset computation, the two layout modes (packed sequential vs aligned static), alignment, endianness, variable-length handling |
 | [data-access.md](data-access.md) | draft | Read/write functions, TUnion dispatch, field paths, zero-copy access, length-prefix reading |
-| [validation.md](validation.md) | draft | Custom keyword validators for all 16 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation, `TypedefEngine` |
+| [validation.md](validation.md) | draft | Custom keyword validators for all 17 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation, `TypedefEngine` |
 
 ## Applicable ADRs
 

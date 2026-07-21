@@ -163,7 +163,7 @@ These boundaries are decided in [ADR-095](../../decisions/095-alknet-typedef-pur
   dispatch, field paths, zero-copy access for fixed-size types,
   length-prefix reading for variable-length types.
 - **[validation.md](validation.md)** — custom keyword validators for all
-  16 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time
+  17 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time
   validation, `TypedefEngine` as the compiled form of a schema.
 
 ## Design Decisions

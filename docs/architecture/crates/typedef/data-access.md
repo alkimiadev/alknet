@@ -21,7 +21,7 @@ typed access at the computed positions.
 
 ### Fixed-size types
 
-Fixed-size types (`TFloat32`, `TInt32`, `TUint8`, etc.) are accessed via
+Fixed-size types (`TFloat32`, `TInt32`, `TUint8`, `TEnum`, etc.) are accessed via
 zero-copy pointer casts:
 
 ```rust
@@ -47,6 +47,28 @@ fn write_u32(buffer: &mut [u8], offset: usize, value: u32, endian: Endian) {
 The engine applies endianness at access time based on the schema's
 `"endian"` annotation (ADR-097). The offset computation is
 endian-agnostic.
+
+### TEnum access
+
+`TEnum` is a fixed-size type (4 bytes, `u32` index). Read/write follows
+the same pattern as other fixed-size types — the engine reads/writes a
+`u32` at the field's computed offset, applying the schema's endianness:
+
+```rust
+fn read_enum(buffer: &[u8], offset: usize, endian: Endian) -> u32 {
+    let bytes: [u8; 4] = buffer[offset..offset+4].try_into().unwrap();
+    match endian {
+        Endian::Little => u32::from_le_bytes(bytes),
+        Endian::Big => u32::from_be_bytes(bytes),
+    }
+}
+```
+
+The consumer maps the `u32` index back to the enum's string values using
+the schema's `"enum"` array (index 0 → first value, index 1 → second
+value, etc.). The engine does not perform this mapping — it operates on
+the raw `u32` index. The jsonschema validator checks that the index
+corresponds to a valid enum value at the JSON level.
 
 ### Variable-length types (inline length-prefixing)
 
