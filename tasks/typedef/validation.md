@@ -1,7 +1,7 @@
 ---
 id: typedef/validation
 name: Implement custom keyword validators for all 17 TypeDef kinds via jsonschema with_keyword API
-status: pending
+status: completed
 depends_on: [typedef/schema-types, typedef/error-type]
 scope: moderate
 risk: medium
@@ -177,4 +177,4 @@ inspects the parent's `properties` to validate each field against its declared
 
 ## Summary
 
-> To be filled on completion
+Implemented `build_validator(schema) -> Result<jsonschema::Validator, TypedefError>` in `crates/alknet-typedef/src/validation.rs`, registering all 17 `TypeDef:*` custom keywords with the `jsonschema` crate via `options().with_keyword(...)`. Each kind has a small (~10 line) `Keyword` struct: numeric validators (`Float32/64`, `Int8/16/32`, `Uint8/16/32`) check finiteness and range bounds; `String`/`Bytes` verify UTF-8 string shape and enforce `maxLength` from the parent schema; `Timestamp` checks RFC 3339 / ISO 8601 structure; `Boolean` rejects non-booleans; composite `Struct`/`Union`/`Array`/`Record` assert container shape and delegate structural checks to jsonschema's built-in keywords; and `Enum` is a deliberate no-op (the built-in `enum` keyword handles value-membership — the custom keyword exists solely as a layout-engine marker). Factory closures reject schemas where a `TypeDef:*` keyword is not set to `true` via `ValidationError::schema`, and `.build()` errors are mapped to `TypedefError::Schema`. All 16 unit tests pass, `cargo check`, `cargo clippy -D warnings`, and `cargo build --workspace` succeed cleanly.
