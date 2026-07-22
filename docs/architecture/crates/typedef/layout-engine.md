@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-21
+last_updated: 2026-07-22
 ---
 
 # alknet-typedef — Layout Engine
@@ -104,6 +104,18 @@ For offset indirection, the field is a struct `{offset: u32, length: u32}`
 at a known position in the `OffsetMap`. The consumer reads the offset and
 length, then slices the separate data region.
 
+### Inline length-prefixing in aligned mode — non-final field restriction
+
+Inline length-prefixed variable fields in aligned mode are only allowed
+as the **last field** in their struct. A non-final inline
+length-prefixed variable field is rejected at `OffsetMap::compute` time
+with a `TypedefError::Offset` — the `OffsetMap` reserves only 4 bytes
+(the length prefix), but `data_access::write_string` writes prefix +
+data inline, which would clobber subsequent fields. Non-final variable
+fields must use `maxLength` (fixed-size reservation) or
+`"encoding": "offset-indirect"`. See
+[ADR-100](../../decisions/100-reject-non-final-inline-length-prefixed-in-aligned-mode.md).
+
 ## Offset Computation Algorithm
 
 The offset computation is a recursive walk of the schema JSON. The
@@ -127,25 +139,27 @@ size is the sum of its fields' sizes (plus alignment padding in aligned
 mode). The struct itself may have an `align` annotation that rounds up
 its total size.
 
-**`TUnion`:** The discriminator occupies `offset..offset + discriminator_size`
-bytes. For byte-offset discriminators, the variant struct starts at
-`offset + discriminator_size`. For field-name discriminators, the
-discriminator is just another field — its offset is computed like any
-other field, and the variant struct follows at the end of the
-discriminator field.
+**`TUnion`:** TUnion is supported in packed sequential mode only. In
+aligned static mode, `OffsetMap::compute` rejects `TUnion` fields with
+`TypedefError::Offset` — see
+[ADR-102](../../decisions/102-reject-tunion-in-aligned-mode.md). Unions
+are the protocol dispatch pattern (SFTP type bytes, call protocol event
+types); mmap-friendly formats use structs and arrays, not tagged unions.
 
-In aligned static mode, the union's total size is `discriminator_size +
-max(variant_sizes)`, where variant sizes are computed from the schema
-(variable-length data lives outside the static layout).
+In packed sequential mode, the discriminator occupies
+`offset..offset + discriminator_size` bytes. For byte-offset
+discriminators, the variant struct starts at `offset + discriminator_size`.
+For field-name discriminators, the discriminator is just another field —
+its offset is computed like any other field, and the variant struct
+follows at the end of the discriminator field.
 
-In packed sequential mode, variant sizes depend on the actual sizes of
-variable-length fields within each variant, which aren't known at schema
-time. The `LayoutBuilder` takes the actual variant discriminator value
-and data sizes at write time, computes the size of the selected variant,
-and uses that for the union's total size. The `SequentialReader` reads
-the discriminator first, looks up the variant schema, then reads the
-variant struct sequentially — it doesn't need to know the union's total
-size upfront.
+Variant sizes depend on the actual sizes of variable-length fields within
+each variant, which aren't known at schema time. The `LayoutBuilder`
+takes the actual variant discriminator value and data sizes at write time,
+computes the size of the selected variant, and uses that for the union's
+total size. The `SequentialReader` reads the discriminator first, looks
+up the variant schema, then reads the variant struct sequentially — it
+doesn't need to know the union's total size upfront.
 
 **`TArray` of fixed-size elements:** Element stride = element size (plus
 alignment padding in aligned mode). Element `i` starts at
@@ -233,9 +247,13 @@ describing a metatensor layout can be consumed by an `OffsetMap` (for
 mmap access).
 
 `TypedefEngine` exposes mode-appropriate accessors: `engine.offset_map()`
-returns `Some` in aligned mode and `None` in packed mode;
-`engine.layout_builder()` and `engine.sequential_reader()` return `Some`
-in packed mode and `None` in aligned mode. See [validation.md](validation.md)
+returns `Some(&OffsetMap)` in aligned mode and `None` in packed mode;
+`engine.layout_builder()` returns `Some(&LayoutBuilder)` in packed mode
+and `None` in aligned mode. `engine.sequential_reader()` returns
+`Option<SequentialReader>` (an owned fresh reader, not a reference — the
+reader has mutable cursor state that the consumer owns; see
+[ADR-101](../../decisions/101-packed-mode-read-factory.md)) in packed
+mode and `None` in aligned mode. See [validation.md](validation.md)
 §"The TypedefEngine struct" for the engine API.
 
 ## Public Types
@@ -316,6 +334,9 @@ order (schema `properties` order, nested struct fields appearing inline).
 |----------|-----|---------|
 | Two layout modes | [ADR-096](../../decisions/096-two-layout-modes-packed-vs-aligned.md) | Packed sequential for protocols; aligned static for mmap formats |
 | Schema annotations | [ADR-097](../../decisions/097-schema-annotations.md) | Endianness, alignment, encoding annotations that control layout behavior |
+| Non-final inline variable fields | [ADR-100](../../decisions/100-reject-non-final-inline-length-prefixed-in-aligned-mode.md) | Rejected in aligned mode (would clobber subsequent fields); use `maxLength` or `offset-indirect` |
+| Packed-mode read factory | [ADR-101](../../decisions/101-packed-mode-read-factory.md) | `engine.sequential_reader()` returns an owned fresh reader, not a reference |
+| TUnion in aligned mode | [ADR-102](../../decisions/102-reject-tunion-in-aligned-mode.md) | Rejected for v1 (broken semantics; no current consumer needs it) |
 
 ## Open Questions
 

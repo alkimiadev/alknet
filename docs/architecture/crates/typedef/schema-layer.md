@@ -1,15 +1,16 @@
 ---
 status: draft
-last_updated: 2026-07-21
+last_updated: 2026-07-22
 ---
 
 # alknet-typedef — Schema Layer
 
-The schema layer: the 17 `TypeDef:*` custom type kinds, their mapping to
+The schema layer: the 19 `TypeDef:*` custom type kinds, their mapping to
 Rust types and byte sizes, the `jsonschema` custom keyword integration,
-TypeBox interop, and the concrete JSON shapes for schema-level annotations.
+TypeBox interop, and the concrete JSON shapes for schema-level
+annotations.
 
-## The 17 TypeDef Kinds
+## The 19 TypeDef Kinds
 
 These are the custom schema kinds defined in TypeBox's `typedef.ts`
 (`/workspace/@alkdev/typebox/example/typedef/typedef.ts`, 619 lines) and
@@ -24,9 +25,11 @@ encoding strategy (for variable-length types).
 | `TInt8` | `TypeDef:Int8` | `i8` | 1 | fixed |
 | `TInt16` | `TypeDef:Int16` | `i16` | 2 | fixed |
 | `TInt32` | `TypeDef:Int32` | `i32` | 4 | fixed |
+| `TInt64` | `TypeDef:Int64` | `i64` | 8 | fixed |
 | `TUint8` | `TypeDef:Uint8` | `u8` | 1 | fixed |
 | `TUint16` | `TypeDef:Uint16` | `u16` | 2 | fixed |
 | `TUint32` | `TypeDef:Uint32` | `u32` | 4 | fixed |
+| `TUint64` | `TypeDef:Uint64` | `u64` | 8 | fixed |
 | `TBoolean` | `TypeDef:Boolean` | `bool` (0x00=false, 0x01=true) | 1 | fixed |
 | `TString` | `TypeDef:String` | length-prefixed UTF-8 | variable | variable |
 | `TBytes` | `TypeDef:Bytes` | length-prefixed raw bytes | variable | variable |
@@ -37,9 +40,15 @@ encoding strategy (for variable-length types).
 | `TRecord` | `TypeDef:Record` | count-prefixed sequence of (key, value) pairs | variable | variable |
 | `TTimestamp` | `TypeDef:Timestamp` | length-prefixed RFC 3339 string | variable | variable |
 
+`TypeDef:Int64` and `TypeDef:Uint64` are alknet-typedef additions —
+TypeBox's `typedef.ts` tops out at 32-bit integers. They are required by
+the primary POC targets: SFTP `Read`/`Write` packets have `offset: u64`,
+and metatensor `data_offsets` are `u64`. See
+[ADR-099](../../decisions/099-int64-uint64-first-class-kinds.md).
+
 ### The `TypeDefKind` enum
 
-The engine represents the 17 kinds as a Rust enum — `TypeDefKind` — with
+The engine represents the 19 kinds as a Rust enum — `TypeDefKind` — with
 one variant per kind (`TypeDefKind::Float32`, `TypeDefKind::Struct`, etc.).
 The enum provides compile-time exhaustiveness checking and integer
 discriminant dispatch (a jump table) instead of string comparison at
@@ -47,8 +56,8 @@ every field access. It is `pub` and re-exported from the crate root.
 
 ```rust
 pub enum TypeDefKind {
-    Int8, Int16, Int32,
-    Uint8, Uint16, Uint32,
+    Int8, Int16, Int32, Int64,
+    Uint8, Uint16, Uint32, Uint64,
     Float32, Float64,
     Boolean, Enum,
     String, Bytes, Timestamp,
@@ -62,8 +71,8 @@ The enum carries the kind's binary-layout metadata as inherent methods:
 |--------|---------|-------|
 | `as_str(self)` | `&'static str` | The JSON Schema keyword, e.g. `"TypeDef:Uint8"` |
 | `type_size(self)` | `Option<usize>` | `Some(N)` for fixed-size kinds; `None` for variable/composite |
-| `natural_alignment(self)` | `usize` | 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/enum, 8 for f64, 4 for variable-length (the u32 length prefix), 1 for struct/union/array |
-| `is_fixed_size(self)` | `bool` | True for the 10 fixed-size primitive kinds |
+| `natural_alignment(self)` | `usize` | 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/enum, 8 for u64/i64/f64, 4 for variable-length (the u32 length prefix), 1 for struct/union/array |
+| `is_fixed_size(self)` | `bool` | True for the 12 fixed-size primitive kinds |
 | `is_composite(self)` | `bool` | True for Struct, Union, Array, Record |
 | `is_variable_length(self)` | `bool` | True for String, Bytes, Timestamp, Record |
 | `needs_endian(self)` | `bool` | True for kinds whose read/write takes an `Endian` parameter |
@@ -382,8 +391,8 @@ Both struct-level and field-level, with field-level overriding:
 - Struct-level `"align"` sets the default for all fields.
 - Field-level `"align"` overrides the struct default.
 - Default alignment: 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/
-  enum, 8 for f64, 4 for variable-length (the u32 length prefix), 1 for
-  struct/union/array.
+  enum, 8 for u64/i64/f64, 4 for variable-length (the u32 length prefix),
+  1 for struct/union/array.
 - Only meaningful in aligned static mode (ADR-096). Ignored in packed
   sequential mode.
 
@@ -478,6 +487,7 @@ Mapping values may be either inline schemas or `$ref` pointers. Both work.
 | Decision | ADR | Summary |
 |----------|-----|---------|
 | Schema annotations | [ADR-097](../../decisions/097-schema-annotations.md) | Concrete JSON shapes for endianness, alignment, encoding, and TUnion discriminators |
+| Int64/Uint64 kinds | [ADR-099](../../decisions/099-int64-uint64-first-class-kinds.md) | 64-bit integers as first-class kinds (required by SFTP offsets and metatensor data_offsets) |
 | Purpose and scope | [ADR-095](../../decisions/095-alknet-typedef-purpose-scope-jsonschema-engine.md) | Why jsonschema not a custom engine; "schema is the format" principle |
 
 ## Open Questions

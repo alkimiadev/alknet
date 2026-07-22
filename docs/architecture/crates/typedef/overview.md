@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-21
+last_updated: 2026-07-22
 ---
 
 # alknet-typedef — Overview
@@ -18,7 +18,8 @@ Component details are in the sibling documents.
 
 `alknet-typedef` is a library crate that consumes JSON Schemas annotated
 with `TypeDef:*` custom keywords (the same kinds defined in TypeBox's
-`typedef.ts`) and produces three capabilities:
+`typedef.ts`, plus `TypeDef:Bytes`, `TypeDef:Int64`, and `TypeDef:Uint64`
+as alknet-typedef additions) and produces three capabilities:
 
 1. **An offset map** — walks the schema, computes byte offsets for each
    field based on type sizes, field order, and alignment.
@@ -153,7 +154,7 @@ These boundaries are decided in [ADR-095](../../decisions/095-alknet-typedef-pur
 
 ## Architecture (component pointers)
 
-- **[schema-layer.md](schema-layer.md)** — the 17 `TypeDef:*` kinds,
+- **[schema-layer.md](schema-layer.md)** — the 19 `TypeDef:*` kinds,
   jsonschema custom keyword integration, TypeBox interop, schema
   annotations (endianness, alignment, encoding, TUnion discriminators).
 - **[layout-engine.md](layout-engine.md)** — offset computation, the two
@@ -163,7 +164,7 @@ These boundaries are decided in [ADR-095](../../decisions/095-alknet-typedef-pur
   dispatch, field paths, zero-copy access for fixed-size types,
   length-prefix reading for variable-length types.
 - **[validation.md](validation.md)** — custom keyword validators for all
-  17 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time
+  19 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time
   validation, `TypedefEngine` as the compiled form of a schema.
 
 ## Design Decisions
@@ -174,6 +175,10 @@ These boundaries are decided in [ADR-095](../../decisions/095-alknet-typedef-pur
 | Two layout modes | [ADR-096](../../decisions/096-two-layout-modes-packed-vs-aligned.md) | Packed sequential (`LayoutBuilder`/`SequentialReader`) for protocols; aligned static (`OffsetMap`) for mmap formats |
 | Schema annotations | [ADR-097](../../decisions/097-schema-annotations.md) | Endianness (schema-level, default LE), alignment (struct + field-level), encoding (length-prefixed vs offset-indirect), TUnion discriminators (byte-offset vs field-name) |
 | Error handling and validation | [ADR-098](../../decisions/098-error-handling-validation-strategy.md) | `TypedefError` enum; load-time build, access-time check; field-path-carrying errors; jsonschema `ValidationError` wrapping |
+| Int64/Uint64 kinds | [ADR-099](../../decisions/099-int64-uint64-first-class-kinds.md) | 64-bit integers as first-class kinds (SFTP offsets, metatensor data_offsets) |
+| Non-final inline variable fields | [ADR-100](../../decisions/100-reject-non-final-inline-length-prefixed-in-aligned-mode.md) | Rejected in aligned mode (would clobber subsequent fields) |
+| Packed-mode read factory | [ADR-101](../../decisions/101-packed-mode-read-factory.md) | `engine.sequential_reader()` returns an owned fresh reader |
+| TUnion in aligned mode | [ADR-102](../../decisions/102-reject-tunion-in-aligned-mode.md) | Rejected for v1 (broken semantics; no current consumer needs it) |
 
 ## Open Questions
 

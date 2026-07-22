@@ -1,11 +1,11 @@
 ---
 status: draft
-last_updated: 2026-07-21
+last_updated: 2026-07-22
 ---
 
 # alknet-typedef — Validation
 
-The validation layer: custom keyword validators for all 17 `TypeDef:*`
+The validation layer: custom keyword validators for all 19 `TypeDef:*`
 kinds, the `TypedefError` enum, load-time vs access-time validation
 strategy, and the `TypedefEngine` as the compiled form of a schema.
 
@@ -62,7 +62,7 @@ pub struct TypedefEngine {
 
 // Private — the consumer selects via LayoutMode at compile time.
 enum Layout {
-    Packed { builder: LayoutBuilder, reader: SequentialReader },
+    Packed { builder: LayoutBuilder },
     Aligned { offset_map: OffsetMap },
 }
 ```
@@ -78,15 +78,21 @@ impl TypedefEngine {
     pub fn endian(&self) -> Endian;
     pub fn offset_map(&self) -> Option<&OffsetMap>;          // Some in aligned mode
     pub fn layout_builder(&self) -> Option<&LayoutBuilder>;  // Some in packed mode
-    pub fn sequential_reader(&self) -> Option<&SequentialReader>; // Some in packed mode
+    pub fn sequential_reader(&self) -> Option<SequentialReader>; // owned fresh reader (ADR-101)
 }
 ```
 
 `compile` takes `&mut Value` because it normalizes `$ref` values in place
 (via [`normalize_refs`](schema-layer.md#ref-resolution-and-normalization))
 before computing the layout and building the validator. The `schema`
-field retains the normalized schema for `read_field`'s kind lookup. The
-validator is mode-agnostic (it operates on `Value`, not raw bytes).
+field retains the normalized schema for `read_field`'s kind lookup and
+for `sequential_reader()`'s factory construction. The validator is
+mode-agnostic (it operates on `Value`, not raw bytes).
+
+The `Layout::Packed` variant stores only the `LayoutBuilder` (write-side).
+The `SequentialReader` (read-side) is not stored — it has mutable cursor
+state that the consumer owns, so `sequential_reader()` constructs a fresh
+reader on each call (ADR-101).
 
 The `read_field`/`write_field` methods on `TypedefEngine` are the
 aligned-mode data-access API — see [data-access.md](data-access.md)

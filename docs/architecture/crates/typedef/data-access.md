@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-21
+last_updated: 2026-07-22
 ---
 
 # alknet-typedef — Data Access
@@ -34,8 +34,8 @@ borrows from the input buffer for variable-length kinds (zero-copy).
 
 ```rust
 pub enum FieldValue<'a> {
-    I8(i8), I16(i16), I32(i32),
-    U8(u8), U16(u16), U32(u32),
+    I8(i8), I16(i16), I32(i32), I64(i64),
+    U8(u8), U16(u16), U32(u32), U64(u64),
     F32(f32), F64(f64),
     Bool(bool),
     Enum(u32),                              // u32 index into the schema's "enum" array
@@ -78,6 +78,11 @@ impl TypedefEngine {
         -> Result<FieldValue<'a>, TypedefError>;
     pub fn write_field(&self, buffer: &mut [u8], field_path: &str,
         value: &FieldValue<'_>) -> Result<(), TypedefError>;
+
+    // Packed mode: returns an owned fresh SequentialReader (ADR-101).
+    // Each call returns a new reader with the cursor at position 0.
+    // The consumer owns the reader and drives read_next/read_field/reset.
+    pub fn sequential_reader(&self) -> Option<SequentialReader>;
 }
 
 impl SequentialReader {

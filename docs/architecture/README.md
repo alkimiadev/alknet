@@ -298,10 +298,10 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [crates/channels/channel-client.md](crates/channels/channel-client.md) | draft | `ChannelClient` — client side of a channels connection, transport-agnostic `from_connection` primary; dial lives in `AlknetClient` (ADR-089); bidirectionality preserved |
 | [crates/typedef/README.md](crates/typedef/README.md) | draft | alknet-typedef crate — binary struct engine; JSON Schema with `TypeDef:*` custom keywords → offset map + read/write + validation |
 | [crates/typedef/overview.md](crates/typedef/overview.md) | draft | Crate purpose, "schema is the format" principle, dependencies, consumers, scope boundaries |
-| [crates/typedef/schema-layer.md](crates/typedef/schema-layer.md) | draft | The 17 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
+| [crates/typedef/schema-layer.md](crates/typedef/schema-layer.md) | draft | The 19 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
 | [crates/typedef/layout-engine.md](crates/typedef/layout-engine.md) | draft | Offset computation, two layout modes (packed sequential vs aligned static), alignment, endianness, variable-length handling |
 | [crates/typedef/data-access.md](crates/typedef/data-access.md) | draft | Read/write functions, TUnion dispatch, field paths, zero-copy access, length-prefix reading |
-| [crates/typedef/validation.md](crates/typedef/validation.md) | draft | Custom keyword validators for all 17 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation |
+| [crates/typedef/validation.md](crates/typedef/validation.md) | draft | Custom keyword validators for all 19 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation |
 
 ## ADR Table
 
@@ -405,6 +405,10 @@ adapter location map is now consistent: all HTTP-backed adapters
 | [096](decisions/096-two-layout-modes-packed-vs-aligned.md) | Two Layout Modes — Packed Sequential vs Aligned Static | Accepted |
 | [097](decisions/097-schema-annotations.md) | Schema Annotations — Endianness, Alignment, Encoding, and TUnion Discriminators | Accepted |
 | [098](decisions/098-error-handling-validation-strategy.md) | Error Handling and Validation Strategy | Accepted |
+| [099](decisions/099-int64-uint64-first-class-kinds.md) | Int64/Uint64 as First-Class Kinds | Accepted |
+| [100](decisions/100-reject-non-final-inline-length-prefixed-in-aligned-mode.md) | Reject Non-Final Inline Length-Prefixed Variable Fields in Aligned Mode | Accepted |
+| [101](decisions/101-packed-mode-read-factory.md) | Packed-Mode Read API — Engine as SequentialReader Factory | Accepted |
+| [102](decisions/102-reject-tunion-in-aligned-mode.md) | Reject TUnion in Aligned Mode for v1 | Accepted |
 
 ## Open Questions
 

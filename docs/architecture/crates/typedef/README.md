@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-07-21
+last_updated: 2026-07-22
 ---
 
 # alknet-typedef
@@ -15,10 +15,10 @@ format definition; the engine is generic.
 | Document | Status | Description |
 |----------|--------|-------------|
 | [overview.md](overview.md) | draft | Crate purpose, "schema is the format" principle, dependencies, consumers, scope boundaries |
-| [schema-layer.md](schema-layer.md) | draft | The 17 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
+| [schema-layer.md](schema-layer.md) | draft | The 19 `TypeDef:*` kinds, jsonschema custom keyword integration, TypeBox interop, schema annotations |
 | [layout-engine.md](layout-engine.md) | draft | Offset computation, the two layout modes (packed sequential vs aligned static), alignment, endianness, variable-length handling |
 | [data-access.md](data-access.md) | draft | Read/write functions, TUnion dispatch, field paths, zero-copy access, length-prefix reading |
-| [validation.md](validation.md) | draft | Custom keyword validators for all 17 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation, `TypedefEngine` |
+| [validation.md](validation.md) | draft | Custom keyword validators for all 19 `TypeDef:*` kinds, `TypedefError`, load-time vs access-time validation, `TypedefEngine` |
 
 ## Applicable ADRs
 
@@ -28,6 +28,10 @@ format definition; the engine is generic.
 | [096](../../decisions/096-two-layout-modes-packed-vs-aligned.md) | Two Layout Modes — Packed Sequential vs Aligned Static | The most important architectural finding; when to use each mode; `LayoutBuilder`/`SequentialReader` vs `OffsetMap` |
 | [097](../../decisions/097-schema-annotations.md) | Schema Annotations — Endianness, Alignment, Encoding, TUnion Discriminators | Concrete JSON shapes for all schema-level annotations |
 | [098](../../decisions/098-error-handling-validation-strategy.md) | Error Handling and Validation Strategy | `TypedefError` enum; load-time build, access-time check; field-path-carrying errors |
+| [099](../../decisions/099-int64-uint64-first-class-kinds.md) | Int64/Uint64 as First-Class Kinds | 64-bit integers (SFTP offsets, metatensor data_offsets); JSON precision caveat |
+| [100](../../decisions/100-reject-non-final-inline-length-prefixed-in-aligned-mode.md) | Reject Non-Final Inline Length-Prefixed Variable Fields in Aligned Mode | Prevents silent data corruption (inline variable data clobbering subsequent fields) |
+| [101](../../decisions/101-packed-mode-read-factory.md) | Packed-Mode Read API — Engine as SequentialReader Factory | `engine.sequential_reader()` returns an owned reader, not a reference |
+| [102](../../decisions/102-reject-tunion-in-aligned-mode.md) | Reject TUnion in Aligned Mode for v1 | Unions are the protocol pattern; aligned-mode union semantics were broken |
 
 ## Relevant Open Questions
 
