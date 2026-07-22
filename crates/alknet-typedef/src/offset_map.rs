@@ -13,9 +13,8 @@
 
 use crate::error::TypedefError;
 use crate::schema::{
-    get_typedef_kind, get_typedef_kind_loose_enum, parse_align, parse_discriminator, parse_encoding,
-    parse_max_length, resolve_ref_or_inline, DiscriminatorKind, TypeDefKind, VariableEncoding,
-    DISCRIMINATOR_PATH,
+    get_typedef_kind, get_typedef_kind_loose_enum, parse_align, parse_encoding,
+    parse_max_length, resolve_ref_or_inline, TypeDefKind, VariableEncoding,
 };
 use serde_json::Value;
 
@@ -183,13 +182,50 @@ impl<'a> ComputeCtx<'a> {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        for (field_name, field_schema) in field_schemas {
+        let field_count = field_schemas.len();
+        for (i, (field_name, field_schema)) in field_schemas.iter().enumerate() {
             let field_path = if prefix.is_empty() {
                 field_name.clone()
             } else {
                 format!("{prefix}.{field_name}")
             };
-            let layout = self.compute_field(&field_schema, &field_path, struct_default_align)?;
+            // ADR-100: reject non-final inline length-prefixed variable fields.
+            // The OffsetMap reserves only 4 bytes (the length prefix), but
+            // data_access::write_string writes prefix+data inline — clobbering
+            // subsequent fields. Only allowed as the last field in the struct.
+            if i < field_count - 1 {
+                if let Some(kind) = get_typedef_kind_loose_enum(field_schema) {
+                    if kind.is_variable_length() {
+                        let keyword_value = field_schema
+                            .as_object()
+                            .and_then(|o| {
+                                o.keys()
+                                    .find(|k| k.starts_with("TypeDef:"))
+                                    .and_then(|k| o.get(k))
+                            })
+                            .cloned()
+                            .unwrap_or(Value::Bool(true));
+                        let encoding = parse_encoding(&keyword_value);
+                        let max_length = parse_max_length(field_schema);
+                        let is_inline_length_prefixed =
+                            encoding == VariableEncoding::LengthPrefixed && max_length.is_none();
+                        if is_inline_length_prefixed {
+                            return Err(TypedefError::Offset {
+                                field_path: field_path.clone(),
+                                reason: format!(
+                                    "non-final inline length-prefixed variable field \
+                                     ({kind}) in aligned mode: the variable data would \
+                                     clobber subsequent fields. Use `maxLength` \
+                                     (fixed-size reservation) or \
+                                     `\"encoding\": \"offset-indirect\"`, or move this \
+                                     field to the last position in the struct. (ADR-100)"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            let layout = self.compute_field(field_schema, &field_path, struct_default_align)?;
             if layout.align > max_align {
                 max_align = layout.align;
             }
@@ -218,9 +254,14 @@ impl<'a> ComputeCtx<'a> {
             TypeDefKind::Struct => {
                 self.compute_struct_field(field_schema, field_path, struct_default_align)
             }
-            TypeDefKind::Union => {
-                self.compute_union_field(field_schema, field_path, struct_default_align)
-            }
+            TypeDefKind::Union => Err(TypedefError::Offset {
+                field_path: field_path.to_string(),
+                reason: "TUnion is not supported in aligned static mode (ADR-102). \
+                         Unions are the protocol dispatch pattern — use packed sequential \
+                         mode (LayoutMode::Packed) for TUnion fields, or restructure as \
+                         a struct with an explicit discriminator field."
+                    .to_string(),
+            }),
             TypeDefKind::Array => {
                 self.compute_array_field(field_schema, field_path, struct_default_align)
             }
@@ -292,163 +333,6 @@ impl<'a> ComputeCtx<'a> {
         }
         self.offset = struct_start + inner_total;
         Ok(FieldLayout { align })
-    }
-
-    /// Compute the layout for a `TypeDef:Union` field.
-    fn compute_union_field(
-        &mut self,
-        field_schema: &Value,
-        field_path: &str,
-        struct_default_align: usize,
-    ) -> Result<FieldLayout, TypedefError> {
-        let disc = parse_discriminator(field_schema)?;
-        let mapping = field_schema
-            .as_object()
-            .and_then(|o| o.get("mapping"))
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| TypedefError::Offset {
-                field_path: field_path.to_string(),
-                reason: "TUnion is missing 'mapping' object".to_string(),
-            })?;
-        let mapping = mapping.clone();
-
-        let union_align_annotation = parse_align(field_schema);
-        let union_default_align = union_align_annotation.unwrap_or(struct_default_align);
-
-        match disc {
-            DiscriminatorKind::Byte {
-                offset: disc_off,
-                disc_type,
-            } => {
-                let disc_size = disc_type.type_size().ok_or_else(|| TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: format!("discriminator type {disc_type} has no fixed size"),
-                })?;
-                let disc_natural = disc_type.natural_alignment();
-                let disc_align = union_default_align.max(disc_natural);
-                align_up(&mut self.offset, disc_align);
-                let union_start = self.offset;
-
-                let disc_range_start = union_start + disc_off;
-                let disc_range_end = disc_range_start + disc_size;
-                let disc_path = format!("{field_path}.{DISCRIMINATOR_PATH}");
-                self.push(&disc_path, disc_range_start, disc_range_end);
-
-                let (variant_max_size, variant_max_align) =
-                    self.variant_size_range(field_path, &mapping)?;
-                let union_align = union_align_annotation
-                    .unwrap_or(variant_max_align.max(disc_align))
-                    .max(1);
-                let union_total = round_up(disc_off + disc_size + variant_max_size, union_align);
-                self.offset = union_start + union_total;
-                Ok(FieldLayout { align: union_align })
-            }
-            DiscriminatorKind::Field { name } => {
-                let (variant_max_size, variant_max_align) =
-                    self.variant_size_range(field_path, &mapping)?;
-                let disc_field_range =
-                    self.find_discriminator_field(&mapping, &name, field_path)?;
-
-                let union_align = union_align_annotation
-                    .unwrap_or(variant_max_align.max(union_default_align))
-                    .max(1);
-                align_up(&mut self.offset, union_align);
-                let union_start = self.offset;
-                if let Some(r) = disc_field_range {
-                    let disc_path = format!("{field_path}.{name}");
-                    self.push(&disc_path, union_start + r.start, union_start + r.end);
-                }
-                let union_total = round_up(variant_max_size, union_align);
-                self.offset = union_start + union_total;
-                Ok(FieldLayout { align: union_align })
-            }
-        }
-    }
-
-    /// Iterate the union's `mapping` and compute `(max_variant_size, max_variant_align)`.
-    fn variant_size_range(
-        &self,
-        field_path: &str,
-        mapping: &serde_json::Map<String, Value>,
-    ) -> Result<(usize, usize), TypedefError> {
-        let mut variant_max_size: usize = 0;
-        let mut variant_max_align: usize = 1;
-        for (_key, variant_schema) in mapping.iter() {
-            let resolved = resolve_ref_or_inline(variant_schema, self.root).ok_or_else(|| {
-                TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: "could not resolve TUnion variant schema ($ref not found)".to_string(),
-                }
-            })?;
-            let v_kind = get_typedef_kind(resolved)
-                .and_then(|s| s.parse::<TypeDefKind>().ok())
-                .ok_or_else(|| TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
-                })?;
-            if v_kind != TypeDefKind::Struct {
-                return Err(TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: format!("TUnion variant must be TypeDef:Struct, got {v_kind}"),
-                });
-            }
-            let v_align_ann = parse_align(resolved).unwrap_or(1);
-            let mut probe = ComputeCtx {
-                root: self.root,
-                fields: Vec::new(),
-                offset: 0,
-            };
-            let (v_total, v_effective_align) = probe.compute_struct(resolved, "", v_align_ann)?;
-            if v_total > variant_max_size {
-                variant_max_size = v_total;
-            }
-            if v_effective_align > variant_max_align {
-                variant_max_align = v_effective_align;
-            }
-        }
-        Ok((variant_max_size, variant_max_align))
-    }
-
-    /// Find the discriminator field's offset within the first variant that contains it.
-    fn find_discriminator_field(
-        &self,
-        mapping: &serde_json::Map<String, Value>,
-        disc_name: &str,
-        field_path: &str,
-    ) -> Result<Option<ByteRange>, TypedefError> {
-        for (_key, variant_schema) in mapping.iter() {
-            let Some(resolved) = resolve_ref_or_inline(variant_schema, self.root) else {
-                continue;
-            };
-            let v_kind = get_typedef_kind(resolved)
-                .and_then(|s| s.parse::<TypeDefKind>().ok())
-                .ok_or_else(|| TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: "TUnion variant schema has no TypeDef:* kind".to_string(),
-                })?;
-            if v_kind != TypeDefKind::Struct {
-                return Err(TypedefError::Offset {
-                    field_path: field_path.to_string(),
-                    reason: format!("TUnion variant must be TypeDef:Struct, got {v_kind}"),
-                });
-            }
-            let v_align_ann = parse_align(resolved).unwrap_or(1);
-            let mut probe = ComputeCtx {
-                root: self.root,
-                fields: Vec::new(),
-                offset: 0,
-            };
-            probe.compute_struct(resolved, "", v_align_ann)?;
-            if let Some(r) = probe
-                .fields
-                .iter()
-                .find(|(p, _)| p == disc_name)
-                .map(|(_, r)| *r)
-            {
-                return Ok(Some(r));
-            }
-        }
-        Ok(None)
     }
 
     /// Compute the layout for a `TypeDef:Array` field.
@@ -759,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn union_byte_discriminator() {
+    fn union_byte_discriminator_rejected_in_aligned_mode() {
         let schema = json!({
             "TypeDef:Struct": true,
             "properties": {
@@ -794,16 +678,17 @@ mod tests {
                 }
             }
         });
-        let m = map(&schema);
-        assert_eq!(
-            m.get("payload.__discriminator"),
-            Some(&ByteRange { start: 0, end: 1 })
-        );
-        assert_eq!(m.total_size(), 16);
+        let err = OffsetMap::compute(&schema).unwrap_err();
+        assert!(matches!(err, TypedefError::Offset { .. }), "got {err:?}");
+        let reason = match err {
+            TypedefError::Offset { reason, .. } => reason,
+            _ => unreachable!(),
+        };
+        assert!(reason.contains("ADR-102"), "reason: {reason}");
     }
 
     #[test]
-    fn union_field_name_discriminator() {
+    fn union_field_name_discriminator_rejected_in_aligned_mode() {
         let schema = json!({
             "TypeDef:Struct": true,
             "properties": {
@@ -834,9 +719,69 @@ mod tests {
                 }
             }
         });
+        let err = OffsetMap::compute(&schema).unwrap_err();
+        assert!(matches!(err, TypedefError::Offset { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn non_final_inline_string_rejected_in_aligned_mode() {
+        let schema = json!({
+            "TypeDef:Struct": true,
+            "properties": {
+                "name": { "TypeDef:String": true },
+                "id": { "TypeDef:Uint32": true }
+            }
+        });
+        let err = OffsetMap::compute(&schema).unwrap_err();
+        match err {
+            TypedefError::Offset { field_path, reason } => {
+                assert_eq!(field_path, "name");
+                assert!(reason.contains("ADR-100"), "reason: {reason}");
+            }
+            other => panic!("expected Offset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn final_inline_string_allowed_in_aligned_mode() {
+        let schema = json!({
+            "TypeDef:Struct": true,
+            "properties": {
+                "id": { "TypeDef:Uint32": true },
+                "name": { "TypeDef:String": true }
+            }
+        });
         let m = map(&schema);
-        assert_eq!(m.get("event.type"), Some(&ByteRange { start: 0, end: 1 }));
-        assert_eq!(m.total_size(), 12);
+        assert_eq!(m.get("id"), Some(&ByteRange { start: 0, end: 4 }));
+        assert_eq!(m.get("name"), Some(&ByteRange { start: 4, end: 8 }));
+    }
+
+    #[test]
+    fn non_final_maxlength_string_allowed_in_aligned_mode() {
+        let schema = json!({
+            "TypeDef:Struct": true,
+            "properties": {
+                "name": { "TypeDef:String": true, "maxLength": 256 },
+                "id": { "TypeDef:Uint32": true }
+            }
+        });
+        let m = map(&schema);
+        assert_eq!(m.get("name"), Some(&ByteRange { start: 0, end: 256 }));
+        assert_eq!(m.get("id"), Some(&ByteRange { start: 256, end: 260 }));
+    }
+
+    #[test]
+    fn non_final_offset_indirect_string_allowed_in_aligned_mode() {
+        let schema = json!({
+            "TypeDef:Struct": true,
+            "properties": {
+                "blob": { "TypeDef:String": { "encoding": "offset-indirect" } },
+                "id": { "TypeDef:Uint32": true }
+            }
+        });
+        let m = map(&schema);
+        assert_eq!(m.get("blob"), Some(&ByteRange { start: 0, end: 8 }));
+        assert_eq!(m.get("id"), Some(&ByteRange { start: 8, end: 12 }));
     }
 
     #[test]

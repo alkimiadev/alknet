@@ -176,6 +176,8 @@ fn read_write_aligned_round_trips_all_fixed_size_kinds() -> Result<(), TypedefEr
             "u16": { "TypeDef:Uint16": true },
             "i32": { "TypeDef:Int32": true },
             "u32": { "TypeDef:Uint32": true },
+            "i64": { "TypeDef:Int64": true },
+            "u64": { "TypeDef:Uint64": true },
             "f32": { "TypeDef:Float32": true },
             "f64": { "TypeDef:Float64": true },
             "b":   { "TypeDef:Boolean": true },
@@ -192,6 +194,8 @@ fn read_write_aligned_round_trips_all_fixed_size_kinds() -> Result<(), TypedefEr
     engine.write_field(&mut buffer, "u16", &FieldValue::U16(0xBEEF))?;
     engine.write_field(&mut buffer, "i32", &FieldValue::I32(-2_000_000_007))?;
     engine.write_field(&mut buffer, "u32", &FieldValue::U32(0xDEADBEEF))?;
+    engine.write_field(&mut buffer, "i64", &FieldValue::I64(-9_000_000_000_000_000_000))?;
+    engine.write_field(&mut buffer, "u64", &FieldValue::U64(0x0102030405060708))?;
     engine.write_field(&mut buffer, "f32", &FieldValue::F32(1.5))?;
     engine.write_field(&mut buffer, "f64", &FieldValue::F64(2.5))?;
     engine.write_field(&mut buffer, "b", &FieldValue::Bool(true))?;
@@ -208,6 +212,14 @@ fn read_write_aligned_round_trips_all_fixed_size_kinds() -> Result<(), TypedefEr
     assert_eq!(
         engine.read_field(&buffer, "u32")?,
         FieldValue::U32(0xDEADBEEF)
+    );
+    assert_eq!(
+        engine.read_field(&buffer, "i64")?,
+        FieldValue::I64(-9_000_000_000_000_000_000)
+    );
+    assert_eq!(
+        engine.read_field(&buffer, "u64")?,
+        FieldValue::U64(0x0102030405060708)
     );
     assert_eq!(engine.read_field(&buffer, "f32")?, FieldValue::F32(1.5));
     assert_eq!(engine.read_field(&buffer, "f64")?, FieldValue::F64(2.5));

@@ -37,10 +37,11 @@ pub enum LayoutMode {
 #[derive(Debug)]
 enum Layout {
     /// Packed sequential layout. The write-side is [`LayoutBuilder`]; the
-    /// read-side is [`SequentialReader`].
+    /// read-side is a fresh [`SequentialReader`] constructed on demand
+    /// (ADR-101 — the reader has mutable cursor state that the consumer
+    /// owns, so the engine is a factory, not a holder).
     Packed {
         builder: LayoutBuilder,
-        reader: SequentialReader,
     },
     /// Aligned static layout. Field offsets are precomputed in an
     /// [`OffsetMap`] for random access.
@@ -88,8 +89,7 @@ impl TypedefEngine {
         let layout = match mode {
             LayoutMode::Packed => {
                 let builder = LayoutBuilder::new(schema)?;
-                let reader = SequentialReader::new(schema)?;
-                Layout::Packed { builder, reader }
+                Layout::Packed { builder }
             }
             LayoutMode::Aligned => {
                 let offset_map = OffsetMap::compute(schema)?;
@@ -136,11 +136,15 @@ impl TypedefEngine {
         }
     }
 
-    /// Access the sequential reader (read-side of packed mode).
+    /// Construct a fresh [`SequentialReader`] for packed-mode reads
+    /// (ADR-101). Each call returns a new reader with the cursor at
+    /// position 0. The consumer owns the reader and calls
+    /// `read_next`/`read_field`/`reset` on it directly.
+    ///
     /// Returns `None` if compiled in aligned mode.
-    pub fn sequential_reader(&self) -> Option<&SequentialReader> {
+    pub fn sequential_reader(&self) -> Option<SequentialReader> {
         match &self.layout {
-            Layout::Packed { reader, .. } => Some(reader),
+            Layout::Packed { .. } => SequentialReader::new(&self.schema).ok(),
             Layout::Aligned { .. } => None,
         }
     }
@@ -224,6 +228,10 @@ impl TypedefEngine {
                 let v = data_access::read_i32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::I32(v))
             }
+            TypeDefKind::Int64 => {
+                let v = data_access::read_i64(buffer, range.start, field_path, endian)?;
+                Ok(FieldValue::I64(v))
+            }
             TypeDefKind::Uint8 => {
                 let v = data_access::read_u8(buffer, range.start, field_path)?;
                 Ok(FieldValue::U8(v))
@@ -235,6 +243,10 @@ impl TypedefEngine {
             TypeDefKind::Uint32 => {
                 let v = data_access::read_u32(buffer, range.start, field_path, endian)?;
                 Ok(FieldValue::U32(v))
+            }
+            TypeDefKind::Uint64 => {
+                let v = data_access::read_u64(buffer, range.start, field_path, endian)?;
+                Ok(FieldValue::U64(v))
             }
             TypeDefKind::Float32 => {
                 let v = data_access::read_f32(buffer, range.start, field_path, endian)?;
@@ -328,12 +340,18 @@ impl TypedefEngine {
             FieldValue::I32(v) => {
                 data_access::write_i32(buffer, range.start, *v, field_path, endian)
             }
+            FieldValue::I64(v) => {
+                data_access::write_i64(buffer, range.start, *v, field_path, endian)
+            }
             FieldValue::U8(v) => data_access::write_u8(buffer, range.start, *v, field_path),
             FieldValue::U16(v) => {
                 data_access::write_u16(buffer, range.start, *v, field_path, endian)
             }
             FieldValue::U32(v) => {
                 data_access::write_u32(buffer, range.start, *v, field_path, endian)
+            }
+            FieldValue::U64(v) => {
+                data_access::write_u64(buffer, range.start, *v, field_path, endian)
             }
             FieldValue::F32(v) => {
                 data_access::write_f32(buffer, range.start, *v, field_path, endian)

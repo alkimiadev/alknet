@@ -29,12 +29,16 @@ pub enum FieldValue<'a> {
     I16(i16),
     /// `TypeDef:Int32`.
     I32(i32),
+    /// `TypeDef:Int64`.
+    I64(i64),
     /// `TypeDef:Uint8`.
     U8(u8),
     /// `TypeDef:Uint16`.
     U16(u16),
     /// `TypeDef:Uint32`.
     U32(u32),
+    /// `TypeDef:Uint64`.
+    U64(u64),
     /// `TypeDef:Float32`.
     F32(f32),
     /// `TypeDef:Float64`.
@@ -288,6 +292,10 @@ fn read_field_value<'a>(
             let v = data_access::read_i32(buffer, offset, field_path, endian)?;
             Ok((FieldValue::I32(v), offset + 4))
         }
+        TypeDefKind::Int64 => {
+            let v = data_access::read_i64(buffer, offset, field_path, endian)?;
+            Ok((FieldValue::I64(v), offset + 8))
+        }
         TypeDefKind::Uint8 => {
             let v = data_access::read_u8(buffer, offset, field_path)?;
             Ok((FieldValue::U8(v), offset + 1))
@@ -299,6 +307,10 @@ fn read_field_value<'a>(
         TypeDefKind::Uint32 => {
             let v = data_access::read_u32(buffer, offset, field_path, endian)?;
             Ok((FieldValue::U32(v), offset + 4))
+        }
+        TypeDefKind::Uint64 => {
+            let v = data_access::read_u64(buffer, offset, field_path, endian)?;
+            Ok((FieldValue::U64(v), offset + 8))
         }
         TypeDefKind::Float32 => {
             let v = data_access::read_f32(buffer, offset, field_path, endian)?;
@@ -1054,26 +1066,30 @@ mod tests {
                 "i8":  { "TypeDef:Int8": true },
                 "i16": { "TypeDef:Int16": true },
                 "i32": { "TypeDef:Int32": true },
+                "i64": { "TypeDef:Int64": true },
                 "u8":  { "TypeDef:Uint8": true },
                 "u16": { "TypeDef:Uint16": true },
                 "u32": { "TypeDef:Uint32": true },
+                "u64": { "TypeDef:Uint64": true },
                 "f32": { "TypeDef:Float32": true },
                 "f64": { "TypeDef:Float64": true },
                 "b":   { "TypeDef:Boolean": true },
                 "e":   { "TypeDef:Enum": true }
             }
         });
-        let mut buf = vec![0u8; 64];
+        let mut buf = vec![0u8; 80];
         buf[0] = 0x80;
         buf[1..3].copy_from_slice(&(-1i16).to_le_bytes());
         buf[3..7].copy_from_slice(&(-5i32).to_le_bytes());
-        buf[7] = 200;
-        buf[8..10].copy_from_slice(&0xBEEFu16.to_le_bytes());
-        buf[10..14].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
-        buf[14..18].copy_from_slice(&std::f32::consts::PI.to_le_bytes());
-        buf[18..26].copy_from_slice(&std::f64::consts::PI.to_le_bytes());
-        buf[26] = 0x01;
-        buf[27..31].copy_from_slice(&7u32.to_le_bytes());
+        buf[7..15].copy_from_slice(&(-9i64).to_le_bytes());
+        buf[15] = 200;
+        buf[16..18].copy_from_slice(&0xBEEFu16.to_le_bytes());
+        buf[18..22].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        buf[22..30].copy_from_slice(&0x0102030405060708u64.to_le_bytes());
+        buf[30..34].copy_from_slice(&std::f32::consts::PI.to_le_bytes());
+        buf[34..42].copy_from_slice(&std::f64::consts::PI.to_le_bytes());
+        buf[42] = 0x01;
+        buf[43..47].copy_from_slice(&7u32.to_le_bytes());
 
         let mut reader = SequentialReader::new(&schema).unwrap();
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
@@ -1083,11 +1099,15 @@ mod tests {
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(v, FieldValue::I32(-5));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
+        assert_eq!(v, FieldValue::I64(-9));
+        let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(v, FieldValue::U8(200));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(v, FieldValue::U16(0xBEEF));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert_eq!(v, FieldValue::U32(0xDEADBEEF));
+        let (_, v) = reader.read_next(&buf).unwrap().unwrap();
+        assert_eq!(v, FieldValue::U64(0x0102030405060708));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();
         assert!(matches!(v, FieldValue::F32(x) if (x - std::f32::consts::PI).abs() < 1e-6));
         let (_, v) = reader.read_next(&buf).unwrap().unwrap();

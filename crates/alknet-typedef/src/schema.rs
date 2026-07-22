@@ -24,7 +24,7 @@ const BYTE_DISCRIMINATOR_TYPES: &[TypeDefKind] = &[
     TypeDefKind::Uint32,
 ];
 
-/// The 17 `TypeDef:*` kinds recognized by the engine.
+/// The 19 `TypeDef:*` kinds recognized by the engine.
 ///
 /// Each variant corresponds to a `TypeDef:<name>` JSON Schema keyword.
 /// The enum provides compile-time exhaustiveness checking and integer
@@ -34,9 +34,11 @@ pub enum TypeDefKind {
     Int8,
     Int16,
     Int32,
+    Int64,
     Uint8,
     Uint16,
     Uint32,
+    Uint64,
     Float32,
     Float64,
     Boolean,
@@ -57,9 +59,11 @@ impl TypeDefKind {
             TypeDefKind::Int8 => "TypeDef:Int8",
             TypeDefKind::Int16 => "TypeDef:Int16",
             TypeDefKind::Int32 => "TypeDef:Int32",
+            TypeDefKind::Int64 => "TypeDef:Int64",
             TypeDefKind::Uint8 => "TypeDef:Uint8",
             TypeDefKind::Uint16 => "TypeDef:Uint16",
             TypeDefKind::Uint32 => "TypeDef:Uint32",
+            TypeDefKind::Uint64 => "TypeDef:Uint64",
             TypeDefKind::Float32 => "TypeDef:Float32",
             TypeDefKind::Float64 => "TypeDef:Float64",
             TypeDefKind::Boolean => "TypeDef:Boolean",
@@ -80,7 +84,7 @@ impl TypeDefKind {
             TypeDefKind::Float32 | TypeDefKind::Int32 | TypeDefKind::Uint32 | TypeDefKind::Enum => {
                 Some(4)
             }
-            TypeDefKind::Float64 => Some(8),
+            TypeDefKind::Float64 | TypeDefKind::Int64 | TypeDefKind::Uint64 => Some(8),
             TypeDefKind::Int8 | TypeDefKind::Uint8 | TypeDefKind::Boolean => Some(1),
             TypeDefKind::Int16 | TypeDefKind::Uint16 => Some(2),
             TypeDefKind::String
@@ -94,7 +98,8 @@ impl TypeDefKind {
     }
 
     /// Natural alignment: 1 for u8/i8/bool, 2 for u16/i16, 4 for u32/i32/f32/enum,
-    /// 8 for f64, 4 for variable-length (u32 length prefix), 1 for composites.
+    /// 8 for u64/i64/f64, 4 for variable-length (u32 length prefix), 1 for
+    /// composites.
     pub fn natural_alignment(self) -> usize {
         match self {
             TypeDefKind::Int8 | TypeDefKind::Uint8 | TypeDefKind::Boolean => 1,
@@ -103,7 +108,7 @@ impl TypeDefKind {
             | TypeDefKind::Uint32
             | TypeDefKind::Float32
             | TypeDefKind::Enum => 4,
-            TypeDefKind::Float64 => 8,
+            TypeDefKind::Float64 | TypeDefKind::Int64 | TypeDefKind::Uint64 => 8,
             TypeDefKind::String
             | TypeDefKind::Bytes
             | TypeDefKind::Record
@@ -121,9 +126,11 @@ impl TypeDefKind {
                 | TypeDefKind::Int8
                 | TypeDefKind::Int16
                 | TypeDefKind::Int32
+                | TypeDefKind::Int64
                 | TypeDefKind::Uint8
                 | TypeDefKind::Uint16
                 | TypeDefKind::Uint32
+                | TypeDefKind::Uint64
                 | TypeDefKind::Boolean
                 | TypeDefKind::Enum
         )
@@ -135,8 +142,10 @@ impl TypeDefKind {
             self,
             TypeDefKind::Int16
                 | TypeDefKind::Int32
+                | TypeDefKind::Int64
                 | TypeDefKind::Uint16
                 | TypeDefKind::Uint32
+                | TypeDefKind::Uint64
                 | TypeDefKind::Float32
                 | TypeDefKind::Float64
                 | TypeDefKind::Enum
@@ -180,9 +189,11 @@ impl FromStr for TypeDefKind {
             "TypeDef:Int8" => Ok(TypeDefKind::Int8),
             "TypeDef:Int16" => Ok(TypeDefKind::Int16),
             "TypeDef:Int32" => Ok(TypeDefKind::Int32),
+            "TypeDef:Int64" => Ok(TypeDefKind::Int64),
             "TypeDef:Uint8" => Ok(TypeDefKind::Uint8),
             "TypeDef:Uint16" => Ok(TypeDefKind::Uint16),
             "TypeDef:Uint32" => Ok(TypeDefKind::Uint32),
+            "TypeDef:Uint64" => Ok(TypeDefKind::Uint64),
             "TypeDef:Float32" => Ok(TypeDefKind::Float32),
             "TypeDef:Float64" => Ok(TypeDefKind::Float64),
             "TypeDef:Boolean" => Ok(TypeDefKind::Boolean),
@@ -486,9 +497,11 @@ mod tests {
         assert_eq!(TypeDefKind::Int8.type_size(), Some(1));
         assert_eq!(TypeDefKind::Int16.type_size(), Some(2));
         assert_eq!(TypeDefKind::Int32.type_size(), Some(4));
+        assert_eq!(TypeDefKind::Int64.type_size(), Some(8));
         assert_eq!(TypeDefKind::Uint8.type_size(), Some(1));
         assert_eq!(TypeDefKind::Uint16.type_size(), Some(2));
         assert_eq!(TypeDefKind::Uint32.type_size(), Some(4));
+        assert_eq!(TypeDefKind::Uint64.type_size(), Some(8));
         assert_eq!(TypeDefKind::Boolean.type_size(), Some(1));
         assert_eq!(TypeDefKind::Enum.type_size(), Some(4));
     }
@@ -510,8 +523,8 @@ mod tests {
 
     #[test]
     fn type_size_unknown_kind_returns_none() {
-        assert!("TypeDef:Int64".parse::<TypeDefKind>().is_err());
         assert!("TypeDef:Uint128".parse::<TypeDefKind>().is_err());
+        assert!("TypeDef:Int128".parse::<TypeDefKind>().is_err());
         assert!("not-a-typedef".parse::<TypeDefKind>().is_err());
     }
 
@@ -527,6 +540,8 @@ mod tests {
         assert_eq!(TypeDefKind::Float32.natural_alignment(), 4);
         assert_eq!(TypeDefKind::Enum.natural_alignment(), 4);
         assert_eq!(TypeDefKind::Float64.natural_alignment(), 8);
+        assert_eq!(TypeDefKind::Int64.natural_alignment(), 8);
+        assert_eq!(TypeDefKind::Uint64.natural_alignment(), 8);
         assert_eq!(TypeDefKind::String.natural_alignment(), 4);
         assert_eq!(TypeDefKind::Bytes.natural_alignment(), 4);
         assert_eq!(TypeDefKind::Record.natural_alignment(), 4);
@@ -544,9 +559,11 @@ mod tests {
             TypeDefKind::Int8,
             TypeDefKind::Int16,
             TypeDefKind::Int32,
+            TypeDefKind::Int64,
             TypeDefKind::Uint8,
             TypeDefKind::Uint16,
             TypeDefKind::Uint32,
+            TypeDefKind::Uint64,
             TypeDefKind::Boolean,
             TypeDefKind::Enum,
         ] {

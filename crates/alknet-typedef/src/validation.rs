@@ -34,9 +34,11 @@ pub fn build_validator(schema: &Value) -> Result<jsonschema::Validator, TypedefE
         .with_keyword("TypeDef:Int8", int8_factory)
         .with_keyword("TypeDef:Int16", int16_factory)
         .with_keyword("TypeDef:Int32", int32_factory)
+        .with_keyword("TypeDef:Int64", int64_factory)
         .with_keyword("TypeDef:Uint8", uint8_factory)
         .with_keyword("TypeDef:Uint16", uint16_factory)
         .with_keyword("TypeDef:Uint32", uint32_factory)
+        .with_keyword("TypeDef:Uint64", uint64_factory)
         .with_keyword("TypeDef:Boolean", boolean_factory)
         .with_keyword("TypeDef:String", string_factory)
         .with_keyword("TypeDef:Bytes", bytes_factory)
@@ -60,6 +62,60 @@ define_int_validator!(Int32Validator, int32_factory, "TypeDef:Int32", -214748364
 define_uint_validator!(Uint8Validator, uint8_factory, "TypeDef:Uint8", 255);
 define_uint_validator!(Uint16Validator, uint16_factory, "TypeDef:Uint16", 65535);
 define_uint_validator!(Uint32Validator, uint32_factory, "TypeDef:Uint32", 4294967295);
+
+// Int64/Uint64 use the full i64/u64 range, so the macro's `n <= $max` check
+// is always true (clippy: "comparison useless due to type limits"). Write
+// them directly — the validator just checks that the JSON value is an
+// integer in the right range.
+struct Int64Validator;
+impl Keyword for Int64Validator {
+    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
+        match instance.as_i64() {
+            Some(_) => Ok(()),
+            None => Err(ValidationError::custom("expected an i64 integer")),
+        }
+    }
+    fn is_valid(&self, instance: &Value) -> bool {
+        instance.as_i64().is_some()
+    }
+}
+
+fn int64_factory<'a>(
+    _parent: &'a Map<String, Value>,
+    value: &'a Value,
+    _path: jsonschema::paths::Location,
+) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
+    if value.as_bool() == Some(true) {
+        Ok(Box::new(Int64Validator))
+    } else {
+        Err(ValidationError::schema("TypeDef:Int64 must be set to true"))
+    }
+}
+
+struct Uint64Validator;
+impl Keyword for Uint64Validator {
+    fn validate<'i>(&self, instance: &'i Value) -> Result<(), ValidationError<'i>> {
+        match instance.as_u64() {
+            Some(_) => Ok(()),
+            None => Err(ValidationError::custom("expected a u64 integer")),
+        }
+    }
+    fn is_valid(&self, instance: &Value) -> bool {
+        instance.as_u64().is_some()
+    }
+}
+
+fn uint64_factory<'a>(
+    _parent: &'a Map<String, Value>,
+    value: &'a Value,
+    _path: jsonschema::paths::Location,
+) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
+    if value.as_bool() == Some(true) {
+        Ok(Box::new(Uint64Validator))
+    } else {
+        Err(ValidationError::schema("TypeDef:Uint64 must be set to true"))
+    }
+}
 define_float_validator!(
     Float32Validator,
     float32_factory,
@@ -365,6 +421,36 @@ mod tests {
         assert!(validator.is_valid(&json!({"u16": 65535, "u32": 4294967295u64})));
         assert!(!validator.is_valid(&json!({"u16": 65536, "u32": 0})));
         assert!(!validator.is_valid(&json!({"u16": -1, "u32": 0})));
+    }
+
+    #[test]
+    fn validates_int64_range() {
+        let schema = json!({
+            "TypeDef:Struct": true,
+            "type": "object",
+            "properties": { "val": { "TypeDef:Int64": true, "type": "integer" } },
+            "required": ["val"]
+        });
+        let validator = validator_for(&schema);
+        assert!(validator.is_valid(&json!({"val": 0})));
+        assert!(validator.is_valid(&json!({"val": 9223372036854775807i64})));
+        assert!(validator.is_valid(&json!({"val": -9223372036854775808i64})));
+        assert!(!validator.is_valid(&json!({"val": "x"})));
+    }
+
+    #[test]
+    fn validates_uint64_range() {
+        let schema = json!({
+            "TypeDef:Struct": true,
+            "type": "object",
+            "properties": { "val": { "TypeDef:Uint64": true, "type": "integer" } },
+            "required": ["val"]
+        });
+        let validator = validator_for(&schema);
+        assert!(validator.is_valid(&json!({"val": 0})));
+        assert!(validator.is_valid(&json!({"val": 18446744073709551615u64})));
+        assert!(!validator.is_valid(&json!({"val": -1})));
+        assert!(!validator.is_valid(&json!({"val": "x"})));
     }
 
     #[test]
